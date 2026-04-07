@@ -13,14 +13,26 @@ When a request explicitly asks for one of the shared validation reviews:
 - use `validation/review/documentation-architecture-review.md` for document organization and source-of-truth structure
 - use `validation/review/full-agent-surface-review.md` for combined review
 
-When a request asks to review prompt assets, review `AGENTS.md` files, validate prompt hierarchy, assess layer ownership, evaluate prompt routing, or asks for validation without naming a narrower review:
+When a request asks to review human-facing docs or subgroup `README.md` files without naming a review:
 
-- use `validation/review/full-agent-surface-review.md` unless the request clearly requires a narrower validation prompt
+- use `validation/review/document-writing-review.md` unless the request clearly focuses on document organization, source-of-truth structure, or cross-document architecture, in which case use `validation/review/documentation-architecture-review.md`
+
+When a request asks to review prompt assets or `AGENTS.md` files without naming a review:
+
+- use `validation/review/prompt-writing-review.md` unless the request clearly focuses on routing, precedence, or hierarchy behavior
+
+When a request asks to validate prompt hierarchy, assess layer ownership, or evaluate prompt routing without naming a review:
+
+- use `validation/review/hierarchy-behavior-review.md` unless the request clearly asks for broader synthesis
+
+When a request asks for validation without naming a narrower review, or asks for a combined review:
+
+- use `validation/review/full-agent-surface-review.md`
 
 When the review scope is not specified:
 
 - default to the requested repo or target root, not the whole workspace
-- use `validation/review/full-agent-surface-review.md` unless the request clearly requires a narrower validation prompt
+- default to the narrowest review that matches the request; do not broaden a narrower review request into the combined pass by default
 
 ## Use Of Shared Validation Prompts
 

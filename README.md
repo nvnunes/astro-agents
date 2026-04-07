@@ -20,11 +20,13 @@ The library sits within a broader instruction hierarchy. The following are conce
 
 1. `Projects/AGENTS.md`
    - workspace bootstrap and workspace-only preferences
-2. `Projects/astro-agents`
+2. `Projects/agents/AGENTS.md`
+   - user-local reusable overrides and extensions that refine shared defaults
+3. `Projects/astro-agents`
    - shared prompt assets and prompt-group routing rules
-3. `Projects/<repo>/AGENTS.md`
+4. `Projects/<repo>/AGENTS.md`
    - repo-specific architecture, workflow, testing, and review guidance
-4. `Projects/<repo>/<subtree>/AGENTS.md`
+5. `Projects/<repo>/<subtree>/AGENTS.md`
    - narrower local overrides for document type, notation, data, or workflow
 
 ## Structure

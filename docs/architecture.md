@@ -51,9 +51,10 @@ This structure deliberately separates:
 - human-facing explanation and authoring guidance in `README.md` files
 - reusable prompt assets in the prompt-group directories
 
-It also separates three levels of selection:
+It also separates four levels of selection:
 
 - workspace bootstrap in `Projects/AGENTS.md`
+- user-local reusable overrides in `Projects/agents/AGENTS.md` when present
 - top-level intent routing in `astro-agents/AGENTS.md`
 - narrower local activation in repo or subtree `AGENTS.md` files when a specific shared prompt asset should govern consistently in that context
 
@@ -77,6 +78,7 @@ In practice:
 
 - use the prompt library for shared defaults and reusable prompt assets
 - use `Projects/AGENTS.md` for workspace-specific instructions
+- use `Projects/agents/` for user-local reusable overrides or extensions that refine the shared defaults
 - use repo `AGENTS.md` files for project-specific rules
 - use deeper subtree `AGENTS.md` files for narrower local overrides
 
@@ -88,6 +90,8 @@ Use each layer for a distinct kind of instruction:
 
 - `Projects/AGENTS.md`
   - workspace-specific preferences, private environment details, and the bootstrap rule that points to this prompt library when available
+- `Projects/agents`
+  - user-local reusable overrides or extensions that refine shared defaults across multiple repos in one workspace
 - `Projects/astro-agents`
   - reusable prompt assets, routing rules, and shared defaults worth applying across multiple repos
 - `Projects/<repo>/AGENTS.md`
@@ -98,6 +102,7 @@ Use each layer for a distinct kind of instruction:
 When deciding where a rule belongs:
 
 - if it depends on the private workspace layout or local environment, keep it at the workspace layer
+- if it refines shared defaults across multiple repos but should remain user-local, keep it in `Projects/agents`
 - if it is reusable across multiple repos without knowing the repo's internal design, keep it in the prompt library
 - if it depends on a repo's architecture, API, testing strategy, deployment path, or domain contracts, keep it in that repo
 - if it matters only inside one subtree, keep it in that subtree
@@ -105,6 +110,7 @@ When deciding where a rule belongs:
 In practice, this means:
 
 - `Projects/AGENTS.md` should bootstrap into the shared prompt router and keep only workspace-specific preferences
+- `Projects/agents/AGENTS.md` should stay small and, where practical, mirror `astro-agents` so user-local overrides are easy to infer
 - the shared prompt library should define prompt areas and reusable prompt assets
 - the top-level prompt `AGENTS.md` should route by intent, not by full hierarchy traversal
 - repo or subtree `AGENTS.md` files may explicitly activate a specific shared prompt asset when that asset should govern consistently in the local context

@@ -166,75 +166,96 @@ Public guidance on `AGENTS.md` is consistent on a few points:
 - use nested `AGENTS.md` files for narrower scopes [1][2][4]
 - let the nearest applicable file win [1][2][4]
 
-For this workspace, repo-level `AGENTS.md` files should follow that model and stay focused on repo-local rules.
+For this workspace, repo-level `AGENTS.md` files should follow that model and stay focused on repo-local routing and source-of-truth activation.
 
-Recommended template:
+Recommended default template:
 
 ```md
 # <Repo> Agent Brief
 
 ## Prompt Routing
 - Follow any higher-level workspace prompt-routing instructions when present.
-- Repo-specific instructions in this file take precedence within this repository.
-- When this repo provides local prompts under `agents/`, use them for repo-specific agent behavior before falling back to shared prompts.
-- When this repo has a stable local default, explicitly activate the relevant shared prompt asset here instead of restating it.
-- Example: if the workspace provides a shared Python coding guide, apply that guide consistently for Python work in this repo.
+- When higher-level routing selects a higher-level prompt subtree, check the corresponding subtree under `agents/` first.
+- Use other prompts under `agents/` when they directly match the request and do not correspond to a higher-level counterpart.
 
-## Scope
-- Briefly state the repo's role.
-- State the main change discipline for this repo.
+## Precedence
+- More specific subtree-level `AGENTS.md` files take precedence within their scope.
+- Otherwise instructions in this file apply by default within this repository.
+- Within this scope, use matching local prompt assets under `agents/` before falling back to higher-level prompt assets.
 
-## Architecture
-- Describe the main module, package, service, or layer boundaries.
-- Identify the intended public API boundary when relevant.
-- State key ownership rules for where behavior belongs.
-- When `docs/architecture.md` or an equivalent design document exists, point to it as the source of truth for boundaries, ownership, and interfaces.
-
-## Contracts
-- Define the important explicit contracts in this repo.
-- State validation and compatibility expectations.
-
-## Workflow
-- Include only repo-specific commands, environment rules, deployment constraints, or operational cautions.
-- Omit generic coding guidance that belongs in the shared prompt library.
-
-## Testing Expectations
-- State the required verification bar for meaningful changes.
-- Name canonical commands when they are repo-specific and stable enough to be worth encoding here.
-- When `docs/testing.md` or an equivalent verification document exists, point to it as the source of truth for canonical checks and validation steps.
-
-## Review Lens
-- State the repo-specific concerns that reviews should prioritize.
+## Source Of Truth
+- Use `README.md` for the repo overview and major entrypoints.
+- Use `docs/architecture.md` for structure, ownership, and interfaces when present.
+- Use `docs/testing.md` for validation requirements and canonical checks when present.
+- Use any other named local source-of-truth docs directly.
 ```
 
-Use this template as a starting point, not a rigid schema. Omit sections that do not add real guidance, and add narrowly scoped sections when a repo has a recurring local risk that agents should know about.
+This is the default recommendation. It is enough to establish local routing, activate the intended shared or local guides, and surface the source-of-truth docs that define the repo's agent surface.
+
+Add sections like these only when inline local guidance materially improves runtime use:
+
+```md
+## Scope
+- This repo owns `<repo role>`.
+- Prefer `<main change discipline>` for changes in this repo.
+
+## Architecture
+- Use `docs/architecture.md` for boundaries, ownership, and interfaces when present.
+- Treat this section as a short local summary, not a replacement for `docs/architecture.md`.
+- Treat `<public API boundary>` as the intended public interface.
+- Keep `<behavior or asset>` in `<layer, module, or path>`.
+
+## Contracts
+- Preserve `<important contract>`.
+- Preserve `<validation or compatibility expectation>`.
+
+## Workflow
+- Use `<repo-specific command or environment rule>`.
+- Respect `<deployment or operational constraint>`.
+
+## Testing Expectations
+- Use `docs/testing.md` for validation requirements and canonical checks when present.
+- Treat this section as a short local summary, not a replacement for `docs/testing.md`.
+- Run `<canonical repo-specific command>` for meaningful changes.
+
+## Review Lens
+- Prioritize `<repo-specific review concern>`.
+- Watch for `<repo-specific risk>`.
+```
 
 For public-safe repo files, prefer this kind of generic activation language over hardcoded workspace paths. The repo file can name the kind of shared guide that should govern locally without assuming a specific private prompt-library location.
 
 When deeper source-of-truth docs exist, repo `AGENTS.md` should surface them explicitly instead of assuming the agent will discover them on its own.
 
-## Workspace Bootstrap Example
+## Workspace Bootstrap AGENTS Template
 
-At the workspace level, prefer a much thinner bootstrap file:
+At the workspace level, for example in `/Projects`, prefer a much thinner bootstrap file:
 
 ```md
 # Workspace Agent Brief
 
 ## Prompt Routing
-- Use this file only as the workspace bootstrap for the shared prompt system.
-- When the shared prompt library is available, use `astro-agents/AGENTS.md` as the top-level intent router.
-- Do not restate prompt-group or prompt-asset behavior here.
-- Let repo-level and subtree-level `AGENTS.md` files decide whether to activate a specific shared prompt asset in their local scope.
-
-## Locality
-- More specific repo-level and subtree-level `AGENTS.md` files take precedence within their scope.
-- Treat this file as a workspace bootstrap, not as a replacement for repo-specific instructions.
-
-## Workspace Preferences
-- Keep only workspace-specific preferences here.
+- When available, use `agents/AGENTS.md` before falling back to `astro-agents/AGENTS.md`.
 ```
 
 This workspace-level file is intentionally thinner than a repo `AGENTS.md`. Its job is to bootstrap the shared router and hold workspace-only preferences, not to compete with the prompt library or repo-local files.
+
+## User-Local Override AGENTS Template
+
+When a workspace needs user-local reusable overrides that should apply across multiple repos without belonging in the shared library, prefer a separate `Projects/agents/AGENTS.md` layer:
+
+```md
+# User Agent Overrides
+
+## Prompt Routing
+- When higher-level routing selects a subtree under `astro-agents/`, check the corresponding subtree here first.
+- Use other prompts here when they directly match the request and do not correspond to a shared counterpart under `astro-agents/`.
+
+## Precedence
+- Use matching local prompt assets here when present; otherwise fall back to the matching path under `astro-agents/`.
+```
+
+This user-local layer does not need a `README.md` by default. Add one only if the local override library becomes large enough that humans need deeper explanatory guidance.
 
 ## Recommended `docs/testing.md` Pattern
 
@@ -281,6 +302,8 @@ When a repo can safely depend on this shared library in its local workspace cont
 
 Use `agents/` for repo-local agent-facing prompts, not for reusable shared validation prompts.
 
+At the workspace level, the user-local `Projects/agents/` layer should, where practical, mirror the organization of `astro-agents/` so the override relationship is easier to infer.
+
 Prefer this staged pattern:
 
 - start with a small `agents/` subtree only when the repo actually needs local agent-facing prompts
@@ -290,8 +313,9 @@ Prefer this staged pattern:
 Use `agents/` for:
 
 - repo-specific validation prompts under `agents/validation/`
-- repo-specific style prompts under `agents/style/`
-- repo-specific coding prompts under `agents/coding/`
+- repo-specific authoring prompts under `agents/authoring/`
+- repo-specific writing prompts under `agents/authoring/writing/`
+- repo-specific coding prompts under `agents/authoring/code/`
 - repos where local agent-facing prompts are stable and substantial enough to justify their own subtree
 
 ## What Belongs In Repo AGENTS.md

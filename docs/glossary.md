@@ -72,6 +72,17 @@ Examples:
 
 Use this term when clarifying ownership and preventing duplicated or drifting guidance.
 
+### Activation Language
+
+Runtime wording in a routing file that tells the agent to use a specific local or shared guide, prompt asset, or source-of-truth document.
+
+Examples:
+
+- `Use docs/testing.md for validation requirements and canonical checks.`
+- `When this repo provides local prompts under agents/, use them for repo-specific behavior before falling back to shared prompts.`
+
+Use this term when discussing the wording that activates a guide or points the agent to the right operational source without restating the deeper instructions.
+
 ### Local Activation
 
 A repo-level or subtree-level instruction that explicitly tells the agent to use a specific shared prompt asset in that local context.

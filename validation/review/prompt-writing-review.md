@@ -18,9 +18,9 @@ When running this review:
 - discover applicable prompt assets dynamically from the target root
 - exclude human-facing `README.md` and `docs/` files from this review
 - use `authoring/agents/agents-md.md` when reviewing `AGENTS.md` files
-- use `authoring/agents/writing-prompt.md` when reviewing prompts that define writing or revision behavior under `authoring/agents/` or repo-local `agents/style/`
+- use `authoring/agents/writing-prompt.md` when reviewing prompts that define writing or revision behavior under `authoring/agents/` or repo-local `agents/authoring/writing/`
 - use `authoring/agents/writing-prompt.md` when reviewing prompt assets under `authoring/writing/`, because those files are still agent-facing writing guides even though they target human-facing writing
-- use `authoring/agents/coding-prompt.md` when reviewing prompts under `authoring/code/` or repo-local `agents/coding/`
+- use `authoring/agents/coding-prompt.md` when reviewing prompts under `authoring/code/` or repo-local `agents/authoring/code/`
 - use `authoring/agents/validation-prompt.md` when reviewing prompts under `validation/` or repo-local `agents/validation/`, except where a more specific local standard explicitly overrides it
 - use `authoring/agents/base.md` for other repo-local prompt assets under `agents/`
 - inspect surrounding local context only when needed to determine prompt role or applicable comparison guide

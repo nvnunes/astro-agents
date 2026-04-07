@@ -1,4 +1,4 @@
-# Style Prompt
+# Writing Prompt
 
 ## Purpose
 Use this style for prompts that define writing or revision behavior for documents. Inherit the common prompt-writing discipline from `authoring/agents/base.md`, then apply the additional rules below.
@@ -10,7 +10,7 @@ Use this style for prompts that define writing or revision behavior for document
 - Prevent stylistic drift into the wrong document type.
 - Define how the model should return the result.
 
-## Style-Specific Requirements
+## Writing-Specific Requirements
 - State the document type and audience.
 - Define success criteria directly.
 - Specify tone and stylistic defaults explicitly.
@@ -31,12 +31,12 @@ Use this style for prompts that define writing or revision behavior for document
 - Omit sections that do not add operational clarity.
 
 ## Preservation And Revision
-When revising style prompts:
+When revising writing prompts:
 - Keep the prompt tied to the document role it claims to serve.
 - Do not let it drift into hierarchy design or repo-organization guidance.
 - Keep preservation rules explicit where meaning, notation, or document role must be preserved.
 - Keep examples selective and only when they resolve real ambiguity.
 
 ## Output
-- When writing or revising a style prompt, return the revised prompt directly unless explanation is requested.
-- When reviewing a style prompt, identify role drift, missing preservation rules, weak tone definition, or weak output definition before proposing replacement text.
+- When writing or revising a writing prompt, return the revised prompt directly unless explanation is requested.
+- When reviewing a writing prompt, identify role drift, missing preservation rules, weak tone definition, or weak output definition before proposing replacement text.

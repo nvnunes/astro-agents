@@ -27,7 +27,7 @@ When running this review:
 Run the following component reviews within the requested scope:
 
 - `validation/review/document-writing-review.md`
-  - for human-facing docs vs the applicable guides under `authoring/prose/`
+  - for human-facing docs vs the applicable guides under `authoring/writing/`
 - `validation/review/prompt-writing-review.md`
   - for `AGENTS.md` and prompt assets vs the applicable guides under `authoring/`
 - `validation/review/hierarchy-behavior-review.md`

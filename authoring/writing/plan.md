@@ -1,7 +1,7 @@
 # Plan
 
 ## Purpose
-Use this style for working plans, implementation roadmaps, and phased execution documents intended primarily for the author. Inherit the common documentation-writing discipline from `authoring/prose/base.md`, then apply the additional rules below.
+Use this style for working plans, implementation roadmaps, and phased execution documents intended primarily for the author. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the additional rules below.
 
 These documents are not polished concept notes. They exist to support execution, re-entry, and decision continuity over time.
 

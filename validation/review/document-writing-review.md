@@ -16,8 +16,8 @@ If the review scope is not specified, review the applicable `README.md`, subgrou
 When running this review:
 
 - discover applicable `README.md`, subgroup `README.md` files, and other human-facing docs dynamically from the target root
-- use the applicable guide under `authoring/prose/` when reviewing human-facing docs
-- default to `authoring/prose/repo-docs.md` for `README.md`, glossary/reference docs, and other repo-facing operational docs
+- use the applicable guide under `authoring/writing/` when reviewing human-facing docs
+- default to `authoring/writing/repo-docs.md` for `README.md`, glossary/reference docs, and other repo-facing operational docs
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
 
 ## Review Lenses
@@ -26,7 +26,7 @@ Evaluate documents against the applicable style guide.
 
 Required review lenses:
 
-- human-facing docs vs the applicable guide under `authoring/prose/`
+- human-facing docs vs the applicable guide under `authoring/writing/`
 - scanability and section discipline
 - directness and precision
 - source-of-truth boundaries

@@ -34,7 +34,7 @@ The library sits within a broader instruction hierarchy. The following are conce
 - `docs/`
   - deeper hierarchy and repo-authoring guidance
 - `authoring/`
-  - shared authoring guides, organized into `authoring/agents/` for AI-facing prompt-writing guides, `authoring/prose/` for human-facing prose guides, and `authoring/code/` as a routed subgroup for source-code authoring guides
+  - shared authoring guides, organized into `authoring/agents/` for AI-facing prompt-writing guides, `authoring/writing/` for human-facing writing guides, and `authoring/code/` as a routed subgroup for source-code authoring guides
 - `validation/`
   - shared validation prompts plus subgroup routing and authoring docs
 - `agents/`

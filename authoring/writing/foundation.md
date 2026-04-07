@@ -1,7 +1,7 @@
 # Foundation
 
 ## Purpose
-Use this style for shareable foundation documents such as concept notes, framework overviews, design charters, and guiding documents. These documents define structure, intent, scope, and expected outputs rather than report scientific results. Inherit the common documentation-writing discipline from `authoring/prose/base.md`, then apply the additional rules below.
+Use this style for shareable foundation documents such as concept notes, framework overviews, design charters, and guiding documents. These documents define structure, intent, scope, and expected outputs rather than report scientific results. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the additional rules below.
 
 ## Success Criteria
 - Preserve the role of the document as a conceptual or guiding document.

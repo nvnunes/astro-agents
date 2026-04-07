@@ -40,7 +40,7 @@ The goal is not to put everything in `AGENTS.md`. The goal is to make the right 
 - `authoring/`
   - authoring guides plus agent-facing routing in `authoring/AGENTS.md`, human-facing authoring guidance in `authoring/README.md`, and three internal guide families:
     - `authoring/agents/` for AI-facing prompt-writing guides
-    - `authoring/prose/` for human-facing prose guides
+    - `authoring/writing/` for human-facing writing guides
     - `authoring/code/` as a routed subgroup for source-code authoring guides, with its own `AGENTS.md` and `README.md`
 - `validation/`
   - validation prompts plus agent-facing routing in `validation/AGENTS.md` and human-facing authoring guidance in `validation/README.md`

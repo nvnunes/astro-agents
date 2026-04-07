@@ -1,7 +1,7 @@
 # Science
 
 ## Purpose
-Use this style for scientific research writing intended for direct inclusion in theses, journal papers, conference proceedings, and research proposals. Inherit the common documentation-writing discipline from `authoring/prose/base.md`, then apply the stricter scientific constraints below.
+Use this style for scientific research writing intended for direct inclusion in theses, journal papers, conference proceedings, and research proposals. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the stricter scientific constraints below.
 
 ## Success Criteria
 - Preserve scientific meaning.

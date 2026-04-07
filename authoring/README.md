@@ -6,7 +6,7 @@ This `README.md` is the human-facing guide for designing and revising those guid
 
 ## Design Model
 
-Use this folder for shared guides about how to author AI-facing prompts, human-facing prose, and source code.
+Use this folder for shared guides about how to author AI-facing prompts, human-facing writing, and source code.
 
 In this subgroup:
 
@@ -22,24 +22,24 @@ In this subgroup:
   - common writing discipline for agent-facing prompt assets
 - `authoring/agents/agents-md.md`
   - specialized style for `AGENTS.md`
-- `authoring/agents/style-prompt.md`
+- `authoring/agents/writing-prompt.md`
   - prompts that define writing or revision behavior
 - `authoring/agents/coding-prompt.md`
   - prompts that define coding or code-review behavior
 - `authoring/agents/validation-prompt.md`
   - validation prompts under shared or repo-local validation libraries
 
-### `prose/`
+### `writing/`
 
-- `authoring/prose/base.md`
-  - common writing discipline for human-facing prose
-- `authoring/prose/repo-docs.md`
+- `authoring/writing/base.md`
+  - common writing discipline for human-facing writing
+- `authoring/writing/repo-docs.md`
   - repo-facing documentation such as `README.md`, architecture docs, testing docs, API docs, and contribution guides
-- `authoring/prose/science.md`
+- `authoring/writing/science.md`
   - scientific papers, theses, proceedings, and proposals
-- `authoring/prose/foundation.md`
+- `authoring/writing/foundation.md`
   - conceptual or guiding framework documents
-- `authoring/prose/plan.md`
+- `authoring/writing/plan.md`
   - working plans, phased roadmaps, and implementation plans
 
 ### `code/`
@@ -62,10 +62,10 @@ Its core recommendations are strongly aligned with published guidance on `AGENTS
 Use the most specific applicable guide from the families above.
 
 - For `AGENTS.md`, prefer `authoring/agents/agents-md.md`.
-- For AI-facing prompts that define writing or revision behavior, prefer `authoring/agents/style-prompt.md`.
+- For AI-facing prompts that define writing or revision behavior, prefer `authoring/agents/writing-prompt.md`.
 - For AI-facing prompts that define coding or code-review behavior, prefer `authoring/agents/coding-prompt.md`.
 - For validation prompts, prefer `authoring/agents/validation-prompt.md`.
-- For human-facing prose, prefer the most specific guide under `authoring/prose/`.
+- For human-facing writing, prefer the most specific guide under `authoring/writing/`.
 - For source-code authoring, use `authoring/code/python.md` when Python is the applicable language.
 
 ## Design Reference

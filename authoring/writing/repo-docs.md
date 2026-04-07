@@ -1,7 +1,7 @@
 # Repo Docs
 
 ## Purpose
-Use this style for repository-facing documentation such as `README.md`, `docs/architecture.md`, `docs/testing.md`, `docs/api.md`, `docs/glossary.md`, `CONTRIBUTING.md`, and similar long-lived operational, reference, or design documents. Inherit the common documentation-writing discipline from `authoring/prose/base.md`, then apply the additional rules below.
+Use this style for repository-facing documentation such as `README.md`, `docs/architecture.md`, `docs/testing.md`, `docs/api.md`, `docs/glossary.md`, `CONTRIBUTING.md`, and similar long-lived operational, reference, or design documents. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the additional rules below.
 
 ## Success Criteria
 - Make the document easy to scan and use as an orientation, source-of-truth, or operational reference.

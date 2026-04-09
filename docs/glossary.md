@@ -81,6 +81,10 @@ For prompts, the default activation-time relationship in which all applicable pr
 
 The part of a project's surface whose primary audience is human readers, typically through `README.md`, `docs/`, and other human-facing documentation. In this repo, the documentation surface is also part of the agent surface because agents are expected to use those docs directly.
 
+#### Documentation Surface Profile `AA`
+
+A named documentation surface pattern that identifies the expected structure and emphasis of a repo’s human-facing documentation. It can activate corresponding validation prompts implemented either by the shared validation family or by higher-precedence workspace- or repo-local prompt layers.
+
 #### Inheritance `AA`
 
 For prompts, an authoring-time relationship between prompt files in which a more specific prompt reuses and refines the rules of a base prompt.
@@ -156,6 +160,7 @@ A broader working environment that contains one or more projects and any shared 
 ## Terms To Avoid
 
 - `prompt asset`: Avoid this when you just mean a prompt or a file containing prompts. Prefer `prompt` or `prompt file`.
+- `repo visibility`, `visibility type`, `repo type`, `publication type`, `publication status`: Avoid these when you just mean whether a repo is `public` or `private`. Prefer plain language such as `public/private status`.
 - bare `surface`: Avoid this when `project surface`, `agent surface`, or `documentation surface` would be clearer. Use `surface` by itself only when the intended meaning is already obvious from context.
 - `surfacing`, `resurface`, `resurfacing`: Avoid these as formal terms. They suggest a broader relationship to `Surface` than we usually mean. Prefer plain language such as `link from a clearer source-of-truth location`, `point to explicitly`, or `retain the document while changing how it is linked or owned`.
 - `prompt-group`, `prompt group`, `prompt subgroup`, `subgroup`: Avoid these when `prompt family` or `subfolder` would be clearer. Prefer `prompt family` for the logical grouping and `folder`, `prompt folder`, or `subfolder` for the on-disk location.

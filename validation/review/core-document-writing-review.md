@@ -1,26 +1,30 @@
-# Document Writing Review
+# Core Document Writing Review
 
 ## Purpose
-Use this prompt to review whether `README.md`, folder-level `README.md` files, and other human-facing docs follow the applicable shared writing-style guides.
+Use this prompt as the shared prose-review component for profile-specific documentation review prompts.
+
+This prompt reviews writing quality only. It does not decide which documentation surface belongs in scope.
 
 ## Inputs
 
 - target root or target paths to review
-- optional focus on `README.md`, folder-level `README.md`, `docs/`, or other human-facing docs
-- optional target scope that narrows the review below the full target root
+- documentation files or other human-facing writing inputs already selected by a profile-specific documentation review prompt
+- optional focus on `README.md`, folder-level `README.md` files, docs pages, contribution docs, changelog docs, or other human-facing docs within that already selected surface
 
-If the review scope is not specified, review the applicable `README.md`, folder-level `README.md`, and `docs/` files within the requested scope.
+If the review scope is not specified, review the human-facing documentation files already selected by the active profile-specific review path.
 
 ## Discovery
 
 When running this review:
 
-- discover applicable `README.md`, folder-level `README.md` files, and other human-facing docs dynamically from the target root
+- use this prompt only after a profile-specific documentation review prompt has selected the documentation surface
+- review only the human-facing documentation files inside that selected surface
 - use the applicable guide under `authoring/writing/` when reviewing human-facing docs
 - default to `authoring/writing/readme-md.md` for `README.md` and folder-level `README.md` files
-- default to `authoring/writing/repo-docs.md` for glossary/reference docs and other repo-facing operational docs
+- default to `authoring/writing/repo-docs.md` for glossary/reference docs and other repo-facing or public-facing operational docs
 - inspect `docs/glossary.md` only when the target docs rely on recurring project terms whose meaning or ownership materially affects writing clarity
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
+- do not widen the selected documentation surface on your own
 
 ## Review Lenses
 
@@ -40,6 +44,8 @@ Required review lenses:
 
 Do not treat the following as the default task:
 
+- deciding which documentation surface profile applies
+- deciding the default documentation surface for the repo
 - hierarchy design review beyond what is needed to judge document writing
 - `AGENTS.md` review
 - prompt-asset writing review for files under `authoring/`, `validation/`, or repo-local `agents/`
@@ -62,5 +68,5 @@ For each finding:
 - state the recommended revision move
 - distinguish direct violations from softer cleanup opportunities
 
-Keep the review focused on whether the documents are written in the right operational style for their role.
+Keep the review focused on whether the selected documents are written in the right operational style for their role.
 When internal file references appear, apply a repo-specific path convention only when the target repo explicitly defines one.

@@ -87,7 +87,7 @@ Within this repo:
 
 In the agent-facing files of other repos, when referring to prompts from this library:
 
-- prefer generic activation wording over hardcoded workspace paths, such as `For human-facing docs, use the shared document-writing review prompt.`, which is intended to activate `astro-agents/validation/review/document-writing-review.md` when the recommended routing prompts are present
+- prefer generic activation wording over hardcoded workspace paths, such as `For docs review, use the shared documentation review prompt.`, which is intended to activate `astro-agents/validation/review/documentation-review.md` when the recommended routing prompts are present
 - use explicit `astro-agents/...` references only when the local setup intentionally depends on this repo as a named shared prompt library rather than on a portable activation pattern
 
 ## Precedence

@@ -20,6 +20,7 @@ When running this review:
 - do not require identical wording, identical section order, or identical review matrices
 - check whether the files remain aligned on the important model:
   - downstream repos import shared validation by defining the structure in their own `docs/testing.md`
+  - downstream repos declare a `documentation surface profile` in the root `AGENTS.md` only when they need a non-default docs-review branch
   - the shared review structure shown in `docs/usage.md` remains broadly consistent with the concrete validation structure this repo actually uses
   - repo-local validation prompts belong under `agents/validation/`
   - the starter template stays generic enough for downstream repos while remaining recognizable as a pattern instantiated by this repo's own validation contract

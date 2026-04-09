@@ -20,18 +20,26 @@ Use `validation/README.md` for reusable bootstrap prompts that should trigger th
 
 The canonical shared checks for this repo are the review prompts in `validation/review/`.
 
+Use `validation/README.md` for the wider shared validation family, including documentation branches that this repo does not use in its own validation contract.
+
 Use these shared review prompts directly in this repo:
 
-- `validation/review/document-writing-review.md`
-  - review `README.md`, folder-level `README.md` files, and other human-facing docs against the applicable style guides
 - `validation/review/prompt-writing-review.md`
   - review `AGENTS.md` and other agent-facing prompts against the applicable prompt-writing guides
 - `validation/review/hierarchy-behavior-review.md`
   - review router discipline, hierarchy behavior, folder coherence, and prompt role drift
-- `validation/review/documentation-architecture-review.md`
-  - review document organization, source-of-truth visibility, cross-document consistency, and portability when a repo may later become public
+- `validation/review/documentation-review.md`
+  - select and run the shared documentation review bundle for the repo's declared documentation surface profile, or `private-default` when none is declared
+- `validation/review/core-document-writing-review.md`
+  - shared writing-review component used by profile-specific document-writing review prompts after they select scope
+- `validation/review/private-default/documentation-review.md`
+  - current documentation review bundle for `astro-agents`
+- `validation/review/private-default/document-writing-review.md`
+  - private-default document-writing review for repo-facing docs
+- `validation/review/private-default/documentation-architecture-review.md`
+  - private-default documentation-architecture review for document organization and source-of-truth structure
 - `validation/review/full-agent-surface-review.md`
-  - run a combined review across writing quality, prompt-writing quality, hierarchy behavior, and documentation architecture
+  - run a combined review across prompt-writing quality, hierarchy behavior, and the applicable profile-scoped documentation review bundle
 
 ## Repo-Local Validation
 
@@ -40,7 +48,7 @@ For repo-specific validation, use the shared checks as the baseline review seque
 - `agents/validation/root-agents-consistency-review.md`
   - a repo-local validation prompt that reviews whether the root `AGENTS.md` remains conceptually consistent with the recommended repo `AGENTS.md` pattern in `docs/usage.md`
 - `agents/validation/shared-validation-template-consistency-review.md`
-  - a repo-local validation prompt that reviews whether the shared-validation starter template in `docs/usage.md` remains conceptually consistent with this repo's concrete validation contract in `docs/testing.md`
+  - a repo-local validation prompt that reviews whether the shared-validation starter template in `docs/usage.md` remains conceptually consistent with this repo's validation contract in `docs/testing.md`
 
 ## Agent Surface Validation
 
@@ -54,8 +62,7 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
   - then run `agents/validation/root-agents-consistency-review.md` when the root repo `AGENTS.md` is changed
 
 - Changes to human-facing `README.md` files or files under `docs/`:
-  - run `validation/review/document-writing-review.md`
-  - run `validation/review/documentation-architecture-review.md`
+  - run `validation/review/documentation-review.md`
   - then run `agents/validation/shared-validation-template-consistency-review.md` when `docs/usage.md` or `docs/testing.md` is changed
 
 - Changes to routers or prompts under `authoring/` or `validation/`:

@@ -1,7 +1,7 @@
-# Documentation Architecture Review
+# Private-Default Documentation Architecture Review
 
 ## Purpose
-Use this prompt to review whether documentation is organized and linked in the way the shared usage guidance recommends.
+Use this prompt to review whether `private-default` documentation is organized and linked in the way the shared usage guidance recommends.
 
 ## Inputs
 
@@ -41,6 +41,8 @@ Required review lenses:
 Do not treat the following as the default task:
 
 - detailed prose editing
+- public package metadata review
+- public docs reachability review
 - hierarchy-router discipline except where it affects documentation organization
 - application-code review
 

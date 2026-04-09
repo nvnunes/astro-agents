@@ -114,6 +114,7 @@ Add sections like these only when inline local guidance materially improves runt
 ## Scope
 - This repo owns `<repo role>`.
 - Prefer `<main change discipline>` for changes in this repo.
+- Documentation surface profile: `<profile-name>`.
 
 ## Architecture
 - Use `docs/architecture.md` for boundaries, ownership, and interfaces when present.
@@ -138,6 +139,8 @@ Add sections like these only when inline local guidance materially improves runt
 - Prioritize `<repo-specific review concern>`.
 - Watch for `<repo-specific risk>`.
 ```
+
+When a repo declares `Documentation surface profile`, that value should be implemented either by the shared validation family or by a higher-precedence local prompt layer.
 
 For repo files that may later become public, prefer this kind of generic activation wording over hardcoded workspace paths. The repo file can name the kind of shared guide that should govern locally without assuming a specific private prompt-library location.
 
@@ -182,7 +185,7 @@ Use bootstrap prompts when you want a fresh thread to invoke a shared path with 
 Common examples:
 
 - `Do a full agent surface review`
-- `Review the repo docs using the shared document writing review prompt`
+- `Review the repo docs using the shared documentation review prompt`
 - `Revise manuscript.tex using the shared science writing guide`
 
 For additional examples, see:
@@ -229,8 +232,8 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
   - run hierarchy-behavior review
 
 - Changes to `README.md` or files under `docs/`:
-  - run document-writing review
-  - run documentation-architecture review
+  - run the shared documentation review selector
+  - let it resolve through the repo's declared documentation surface profile, or `private-default` when none is declared
 
 - Changes to other agent-facing prompt files:
   - run prompt-writing review
@@ -268,6 +271,35 @@ Keep out of repo `AGENTS.md`:
 - generic coding-style defaults already covered by `astro-agents/authoring/code/*`
 - subtree-specific rules that belong in a deeper `AGENTS.md`
 - long background documentation that repo docs should own instead
+
+## Documentation Surface Considerations for Public Python Projects
+
+For a public Python project, treat the public documentation surface as more than `README.md` plus repo-operational docs.
+
+By default, treat these as part of the public documentation surface:
+
+- `README.md`
+- public package metadata in `pyproject.toml` that affects package presentation or documentation discovery
+- `docs/` source pages and docs-site configuration when the project publishes docs
+
+Treat these as part of the public documentation surface when the public entry surface exposes or depends on them:
+
+- generated API-doc inputs such as docstrings and docs-generation config
+- `CONTRIBUTING.md`
+- `CHANGELOG.md`
+- `LICENSE`
+- examples, notebooks, or other tutorial assets
+- docs-related tests or scripts that verify public examples, README snippets, or docs drift
+
+For files under `docs/`, review the publicly reachable graph by default rather than the full tree.
+
+- start from public entrypoints such as `README.md`, docs navigation/config, and public package metadata
+- include docs pages that those entrypoints link to or publish
+- ignore unlinked planning or draft material unless it is explicitly published or requested
+
+Treat docstrings, docs-generation config, examples, and docs-related tests as documentation-review inputs only when they materially define or verify reachable public docs.
+
+Use `docs/public-python-docs-design.md` for the deeper design rationale and source-backed definition of this public-doc surface model.
 
 ## Agent Surface Considerations for Public Projects
 

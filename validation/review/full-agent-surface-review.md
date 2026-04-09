@@ -1,7 +1,7 @@
 # Full Agent-Surface Review
 
 ## Purpose
-Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across writing quality, prompt-writing quality, hierarchy behavior, and documentation architecture.
+Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across prompt-writing quality, hierarchy behavior, and the applicable profile-scoped documentation review bundle.
 
 Treat the requested repo or target root as the primary review object. Review-system or validation-contract issues are secondary findings and should be included only when they materially affect the completeness, correctness, or discoverability of the requested review.
 
@@ -21,26 +21,25 @@ When running this review:
 - include only files inside the requested scope
 - inspect linked supporting docs only when needed to support the component reviews below
 - do not assume repo names or hardcode expected repo paths
+- resolve the documentation surface profile using `validation/review/documentation-review.md`
 
 ## Review Components
 
 Run the following component reviews within the requested scope:
 
-- `validation/review/document-writing-review.md`
-  - for human-facing docs vs the applicable guides under `authoring/writing/`
 - `validation/review/prompt-writing-review.md`
   - for `AGENTS.md` and prompts vs the applicable guides under `authoring/`
 - `validation/review/hierarchy-behavior-review.md`
   - for router discipline, design adherence, folder coherence, and prompt role drift
-- `validation/review/documentation-architecture-review.md`
-  - for document organization, source-of-truth visibility, cross-document consistency, and portability when a repo may later become public
+- `validation/review/documentation-review.md`
+  - for the shared documentation selector and the applicable profile-scoped documentation review bundle
 
 After the shared component reviews are active:
 
 - discover applicable repo-local validation prompts under `agents/validation/`
 - run applicable local validation prompts when they exist beneath the target root being reviewed
 
-Use these component reviews to build one combined assessment rather than returning four isolated reports.
+Use these component reviews to build one combined assessment rather than returning separate component reports.
 
 Prioritize direct review of the requested repo state before stepping up to critique the validation framework itself.
 
@@ -58,9 +57,10 @@ Do not treat the following as the default task:
 
 Return:
 
-1. A brief overall judgment of the system within the requested scope.
-2. Findings ordered by severity.
-3. Concrete corrective actions after the findings.
+1. The selected documentation surface profile.
+2. A brief overall judgment of the system within the requested scope.
+3. Findings ordered by severity.
+4. Concrete corrective actions after the findings.
 
 For each finding:
 

@@ -5,6 +5,8 @@ Use this style for working plans, implementation roadmaps, and phased execution 
 
 These documents are not polished concept notes. They exist to support execution, re-entry, and decision continuity over time.
 
+When work is sequential, dependency-ordered, or intentionally staged, the plan must use explicit phases.
+
 ## Success Criteria
 - Make the next steps clear.
 - Preserve enough detail that the author can return later without losing intent, dependencies, cautions, or deferred ideas.
@@ -30,17 +32,20 @@ These documents are not polished concept notes. They exist to support execution,
 - Avoid motivational, historical, or explanatory prose unless it affects the plan.
 
 ## Structure
-- Use a stable top-level structure when possible.
-- Prefer sections such as:
+- Use a stable top-level structure.
+- Use sections such as:
   - `Overview`
   - `Phase Plan`
   - `Dependencies`
   - `Deliverables`
   - `Assumptions And Deferred Decisions`
+- When later work depends on earlier work, use `Phase Plan` explicitly rather than a flat task list or implementation summary.
 - Each phase should make clear:
   - what the phase does
   - what it produces
   - what it does not yet attempt, if that matters
+- If the work is not meaningfully staged, a small plan may omit phases, but it should still make ordering and outputs explicit.
+- Do not collapse a dependency-ordered roadmap into a flat implementation summary.
 
 ## Hierarchy
 - When planning involves nested structure, use the hierarchy:
@@ -55,7 +60,8 @@ These documents are not polished concept notes. They exist to support execution,
 - Phased roadmap: prioritize ordering, outputs, dependencies, and boundaries between phases.
 - Implementation plan: prioritize concrete actions, deliverables, and constraints.
 - Review plan: prioritize questions, evaluation criteria, comparison targets, and decision points.
-- If plan subtype is unclear, infer it from the surrounding material. If it remains unclear, default to phased roadmap style.
+- If a plan has ordered stages, dependencies, or gatekeeping decisions, default to phased roadmap style.
+- If plan subtype is unclear, default to phased roadmap style.
 
 ## Notes
 - Use notes to preserve ideas that matter to later execution.
@@ -74,4 +80,9 @@ When revising an existing plan:
 
 ## Output
 - When writing or revising a plan, return the revised plan directly unless explanation is requested.
-- When reviewing a plan, identify scope blur, weak execution structure, weak re-entry support, or weak output definition before proposing replacement text.
+- For sequential or staged work, prefer this minimum shape:
+  - `Overview`
+  - `Phase Plan`
+  - `Deliverables`
+  - `Assumptions And Deferred Decisions`
+- When reviewing a plan, identify scope blur, weak execution structure, weak re-entry support, weak phase boundaries, or weak output definition before proposing replacement text.

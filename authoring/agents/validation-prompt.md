@@ -52,4 +52,4 @@ When revising validation prompts:
 
 ## Output
 - When writing or revising a validation prompt, return the revised prompt directly unless explanation is requested.
-- When reviewing validation prompts, identify scope drift, missing review lenses, weak exclusions, or weak output specification before proposing replacement text.
+- When reviewing validation prompts, identify role drift, missing review lenses, weak exclusions, or weak output specification before proposing replacement text.

@@ -29,17 +29,16 @@ Run the following component reviews within the requested scope:
 - `validation/review/document-writing-review.md`
   - for human-facing docs vs the applicable guides under `authoring/writing/`
 - `validation/review/prompt-writing-review.md`
-  - for `AGENTS.md` and prompt assets vs the applicable guides under `authoring/`
+  - for `AGENTS.md` and prompts vs the applicable guides under `authoring/`
 - `validation/review/hierarchy-behavior-review.md`
-  - for router discipline, design adherence, subgroup coherence, and prompt scope drift
+  - for router discipline, design adherence, folder coherence, and prompt role drift
 - `validation/review/documentation-architecture-review.md`
-  - for document organization, source-of-truth surfacing, cross-document consistency, and public-safe portability
+  - for document organization, source-of-truth visibility, cross-document consistency, and portability when a repo may later become public
 
-After the shared component reviews:
+After the shared component reviews are active:
 
-- discover applicable repo-local validation overlays under `agents/validation/`
-- run applicable local overlay prompts when they exist beneath the target root being reviewed and those overlays refine the shared review for local constraints
-- treat local overlays as additive to the shared component reviews rather than as replacements for them
+- discover applicable repo-local validation prompts under `agents/validation/`
+- run applicable local validation prompts when they exist beneath the target root being reviewed
 
 Use these component reviews to build one combined assessment rather than returning four isolated reports.
 
@@ -75,6 +74,7 @@ When combining findings:
 
 - remove duplicates across the component reviews
 - keep the most specific wording when findings overlap
+- merge overlapping glossary, term-ownership, or plain-language findings into one terminology finding when possible
 - distinguish system-level issues from local cleanup
 - preserve the most severe version of an overlapping issue
 - keep direct repo findings primary and place meta validation-design findings after them unless the meta issue blocks review completeness

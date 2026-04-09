@@ -1,23 +1,25 @@
 # Document Writing Review
 
 ## Purpose
-Use this prompt to review whether `README.md`, subgroup `README.md` files, and other human-facing docs follow the applicable shared writing-style guides.
+Use this prompt to review whether `README.md`, folder-level `README.md` files, and other human-facing docs follow the applicable shared writing-style guides.
 
 ## Inputs
 
 - target root or target paths to review
-- optional focus on `README.md`, subgroup `README.md`, `docs/`, or other human-facing docs
+- optional focus on `README.md`, folder-level `README.md`, `docs/`, or other human-facing docs
 - optional target scope that narrows the review below the full target root
 
-If the review scope is not specified, review the applicable `README.md`, subgroup `README.md`, and `docs/` files within the requested scope.
+If the review scope is not specified, review the applicable `README.md`, folder-level `README.md`, and `docs/` files within the requested scope.
 
 ## Discovery
 
 When running this review:
 
-- discover applicable `README.md`, subgroup `README.md` files, and other human-facing docs dynamically from the target root
+- discover applicable `README.md`, folder-level `README.md` files, and other human-facing docs dynamically from the target root
 - use the applicable guide under `authoring/writing/` when reviewing human-facing docs
-- default to `authoring/writing/repo-docs.md` for `README.md`, glossary/reference docs, and other repo-facing operational docs
+- default to `authoring/writing/readme-md.md` for `README.md` and folder-level `README.md` files
+- default to `authoring/writing/repo-docs.md` for glossary/reference docs and other repo-facing operational docs
+- inspect `docs/glossary.md` only when the target docs rely on recurring project terms whose meaning or ownership materially affects writing clarity
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
 
 ## Review Lenses
@@ -31,6 +33,7 @@ Required review lenses:
 - directness and precision
 - source-of-truth boundaries
 - duplication versus linking
+- glossary alignment when recurring project terms materially affect clarity
 - internal path usage versus any target-local path convention that is explicitly defined
 
 ## Exclusions

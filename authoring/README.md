@@ -1,25 +1,19 @@
-# Authoring Guide Group
+# Authoring Prompt Family
 
-This folder contains shared authoring guides.
+This folder contains shared authoring prompts and guides.
 
-This `README.md` is the human-facing guide for designing and revising those guides. Its peer file, `AGENTS.md`, is the agent-facing router for selecting them.
+Use it to understand the authoring families in this repo, what each one is for, and which guide to use next.
 
-## Design Model
+This folder is organized into shared authoring prompts and guides for prompt writing, human-facing writing, and source code.
 
-Use this folder for shared guides about how to author AI-facing prompts, human-facing writing, and source code.
+For the repo-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/architecture.md`.
 
-In this subgroup:
-
-- `AGENTS.md` decides which guide applies
-- `README.md` explains the subgroup and points to the relevant authoring guides
-- prompt assets carry the substantive authoring behavior
-
-## Guide Families
+## Prompt And Guide Families
 
 ### `agents/`
 
 - `authoring/agents/base.md`
-  - common writing discipline for agent-facing prompt assets
+  - common writing discipline for agent-facing prompts
 - `authoring/agents/agents-md.md`
   - specialized style for `AGENTS.md`
 - `authoring/agents/writing-prompt.md`
@@ -32,15 +26,17 @@ In this subgroup:
 ### `writing/`
 
 - `authoring/writing/base.md`
-  - common writing discipline for human-facing writing
+  - base authoring prompt for human-facing writing
+- `authoring/writing/readme-md.md`
+  - specialized authoring prompt for `README.md` as the main human-facing entrypoint doc
 - `authoring/writing/repo-docs.md`
-  - repo-facing documentation such as `README.md`, architecture docs, testing docs, API docs, and contribution guides
+  - authoring prompt for repo-facing documentation other than `README.md`, such as architecture docs, testing docs, API docs, and contribution guides
 - `authoring/writing/science.md`
-  - scientific papers, theses, proceedings, and proposals
+  - authoring prompt for scientific papers, theses, proceedings, and proposals
 - `authoring/writing/foundation.md`
-  - conceptual or guiding framework documents
+  - authoring prompt for conceptual or guiding framework documents
 - `authoring/writing/plan.md`
-  - working plans, phased roadmaps, and implementation plans
+  - authoring prompt for working plans, phased roadmaps, and implementation plans
 
 ### `code/`
 
@@ -59,15 +55,16 @@ Its core recommendations are strongly aligned with published guidance on `AGENTS
 
 ## Selection Summary
 
-Use the most specific applicable guide from the families above.
+Use the most specific applicable prompt or guide from the families above.
 
 - For `AGENTS.md`, prefer `authoring/agents/agents-md.md`.
+- For `README.md`, prefer `authoring/writing/readme-md.md`.
 - For AI-facing prompts that define writing or revision behavior, prefer `authoring/agents/writing-prompt.md`.
 - For AI-facing prompts that define coding or code-review behavior, prefer `authoring/agents/coding-prompt.md`.
 - For validation prompts, prefer `authoring/agents/validation-prompt.md`.
-- For human-facing writing, prefer the most specific guide under `authoring/writing/`.
+- For other human-facing repo docs, prefer the most specific authoring prompt under `authoring/writing/`.
 - For source-code authoring, use `authoring/code/python.md` when Python is the applicable language.
 
 ## Design Reference
 
-For the shared `README.md` / `AGENTS.md` rationale and external references behind this subgroup structure, use `docs/architecture.md`.
+For the shared `README.md` / `AGENTS.md` rationale behind this folder structure, use `docs/architecture.md`.

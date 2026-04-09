@@ -6,7 +6,7 @@ Use this prompt to review whether the prompt hierarchy behaves as designed when 
 ## Inputs
 
 - target root or target paths to review
-- optional focus areas such as router discipline, subgroup coherence, or prompt scope drift
+- optional focus areas such as router discipline, folder coherence, or prompt role drift
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, default to the requested repo or target root together with discoverable repo and subtree `AGENTS.md` files beneath that root.
@@ -16,7 +16,7 @@ If the review scope is not specified, default to the requested repo or target ro
 When running this review:
 
 - discover applicable repo and subtree `AGENTS.md` files dynamically from the target root
-- inspect prompt-group routers and prompt assets within the requested scope
+- inspect folder routers and other prompts within the requested scope
 - inspect `docs/architecture.md` as the source of truth for the hierarchy model
 - inspect linked supporting docs only when needed to judge hierarchy behavior
 
@@ -29,8 +29,8 @@ Required review lenses:
 - layer ownership
 - `AGENTS.md` as routers
 - actual hierarchy behavior vs `docs/architecture.md`
-- subgroup coherence
-- prompt scope drift
+- folder coherence
+- prompt role drift
 - shared-versus-local duplication
 - `AGENTS.md` as map versus prompt substitute
 - routing clarity and progressive disclosure

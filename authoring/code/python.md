@@ -71,7 +71,6 @@ When revising existing Python code:
 - Preserve externally visible behavior unless a change is intentional and documented.
 - Keep docs and examples aligned with code.
 - If touched code contains stale comments, outdated docstrings, or duplicated contract checks, clean them up in the same change.
-- Prefer removing misleading abstractions over preserving them.
 
 ## Adaptation
 - Editing existing code: follow established local patterns unless they are clearly harmful or the user asks for a deliberate style change.

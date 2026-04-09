@@ -1,18 +1,18 @@
-# Code Authoring Guide Group
+# Code Authoring Prompt Family
 
 This folder contains shared guides for authoring source code.
 
-This `README.md` is the human-facing guide for designing and revising those guides. Its peer file, `AGENTS.md`, is the agent-facing router for selecting them.
+Use it to understand the code-authoring guides in this repo, what each one is for, and which guide to use next.
 
 ## Design Model
 
 Use this folder for source-code authoring guides.
 
-In this subgroup:
+In this folder:
 
 - `AGENTS.md` decides which guide applies
-- `README.md` explains the subgroup and points to the relevant authoring guidance
-- prompt assets such as `authoring/code/python.md` carry the substantive source-code authoring behavior
+- `README.md` explains the folder and points to the relevant authoring guidance
+- prompts such as `authoring/code/python.md` carry the substantive source-code authoring behavior
 
 ## Current Guides
 
@@ -26,4 +26,4 @@ In this subgroup:
 
 ## Design Reference
 
-For the shared `README.md` / `AGENTS.md` rationale and external references behind this subgroup structure, use `docs/architecture.md`.
+For the shared `README.md` / `AGENTS.md` rationale behind this folder structure, use `docs/architecture.md`.

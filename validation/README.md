@@ -1,46 +1,55 @@
-# Validation Prompt Group
+# Validation Prompt Family
 
 This folder contains shared validation prompts.
 
-This `README.md` is the human-facing guide for designing and revising those prompts. Its peer file, `AGENTS.md`, is the agent-facing router for selecting them.
+Use it to understand the validation prompt families in this repo, what each one is for, and which prompt or guide to use next.
 
-## Design Model
+For the repo-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/architecture.md`.
 
-Use this folder for shared validation prompts.
-
-In this subgroup:
-
-- `AGENTS.md` decides which prompt applies
-- `README.md` explains the subgroup and points to the relevant writing guidance
-- prompt assets carry the substantive review behavior
-
-## Prompt Families
+## Folders
 
 ### `review/`
 
 - `validation/review/full-agent-surface-review.md`
   - composite reusable prompt for a combined review of writing quality, prompt-writing quality, hierarchy behavior, and documentation architecture
 - `validation/review/document-writing-review.md`
-  - focused review of `README.md`, subgroup `README.md` files, and other human-facing docs against the applicable style guides
+  - focused review of `README.md`, folder-level `README.md` files, and other human-facing docs against the applicable style guides
 - `validation/review/prompt-writing-review.md`
-  - focused review of `AGENTS.md` and other agent-facing prompt assets against the applicable prompt-writing guides
+  - focused review of `AGENTS.md` and other agent-facing prompts against the applicable prompt-writing guides
 - `validation/review/hierarchy-behavior-review.md`
-  - focused review of router discipline, hierarchy behavior, subgroup coherence, and prompt scope drift
+  - focused review of router discipline, hierarchy behavior, folder coherence, and prompt role drift
 - `validation/review/documentation-architecture-review.md`
-  - focused review of document organization, source-of-truth surfacing, cross-document consistency, and public-safe portability
+  - focused review of document organization, source-of-truth visibility, cross-document consistency, and portability when a repo may later become public
 
-This leaves room for future validation families if review is no longer the only validation mode.
+In this folder:
+
+- review prompts assess current-state agent-surface quality
 
 ## Review Independence
 
 The narrower review prompts under `validation/review/` are intended to be independently triggerable.
 
-In this subgroup:
+In this folder:
 
 - a bootstrap prompt for a narrower review should invoke only that review by default
 - a narrower review may mention adjacent issues only when needed to judge its own review lens
 - broader synthesis belongs in `validation/review/full-agent-surface-review.md`, not in the narrower reviews
 - if a narrower review repeatedly needs broader scoping to be useful, treat that as a validation-design problem rather than silently broadening the bootstrap prompt
+
+## Bootstrap Prompts
+
+Use these short prompts in fresh threads when you want the validation router to invoke a shared review with minimal extra scoping.
+
+- `Do a full agent surface review.`
+  - intended to trigger `validation/review/full-agent-surface-review.md` and return one combined assessment across the repo's full agent surface
+- `Review this repository's human-facing docs using the shared document writing review prompt.`
+  - intended to trigger `validation/review/document-writing-review.md`
+- `Review this repository's AGENTS.md files and prompts using the shared prompt writing review prompt.`
+  - intended to trigger `validation/review/prompt-writing-review.md`
+- `Review this repository's prompt-routing and hierarchy behavior using the shared hierarchy behavior review prompt.`
+  - intended to trigger `validation/review/hierarchy-behavior-review.md`
+- `Review this repository's documentation architecture using the shared documentation architecture review prompt.`
+  - intended to trigger `validation/review/documentation-architecture-review.md`
 
 ## Writing Validation Prompts
 
@@ -50,4 +59,4 @@ That guide inherits the common prompt-writing discipline from `authoring/agents/
 
 ## Design Reference
 
-For the shared `README.md` / `AGENTS.md` rationale and external references behind this subgroup structure, use `docs/architecture.md`.
+For the shared `README.md` / `AGENTS.md` rationale behind this folder structure, use `docs/architecture.md`.

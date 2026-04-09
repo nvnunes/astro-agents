@@ -20,9 +20,8 @@ When the right guide is still not clear after this comparison:
 ## Use Of Shared Code Guides
 
 - Use shared code-authoring guides for reusable editing defaults, not for repo-specific architecture or workflow rules.
-- More specific repo or subtree `AGENTS.md` files override this folder's shared defaults within their scope.
 - Follow repo-local `AGENTS.md` files when they define architecture, contracts, deployment rules, test commands, or other local conventions.
-- When the task is to revise a coding prompt asset rather than source code, use `authoring/agents/coding-prompt.md` instead of this folder.
+- When the task is to revise a coding prompt rather than source code, use `authoring/agents/coding-prompt.md` instead of this folder.
 
 ## Practical Rule
 

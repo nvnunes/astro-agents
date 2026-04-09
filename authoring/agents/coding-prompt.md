@@ -34,8 +34,8 @@ When revising coding prompts:
 - Keep the prompt tied to the coding context it claims to serve.
 - Do not let it drift into repo-specific architecture or workflow rules that belong elsewhere.
 - Keep preservation rules explicit when behavior or contracts must not change.
-- Keep local override behavior clear.
+- Keep local composition and conflict-resolution behavior clear.
 
 ## Output
 - When writing or revising a coding prompt, return the revised prompt directly unless explanation is requested.
-- When reviewing a coding prompt, identify scope drift, weak preservation rules, weak local-adaptation behavior, or weak output definition before proposing replacement text.
+- When reviewing a coding prompt, identify role drift, weak preservation rules, weak local-adaptation behavior, or weak output definition before proposing replacement text.

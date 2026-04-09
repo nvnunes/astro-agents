@@ -4,136 +4,158 @@ This document is the human-facing source of truth for shared terminology in `ast
 
 Use it when a design term, review term, or prompt-system term needs a stable meaning that both humans and agents can reuse consistently.
 
+## Inclusion And Style
+
+- Use these rules when deciding whether to add, keep, revise, or remove a glossary entry.
+- Include a term here only when it materially improves clarity in this repo and is actually used in the repo.
+- Prefer widely recognized terms from software, AI, or prompt-engineering practice when they fit the concept that needs a stable label.
+- Keep adopted terms aligned with common usage. Do not redefine a familiar term in a way that would surprise an informed reader.
+- Add a new local term only when it names a recurring concept that plain language cannot express as clearly, briefly, or consistently; otherwise prefer plain language.
+- Keep a term local to its source-of-truth document when it reads plainly in context and the surrounding text points clearly to that document. Promote it to the main glossary only when it needs a stable meaning across the repo or stops reading plainly outside that source document.
+- Prefer linking to the main glossary over redefining the same term in multiple docs unless a narrower local override is necessary.
+- Let the glossary reflect relevant developer norms only when they help explain concepts the repo actually uses.
+- Write definitions for a mixed audience, including researchers with different levels of development background. Prefer direct, concrete definitions and short examples over insider shorthand or implied developer context.
+- When adding or revising an entry, prefer one short paragraph. Add more structure only when a distinction or example is genuinely necessary.
+- Treat the glossary as a reader aid, not a vocabulary-building exercise.
+
+## Categories
+
+- `AI`
+  - AI and agent-system terms
+- `DEV`
+  - development terms
+- `AA`
+  - `astro-agents`-specific terms
+
 ## Terms
 
-### Agent Surface
+#### Activation `AI`
 
-The set of agent-facing files and structures that shape how an agent navigates, interprets, or applies a repo.
+The act of making a prompt, source-of-truth document, or other instruction applicable in the current context.
 
-Typical examples:
+#### Agent Surface `AI`
 
-- `AGENTS.md`
-- prompt assets
-- agent-facing routing files
-- repo-local prompts under `agents/`
+The part of a project's surface that agents are expected to rely on directly when navigating, interpreting, and applying the repo. In this repo, the agent surface includes `AGENTS.md`, prompt files, and the relevant documentation and source-of-truth docs that agents are expected to use directly.
 
-Use this term when the concern is the operational interface presented to the agent rather than the underlying implementation.
+#### Agentic System `AI`
 
-### Prompt Surface
+A software system in which AI agents pursue delegated goals by reasoning about context, making decisions, and taking actions, often through tools, workflows, or coordination with other systems. This kind of system is often discussed under the broader label `agentic AI`.
 
-The subset of the agent surface made of prompt assets and prompt-routing files.
+#### API `DEV`
 
-Use this term when the discussion is specifically about prompts, prompt structure, or prompt behavior rather than all agent-facing materials.
+An application programming interface: a defined interface that software exposes for other software to call or use. Use this term when discussing stable programmatic entry points such as functions, methods, endpoints, or other externally intended interfaces, rather than human-facing documentation or command-line usage.
 
-### Surface
+#### Authoring Prompt `AI`
 
-A stable interaction layer that a reader, agent, or tool works against.
+A prompt whose primary role is to guide the writing, revision, or transformation of content. Some authoring prompts, especially in writing contexts, may also function as style guides.
 
-Examples:
+#### Autonomy Level `AI`
 
-- a repo's agent surface
-- a repo's documentation surface
-- a validation surface
+A level that defines how independently an agent may make changes, including when it may act autonomously, when it must wait for approval, and when it requires additional guidance before proceeding.
 
-Use this term when the concern is the usable interface exposed by a set of files rather than the internal history or implementation details behind them.
+#### Bootstrap Routing `AA`
 
-### Router
+For prompts, the initial routing step that gets an agent from a generic starting state into the applicable prompt hierarchy. Bootstrap routing may happen because an agent discovers an `AGENTS.md` file or because a user prompt explicitly directs the initial routing path.
 
-A file whose primary job is to direct the agent to the right narrower prompt area, guide, or source of truth.
+#### Bootstrap Prompt `AA`
 
-Routers should route and scope. They should not restate the full substantive behavior of the deeper asset they activate.
+A short user prompt intended to trigger the correct shared router, prompt, or review path without manually restating the fuller routing or scope instructions.
 
-Examples:
+#### CLI `DEV`
 
-- top-level `AGENTS.md`
-- subgroup `AGENTS.md`
+A command-line interface: a text-based interface for running commands and interacting with a tool or program. Use this term when discussing commands, flags, arguments, or other shell-level entry points intended for human or agent use.
 
-### Prompt Asset
+#### Codebase `DEV`
 
-A substantive reusable prompt document that carries operational behavior rather than just routing or explanation.
+The maintained set of source code and closely related authored files that make up a software project, including documentation, prompts, configuration, and tests. Use this term when referring to the project's authored files as a whole rather than generated artifacts or runtime data.
 
-Examples:
+#### Contract `DEV`
 
-- writing guides
-- coding guides
-- validation prompts
+A defined behavior, interface, format, or compatibility condition that other parts of a system rely on and that should not be changed casually.
 
-Use this term to distinguish the prompt itself from the router that selects it and the README that explains it.
+#### Composition `AA`
 
-### Source Of Truth
+For prompts, the default activation-time relationship in which all applicable prompt instructions remain active together. Composition is resolved at the instruction level: compatible guidance stays in force together, while precedence resolves any conflicts between applicable instructions.
 
-The document that should be treated as authoritative for a particular kind of information within a given scope.
+#### Documentation Surface `AI`
 
-Examples:
+The part of a project's surface whose primary audience is human readers, typically through `README.md`, `docs/`, and other human-facing documentation. In this repo, the documentation surface is also part of the agent surface because agents are expected to use those docs directly.
 
-- `docs/architecture.md` for hierarchy design
-- `docs/testing.md` for validation workflow
-- a repo `AGENTS.md` for repo-local operational constraints
+#### Inheritance `AA`
 
-Use this term when clarifying ownership and preventing duplicated or drifting guidance.
+For prompts, an authoring-time relationship between prompt files in which a more specific prompt reuses and refines the rules of a base prompt.
 
-### Activation Language
+#### Layer `AA`
 
-Runtime wording in a routing file that tells the agent to use a specific local or shared guide, prompt asset, or source-of-truth document.
+In the prompt hierarchy, one position where prompts or instructions can be introduced and take effect. A layer may be a workspace bootstrap file, a shared prompt library, a repo-local prompt library, or a subtree-local routing layer.
 
-Examples:
+#### Precedence `DEV`
 
-- `Use docs/testing.md for validation requirements and canonical checks.`
-- `When this repo provides local prompts under agents/, use them for repo-specific behavior before falling back to shared prompts.`
+The rule that determines which applicable instruction governs when active prompt instructions conflict in the same context. Precedence resolves conflicts between applicable instructions; it is not automatic whole-file replacement.
 
-Use this term when discussing the wording that activates a guide or points the agent to the right operational source without restating the deeper instructions.
+#### Project Surface `AI`
 
-### Local Activation
+The part of a codebase that a user, agent, or other tool directly works with. It is where the codebase presents what it is, how it is organized, what its important entry points and boundaries are, and how it should be used or developed. Common components of a surface include documentation, prompts, code comments, and exposed APIs, CLIs, or other declared entry points. Code can sometimes be used to infer these details, but it is usually a poor substitute for clearer outward-facing sources, so internal implementation is generally not treated as part of the main surface.
 
-A repo-level or subtree-level instruction that explicitly tells the agent to use a specific shared prompt asset in that local context.
+#### Prompt `AI`
 
-Use this term when a local `AGENTS.md` points downward to a shared guide instead of restating that guide.
+A prompt is an agent-facing instruction or set of instructions intended to guide the agent’s behavior.
 
-### Scope Drift
+#### Prompt File `AI`
 
-The failure mode where a file, prompt, or document expands beyond its intended role and starts doing a neighboring file's job.
+A file whose main contents are prompts. In this repo, `AGENTS.md` files are common examples.
 
-Examples:
+#### Prompt Family `AA`
 
-- an `AGENTS.md` file becoming a design doc
-- a validation prompt becoming a generic rewrite prompt
-- a repo doc becoming both overview and testing source of truth
+A logical collection of related prompt files, typically organized within a folder tree.
 
-Use this term when the problem is role expansion rather than simple verbosity.
+#### Review Lens `AA`
 
-### Smell
+A named criterion or angle of evaluation used to structure a review, often referred to more briefly as a `lens`. A review may apply lenses defined directly in a review prompt or drawn from another prompt or source-of-truth document.
 
-A sign that the current structure or wording may be misaligned even if there is not yet a concrete defect.
+#### Review Prompt `AA`
 
-A smell is not automatically a bug. It is a signal that category boundaries, naming, ownership, or layering may need closer inspection.
+A validation prompt whose primary role is to review a target and return findings, judgments, or corrective guidance.
 
-Use this term when pointing out structural unease that deserves investigation before it hardens into drift or duplication.
+#### Router `AI`
 
-### Public-Safe
+A file whose main prompt behavior is routing. In this repo, `AGENTS.md` files commonly act as routers even when they also include short local operational constraints.
 
-Safe to keep in a repo that may later become public because it does not depend on private workspace paths, private repo coupling, or hidden local assumptions.
+#### Routing Prompt `AI`
 
-Use this term when evaluating whether examples, templates, or repo files remain portable outside the private workspace.
+A prompt that performs routing by directing the agent to the right narrower prompt area, guide, source-of-truth document, or next instruction path.
 
-### Subgroup
+#### Shared Activation `AA`
 
-A narrower prompt family inside the shared library, such as `authoring/` or `validation/`.
+An activation performed within a shared prompt library, typically by a shared router, to make a narrower shared prompt or source-of-truth document govern.
 
-Use this term when discussing a prompt area that has its own router, README, and prompt assets.
+#### Source Of Truth `DEV`
 
-### Review Lens
+An authoritative document for a particular kind of information within a given scope, often called the single source of truth for that topic. Use this term when clarifying which file owns that information and when avoiding duplication or drift across multiple files.
 
-A named criterion or angle of evaluation used by a validation prompt.
+#### Structural Concern `AA`
 
-Examples:
+A sign that structure, ownership, wording, or layering may be misaligned even if there is not yet a confirmed defect; in developer conversation this may sometimes be called a `smell`. Use this term when the issue is structural and worth attention, but has not yet been established as a concrete bug or direct violation.
 
-- source-of-truth boundaries
-- hierarchy behavior
-- prompt role clarity
+#### Surface `AI`
 
-Use this term when the review needs explicit dimensions of assessment rather than a generic critique.
+A context-dependent shorthand for `Project Surface`, `Agent Surface`, or `Documentation Surface`. Use `surface` by itself only when the intended meaning is already obvious from context; otherwise prefer the more specific term.
 
-## Notes
+#### Validation Prompt `AA`
 
-- Add a term here when it is used repeatedly across prompts or docs and needs one stable meaning.
-- Prefer linking here over redefining the same term in multiple docs unless a narrower local override is necessary.
+A prompt whose primary role is to assess or classify an existing target and determine what should happen next, rather than directly author the target.
+
+#### Workflow `DEV`
+
+A defined sequence of steps, decisions, or checks used to carry out a task. Use this term when discussing how work should be performed, including required commands, ordering, gates, or operational constraints.
+
+#### Workspace `DEV`
+
+A broader working environment that contains one or more projects and any shared resources that apply across them. For example, a collection of repos within a parent folder such as `Projects/`.
+
+## Terms To Avoid
+
+- `prompt asset`: Avoid this when you just mean a prompt or a file containing prompts. Prefer `prompt` or `prompt file`.
+- bare `surface`: Avoid this when `project surface`, `agent surface`, or `documentation surface` would be clearer. Use `surface` by itself only when the intended meaning is already obvious from context.
+- `surfacing`, `resurface`, `resurfacing`: Avoid these as formal terms. They suggest a broader relationship to `Surface` than we usually mean. Prefer plain language such as `link from a clearer source-of-truth location`, `point to explicitly`, or `retain the document while changing how it is linked or owned`.
+- `prompt-group`, `prompt group`, `prompt subgroup`, `subgroup`: Avoid these when `prompt family` or `subfolder` would be clearer. Prefer `prompt family` for the logical grouping and `folder`, `prompt folder`, or `subfolder` for the on-disk location.

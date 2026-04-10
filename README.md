@@ -49,8 +49,6 @@ For deeper architecture, usage, and validation guidance, see:
   - the validation contract for this repo: requirements, canonical checks, and completion expectations
 - `docs/upgrade-design.md`
   - the upgrade process design and next steps
-- `docs/plan.md`
-  - future work ideas and deferred tasks for the repo
 - `authoring/README.md`
   - authoring-guide design, including the special note on `authoring/agents/agents-md.md`
 - `validation/README.md`

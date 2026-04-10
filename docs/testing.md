@@ -11,7 +11,7 @@ Use this document to decide what validation is required when changing:
 - `AGENTS.md` files
 - `README.md`
 - files under `docs/`
-- prompts under `authoring/`, `validation/`, or `agents/`
+- prompts under `authoring/`, `validation/`, `upgrade/`, or `agents/`
 - other files that change how agents should navigate, interpret, or apply this repository
 
 Use `validation/README.md` for reusable bootstrap prompts that should trigger these checks in fresh threads.
@@ -52,7 +52,7 @@ For repo-specific validation, use the shared checks as the baseline review seque
 
 ## Agent Surface Validation
 
-Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or prompts under `authoring/`, `validation/`, or `agents/`.
+Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or prompts under `authoring/`, `validation/`, `upgrade/`, or `agents/`.
 
 ### Required Reviews
 
@@ -65,7 +65,7 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
   - run `validation/review/documentation-review.md`
   - then run `agents/validation/shared-validation-template-consistency-review.md` when `docs/usage.md` or `docs/testing.md` is changed
 
-- Changes to routers or prompts under `authoring/` or `validation/`:
+- Changes to routers or prompts under `authoring/`, `validation/`, or `upgrade/`:
   - run `validation/review/hierarchy-behavior-review.md`
   - run `validation/review/prompt-writing-review.md`
 

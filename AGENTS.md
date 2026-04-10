@@ -4,8 +4,9 @@ This repo is the shared prompt library itself, so this root `AGENTS.md` acts as 
 
 ## Prompt Routing
 - Route authoring work, including prompt, documentation, and `AGENTS.md` writing or revision work, plus source-code writing, revision, or review work, into `authoring/AGENTS.md`.
-- Route general planning work, including ad hoc plans, execution plans, next-step planning, sequencing, roadmaps, and review plans that are not agent surface upgrade-planning, into `authoring/AGENTS.md`.
+- Route general planning work, including ad hoc plans, execution plans, next-step planning, sequencing, roadmaps, and review plans that are not agent surface upgrading, into `authoring/AGENTS.md`.
 - Route review or validation of prompts, documentation, `AGENTS.md`, routing, or hierarchy into `validation/AGENTS.md`.
+- Route agent surface upgrading work into `upgrade/AGENTS.md`.
 - When routing in this file selects a shared prompt subtree, check the corresponding subtree under `agents/` for matching local prompts.
 - Keep applicable shared and matching local prompts active together.
 - When applicable instructions conflict, use the applicable precedence rules to decide which instruction governs.
@@ -21,6 +22,7 @@ This repo is the shared prompt library itself, so this root `AGENTS.md` acts as 
 - Use `README.md` for the repo overview and major entrypoints.
 - Use `docs/architecture.md` for hierarchy design, layer ownership, precedence, validation model, and maintenance expectations in this repo.
 - Use `docs/testing.md` for validation requirements and canonical review checks in this repo.
+- Use `docs/upgrade-design.md` for the upgrade process design and next steps.
 - Use any other named local source-of-truth docs directly.
 
 ## Validation

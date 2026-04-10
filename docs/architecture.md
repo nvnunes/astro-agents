@@ -8,7 +8,7 @@ Use `docs/usage.md` when applying this library in another repo or workspace.
 
 ## Architecture Model
 
-The prompt library holds reusable prompts, guides, and routing rules that should not be duplicated across repositories. These include authoring prompts, validation prompts, and routing rules for prompt folders.
+The prompt library holds reusable prompts, guides, and routing rules that should not be duplicated across repositories. These include authoring prompts, validation prompts, upgrade prompts, and routing rules for prompt folders.
 
 The hierarchy is built around three recurring roles:
 
@@ -16,7 +16,7 @@ The hierarchy is built around three recurring roles:
 - `README.md` files explain folder purpose, supporting guidance, and rationale
 - prompt files carry the substantive reusable behavior
 
-That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such as `authoring/`, `authoring/code/`, and `validation/`; in this repo, it is a local way of applying the broader recommendation to keep routing brief and explanation in supporting docs.
+That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such as `authoring/`, `authoring/code/`, `validation/`, and `upgrade/`; in this repo, it is a local way of applying the broader recommendation to keep routing brief and explanation in supporting docs.
 
 ## AGENTS.md As Map, Docs As Source Of Truth
 
@@ -38,12 +38,12 @@ The goal is not to put everything in `AGENTS.md`. The goal is to make the right 
 
 ## Library Structure
 
-At the repo root, the architecture separates source-of-truth docs in `docs/`, shared prompt families in `authoring/` and `validation/`, and repo-local prompts in `agents/`, with `README.md` and `AGENTS.md` providing the entrypoint and top-level routing.
+At the repo root, the architecture separates source-of-truth docs in `docs/`, shared prompt families in `authoring/`, `validation/`, and `upgrade/`, and repo-local prompts in `agents/`, with `README.md` and `AGENTS.md` providing the entrypoint and top-level routing.
 
 Within that split:
 
 - `docs/` holds the stable source-of-truth documents that explain how the library is structured and used
-- `authoring/` and `validation/` hold the reusable shared prompt families that the library is organized around
+- `authoring/`, `validation/`, and `upgrade/` hold the reusable shared prompt families that the library is organized around
 - folder-level `AGENTS.md` and `README.md` files in those areas repeat the same router-plus-guidance pattern at a narrower scope
 - `agents/` holds repo-local prompts that apply specifically to `astro-agents`
 
@@ -57,8 +57,8 @@ Within that split:
   - the main companion doc for applying this library in other repos and workspaces
 - `validation/README.md`
   - the human-facing guide to the shared validation prompt families, including reusable bootstrap prompts
-- `authoring/` and `validation/`
-  - the two main shared prompt families in the library
+- `authoring/`, `validation/`, and `upgrade/`
+  - the three main shared prompt families in the library
 
 ## Workspace Context
 

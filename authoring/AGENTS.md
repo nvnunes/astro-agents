@@ -9,6 +9,7 @@ When choosing among shared authoring prompts and guides in this folder:
 
 - identify the document's primary role from its file path, title, section headings, and surrounding context
 - for `AGENTS.md` files, prefer `authoring/agents/agents-md.md`
+- for agent-facing prompt files under `upgrade/` other than `upgrade/AGENTS.md`, prefer `authoring/agents/upgrade-prompt.md`
 - for prompts that define writing or revision behavior under `authoring/agents/` or repo-local `agents/authoring/writing/`, prefer `authoring/agents/writing-prompt.md`
 - for prompts under `authoring/writing/`, prefer `authoring/agents/writing-prompt.md` when revising the prompt itself rather than the human-facing text it governs
 - for prompts that define coding or code-review behavior under `authoring/code/` or repo-local `agents/authoring/code/`, prefer `authoring/agents/coding-prompt.md`

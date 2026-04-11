@@ -1,109 +1,109 @@
 # Upgrade Plan
 
 ## Purpose
-Use this prompt to handle one planning task at a time within the upgrade workflow.
+Use this prompt to inspect the current surface, draft or revise the saved upgrade plan, and write `docs/upgrade/plan.md` in the target repo.
 
-Use it for:
+Use it when the user wants to:
 
-- `plan-1`: report on current agent surface
-- `plan-2`: design the upgrade approach
-- `plan-3`: write the upgrade plan
+- start planning an upgrade
+- revise an existing plan
+- review the current saved plan before changing or approving it
+- save the current planning decisions into `docs/upgrade/plan.md`
+- mark the saved plan `approved` after explicit user approval
 
-Read the durable upgrade-progress record first, perform only the requested planning task, and update only that task's record fields.
+Use `astro-agents/upgrade/report-current-agent-surface.md` as the detailed inspection standard for the current-surface read that supports the plan.
 
 ## Inputs
 
 - target root or target paths
-- upgrade-progress record path, usually `docs/upgrade-progress.md` in the target repo
-- optional planning task id or planning task name
+- documentation surface profile declared in the target repo's root `AGENTS.md`
+- optional plan path, defaulting to `docs/upgrade/plan.md` in the target repo
 - optional focus areas
 - optional target scope that narrows work below the full target root
 
 If the target scope is not specified, default to the requested repo or target root rather than the whole workspace.
 
-If the planning task is not specified, use the task indicated by the upgrade-progress record. If the record does not make one planning task unambiguous, stop and report the blocker rather than guessing.
+Use the documentation surface profile declared in the root `AGENTS.md` as workflow input. Do not choose, approve, or reinterpret that profile inside this prompt.
+
+If the root `AGENTS.md` does not yet declare the documentation surface profile, stop and send the user to `astro-agents/upgrade/upgrade-documentation-surface-profile.md` before inspecting the repo or writing `docs/upgrade/plan.md`.
 
 ## Common Workflow
 
-1. Read `astro-agents/docs/upgrade-design.md` and the upgrade-progress record first.
-2. Confirm that the requested task is exactly one of `plan-1`, `plan-2`, or `plan-3`.
-3. Use the documentation surface profile already recorded in the progress record as workflow input.
-4. Read only the progress-record sections, repo files, and supporting docs needed for the current planning task.
-5. Update only the matching task-ledger row and the matching entry under `Planning Outputs`.
-6. Leave orchestration-owned workflow-state, blocker, checkpoint-ledger, and next-step fields to `astro-agents/upgrade/upgrade-orchestrator.md`.
-
-## Planning Task Instructions
-
-### `plan-1`: report on current agent surface
-
-- use `astro-agents/upgrade/report-current-agent-surface.md` as the task-specific standard for discovery order, checks, exclusions, and output shape
-- inspect the requested target root fresh rather than relying on previously recorded `plan-1` text
-- keep the task current-state-only and provisional
-- do not turn the report into the upgrade approach or execution plan
-- write the finished report into the `plan-1` output section of the progress record
-- mark the `plan-1` task row `done` when the report is complete
-
-### `plan-2`: design the upgrade approach
-
-- use the `plan-1` report, the repo's source-of-truth docs, and the user-provided documentation surface profile already recorded in the progress record
-- decide the main goals and out-of-scope areas
-- decide which editing tasks are in scope
-- decide the main change scopes suggested by the current surface for those tasks
-- define the oversight checkpoints that should govern later work
-- decide the review requirements before the upgrade is treated as complete
-- keep the output at the design level rather than turning it into a task-by-task execution script
-- if the current evidence is too weak to support a design decision, record the uncertainty explicitly instead of forcing a choice
-- write the result into the `plan-2` output section of the progress record
-- update the `plan-2` task row to `waiting for approval` when the design-level summary is ready for user review
-
-### `plan-3`: write the upgrade plan
-
-- require a completed `plan-2` output before proceeding
-- if the progress record does not clearly show that the design checkpoint has been approved, stop and report that blocker instead of drafting the execution plan
-- turn the approved upgrade approach into a concrete task order
-- keep the plan task-by-task and one-task-at-a-time
-- name the expected prompt for each planned task when that helps execution clarity
-- include prerequisite or dependency notes only when they materially affect the task order
-- do not perform file edits inside this planning task
-- write the result into the `plan-3` output section of the progress record
-- update the `plan-3` task row to `waiting for approval` when the plan-level summary is ready for user review
+1. Read `astro-agents/docs/upgrade-design.md` first.
+   - use the `## Begin An Upgrade` table there as the source of truth for any exact launch prompt you recommend back to the user
+2. Read the target repo's root `AGENTS.md` and confirm that it declares `Documentation surface profile: <profile>.`
+3. Inspect the target repo fresh, using `astro-agents/upgrade/report-current-agent-surface.md` as the detailed standard for inspection order, checks, and current-state reporting.
+4. Decide the main goals, out-of-scope areas, editing tasks in scope, change scopes, and review requirements.
+5. Keep the saved plan simple: one edit task per row in the intended execution order, with one change scope and a brief note.
+6. When the user wants the saved plan written or revised, create `docs/upgrade/` in the target repo when it does not already exist, then create or update `docs/upgrade/plan.md`.
+7. Treat the plan file as a working record:
+   - use `draft` while the plan is still being discussed or revised
+   - use `approved` only after the user explicitly approves the current saved plan
+   - if an approved plan is revised, set it back to `draft` until the user reapproves it
+8. When the user explicitly asks to review the current saved plan without rewriting it, inspect the current saved plan and the repo, leave `docs/upgrade/plan.md` unchanged, and either:
+   - return concrete recommended revisions, or
+   - guide the user through the plan step by step, depending on the request
+9. Keep review expectations, assumptions, current-surface summary, and open issues in `## Notes` rather than turning the file into a larger workflow ledger.
 
 ## Exclusions
 
 - do not choose, approve, or reinterpret the documentation surface profile
-- do not perform editing tasks or review tasks
-- do not update orchestration-owned workflow fields
-- do not collapse `plan-1` into target-state design
-- do not let `plan-2` drift into execution planning
-- do not let `plan-3` drift into making the edits themselves
+- do not perform editing tasks or review tasks inside this prompt
+- do not turn `docs/upgrade/plan.md` into a centralized controller for the workflow
+- do not add next-step routing or prompt-to-run-next fields to the saved plan
+- do not broaden the plan beyond the requested target root or scope
+- do not rewrite `docs/upgrade/plan.md` when the user explicitly asked only to review the current saved plan without changing it
 
 ## Output
-Return one planning-task result.
 
-For `plan-1`:
+Write or replace `docs/upgrade/plan.md` in this structure:
 
-- use the current-surface report shape required by `astro-agents/upgrade/report-current-agent-surface.md`
+```md
+# Upgrade Plan
 
-For `plan-2`:
+## Metadata
 
-- return a design-level summary with:
-  - goals in scope
-  - out-of-scope areas
-  - editing tasks in scope
-  - main change scopes
-  - oversight checkpoints
-  - review requirements
-  - open questions or blockers
+- target root:
+- documentation surface profile:
+- prompt used: `astro-agents/upgrade/upgrade-plan.md`
+- last updated:
+- status: `draft` | `approved`
 
-For `plan-3`:
+## Planned Tasks
 
-- return a plan-level summary with:
-  - planned task order
-  - task-by-task execution notes
-  - checkpoint dependencies
-  - open questions or blockers
+| Task | Applicability | Change scope | Notes |
+| --- | --- | --- | --- |
 
-When a progress record is provided:
+## Notes
+```
 
-- update only the matching task row and `Planning Outputs` entry
-- do not rewrite other task sections or orchestration-owned fields
+For `## Planned Tasks`:
+
+- use the exact edit-task names from `astro-agents/docs/upgrade-design.md`
+- preserve row order as the intended execution order
+- keep the table limited to the edit tasks that are actually in scope
+- use `core` or `public-python` in the `Applicability` column
+
+For `## Notes`:
+
+- summarize the main current-surface findings that shaped the plan
+- record important out-of-scope areas, review requirements, assumptions, and open questions
+
+Return a short planning summary with:
+
+- saved file path, or a clear note that no saved-file change was made when the user asked only to review the current saved plan
+- current plan status
+- the planned-task table copied into chat, including `Task`, `Applicability`, `Change scope`, and `Notes`
+- the main current-surface findings that shaped the plan
+- any approval or revision still needed
+- the likely first planned task after approval, including its change scope, when the plan is still `draft`
+- if the saved plan is `draft`, end with a `Next Steps:` list in this order:
+  - the option labels may be highlighted, but do not format them as inline code
+  - format only the exact prompt text as code
+  - guide me through reviewing this plan step by step
+    - quote an exact prompt that asks `astro-agents/upgrade/upgrade-plan.md` to explain the current saved plan one part at a time, ask whether the user approves each part before moving on, and leave `docs/upgrade/plan.md` unchanged unless the user explicitly asks for plan changes
+  - revise `docs/upgrade/plan.md` directly and tell me to review it
+    - quote an exact prompt that asks `astro-agents/upgrade/upgrade-plan.md` to read the current saved plan for this repo, review the saved changes, and show the updated plan in chat without rewriting `docs/upgrade/plan.md` unless the user explicitly asks for further plan changes
+  - approve the plan
+    - quote an exact prompt that asks `astro-agents/upgrade/upgrade-plan.md` to mark the current saved plan `approved` and tell the user the next step, without changing the planned-task table unless the repo evidence contradicts it
+- if the saved plan is `approved`, recommend the first planned task in order and quote the exact launch prompt from the `## Begin An Upgrade` table in `astro-agents/docs/upgrade-design.md`

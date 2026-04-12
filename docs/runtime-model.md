@@ -1,6 +1,6 @@
 # Runtime Model
 
-This document is evolving into a working source of truth for runtime-related terminology and control-flow concepts in this repo, grounded in current agentic AI guidance, and identifies where terminology in `astro-agents` should be updated to match.
+This document is evolving into a working source of truth for runtime-related terminology and control-flow concepts in this repo, grounded in current agentic AI guidance.
 
 ## Common Agent Runtime Ontology
 
@@ -93,42 +93,6 @@ The terms below are also common in agent and prompt-system discussions, but they
   - A role label for an `Agent` or `Deterministic controller` that chooses one option from a bounded set. [\[17\]](#ref-17)[\[19\]](#ref-19)
 - `orchestrator`
   - An `Agent` performing `Orchestration`. [\[4\]](#ref-4)[\[17\]](#ref-17)[\[19\]](#ref-19)
-
-## Repo Terms To Reframe
-
-Most repo-specific runtime vocabulary should be retired in favor of the generalized ontology above. The table below keeps only the live repo terms that still need explicit reframing during the rewrite.
-
-These entries are transitional. Keep them only where the current repo still uses them, and prefer the generalized terms above in new or revised guidance. In the middle column, defined ontology terms and other defined supporting terms appear in `backticks`, plain-language replacements appear in plain text, and CODEX-specific mechanisms appear in ALL CAPS.
-
-| Live repo term | Potential replacement term(s) | Mapping note |
-| --- | --- | --- |
-| `Precedence` | `authority`; higher-priority `Instructions`; ordering of `Instructions`; CODEX instruction discovery and merge behavior | Still used in this repo, but not treated as a top-level ontology bucket. Choose the replacement that names the actual mechanism rather than using `precedence` as a general runtime term. |
-| `Router` | `Route`; `Agent`; `Deterministic controller`; `dispatcher`; `selector`; `orchestrator` | Still used in this repo as a local label, but not treated as a separate ontology class. Use the narrower role term only when that narrower role is actually intended. |
-| `Resolve` | determine; identify; `Route`; determine the applicable `Prompt`; determine the applicable profile | Useful as an operation name, but not as a top-level runtime concept. Use it for a determination step, not for a runtime entity or ontology bucket. |
-| `Override` | higher-priority `Instructions`; superseding file; replace the default; supersede broader `Instructions`; CODEX override file | Reserve the product-specific sense for CODEX's per-directory override file. Otherwise explain the exact mechanism instead of using `override` as a broad local runtime term. |
-| `Activate` | `Route`; load; make applicable; `Handoff` / `Transfer`; select | Still used in the repo, but too broad. Pick the term that names the concrete mechanism actually happening. |
-| `Activation` | loading `Instructions`; route choice; selection; `Handoff` / `Transfer`; `guidance` becoming applicable; scope change | Still used in the repo, but it conflates several different runtime ideas. Prefer wording that names the concrete mechanism or state change. |
-| `Govern` | own the task; apply `Instructions`; determine the active `Instructions`; `Orchestration` | Used in the repo, but usually better replaced with a more concrete statement about ownership or applicable instructions. |
-| `Attach` | extend; add local guidance; apply at a named extension point; supplement the current scope | Mostly appears in transitional planning language. Keep it only if the rewrite introduces explicit extension points; otherwise prefer more concrete wording. |
-| `Composition` | simultaneous applicability; overlapping `Instructions`; multi-step `Workflow`; reusable prompt combination | Too broad as a standalone runtime term. Explain whether you mean overlapping applicable instructions, workflow structure, or authoring-time prompt reuse. |
-| `Shared Activation` | shared `Route`; shared selection; shared `Instructions` becoming applicable | A local runtime label, not a common ontology term. Prefer wording that names the concrete shared-library step or state change. |
-| `Bootstrap Routing` | initial `Route`; initial dispatch; first-step route choice | A repo-local control-flow phase, not a general ontology bucket. Use plain language for the initial route into the relevant branch. |
-| `Bootstrap Prompt` | initial `Prompt`; bootstrap request; initial user request | Better treated as plain language for the first prompt or request that triggers the intended route. |
-| `Authoring Prompt` | `Prompt`; writing-focused `Prompt`; authoring `Task` guidance | A useful functional description, but not a separate runtime ontology term. Use it only when the writing-focused role matters. |
-| `Review Prompt` | `Prompt`; review `Task`; review `Workflow` | Better treated as a prompt role or workflow role than as a top-level runtime concept. |
-| `Validation Prompt` | `Prompt`; validation `Task`; validation `Workflow` | Better treated as a prompt role or workflow role than as a top-level runtime concept. |
-| `Routing Prompt` | `Prompt`; `Route`; `dispatcher`; `selector`; `orchestrator` | Too local as a canonical category. Use the narrower routing or coordination term that matches the actual behavior. |
-| `Layer` | scope; source; place where `Instructions` or `Context` are introduced | Better treated as plain architectural language than as a common runtime ontology term. Name the specific scope or source when possible. |
-| `Inheritance` | reuse; refinement; narrower `Instructions`; derived prompt | An authoring-time relation, not a core runtime term. Prefer concrete language about reuse or refinement. |
-| `Review Lens` | review criterion; evaluation dimension; review angle | A review-structure term, not a runtime ontology term. Prefer plain language unless a stable local review rubric really needs the label. |
-| `Select` | bounded choice; choose one option; `selector` | Better treated as an action or supporting role label than as a top-level ontology term. |
-| `Hierarchy` | scope ordering; source ordering; `authority`; `Route` structure; `Workflow` structure | Too broad as a single runtime term. Explain whether you mean document/source ordering, authority among `Instructions`, or control-flow structure. |
-| `Control Flow` | `Workflow`; `Route`; `Handoff` / `Transfer`; `Orchestration` | Better replaced by the more specific runtime mechanism actually being described. |
-| `Entrypoint` | initial `Route`; directly user-addressable `Prompt`; entry document; starting path | Useful as plain language, but not a separate runtime ontology bucket. Use the concrete entry mechanism that actually applies. |
-| `Bundle` | grouped prompts; internal `Workflow`; reusable review set | A local packaging term, not a common runtime concept. Prefer wording that says whether the grouping is a workflow, a reusable set, or an internal review path. |
-| `Component` | internal prompt; reusable prompt; internal workflow step | Too broad on its own. Name the concrete prompt or workflow role instead. |
-| `Composite` | multi-step `Workflow`; coordinating `Prompt`; synthesized output | A local shorthand, not a core runtime term. Prefer wording that says whether the item coordinates a workflow, combines outputs, or both. |
-| `Shared Validation Family` | shared validation prompts; shared review library; validation `Workflow`s | A repo-local organizational label, not a general runtime term. Use it only for the shared validation collection itself, not as a runtime category. |
 
 ## What Codex Does
 

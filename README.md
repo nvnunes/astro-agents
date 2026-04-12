@@ -9,7 +9,7 @@ It currently includes:
 
 - authoring prompts and guides in `authoring/`
 - validation prompts in `validation/`
-- upgrade prompts in `upgrade/`
+- upgrade design guidance in `docs/upgrade-design.md`
 - top-level and folder-level routing rules in `AGENTS.md` files
 
 This repo also includes repo-local validation prompts for `astro-agents` itself under `agents/`.
@@ -20,7 +20,8 @@ This repo also includes repo-local validation prompts for `astro-agents` itself 
 - To use the library in another repo, start with `docs/usage.md`.
 - To author or revise prompts and guides, start with `authoring/README.md`.
 - To review prompts or documentation, start with `validation/README.md`.
-- To plan a repo upgrade, start with `docs/upgrade-design.md` and `upgrade/README.md`.
+- To assess a repo or propose how to group the upgrade work, start with `validation/README.md`.
+- To revise the shared upgrade model, start with `docs/upgrade-design.md`.
 
 ## Repository Layout
 
@@ -28,10 +29,8 @@ This repo also includes repo-local validation prompts for `astro-agents` itself 
   - shared authoring prompts and guides
 - `validation/`
   - shared validation prompts
-- `upgrade/`
-  - shared upgrade prompts
 - `docs/`
-  - architecture, usage, testing, glossary, and planning documentation
+  - architecture, usage, testing, glossary, and upgrade-design documentation
 - `agents/`
   - repo-local validation prompts for `astro-agents`
 
@@ -48,10 +47,8 @@ For deeper architecture, usage, and validation guidance, see:
 - `docs/testing.md`
   - the validation contract for this repo: requirements, canonical checks, and completion expectations
 - `docs/upgrade-design.md`
-  - the upgrade process design and next steps
+  - the shared review-led upgrade model and guidance for grouping the work
 - `authoring/README.md`
   - authoring-guide design, including the special note on `authoring/agents/agents-md.md`
 - `validation/README.md`
   - folder-level guidance for the shared validation prompt families, including reusable bootstrap prompts
-- `upgrade/README.md`
-  - folder-level guidance for the shared upgrade prompts

@@ -11,7 +11,7 @@ Use this document to decide what validation is required when changing:
 - `AGENTS.md` files
 - `README.md`
 - files under `docs/`
-- prompts under `authoring/`, `validation/`, `upgrade/`, or `agents/`
+- prompts under `authoring/`, `validation/`, or `agents/`
 - other files that change how agents should navigate, interpret, or apply this repository
 
 Use `validation/README.md` for reusable bootstrap prompts that should trigger these checks in fresh threads.
@@ -40,6 +40,8 @@ Use these shared review prompts directly in this repo:
   - private-default documentation-architecture review for document organization and source-of-truth structure
 - `validation/review/full-agent-surface-review.md`
   - run a combined review across prompt-writing quality, hierarchy behavior, and the applicable profile-scoped documentation review bundle
+- `validation/review/upgrade-review.md`
+  - review a repo against `docs/upgrade-design.md`, recommend an upgrade profile, and suggest how to group the work without creating repo-local upgrade artifacts
 
 ## Repo-Local Validation
 
@@ -52,7 +54,7 @@ For repo-specific validation, use the shared checks as the baseline review seque
 
 ## Agent Surface Validation
 
-Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or prompts under `authoring/`, `validation/`, `upgrade/`, or `agents/`.
+Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or prompts under `authoring/`, `validation/`, or `agents/`.
 
 ### Required Reviews
 
@@ -65,7 +67,7 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
   - run `validation/review/documentation-review.md`
   - then run `agents/validation/shared-validation-template-consistency-review.md` when `docs/usage.md` or `docs/testing.md` is changed
 
-- Changes to routers or prompts under `authoring/`, `validation/`, or `upgrade/`:
+- Changes to routers or prompts under `authoring/` or `validation/`:
   - run `validation/review/hierarchy-behavior-review.md`
   - run `validation/review/prompt-writing-review.md`
 

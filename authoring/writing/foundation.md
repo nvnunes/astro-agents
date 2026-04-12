@@ -40,7 +40,7 @@ Use this style for shareable foundation documents such as concept notes, framewo
 ## Preservation And Revision
 When revising existing text:
 - Preserve the role of the document as a conceptual or guiding document.
-- Do not change defined terms, layer names, framework names, document roles, or other structural terminology unless instructed or clearly required to fix an error.
+- Do not change defined terms, scope names, framework names, document roles, or other structural terminology unless instructed or clearly required to fix an error.
 - Do not remove necessary normative, conceptual, or forward-looking language if it is part of the document's purpose.
 - Do not add claims about implementation status, evidence, consensus, or external validation that are not supported by the source text.
 - Improve clarity, concision, and flow.

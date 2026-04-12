@@ -1,7 +1,7 @@
 # Public-Python Document Writing Review
 
 ## Purpose
-Use this prompt to select the reachable public documentation surface of a Python project and apply the shared core document-writing review to it.
+Use this prompt to determine the reachable public documentation surface of a Python project and apply the shared core document-writing review to it.
 
 ## Inputs
 
@@ -11,24 +11,24 @@ Use this prompt to select the reachable public documentation surface of a Python
 
 If the review scope is not specified, review the human-facing documents inside the reachable public documentation surface for the requested scope.
 
-## Discovery
+## Scope Identification
 
 When running this review:
 
 - inspect `docs/public-python-docs-design.md` as the source of truth for the `public-python` documentation surface model
 - inspect `docs/usage.md` for the shared operational guidance on the `public-python` profile
-- start from the public entrypoints and reachability rules defined there
-- discover the human-facing documents within that reachable public documentation surface
-- use `validation/review/core-document-writing-review.md` as the shared writing-review component after selecting that surface
+- start from the public starting documents and reachability rules defined there
+- identify the human-facing documents within that reachable public documentation surface
+- use `validation/review/core-document-writing-review.md` as the shared writing-review file after choosing that surface
 - prefer source docs and documentation-generation inputs over built output when both are present
 - inspect public package metadata, docs-site configuration, examples, docstrings, and docs-related tests only when they materially define or verify the selected public docs surface
 - keep the findings documentation-centered even when non-doc files are inspected as evidence
 
-## Review Lenses
+## Review Criteria
 
-Apply the shared core document-writing review lenses to the reachable public documentation surface selected through the `public-python` documentation model.
+Apply the shared core document-writing review criteria to the reachable public documentation surface selected through the `public-python` documentation model.
 
-Required review lenses:
+Required review criteria:
 
 - human-facing docs vs the applicable guide under `authoring/writing/`
 - scanability and section discipline

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Purpose
-Use this folder when the task is to select and apply a shared source-code authoring guide.
+Use this folder when the task is to choose and apply a shared source-code authoring guide.
 
 ## Code Guide Selection
 
@@ -15,7 +15,7 @@ When choosing among code-authoring guides in this folder:
 
 When the right guide is still not clear after this comparison:
 
-- ask the user directly which guide should govern the work before making substantial edits
+- ask the user directly which guide should apply to the work before making substantial edits
 
 ## Use Of Shared Code Guides
 

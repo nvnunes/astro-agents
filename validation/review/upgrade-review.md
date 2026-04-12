@@ -22,24 +22,24 @@ Do not use sub-agents unless the user explicitly asks for delegation or parallel
 
 If the review scope is not specified, default to the requested repo or target root rather than the whole workspace.
 
-## Scope Resolution
+## Scope Determination
 
 When running this review:
 
-- resolve applicable repo and subtree `AGENTS.md` files dynamically from the target root
+- determine applicable repo and subtree `AGENTS.md` files dynamically from the target root
 - inspect `README.md`, `docs/architecture.md`, `docs/testing.md`, and other likely source-of-truth docs when present
 - inspect bounded operational and public-doc signals when they materially affect upgrade recommendations
 - use `docs/upgrade-design.md` as the source of truth for the upgrade model, work areas, change-scope language, and `public-python` recommendation rules
 - do not require a declared `Documentation surface profile` before reviewing; when none is declared, treat the current shared documentation review path as `private-default`
 
-## Review Components
+## Internal Review Steps
 
 Build one combined assessment from this shared review surface:
 
 - `validation/review/full-agent-surface-review.md`
   - use as the baseline combined read on the repo's current agent surface, including the applicable shared documentation path, documentation profile context, current-state coverage snapshot, and any applicable repo-local validation prompts
 
-Use that combined review as the evidence base for one upgrade assessment rather than returning separate review reports or rerunning its component reviews independently.
+Use that combined review as the evidence base for one upgrade assessment rather than returning separate review reports or rerunning its internal review steps independently.
 
 ## Upgrade Assessment
 

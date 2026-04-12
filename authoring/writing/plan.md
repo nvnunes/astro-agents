@@ -47,13 +47,13 @@ When work is sequential, dependency-ordered, or intentionally staged, the plan m
 - If the work is not meaningfully staged, a small plan may omit phases, but it should still make ordering and outputs explicit.
 - Do not collapse a dependency-ordered roadmap into a flat implementation summary.
 
-## Hierarchy
-- When planning involves nested structure, use the hierarchy:
+## Nested Structure
+- When planning involves nested structure, use this structure:
   - `Phase > Pass > Workstream`
 - Prefer to avoid `Pass` and `Workstream` unless they reduce ambiguity.
 - Use `Pass` when one phase requires multiple distinct sweeps over the same material.
 - Use `Workstream` when one phase contains parallel tracks with different outputs.
-- Do not introduce extra hierarchy just for presentation.
+- Do not introduce extra nested structure just for presentation.
 
 ## Adaptation
 - Small working plan: prioritize the next steps, immediate dependencies, and deferred items that matter for re-entry.

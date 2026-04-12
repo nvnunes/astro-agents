@@ -1,7 +1,7 @@
 # Private-Default Document Writing Review
 
 ## Purpose
-Use this prompt to select the `private-default` documentation surface and apply the shared core document-writing review to it.
+Use this prompt to determine the `private-default` documentation surface and apply the shared core document-writing review to it.
 
 ## Inputs
 
@@ -11,19 +11,19 @@ Use this prompt to select the `private-default` documentation surface and apply 
 
 If the review scope is not specified, review the applicable `README.md`, folder-level `README.md`, and other human-facing docs within the requested scope.
 
-## Discovery
+## Scope Identification
 
 When running this review:
 
-- discover applicable `README.md`, folder-level `README.md` files, and other human-facing docs dynamically from the target root
+- identify applicable `README.md`, folder-level `README.md` files, and other human-facing docs dynamically from the target root
 - treat repo-facing `README.md` files and repo docs as the default documentation surface for this profile
-- use `validation/review/core-document-writing-review.md` as the shared writing-review component after selecting that surface
+- use `validation/review/core-document-writing-review.md` as the shared writing-review file after choosing that surface
 - inspect `docs/glossary.md` only when the target docs rely on recurring project terms whose meaning or ownership materially affects writing clarity
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
 
-## Review Lenses
+## Review Criteria
 
-Apply all review lenses from `validation/review/core-document-writing-review.md` to the selected `private-default` documentation surface.
+Apply all review criteria from `validation/review/core-document-writing-review.md` to the selected `private-default` documentation surface.
 
 ## Exclusions
 
@@ -32,7 +32,7 @@ Do not treat the following as the default task:
 - public package metadata review
 - docs-site reachability analysis for published public docs
 - generated API-doc inputs unless they are explicitly in scope for another reason
-- hierarchy design review beyond what is needed to judge document writing
+- route-structure design review beyond what is needed to judge document writing
 - `AGENTS.md` review
 - application-code review
 

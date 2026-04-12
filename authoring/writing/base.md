@@ -1,7 +1,7 @@
 # Base Docs Writing
 
 ## Purpose
-Use this style as the common base for human-facing documents. Apply it to documents meant to be read directly by collaborators, maintainers, reviewers, contributors, or future users, then layer a more specific document-type guide on top when one exists.
+Use this style as the common base for human-facing documents. Apply it to documents meant to be read directly by collaborators, maintainers, reviewers, contributors, or future users, then apply a more specific document-type guide on top when one exists.
 
 Specialized document guides should inherit this base and add only the constraints, preservation rules, and adaptation behavior that are specific to their document type.
 
@@ -11,11 +11,11 @@ Specialized document guides should inherit this base and add only the constraint
 - Improve clarity, precision, and structure.
 - Reduce repetition, filler, and vague claims.
 
-## Common Inheritance Rules
+## Common Reuse Rules
 - Preserve the document's role before improving its prose.
 - Keep the document usable for its actual reading mode, whether that is orientation, direct inclusion, conceptual reference, or working execution.
 - Let specialized guides add role-specific constraints instead of repeating this base.
-- Repeat a base rule in a specialized guide only when that guide needs to sharpen, qualify, or override it.
+- Repeat a base rule in a specialized guide only when that guide needs to sharpen, qualify, or replace it.
 
 ## Style
 - Use a direct, technical, restrained tone.

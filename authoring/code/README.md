@@ -1,4 +1,4 @@
-# Code Authoring Prompt Family
+# Shared Code Authoring Guides
 
 This folder contains shared guides for authoring source code.
 

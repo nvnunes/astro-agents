@@ -29,9 +29,9 @@ When revising existing repo docs:
 
 ## Adaptation
 Adjust emphasis by document type without changing the overall tone:
-- `README.md`: prioritize orientation, entrypoints, setup, and where to go next.
-- `docs/architecture.md`: prioritize boundaries, ownership, interfaces, and data/control flow.
-- `docs/testing.md`: prioritize canonical commands, verification expectations, and test-layer boundaries.
+- `README.md`: prioritize orientation, starting documents, setup, and where to go next.
+- `docs/architecture.md`: prioritize boundaries, ownership, interfaces, and data/routing and workflow.
+- `docs/testing.md`: prioritize canonical commands, verification expectations, and testing-scope boundaries.
 - `docs/glossary.md`: prioritize stable definitions, term boundaries, and consistent cross-references to the documents that use those terms.
 - `docs/api.md`: prioritize stable interfaces, inputs/outputs, and usage constraints.
 - `CONTRIBUTING.md`: prioritize workflow, review expectations, and contribution steps.

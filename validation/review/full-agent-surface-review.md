@@ -1,45 +1,46 @@
 # Full Agent-Surface Review
 
 ## Purpose
-Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across prompt-writing quality, hierarchy behavior, and the applicable profile-scoped documentation review bundle.
+Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across prompt-writing quality, routing and authority behavior, and the applicable profile-scoped documentation review workflow.
 
 Treat the requested repo or target root as the primary review object. Review-system or validation-contract issues are secondary findings and should be included only when they materially affect the completeness, correctness, or discoverability of the requested review.
 
 ## Inputs
 
 - target root or target paths to review
-- optional focus areas such as writing quality, prompt-writing quality, hierarchy behavior, documentation architecture, or full agent-surface synthesis
+- optional focus areas such as writing quality, prompt-writing quality, routing and authority behavior, documentation architecture, or full agent-surface synthesis
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, default to the requested repo or target root rather than the whole workspace.
 
-## Discovery
+## Scope Determination
 
 When running this review:
 
-- discover applicable repo and subtree `AGENTS.md` files dynamically from the target root
+- determine applicable repo and subtree `AGENTS.md` files dynamically from the target root
 - include only files inside the requested scope
-- inspect linked supporting docs only when needed to support the component reviews below
+- inspect linked supporting docs only when needed to support the internal review steps below
+- inspect bounded operational and public-doc signals only when they materially affect documentation profile context or the current-state coverage snapshot
 - do not assume repo names or hardcode expected repo paths
-- resolve the documentation surface profile using `validation/review/documentation-review.md`
+- determine the documentation surface profile using `validation/review/documentation-review.md`
 
-## Review Components
+## Internal Review Steps
 
-Run the following component reviews within the requested scope:
+Run the following internal review steps within the requested scope:
 
 - `validation/review/prompt-writing-review.md`
   - for `AGENTS.md` and prompts vs the applicable guides under `authoring/`
-- `validation/review/hierarchy-behavior-review.md`
-  - for router discipline, design adherence, folder coherence, and prompt role drift
+- `validation/review/routing-and-authority-review.md`
+  - for routing-and-workflow discipline, design adherence, folder coherence, and prompt role drift
 - `validation/review/documentation-review.md`
-  - for the shared documentation selector and the applicable profile-scoped documentation review bundle
+  - for the shared documentation chooser and the applicable profile-scoped documentation review workflow
 
-After the shared component reviews are active:
+After the shared internal review steps are active:
 
-- discover applicable repo-local validation prompts under `agents/validation/`
-- run applicable local validation prompts when they exist beneath the target root being reviewed
+- determine applicable repo-local review files under `agents/validation/`
+- run applicable local review files when they exist beneath the target root being reviewed
 
-Use these component reviews to build one combined assessment rather than returning separate component reports.
+Use these internal review steps to build one combined assessment rather than returning separate reports.
 
 Prioritize direct review of the requested repo state before stepping up to critique the validation framework itself.
 
@@ -58,9 +59,18 @@ Do not treat the following as the default task:
 Return:
 
 1. The selected documentation surface profile.
-2. A brief overall judgment of the system within the requested scope.
-3. Findings ordered by severity.
-4. Concrete corrective actions after the findings.
+2. Documentation profile context.
+3. A brief overall judgment of the system within the requested scope.
+4. Findings ordered by severity.
+5. A current-state coverage snapshot.
+6. Concrete corrective actions after the findings.
+
+For documentation profile context:
+
+- name the declared `Documentation surface profile` when the root `AGENTS.md` provides one
+- name the effective selected profile used for the review
+- note bounded current-surface signals that materially shaped how the documentation surface was interpreted
+- note any ambiguity or mismatch that materially affects the completeness or interpretation of the review
 
 For each finding:
 
@@ -72,7 +82,7 @@ For each finding:
 
 When combining findings:
 
-- remove duplicates across the component reviews
+- remove duplicates across the internal review steps
 - keep the most specific wording when findings overlap
 - merge overlapping glossary, term-ownership, or plain-language findings into one terminology finding when possible
 - distinguish system-level issues from local cleanup
@@ -81,9 +91,28 @@ When combining findings:
 
 For corrective actions:
 
-- group actions by layer or document area rather than as a raw file dump
+- group actions by scope or document area rather than as a raw file dump
 - make the actions specific enough to implement without re-deciding ownership
 - keep the review focused on prompt and instruction-system changes rather than general repo critique
+
+For the current-state coverage snapshot:
+
+- use these coverage areas when they apply:
+  - routing-and-workflow and prompt surface
+  - repo entry surface
+  - source-of-truth docs surface
+  - environment and execution support surface
+  - testing and validation support surface
+  - additional interface surface
+  - additional supporting-doc surface
+  - public documentation surface when the repo materially exposes one
+- classify each applicable area as `present`, `partial`, `missing`, or `not applicable`
+- keep each area descriptive:
+  - identify the key evidence
+  - identify the key gap or caveat
+- keep this section current-state only:
+  - do not recommend grouping, sequencing, or oversight here
+  - do not recommend changing the documentation surface profile here
 
 If a validation-architecture issue is included:
 

@@ -1,7 +1,7 @@
 # Private-Default Documentation Review
 
 ## Purpose
-Use this prompt to run the `private-default` documentation review bundle.
+Use this prompt to run the `private-default` documentation review workflow.
 
 Use it when the repo has no declared non-default `documentation surface profile`, or when the user explicitly asks for the private-default documentation review path.
 
@@ -13,29 +13,29 @@ Use it when the repo has no declared non-default `documentation surface profile`
 
 If the review scope is not specified, review the requested repo or target root as the primary documentation review object.
 
-## Discovery
+## Scope Identification
 
 When running this review:
 
-- discover applicable `README.md`, folder-level `README.md`, and relevant `docs/` files dynamically from the target root
-- inspect linked supporting docs only when needed to support the component reviews below
+- identify applicable `README.md`, folder-level `README.md`, and relevant `docs/` files dynamically from the target root
+- inspect linked supporting docs only when needed to support the internal review steps below
 - do not assume repo names or hardcode expected repo paths
 
-## Review Components
+## Internal Review Steps
 
-Run the following component reviews within the requested scope:
+Run the following internal review steps within the requested scope:
 
 - `validation/review/private-default/document-writing-review.md`
 - `validation/review/private-default/documentation-architecture-review.md`
 
-Use these component reviews to build one combined assessment rather than returning two isolated reports.
+Use these internal review steps to build one combined assessment rather than returning two isolated reports.
 
 ## Exclusions
 
 Do not treat the following as the default task:
 
 - prompt-writing review
-- hierarchy review beyond what the documentation components need
+- route-structure review beyond what the documentation workflow needs
 - public-package documentation-surface review
 - application-code review
 
@@ -58,7 +58,7 @@ For each finding:
 
 When combining findings:
 
-- remove duplicates across the component reviews
+- remove duplicates across the internal review steps
 - keep the most specific wording when findings overlap
 - preserve the most severe version of an overlapping issue
 - keep documentation-system findings primary and place softer cleanup after them

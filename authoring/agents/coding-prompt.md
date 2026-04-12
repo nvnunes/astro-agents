@@ -34,7 +34,7 @@ When revising coding prompts:
 - Keep the prompt tied to the coding context it claims to serve.
 - Do not let it drift into repo-specific architecture or workflow rules that belong elsewhere.
 - Keep preservation rules explicit when behavior or contracts must not change.
-- Keep local composition and conflict-resolution behavior clear.
+- Keep local simultaneous-applicability and conflict-resolution behavior clear.
 
 ## Output
 - When writing or revising a coding prompt, return the revised prompt directly unless explanation is requested.

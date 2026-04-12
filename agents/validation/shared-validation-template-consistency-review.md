@@ -1,7 +1,7 @@
 # Shared Validation Template Consistency Review
 
 ## Purpose
-Use this prompt as a repo-local validation prompt to review whether the shared-validation starter template in `docs/usage.md` remains conceptually consistent with this repo's concrete validation contract in `docs/testing.md`.
+Use this prompt as a repo-local review file to check whether the shared-validation starter template in `docs/usage.md` remains conceptually consistent with this repo's concrete validation contract in `docs/testing.md`.
 
 ## Inputs
 
@@ -29,7 +29,7 @@ When running this review:
 
 Do not treat the following as the default task:
 
-- replacing the shared validation reviews for document writing, prompt writing, hierarchy behavior, or documentation architecture
+- replacing the shared validation reviews for document writing, prompt writing, routing and authority behavior, or documentation architecture
 - broad review of repo-local validation prompts under `agents/validation/`
 - generic cleanup of `docs/usage.md` or `docs/testing.md` wording that does not affect consistency between the starter template and the concrete local contract
 

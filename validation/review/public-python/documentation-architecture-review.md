@@ -6,23 +6,25 @@ Use this prompt to review whether the reachable public documentation surface of 
 ## Inputs
 
 - target root or target paths to review
-- optional focus areas such as public entrypoints, package metadata, docs reachability, generated API-doc ownership, contributor, release, or license surfaces, or combined public-doc architecture
+- optional focus areas such as public starting documents, package metadata, docs reachability, generated API-doc ownership, contributor, release, or license surfaces, terminology consistency, or combined public-doc architecture
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, review the requested repo or document set as a public-Python documentation system.
 
-## Discovery
+## Scope Identification
 
 When running this review:
 
 - inspect `docs/usage.md` for the shared operational guidance on the `public-python` documentation surface profile
 - inspect `docs/public-python-docs-design.md` for the deeper source-of-truth model behind that profile
-- discover the public entrypoints and reachable public documentation surface within the requested scope
+- inspect `docs/runtime-model.md` when runtime or control-flow terminology materially affects the review
+- inspect `docs/glossary.md` when recurring local terms, term ownership, or terminology drift materially affect the review
+- identify the public starting documents and reachable public documentation surface within the requested scope
 - inspect `README.md`, relevant public package metadata, docs-site configuration, reachable docs pages, and exposed contributor, release, license, example, or generated-reference surfaces as needed
 - prefer source docs and documentation-generation inputs over built output when both are present
 - inspect linked supporting docs only when needed to judge public reachability, source-of-truth visibility, and cross-surface consistency
 
-## Review Lenses
+## Review Criteria
 
 Evaluate the public-Python documentation system against `docs/usage.md` and `docs/public-python-docs-design.md`.
 
@@ -32,16 +34,17 @@ Apply the tier model from those source documents when judging severity:
 - conditionally exposed or claimed public-doc surfaces should be treated as required when the repo presents them publicly
 - recommended public-doc elements for mature packages should be treated as softer improvement opportunities unless the repo explicitly claims them
 
-Required review lenses:
+Required review criteria:
 
 - public documentation surface selection vs the `public-python` profile
-- public entrypoint clarity and discoverability
+- public starting document clarity and discoverability
 - always-expected public-Python surface elements such as `README.md`, package-description metadata, and public package URLs when those links are published
 - documentation role clarity and proportional structure for the size of the public docs surface
 - source-of-truth visibility across `README.md`, package metadata, docs pages, generated-reference inputs, and other exposed public-doc surfaces
 - reachable docs organization rather than full-tree `docs/` inspection by default
 - redundancy versus stronger source-of-truth ownership within the reachable public surface
 - cross-surface consistency across `README.md`, package metadata, docs-site navigation, contributor or release docs, and exposed examples
+- terminology consistency versus `docs/runtime-model.md` and `docs/glossary.md`, including reintroduction of terms those docs say to avoid
 - generated API-doc ownership when public reference pages are generated from docstrings or docs-generation config
 - conditional public-surface expectations such as `CONTRIBUTING.md`, `CHANGELOG.md`, `LICENSE`, and example assets when the public entry surface exposes or depends on them
 - recommended public-doc elements for mature packages such as explicit docs navigation, drift checks, and a stable contributor-facing path into the docs surface
@@ -52,7 +55,7 @@ Do not treat the following as the default task:
 
 - detailed prose editing
 - prompt-writing review
-- hierarchy-router discipline except where it affects public documentation organization
+- route-structure and routing-and-workflow discipline except where they affect public documentation organization
 - generic application-code review
 - defaulting to the full `docs/` tree without reachability review
 - built site output such as `site/` as the primary review target

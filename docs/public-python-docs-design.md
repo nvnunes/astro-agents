@@ -2,9 +2,9 @@
 
 This document is the human-facing design reference for adding shared review support for the public documentation surface of Python projects.
 
-Use it when designing or revising shared validation prompts for public Python package documentation.
+Use it when designing or revising shared reviews for public Python package documentation.
 
-It records the external guidance consulted, the main findings that matter for prompt design, and the derived design rules that the new review prompt should follow.
+It records the external guidance consulted, the main findings that matter for prompt design, and the derived design rules that the new review file should follow.
 
 ## Purpose
 
@@ -48,7 +48,7 @@ Use `docs/usage.md` for the shared repo-application model in general. Use this d
 
 ## Public Documentation Surface
 
-For the purposes of shared validation in this repo, the public documentation surface of a Python project is the set of public-facing documentation entrypoints, published docs sources, and documentation-generation inputs that define what external users and contributors actually see.
+For the purposes of shared validation in this repo, the public documentation surface of a Python project is the set of public-facing documentation starting documents, published docs sources, and documentation-generation inputs that define what external users and contributors actually see.
 
 This surface normally includes:
 
@@ -58,7 +58,7 @@ This surface normally includes:
 - docs-site configuration such as `mkdocs.yml` when it determines published navigation or reachability
 - `CONTRIBUTING.md` when the project invites external contribution
 - `CHANGELOG.md` or equivalent release-history docs when release history is public
-- `LICENSE` when a public entrypoint links to it directly
+- `LICENSE` when a public starting document links to it directly
 - examples or tutorial assets when the public docs rely on them
 
 This definition is derived mainly from Python packaging guidance on public package metadata, MkDocs guidance on docs sources and navigation, and broader external guidance on documentation structure and reference material. [2][3][4][5][6][7]
@@ -82,21 +82,21 @@ The default review scope for public docs should be the publicly reachable docume
 
 This reachability rule is derived from MkDocs publication behavior and navigation structure rather than from a rule that every file under `docs/` is equally public. [4]
 
-Start from these public entrypoints:
+Start from these public starting documents:
 
 - `README.md`
 - docs-site navigation and discovery configuration such as `mkdocs.yml`
 - `CONTRIBUTING.md`
 - `CHANGELOG.md`
-- `LICENSE` when a public entrypoint links to it
+- `LICENSE` when a public starting document links to it
 - public package metadata entries that point users toward documentation or related public surfaces
 
 Then review:
 
-- docs pages linked from those entrypoints
+- docs pages linked from those starting documents
 - docs pages included in docs-site navigation
 - docs pages implicitly published by docs-site discovery when the site configuration would publish them
-- generated API-doc inputs only for the published reference surface that those entrypoints expose
+- generated API-doc inputs only for the published reference surface that those starting documents expose
 
 Ignore by default:
 
@@ -112,7 +112,7 @@ The review model should use tiers rather than a single mandatory checklist.
 
 ### Always Expected
 
-- `README.md` as a public entrypoint
+- `README.md` as a public starting document
 - consistent public package metadata in `pyproject.toml` for the package description and README binding
 - consistent package URLs when the project publishes links for public docs, source, issues, or changelog history
 
@@ -126,7 +126,7 @@ Treat these as required when the repo clearly exposes or claims the correspondin
 - generated API reference inputs when the project publishes generated API docs
 - `CONTRIBUTING.md` when the project invites outside contribution or documents contributor workflow publicly
 - `CHANGELOG.md` or equivalent when release history is part of the public package surface
-- `LICENSE` when `README.md` or another public entrypoint explicitly directs readers to it
+- `LICENSE` when `README.md` or another public starting document explicitly directs readers to it
 - examples, notebooks, or tutorial assets when README or docs instruct users to rely on them
 
 These conditions are design conclusions drawn from the principle that exposed public surfaces should be reviewed through their real sources of truth. The packaging and docs-site parts are grounded directly in the packaging and MkDocs sources; the contributor, changelog, and example cases are operational extensions of that principle.
@@ -142,11 +142,11 @@ The documentation-role recommendation is informed by the external documentation-
 
 ## Review-Lens Implications
 
-The future shared review prompt should evaluate public Python docs against the following design rules.
+The future shared review file should evaluate public Python docs against the following design rules.
 
 ### Public Entry And Discovery
 
-- `README.md` should work as a package entrypoint, not only as an internal repo overview.
+- `README.md` should work as a package starting document, not only as an internal repo overview.
 - Public metadata and public docs should not point to missing, stale, or contradictory surfaces.
 - Public docs should be discoverable through reachable links or published navigation.
 
@@ -179,7 +179,7 @@ The role-clarity point is informed by the external documentation-structure sourc
 The shared validation implementation that follows from this document should:
 
 - add a dedicated shared review path for public Python documentation surface review rather than silently broadening the existing generic document-writing review
-- discover public entrypoints first, then traverse the reachable public docs graph
+- discover public starting documents first, then traverse the reachable public docs graph
 - inspect docs-generation inputs only when they materially define reachable public docs
 - prefer source docs and generation inputs over reviewing built site output
 - keep findings documentation-centered even when metadata, tests, examples, or docstrings are inspected as evidence

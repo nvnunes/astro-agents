@@ -17,9 +17,9 @@ Key sections:
   - baseline document set for nontrivial repos
 - `Document Naming And Cross-Linking`
   - stable naming and source-of-truth visibility rules
-- `Routing Architecture`
+- `Routing And Workflow Architecture`
   - repo, workspace root, and workspace-global `AGENTS.md` patterns
-- `Bootstrap Prompts`
+- `Starter Requests`
   - short prompts for invoking shared validation reviews in fresh threads
 - `Recommended docs/testing.md Pattern`
   - validation contract structure and trigger design
@@ -33,7 +33,7 @@ Recommended minimum:
 - `AGENTS.md`
   - the operational working brief for agents
 - `README.md`
-  - the human-facing overview, setup entrypoint, and orientation document
+  - the human-facing overview, setup starting document, and orientation document
 - `docs/architecture.md` or an equivalent design document
   - the source of truth for system structure, boundaries, and ownership
 - `docs/testing.md` or an equivalent verification document
@@ -54,7 +54,7 @@ Prefer a separate supporting document when:
 - the repo has recurring local terms, term boundaries, or term ownership that materially affect how it should be understood and warrant a dedicated glossary such as `docs/glossary.md`
 - the repo has enough complexity that agents need a persistent source of truth
 
-`AGENTS.md` should stay limited to short operational guidance: routing, immediate working constraints, and the source-of-truth docs an agent should follow.
+`AGENTS.md` should stay limited to short operational guidance: routing and workflow, immediate working constraints, and the source-of-truth docs an agent should follow.
 
 ## Document Naming And Cross-Linking
 
@@ -72,37 +72,56 @@ These names are not required, but predictable names make documents easier for bo
 
 When these documents exist:
 
-- make long-lived source-of-truth docs discoverable from `AGENTS.md`, `README.md`, or another clear entrypoint
+- make long-lived source-of-truth docs discoverable from `AGENTS.md`, `README.md`, or another clear starting document
 - make the role of each doc explicit near the top, especially whether it is operational guidance or supporting explanation
 - keep cross-references direct and current when doc names, paths, or ownership change
 - avoid scattering the same instruction across multiple files without a clear owner
 
-## Routing Architecture
+When a repo uses `docs/data-sources.md`, treat that document as the source of truth for durable data artifacts the repo consumes, produces, ships, or expects users to work with.
 
-Use this section as the practical companion to `docs/architecture.md`. For the formal routing model, precedence, and layer ownership, use `docs/architecture.md`. In that model, applicable prompts compose by default, and precedence resolves conflicts between applicable instructions. The templates below show how to establish that routing architecture at the repo and workspace levels.
+Use `docs/data-sources.md` for questions such as:
+
+- which data artifacts matter in this repo
+- whether an artifact is committed, generated, external, downloaded, cached, or reproducible
+- where those artifacts usually live
+- which parts of the repo or workflow produce or consume them
+- which data examples are real sample data artifacts that users or agents are expected to inspect or run against
+
+Do not use `docs/data-sources.md` as the owner for:
+
+- CLI or API input grammar
+- normalization rules
+- persisted schema contracts
+- field-level interface semantics
+
+When a repo needs a stable source of truth for data contracts or persistence rules, use a more explicit owner such as `docs/architecture.md`, `docs/api.md`, or a narrower document whose name makes that contract role clear.
+
+## Routing And Workflow Architecture
+
+Use this section as the practical companion to `docs/architecture.md`. For the formal routing and workflow model, instruction authority, and scope ownership, use `docs/architecture.md`. In that model, applicable prompts compose by default, and higher-authority instructions settle conflicts between applicable instructions. The templates below show how to establish that routing and workflow model at the repo and workspace levels.
 
 ### Repo AGENTS Template
 
-The workspace `Projects/AGENTS.md` file is a bootstrap layer that helps route into the broader precedence chain, not the main reusable prompt layer inside it. Repo-level `AGENTS.md` files should stay focused on repo-local routing, source-of-truth activation, and routing into applicable shared prompts that may exist outside the repo.
+The workspace `Projects/AGENTS.md` file is a thin starting file that helps dispatch into the broader instruction-authority chain, not the main reusable prompt set inside it. Repo-level `AGENTS.md` files should stay focused on repo-local routing-and-workflow guidance, source-of-truth references, and broad routing into applicable shared prompts that may exist outside the repo.
 
 ```md
 # <Repo> Agent Brief
 
-## Prompt Routing
-- Follow any higher-level workspace prompt-routing instructions when present.
-- When higher-level routing selects a higher-level prompt subtree, check the corresponding subtree under `agents/` for matching local prompts.
+## Prompt Routing And Workflow
+- Follow any higher-level workspace routing-and-workflow instructions when present.
+- When higher-level instructions route work into a higher-level prompt subtree, check the corresponding subtree under `agents/` for matching local prompts.
 - Keep applicable higher-level and matching local prompts active together.
-- When applicable instructions conflict, use the applicable precedence rules to decide which instruction governs.
+- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
 - Use other prompts under `agents/` when they directly match the request and do not correspond to a higher-level counterpart.
 
-## Precedence
-- More specific subtree-level `AGENTS.md` files take precedence within their scope.
+## Instruction Authority And Conflict Handling
+- More specific subtree-level `AGENTS.md` files have higher instruction authority within their scope.
 - Otherwise instructions in this file apply by default within this repository.
 - When matching local prompts under `agents/` and higher-level prompts both apply, keep compatible guidance from both.
-- When their instructions conflict, the higher-precedence instruction governs.
+- When their instructions conflict, follow the higher-authority instruction.
 
 ## Source Of Truth
-- Use `README.md` for the repo overview and major entrypoints.
+- Use `README.md` for the repo overview and major starting documents.
 - Use `docs/architecture.md` for structure, ownership, and interfaces when present.
 - Use `docs/testing.md` for validation requirements and canonical checks when present.
 - Use any other named local source-of-truth docs directly.
@@ -120,7 +139,7 @@ Add sections like these only when inline local guidance materially improves runt
 - Use `docs/architecture.md` for boundaries, ownership, and interfaces when present.
 - Treat this section as a short local summary, not a replacement for `docs/architecture.md`.
 - Treat `<public API boundary>` as the intended public interface.
-- Keep `<behavior or asset>` in `<layer, module, or path>`.
+- Keep `<behavior or asset>` in `<scope, module, or path>`.
 
 ## Contracts
 - Preserve `<important contract>`.
@@ -135,61 +154,65 @@ Add sections like these only when inline local guidance materially improves runt
 - Treat this section as a short local summary, not a replacement for `docs/testing.md`.
 - Run `<canonical repo-specific command>` for meaningful changes.
 
-## Review Lens
+## Review Criteria
 - Prioritize `<repo-specific review concern>`.
 - Watch for `<repo-specific risk>`.
 ```
 
-When a repo declares `Documentation surface profile`, that value should be implemented either by the shared validation family or by a higher-precedence local prompt layer.
+Use this document as the source of truth for how a downstream repo declares `Documentation surface profile` in its root `AGENTS.md`.
 
-For repo files that may later become public, prefer this kind of generic activation wording over hardcoded workspace paths. The repo file can name the kind of shared guide that should govern locally without assuming a specific private prompt-library location.
+When a repo declares `Documentation surface profile`, that value should be implemented either by the shared validation library or by higher-authority local prompt files.
 
-When deeper source-of-truth docs exist, repo `AGENTS.md` should point to them explicitly instead of assuming the agent will discover them on its own.
+When present, keep that `Documentation surface profile` declaration in a short `## Scope` section near the top of the root `AGENTS.md` so shared upgrade review and later repo editing work can read it reliably.
+
+For repo files that may later become public, prefer this kind of generic routing wording over hardcoded workspace paths. The repo file can name the kind of shared guide that should apply locally without assuming a specific private prompt-library location.
+
+When deeper source-of-truth docs exist, repo `AGENTS.md` should point to them explicitly instead of assuming the agent will inspect them on its own.
 
 ### Workspace Root AGENTS Template
 
-At the workspace level, for example under `Projects/`, prefer a much thinner bootstrap router whose job is to bootstrap the shared router, not to compete with the prompt library or repo-local files. Keep workspace-global reusable preferences and defaults in `Projects/agents/` instead:
+At the workspace level, for example under `Projects/`, prefer a much thinner initial dispatcher whose job is to route into the shared dispatcher, not to compete with the prompt library or repo-local files. Keep workspace-global reusable preferences and defaults in `Projects/agents/` instead:
 
 ```md
 # Workspace Root Agent Brief
 
-## Prompt Routing
-- When available, use `agents/AGENTS.md` to activate any applicable workspace-global prompts.
-- Use `astro-agents/AGENTS.md` to route into the shared prompt library.
+## Prompt Routing And Workflow
+- When available, use `agents/AGENTS.md` to apply any applicable workspace-global prompts.
+- Use `astro-agents/AGENTS.md` to dispatch into the shared prompt library.
 - Keep applicable workspace-global and shared prompts active together.
-- When applicable instructions conflict, use the applicable precedence rules to decide which instruction governs.
+- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
 ```
 
 ### Workspace Global AGENTS Template
 
-When reusable prompts or user preferences should apply across multiple repos in one workspace without belonging in the shared library, prefer a separate `Projects/agents/AGENTS.md` layer:
+When reusable prompts or user preferences should apply across multiple repos in one workspace without belonging in the shared library, prefer a separate `Projects/agents/AGENTS.md` scope:
 
 ```md
 # Workspace Global Agent Brief
 
-## Prompt Routing
-- When higher-level routing selects a subtree under `astro-agents/`, check the corresponding subtree here for matching local prompts.
+## Prompt Routing And Workflow
+- When higher-level instructions route work into a subtree under `astro-agents/`, check the corresponding subtree here for matching local prompts.
 - Keep applicable shared and matching local prompts active together.
-- When applicable instructions conflict, use the applicable precedence rules to decide which instruction governs.
+- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
 - Use other prompts here when they directly match the request and do not correspond to a shared counterpart under `astro-agents/`.
 
-## Precedence
+## Instruction Authority And Conflict Handling
 - When matching local prompts here and shared prompts under `astro-agents/` both apply, keep compatible guidance from both.
-- When their instructions conflict, the higher-precedence instruction governs.
+- When their instructions conflict, follow the higher-authority instruction.
 ```
 
-## Bootstrap Prompts
+## Starter Requests
 
-Use bootstrap prompts when you want a fresh thread to invoke a shared path with minimal manual prompting. They should be short but lead to the intended activation within the routing system.
+Use starter requests when you want a fresh thread to invoke a shared path with minimal manual prompting. They should be short but lead to the intended route within the shared routing and workflow system.
 
 Common examples:
 
 - `Do a full agent surface review`
-- `Review the repo docs using the shared documentation review prompt`
+- `Review the repo docs using the shared documentation review`
 - `Revise manuscript.tex using the shared science writing guide`
 
 For additional examples, see:
-- `validation/README.md` for validation- and review-related bootstrap prompts
+- `validation/README.md` for validation- and review-related starter requests
 
 ## Pattern For Repos Using Shared Validation
 
@@ -229,15 +252,15 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
 
 - Changes to `AGENTS.md` files:
   - run prompt-writing review
-  - run hierarchy-behavior review
+  - run routing-and-authority review (`validation/review/routing-and-authority-review.md`)
 
 - Changes to `README.md` or files under `docs/`:
   - run the shared documentation review selector
-  - let it resolve through the repo's declared documentation surface profile, or `private-default` when none is declared
+  - let it determine the repo's declared documentation surface profile, or `private-default` when none is declared
 
 - Changes to other agent-facing prompt files:
   - run prompt-writing review
-  - run hierarchy-behavior review
+  - run routing-and-authority review (`validation/review/routing-and-authority-review.md`)
 
 - Changes that substantially alter prompt or instruction structure:
   - run a full agent surface review
@@ -248,7 +271,7 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
 
 ## Regression Priorities
 
-- prioritize preventing regressions in hierarchy clarity, source-of-truth visibility, and consistency across the repo's agent surface
+- prioritize preventing regressions in route-structure clarity, source-of-truth visibility, and consistency across the repo's agent surface
 ```
 
 Once adapted in a target repo, that repo's own `docs/testing.md` becomes the source of truth for its actual validation contract.
@@ -293,8 +316,8 @@ Treat these as part of the public documentation surface when the public entry su
 
 For files under `docs/`, review the publicly reachable graph by default rather than the full tree.
 
-- start from public entrypoints such as `README.md`, docs navigation/config, and public package metadata
-- include docs pages that those entrypoints link to or publish
+- start from public starting points such as `README.md`, docs navigation/config, and public package metadata
+- include docs pages that those starting documents link to or publish
 - ignore unlinked planning or draft material unless it is explicitly published or requested
 
 Treat docstrings, docs-generation config, examples, and docs-related tests as documentation-review inputs only when they materially define or verify reachable public docs.
@@ -307,6 +330,6 @@ For a public project, keep its agent surface from depending too heavily on works
 
 - keep project-specific guidance visible inside the project's own agent surface
 - do not hardcode absolute paths to the private workspace prompt library
-- use a generic bootstrap line such as `Follow any higher-level workspace prompt-routing instructions when present.`
+- use a generic bootstrap line such as `Follow any higher-level workspace routing-and-workflow instructions when present.`
 
-This allows a private workspace to supply higher-level routing and shared prompts without baking private path assumptions into public repositories.
+This allows a private workspace to supply higher-level routing-and-workflow guidance and shared prompts without baking private path assumptions into public repositories.

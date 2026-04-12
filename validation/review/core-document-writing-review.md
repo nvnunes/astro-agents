@@ -1,14 +1,14 @@
 # Core Document Writing Review
 
 ## Purpose
-Use this prompt as the shared prose-review component for profile-specific documentation review prompts.
+Use this prompt as the shared prose-review file for profile-specific documentation review workflows.
 
 This prompt reviews writing quality only. It does not decide which documentation surface belongs in scope.
 
 ## Inputs
 
 - target root or target paths to review
-- documentation files or other human-facing writing inputs already selected by a profile-specific documentation review prompt
+- documentation files or other human-facing writing inputs already chosen by a profile-specific documentation review workflow
 - optional focus on `README.md`, folder-level `README.md` files, docs pages, contribution docs, changelog docs, or other human-facing docs within that already selected surface
 
 If the review scope is not specified, review the human-facing documentation files already selected by the active profile-specific review path.
@@ -17,7 +17,7 @@ If the review scope is not specified, review the human-facing documentation file
 
 When running this review:
 
-- use this prompt only after a profile-specific documentation review prompt has selected the documentation surface
+- use this prompt only after a profile-specific documentation review workflow has chosen the documentation surface
 - review only the human-facing documentation files inside that selected surface
 - use the applicable guide under `authoring/writing/` when reviewing human-facing docs
 - default to `authoring/writing/readme-md.md` for `README.md` and folder-level `README.md` files
@@ -26,11 +26,11 @@ When running this review:
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
 - do not widen the selected documentation surface on your own
 
-## Review Lenses
+## Review Criteria
 
 Evaluate documents against the applicable style guide.
 
-Required review lenses:
+Required review criteria:
 
 - human-facing docs vs the applicable guide under `authoring/writing/`
 - scanability and section discipline
@@ -46,7 +46,7 @@ Do not treat the following as the default task:
 
 - deciding which documentation surface profile applies
 - deciding the default documentation surface for the repo
-- hierarchy design review beyond what is needed to judge document writing
+- route-structure design review beyond what is needed to judge document writing
 - `AGENTS.md` review
 - prompt-asset writing review for files under `authoring/`, `validation/`, or repo-local `agents/`
 - application-code review

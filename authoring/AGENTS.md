@@ -1,18 +1,18 @@
 # AGENTS.md
 
 ## Purpose
-Use this folder when the task is to select and apply a shared authoring prompt or guide.
+Use this folder when the task is to choose and apply a shared authoring guide or prompt-writing guide.
 
-## Authoring Prompt And Guide Selection
+## Choosing An Authoring Guide
 
-When choosing among shared authoring prompts and guides in this folder:
+When choosing among shared authoring guides in this folder:
 
 - identify the document's primary role from its file path, title, section headings, and surrounding context
 - for `AGENTS.md` files, prefer `authoring/agents/agents-md.md`
 - for prompts that define writing or revision behavior under `authoring/agents/` or repo-local `agents/authoring/writing/`, prefer `authoring/agents/writing-prompt.md`
 - for prompts under `authoring/writing/`, prefer `authoring/agents/writing-prompt.md` when revising the prompt itself rather than the human-facing text it governs
 - for prompts that define coding or code-review behavior under `authoring/code/` or repo-local `agents/authoring/code/`, prefer `authoring/agents/coding-prompt.md`
-- for validation prompts such as review prompts under `validation/` or `agents/validation/`, prefer `authoring/agents/validation-prompt.md`
+- for review prompts and other prompts under `validation/` or `agents/validation/`, prefer `authoring/agents/review-prompt.md`
 - for prompts under repo-local `agents/` that do not match a more specific local prompt type, prefer `authoring/agents/base.md`
 - for source-code authoring work such as writing, editing, reviewing, or refactoring code, route into `authoring/code/AGENTS.md`
 - for `README.md` files, prefer `authoring/writing/readme-md.md`
@@ -38,4 +38,4 @@ When the right prompt or guide is still not clear after this comparison:
 
 Use this folder to answer:
 
-- which shared authoring prompt or guide applies
+- which shared authoring guide applies

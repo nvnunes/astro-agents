@@ -45,7 +45,7 @@ The recommended upgrade loop is:
 
 In this model:
 
-- `validation/review/upgrade-review.md` is the default shared entrypoint for assessing a repo against this design
+- `validation/review/upgrade-review.md` is the default shared starting document for assessing a repo against this design
 - upgrade review starts from the current repo surface and the effective documentation review profile
 - the root `AGENTS.md` should be updated with the chosen `Documentation surface profile` only as part of approved editing work
 
@@ -63,9 +63,9 @@ Use `docs/glossary.md` for the shared meaning of `documentation surface profile`
 
 Use `docs/usage.md` for how downstream repos declare that value in the root `AGENTS.md`.
 
-Use `validation/review/documentation-review.md` for how the shared validation family resolves the active profile.
+Use `validation/review/documentation-review.md` for how the shared validation library determines the active profile.
 
-The shared validation family currently recognizes:
+The shared validation library currently recognizes:
 
 - `private-default`
 - `public-python`
@@ -78,7 +78,7 @@ Bounded `public-python` signals include:
 
 - public package metadata
 - docs-site config
-- reachable public docs entrypoints
+- reachable public docs starting documents
 - public contributor or release docs
 - public examples or tutorial assets
 
@@ -120,7 +120,7 @@ When introducing a project-specific work area:
 1. minimum repo-level `AGENTS.md`
    - establish the minimum recommended repo-level `AGENTS.md` surface from `docs/usage.md`
 2. minimum repo-level `README.md`
-   - establish the minimum recommended repo entrypoint and top-level navigation
+   - establish the minimum recommended repo starting document and top-level navigation
 3. minimum source-of-truth docs
    - minimum source-of-truth docs including `docs/architecture.md` and `docs/data-sources.md` when needed
    - use `docs/data-sources.md` only when the repo has meaningful durable data artifacts that need one stable inventory-and-ownership doc; do not use it as the owner for data interfaces or persisted contracts
@@ -129,7 +129,7 @@ When introducing a project-specific work area:
 5. minimum testing and validation support
    - establish `docs/testing.md` and the minimum testing or validation code needed to support agent operation
 6. additional interface docs
-   - document additional commands, services, APIs, or entrypoints the agent must understand to operate effectively
+   - document additional commands, services, APIs, or starting documents the agent must understand to operate effectively
 7. additional supporting docs
    - existing or newly retained docs that remain useful after normalization, including operational or secrets-related docs when needed, and are linked from stronger owners
 
@@ -253,11 +253,11 @@ Do not treat `docs/upgrade-plan.md` as required for normal upgrades. Recommend i
 
 ## Validation And Completion
 
-Use the shared validation family to assess both readiness and completion.
+Use the shared validation library to assess both readiness and completion.
 
 During upgrade work:
 
-- use `validation/review/upgrade-review.md` as the default shared assessment entrypoint
+- use `validation/review/upgrade-review.md` as the default shared assessment starting document
 - rerun upgrade review after meaningful progress when the user wants to reassess remaining work
 - use `validation/review/documentation-review.md` for docs-heavy changes or profile-specific documentation checks
 - use `validation/review/full-agent-surface-review.md` before treating the upgraded repo as complete
@@ -265,6 +265,6 @@ During upgrade work:
 For repos with a material `public-python` surface:
 
 - keep the documentation surface profile recommendation aligned with the exposed public surface
-- use the `public-python` documentation review bundle through the shared documentation selector when the repo declares or is moving toward that profile
+- use the `public-python` documentation review workflow through the shared documentation chooser when the repo declares or is moving toward that profile
 
 Do not treat an upgrade as complete while direct validation findings remain unresolved.

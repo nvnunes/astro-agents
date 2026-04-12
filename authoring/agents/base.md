@@ -12,11 +12,11 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 - Make inputs, constraints, and output expectations explicit when they matter.
 - Keep the prompt operational rather than descriptive.
 
-## Common Inheritance Rules
+## Common Reuse Rules
 - Preserve the prompt's role before improving its wording.
 - Keep the prompt usable for its actual task mode, whether that is routing, revision, review, or another operational task.
 - Let specialized guides add role-specific constraints instead of repeating this base.
-- Repeat a base rule in a specialized guide only when that guide needs to sharpen, qualify, or override it.
+- Repeat a base rule in a specialized guide only when that guide needs to sharpen, qualify, or replace it.
 
 ## Style
 - Use direct, operational language.
@@ -36,7 +36,7 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 - Prefer this basic structure when it fits:
   - `Purpose`
   - `Inputs`
-  - `Instructions`, `Review Lenses`, or `Review Checks`
+  - `Instructions`, `Review Criteria`, or `Review Checks`
   - `Exclusions`
   - `Output`
 - Use only the sections that actually add operational clarity.

@@ -17,7 +17,7 @@ This guide is intended for codebases that value stable contracts, explicit owner
 - Prefer direct implementations over clever or overly generic ones.
 - Keep one obvious owner for each responsibility.
 - Keep public APIs clean and minimally surprising.
-- Keep entrypoints thin relative to the core Python API or logic.
+- Keep starting documents thin relative to the core Python API or logic.
 
 ## Structure
 - Prefer a consistent module order:
@@ -26,7 +26,7 @@ This guide is intended for codebases that value stable contracts, explicit owner
   - properties or simple accessors near the top
   - helper primitives next
   - composed helpers next
-  - public entrypoints last
+  - public starting documents last
 - If a module follows a strong lifecycle, order methods by lifecycle instead.
 - Separate logical blocks with clear section comments.
 - Keep helpers in the narrowest module that owns the behavior.
@@ -63,7 +63,7 @@ When revising existing Python code:
 - Do not rename fields, parameters, or helpers casually when existing names still match the behavior.
 - Do not rewrite unrelated code for style alone.
 - Make the critical path clearer, not richer.
-- Prefer removing misleading abstraction over adding a new abstraction layer.
+- Prefer removing misleading abstraction over adding a new abstraction stage.
 
 ## Testing And Verification
 - Add or adjust tests with every behavior change.

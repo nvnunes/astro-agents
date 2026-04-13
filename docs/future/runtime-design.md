@@ -16,31 +16,69 @@ Use it to keep the workstreams aligned, preserve the intended sequencing, and re
 
 ### Runtime Governance
 
-Develop a clearer runtime-governance model on top of the current lightweight live surface. This should focus on how routing, instruction loading and applicability, conflict handling among applicable instructions, context boundaries, tool contracts, permission levels, and approval checkpoints behave during execution rather than only in document structure. Routing belongs primarily in this area, because it is the main mechanism by which the system decides which instructions and context are applicable and what the agent is allowed to carry forward into action. The goal is to define the execution model more explicitly before trying to test or harden it in detail.
+Develop a clearer runtime-governance model on top of the current lightweight live surface. This should focus on defining explicit route contracts: which pattern a branch uses, who owns the next user-facing output, which tools or specialists are allowed, what state and context may carry forward, and where approval or guardrail boundaries apply. Routing belongs primarily in this area because it is the first control point that determines ownership, tool access, and carry-forward behavior. The goal is to make the execution contract explicit enough that later observability, validation, and safety work can test and enforce it.
 
 ### Observability And Provenance
 
-Extend the current lightweight observability baseline. Today that baseline is static routing and source-of-truth visibility plus `Route Summary` on shared selector and combined-review outputs. This workstream develops a stronger account of traces, intermediate state, applicable instructions and context, source linkage, and reconstructable records of why the system behaved as it did. Effective use of context belongs mainly here, because context needs to be treated not only as something to optimize, but also as something to inspect, recover, and audit. The goal is to make behavior visible enough that later validation and failure analysis are based on evidence rather than reconstruction.
+Extend the current lightweight observability baseline. Today that baseline is static routing and source-of-truth visibility plus `Route Summary` on shared selector and combined-review outputs. This workstream should start with event-first evidence: route and handoff events, tool calls, guardrails and approvals, state-class transitions, compaction artifacts, and source provenance. Effective use of context belongs mainly here because context needs to be inspectable, recoverable, and auditable, not just optimized. The goal is to make behavior visible enough that later validation and failure analysis are based on concrete runtime evidence rather than reconstruction.
 
 ### Validation
 
-Extend the current review-driven validation system beyond review prompts into behavior-focused testing. The current review structure and maintained validation-path scenario baseline are useful starting points, but they should be supplemented with routing tests, instruction-loading and applicability checks, representative cases, regression checks, and longer-horizon evaluations where appropriate. Routing also belongs partly here, because once routing rules are defined they need to be tested to confirm that the intended route, any handoff or ownership model, and conflict-handling decisions actually occur. The goal is to move from validating the design of the agent surface to validating the behavior that the surface produces.
+Extend the current review-driven validation system beyond review prompts into behavior-focused testing. The current review structure and maintained validation-path scenario baseline are useful starting points, but the next layer should begin with representative tasks, expected observable outcomes, trace-backed debugging, and repeatable graders before expanding into broader routing, applicability, and longer-horizon checks. Routing also belongs partly here because once route contracts are defined they need to be tested to confirm that the intended branch, tool boundary, handoff, or approval behavior actually occurs. The goal is to move from validating the design of the agent surface to validating the behavior that the surface produces.
 
 ### Safety
 
-Turn safety into a more explicit design and review axis on top of the current lightweight, review-driven surface. This should include prompt injection, unsafe tool use, excessive agency, untrusted context, memory poisoning, and related runtime risks. Both routing and context management matter here, because poor routing can bring the wrong instructions into scope and poor context handling can expose the system to unsafe inputs or unsafe action chains. The goal is to build on governance, observability, and validation so that safety is treated as a concrete operational concern rather than only a general preference for caution.
+Turn safety into a more explicit design and review axis on top of the current lightweight, review-driven surface. This should include prompt injection, unsafe tool use, excessive agency, untrusted context, memory poisoning, and related runtime risks. The first useful output should be a concrete control stack: trust classes for context and state, per-tool or per-action permission classes, approval thresholds for side effects, post-tool and output validation, and incident evidence requirements. The goal is to build on governance, observability, and validation so that safety is treated as a concrete operational concern rather than only a general preference for caution.
 
 ## Cross-Workstream Dependencies
 
-- `docs/future/runtime-governance.md` defines the intended runtime behavior for routing, instruction loading and applicability, conflict handling among applicable instructions, customization behavior, and context-boundary decisions.
-- `docs/future/runtime-observability-and-provenance.md` defines what runtime state must be visible, linked, and reconstructable.
-- `docs/future/runtime-validation.md` defines how the intended runtime behavior will be tested, measured, and accepted.
-- `docs/future/runtime-safety.md` defines runtime-risk framing and the control points that the design must satisfy.
+- `docs/future/runtime-governance.md` defines the intended route contracts, coordination patterns, state classes, and control boundaries for execution.
+- `docs/future/runtime-observability-and-provenance.md` defines which events, state transitions, and provenance links must be visible and reconstructable.
+- `docs/future/runtime-validation.md` defines how representative tasks, observable outcomes, and repeatable checks will be used to test the intended behavior.
+- `docs/future/runtime-safety.md` defines runtime-risk framing, trust classes, and the control points that the design must satisfy.
 - This document depends on all four workstreams and should not be treated as implementation-ready until those inputs are mature enough to support integrated decisions.
 
 ## Program Frame
 
 Use the workstream documents for the current project assessment, open questions, and workstream-specific target models. Use this document for shared framing, cross-workstream dependencies, high-level sequencing, and later synthesis.
+
+## Defined Terms
+
+Use the terms below as the shared state taxonomy for the future runtime workstreams.
+
+### Shared State Classes
+
+| State class | Meaning | Default stability | Recomputable | Default trust | Normal carry-forward rule |
+| --- | --- | --- | --- | --- | --- |
+| `Stable policy` | Slow-changing guidance that defines durable runtime behavior, such as route contracts, tool policies, and safety constraints. | high | yes | high | should remain available across relevant runs until intentionally changed |
+| `Task-local state` | Short-lived working state for the current task or branch, such as intermediate decisions, partial outputs, and current-step bookkeeping. | low to medium | sometimes | medium | carry forward only within the active task or branch |
+| `Session history` | Prior messages, outputs, tool results, and other thread-local interaction history. | medium | no | mixed | carry forward only while still relevant to the active branch and context window |
+| `Compaction summary` | A distilled summary of earlier session history created to preserve continuity after trimming or compaction. | medium | no | medium | carry forward only as an explicitly marked summary artifact, not as equivalent to full history |
+| `Rediscovered repo state` | Facts reloaded from the current repo surface during execution, such as discovered files, current docs, and current routing structure. | medium | yes | medium to high | prefer fresh rediscovery over blind carry-forward when possible |
+| `Retrieved context` | Context fetched during a run from search, retrieval, external systems, or other dynamic sources. | low | sometimes | lower-trust by default | carry forward only with provenance and only while still relevant |
+| `Longer-lived memory` | State intended to persist beyond one task or session, such as reusable preferences, stored notes, or memory-bank content. | variable | no | variable and risk-sensitive | treat as a privileged subsystem with explicit rules for write, read, trust, and monitoring |
+
+These classes are shared design terms, not yet implementation commitments. Governance should define how they are used, observability should define how they are exposed, validation should define how they are checked, and safety should define their trust and control requirements.
+
+### Exemplar Tool Contract
+
+Use the shape below as a shared example of what a first tool or interface contract should make explicit.
+
+| Field | Purpose |
+| --- | --- |
+| `Tool name` | Stable identifier used in prompts, traces, and reviews. |
+| `Purpose` | Short statement of the bounded capability the tool provides. |
+| `Caller pattern` | Whether the tool is called directly by the active agent, through a manager-style specialist call, or through another bounded route contract. |
+| `Inputs / schema` | Required arguments, schema constraints, and any input examples needed to make invocation reliable. |
+| `Output shape` | Expected return format, including whether the output is free text, structured data, or a side-effect record. |
+| `Permission class` | The minimum privilege level required to call the tool. |
+| `Approval requirement` | Whether the tool can run automatically, needs conditional approval, or always requires explicit human approval. |
+| `Allowed side effects` | What kinds of external changes the tool is allowed to make, if any. |
+| `Post-call validation` | What must be checked after the tool runs, such as schema conformance, redaction, or side-effect confirmation. |
+| `Required trace fields` | What the runtime must record for debugging, validation, and audit, such as tool name, arguments, result, approval state, and any side-effect outcome. |
+| `Carry-forward rule` | What parts of the tool result may enter task-local state, session history, summaries, or longer-lived memory. |
+
+This is an example contract shape, not an implementation format. Governance should define when this level of detail is required, observability should define how it is recorded, validation should define how it is checked, and safety should define which fields are risk-critical.
 
 ## Planned Synthesis Structure
 
@@ -48,11 +86,11 @@ Populate the sections below only after the workstream documents are mature enoug
 
 ### Runtime Governance Model
 
-Define the intended runtime behavior for routing, handoffs, any ownership or governing-path model after the relevant `Route` or `Handoff`, instruction loading and applicability, conflict handling among applicable instructions, common execution paths, and governance-side compaction handling.
+Define the intended route-contract model for routing, handoffs, manager-style specialist calls, tool permissions, state carry-forward, common execution paths, and governance-side compaction handling.
 
 ### Observability And Provenance Model
 
-Define what runtime state, route decisions, governing-path information, applicable instructions and context, and source linkage must be visible and reconstructable.
+Define what runtime events, state transitions, route decisions, source linkage, and compaction artifacts must be visible and reconstructable.
 
 ### Validation Model
 
@@ -69,16 +107,32 @@ Settle cross-workstream dependencies, conflicts, and tradeoffs that cannot be se
 ## Sequencing
 
 1. Keep the current project assessments and source-backed comparisons aligned across the four workstreams.
-2. Advance Runtime Governance from the current lightweight routing baseline to a synthesis-ready target model while keeping observability, validation, and safety dependencies explicit.
-3. Advance Runtime Observability And Provenance from the current static visibility plus `Route Summary` baseline, Runtime Validation from the current shared review family plus maintained validation-path scenario baseline, and Runtime Safety from the current lightweight review-driven surface to synthesis-ready target models.
+2. Define a shared state taxonomy and a first route-contract bundle for one representative pilot path while keeping observability, validation, and safety dependencies explicit.
+3. Advance Runtime Observability And Provenance from the current static visibility plus `Route Summary` baseline, Runtime Validation from the current shared review family plus maintained validation-path scenario baseline, and Runtime Safety from the current lightweight review-driven surface by building around that pilot route contract and its evidence surfaces.
 4. Synthesize the workstream outputs here and settle the integrated design decisions, guardrails, and acceptance criteria.
 
 Avoid treating this as a strict waterfall. Governance decisions should remain provisional where they still depend on observability, validation, or safety work that has not yet matured enough to support them.
 
+### Pilot Selection Criteria
+
+Choose the first integrated pilot path using a shared rubric rather than by defaulting to the deepest existing workflow.
+
+Prefer a path that has:
+
+- a clear route contract or one that can be made clear with limited design work
+- a meaningful success signal, acceptance condition, or user-visible outcome
+- enough structure to expose state transitions, evidence surfaces, or approval boundaries
+- bounded side effects and bounded risk while the design is still immature
+- enough complexity to teach the workstreams something real, but not so much ambiguity that failures become hard to interpret
+
+Use this rubric across governance, observability, validation, and safety. Different workstreams may emphasize different pilot paths, but they should explain that choice in terms of the same criteria.
+
 ## Open Integrated Questions
 
 - Which tool, interface, and harness contracts must be explicit in the first integrated runtime design rather than deferred?
+- Which route pattern should be used for the first integrated pilot: direct route, handoff, or manager-calls-specialist?
 - How strong should the first integrated model be on session identity, checkpointing, and handoff artifacts for longer-running or resumed work?
+- Which state classes need to be distinguished in the first integrated model: stable policy, task-local state, retrieved context, compaction summaries, and longer-lived memory?
 - How should the validation workstream extend the maintained validation-path scenario baseline into a fuller eval program without making ordinary repo work too heavy?
 - How should observability extend beyond `Route Summary` and static routing visibility without over-instrumenting ordinary repo work?
 - Which containment layers must the first integrated safety model choose explicitly, even if richer controls remain deferred?

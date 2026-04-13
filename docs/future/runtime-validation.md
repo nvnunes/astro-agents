@@ -36,21 +36,21 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 - the project defines a clear validation contract for the current agent surface: prompt-writing quality, routing and scope behavior, documentation review, and combined review are all explicit in `docs/testing.md` and `validation/README.md`
 - profile-specific documentation validation objectives are also explicit: the shared family distinguishes `private-default` and `public-python` documentation surfaces and defines separate writing and architecture checks for each
-- runtime behaviors that matter most to the next design phase are named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
+- runtime behaviors that matter most to the next design phase are named in `docs/future/runtime-governance.md`, especially route contracts, tool and approval boundaries, state and carry-forward behavior, customization behavior, and degraded routing cases
 - those runtime behaviors are still defined mainly as design concerns to validate later, not as a current test objective set with explicit success criteria, evaluator types, or thresholds
 
 #### Current Review-Surface Adequacy
 
 - for the current prompt-library repo, the shared review family is strong: narrow review prompts are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and repo-local consistency reviews catch drift in the root dispatcher and shared validation surface
 - this review surface is adequate for maintaining prompt-writing quality, route-structure discipline, documentation structure, and validation-contract consistency in the repo as it exists today
-- it is not adequate on its own for proving runtime behavior once the project starts making stronger claims about instruction applicability, route choice, carried-forward context, or degraded execution paths
+- it is not adequate on its own for proving runtime behavior once the project starts making stronger claims about route contracts, route choice, carried-forward context, tool boundaries, or degraded execution paths
 
 #### Behavior-Facing Coverage
 
 - the current validation model is still primarily review-driven: the prompts inspect files, compare them against source-of-truth docs and guides, and synthesize findings from static evidence
-- even the strongest behavior-oriented prompt, `validation/review/routing-and-scope-review.md`, evaluates whether routing and scope behavior work as designed by reading the route structure and its source-of-truth docs rather than by checking live runtime instruction loading and applicability
+- even the strongest behavior-oriented prompt, `validation/review/routing-and-scope-review.md`, evaluates whether routing and scope behavior work as designed by reading the route structure and its source-of-truth docs rather than by checking live runtime route contracts, state transitions, or tool and approval behavior
 - there is no stable method yet for checking which loaded instructions, internal steps, or carried-forward context actually shaped a live runtime path
-- instruction-loading and applicability checks, routing tests, and longer-thread behavior checks are still planning items rather than established validation methods
+- route-contract checks, tool and approval checks, and longer-thread behavior checks are still planning items rather than established validation methods
 
 #### Scenario Representativeness
 
@@ -62,8 +62,8 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 - current validation depends heavily on static inspection and reviewer reconstruction from prompt files, `AGENTS.md`, and source-of-truth docs
 - the review prompts do ask for dynamic file discovery within scope, which is better than hardcoded assumptions, but that is still runtime discovery of repo artifacts rather than observable evidence of instruction loading and applicability or route choice
-- `docs/future/runtime-observability-and-provenance.md` correctly identifies that instruction applicability, route choice, and carried-forward context are not yet inspectable enough for behavior-focused validation
-- until observable runtime evidence exists, validation of routing and instruction-applicability behavior will remain inference-heavy
+- `docs/future/runtime-observability-and-provenance.md` correctly identifies that route choice, state transitions, and carried-forward context are not yet inspectable enough for behavior-focused validation
+- until observable runtime evidence exists, validation of routing and carry-forward behavior will remain inference-heavy
 
 #### Metrics And Measurement
 
@@ -103,27 +103,29 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 - the current baseline is a lightweight shared-review family, visible review-path summaries, and a maintained validation-path scenario baseline for the current validation surface
 - preserve the current shared review family as the lightweight baseline for prompt-surface maintenance rather than replacing it with a heavier runtime harness
-- define an explicit validation target set for the runtime behaviors named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
-- build on the maintained validation-path scenario baseline, starting with common virgin-thread routes and the highest-risk validation routes
-- define behavior-facing checks for routing and instruction applicability, rather than relying only on design review and static file inspection
-- if the future governance model adopts stronger ownership or handoff semantics, define how validation should confirm the intended governing path and active instructions after the relevant `Route` or `Handoff`
+- define a first representative task set with clear success criteria, expected observable outcomes, and expected route contracts
+- build on the maintained validation-path scenario baseline, starting with common routes that already have meaningful outcomes, visible traces, or other high-signal feedback
+- use traces and replayable runtime evidence as the first debugging surface before introducing broader graders or datasets
+- define behavior-facing checks for routing, tool use, approvals, and state transitions rather than relying only on design review and static file inspection
+- if the future governance model adopts stronger ownership or handoff semantics, define how validation should confirm the intended route contract and result ownership after the relevant `Route` or `Handoff`
 - define a small set of degraded and edge-case scenarios, including unsupported profiles, undefined upgrade paths, rediscovery failure, compaction-sensitive routes, and stale-context cases
 - define what observable runtime evidence validation will require from the observability workstream before behavior checks can be trusted
 - define a practical measurement method for runtime-context size and other runtime-cost signals that materially affect route design
 - decide which validation questions can use deterministic checks, which require rubric-based grading, and which still need human review
-- define runtime acceptance criteria that go beyond unresolved review findings and state what counts as acceptable routing and instruction-applicability behavior
+- define runtime acceptance criteria that go beyond unresolved review findings and state what counts as acceptable routing, tool-boundary, approval, and state-behavior correctness
 - build regression discipline around repeatable scenarios and evidence expectations rather than around one-off review prompts alone
 - keep the first behavior-facing validation stage lightweight enough for ordinary repo use and lower-budget runtime paths
-- use `validation/` as the first pilot area because it contains the deepest routes, the clearest orchestration behavior, and the most direct current validation responsibility
+- choose the first pilot area for validation using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a good routing pilot, but not automatically the best first pilot for tool permissions or side-effect controls
 
 ### Open Validation Questions
 
 - which runtime behaviors should be in the first explicit validation target set, and which can remain design-only until later
-- what should the initial baseline scenario set include for common routes, narrow reviews, combined reviews, and degraded cases
-- how should virgin-thread routing checks be structured so they are stable and reusable without overfitting to one prompt wording
-- what evidence must be visible to validate route choice, any future ownership or handoff model, instruction applicability, conflict handling among applicable instructions, and carried-forward context with confidence
+- what representative task set should define the first validation stage, and what observable outcomes should count as success on those tasks
+- what should the initial baseline scenario set include for common routes, narrow reviews, combined reviews, tool-boundary cases, and degraded cases
+- how should common-route checks be structured so they are stable and reusable without overfitting to one prompt wording
+- what evidence must be visible to validate route choice, any future ownership or handoff model, tool use, approvals, state transitions, and carried-forward context with confidence
 - which behaviors can be validated through static inspection plus traces, and which need direct runtime replay or scenario execution
-- what should count as success or failure for routing correctness, instruction-applicability correctness, and degraded-route recovery
+- what should count as success or failure for routing correctness, tool-boundary correctness, approval behavior, state-behavior correctness, and degraded-route recovery
 - how should runtime-context size and runtime-cost concerns affect validation thresholds and representative scenarios
 - how much longer-thread and compaction coverage is needed in the first validation stage before the observability workstream matures further
 - which current review prompts should remain purely qualitative and which should later feed into more structured evaluators or scoring
@@ -136,22 +138,22 @@ This section describes the current runtime-validation state of `astro-agents`.
 ### Stage 1 — Define Target Set And Baseline Scenarios
 
 - use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for scenario and method selection
-- define the first explicit validation target set for runtime behavior
-- extend the current validation-path scenario baseline with route examples, starter requests, and known degraded cases that matter to the future runtime design
+- define the first representative task set, expected outcomes, and validation target set for runtime behavior
+- extend the current validation-path scenario baseline with route examples, starter requests, known degraded cases, and any first tool-boundary or approval cases that matter to the future runtime design
 - separate common-path scenarios from degraded or edge-case scenarios so later validation can stay proportional
 
 ### Stage 2 — Define Behavior Checks And Evidence Requirements
 
-- define how to check routing choices on representative scenarios
-- define how to check instruction applicability, conflict handling among applicable instructions, and customization behavior on those scenarios
-- define what observable runtime evidence is required to validate route choice, instruction applicability, and carried-forward context
+- define how to check routing choices and route contracts on representative scenarios
+- define how to check tool use, approvals, state transitions, and any required customization behavior on those scenarios
+- define what observable runtime evidence is required to validate route choice, route contract behavior, and carried-forward context
 - define what compaction-related evidence is required for longer-thread cases
 
 ### Stage 3 — Define Measurement, Acceptance, And Regression
 
 - define a standard approach to measuring the size of runtime context assembled by representative prompt paths
 - define how routing reliability and runtime-cost concerns should be measured on the first scenario set
-- define what counts as acceptable routing, instruction applicability, conflict handling among applicable instructions, and degraded-case behavior
+- define what counts as acceptable routing, tool-boundary behavior, approval behavior, state-behavior correctness, and degraded-case behavior
 - define compaction-resilience checks for routes that must still work after longer-thread summarization
 - define how lower-budget runtime cost concerns should affect validation thresholds and representative scenarios
 - define the first repeatable regression suite for runtime behavior
@@ -167,12 +169,12 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 - a validation workstream plan with stable current-state findings and target questions
 - a maintained baseline scenario set for common and degraded runtime behavior
-- validation methods for routing, instruction applicability, conflict handling among applicable instructions, and degraded-case checks
+- validation methods for representative task outcomes, routing, tool-boundary behavior, state-behavior correctness, and degraded-case checks
 - a runtime-context and runtime-cost measurement approach for representative runtime paths
 - runtime behavior acceptance criteria, evidence requirements, and regression priorities
 
 ## Assumptions And Deferred Decisions
 
 - This workstream defines how runtime behavior will be checked, not what the behavior should be.
-- Virgin-thread scenarios should remain a primary validation surface even after additional longer-thread checks are introduced.
+- Common fresh-start scenarios should remain a primary validation surface even after additional longer-thread checks are introduced.
 - The exact harness, tooling, or automation surface for these checks is deferred until the integrated runtime design is more stable.

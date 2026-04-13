@@ -36,9 +36,9 @@ This section describes the current runtime-safety state of `astro-agents`.
 Assess the current project against these criteria:
 
 - `Instruction And Trust Boundaries`
-  - can the project distinguish active `Instructions`, supporting `Context`, and untrusted or merely informative context well enough to reduce unsafe instruction following
-- `Routing And Instruction-Applicability Safety`
-  - does the runtime structure reduce the risk of making the wrong instructions applicable, preserving stale carried-forward context, or widening active context unsafely
+  - can the project distinguish trusted instructions, supporting context, and untrusted or merely informative context well enough to reduce unsafe instruction following
+- `Routing, Scope, And Carry-Forward Safety`
+  - does the runtime structure reduce the risk of taking the wrong route, preserving stale carried-forward context, or widening active context unsafely
 - `Untrusted Context And Injection Exposure`
   - does the current design bound risks from prompt injection, indirect prompt injection, and other untrusted content entering the runtime path
 - `Carry-Forward, Memory, And State Safety`
@@ -58,7 +58,7 @@ Assess the current project against these criteria:
 - `Proportionality`
   - are safety controls likely to stay practical for ordinary repo work rather than becoming so heavy that they will be skipped or bypassed
 
-For `astro-agents` now, the primary criteria are `Instruction And Trust Boundaries`, `Routing And Instruction-Applicability Safety`, `Carry-Forward, Memory, And State Safety`, `Failure Containment And Degraded Operation`, and `Incident Visibility And Forensics`. `Least Privilege And Permission Boundaries` and `Approval And Side-Effect Boundaries` are still important, but they are more forward-looking until the runtime model becomes more explicitly tool-capable and action-capable.
+For `astro-agents` now, the primary criteria are `Instruction And Trust Boundaries`, `Routing, Scope, And Carry-Forward Safety`, `Carry-Forward, Memory, And State Safety`, `Failure Containment And Degraded Operation`, and `Incident Visibility And Forensics`. `Least Privilege And Permission Boundaries` and `Approval And Side-Effect Boundaries` are still important, but they are more forward-looking until the runtime model becomes more explicitly tool-capable and action-capable.
 
 ### Findings
 
@@ -148,17 +148,20 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - the live surface stays intentionally lightweight, so the actions below describe future control-model work rather than missing live-surface doctrine
 - define an explicit runtime trust model that distinguishes active `Instructions`, supporting `Context`, untrusted context, and lower-trust carried-forward state
 - define when carried-forward, compacted, or rediscovered context must be revalidated, downgraded in authority, or discarded
-- if the future runtime grows deeper coordination paths, constrain risky routing behavior so the active governing path stays explicit and carry-forward stays bounded
+- if the future runtime grows deeper coordination paths, constrain risky routing behavior so the active route contract stays explicit and carry-forward stays bounded
 - if the future governance model adopts stronger ownership or handoff semantics, define how that model should limit unsafe carry-forward and ambiguous control after the relevant `Route` or `Handoff`
 - define fail-safe behavior for ambiguous routes, unsupported implementations, failed rediscovery, stale carried-forward context, and partial recovery after context loss
 - define how untrusted or externally supplied content should be isolated from active `Instructions` even before the runtime grows more tool-capable
+- define a first safety control matrix covering trust class, allowed tools or actions, validation requirement, approval requirement, and required runtime evidence
 - decide the minimum least-privilege and approval posture required in the first integrated runtime design, even if full tool governance is deferred
 - define which side-effect boundaries and human approval checkpoints must exist before the runtime is allowed to take more consequential actions
-- require observability surfaces that can expose wrong-route instruction applicability, stale carried-forward context, and unsafe carry-forward for later investigation
+- require observability surfaces that can expose wrong-route behavior, stale carried-forward context, unsafe carry-forward, approval interruptions, and other safety-relevant transitions for later investigation
+- define post-tool and post-output validation requirements for the first integrated runtime design, especially where tool results, retrieved content, or structured outputs can propagate unsafe state
+- treat longer-lived memory as a privileged subsystem that needs separate trust, provenance, and monitoring rules rather than as ordinary carry-forward context
 - require validation coverage for the highest-risk runtime behaviors rather than relying only on structural review
 - define where human oversight remains intentionally mandatory because runtime controls are incomplete, expensive, or inappropriate to automate
 - preserve proportionality by keeping the first safety stage lightweight enough for ordinary repo work while still making the main risks explicit
-- use `validation/` as the first pilot area because it combines the deepest routing, the weakest current runtime evidence, and the clearest risk of unsafe carried-forward guidance
+- choose the first safety pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a strong candidate for carry-forward and routing risk, but tool-using or approval-bearing paths may be better for least-privilege and side-effect controls
 
 ### Open Safety Questions
 
@@ -168,6 +171,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - what minimum fail-safe behavior should exist when the preferred route is ambiguous, unavailable, or too weakly recovered to trust
 - if the future governance design adopts stronger ownership or handoff semantics, what safety guarantees should that model provide
 - what minimum least-privilege model is needed in the first integrated runtime design even if the repo remains mostly prompt-centric
+- what minimum control matrix should exist for tool calls, external retrieval, state writes, and side-effecting actions
 - whether approval checkpoints should be defined now as a general control surface or explicitly deferred until tool and action surfaces are more concrete
 - what safety-relevant runtime evidence must be visible before the project can claim that routing and state risks are reviewable rather than inferred
 - which runtime behaviors most urgently need safety-focused validation coverage
@@ -181,14 +185,16 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for safety scope
 - define the first explicit runtime threat inventory for routing, instruction applicability, trust boundaries, carry-forward state, and degraded operation
 - define the first trust classes for active `Instructions`, supporting `Context`, lower-trust context, and untrusted context
+- define the first distinctions among task-local state, compacted summaries, rediscovered state, retrieved context, and any longer-lived memory
 - separate current risks from forward-looking risks that only become material when the runtime grows more tool-capable or more stateful
 
 ### Safety Control Points
 
 - define where runtime design should bound untrusted context, unsafe carry-forward, and future tool or action escalation
+- define the first safety control matrix for tool calls, external retrieval, state writes, and side-effecting actions
 - define which governance decisions need explicit safety constraints
 - define which observability surfaces are necessary for later safety review
-- define the minimum least-privilege, approval, and side-effect boundaries needed in the first integrated runtime design
+- define the minimum least-privilege, approval, side-effect, and post-tool validation boundaries needed in the first integrated runtime design
 
 ### Safety Review Criteria And Validation Hooks
 

@@ -4,16 +4,15 @@
 
 Use this plan to define the runtime-governance model for `astro-agents`.
 
-Runtime Governance is the design of the control surfaces that determine what governs behavior at runtime, how work is routed or delegated, what instructions and context are applicable at each stage of execution, how conflicts and customization are handled, how context and state carry forward, and what boundaries exist around tools, permissions, side effects, and degraded operation.
+Runtime Governance is the design of the control surfaces that determine what governs behavior at runtime: how work is routed or delegated, which pattern a branch uses, who owns the next user-facing output, which tools or specialists are allowed, how context and state carry forward, and what boundaries exist around permissions, side effects, and degraded operation.
 
-Current working direction, pending later review: the future governance design should make the active governing path explicit after the relevant `Route` or `Handoff` rather than relying on broad co-owning instruction sources by default. Whether that should become a one-task-owner model or a different explicit coordination model remains open.
+Current working direction, pending later review: the future governance design should make branch-level coordination explicit after the relevant `Route` or `Handoff` rather than relying on broad co-owning instruction sources by default. The main open design choice is not whether one global ownership doctrine exists, but which coordination pattern each route should use and what that pattern allows to carry forward.
 
 This workstream owns:
 
 - instruction-source ordering and scope behavior
 - routing, orchestration, and local customization behavior
-- conflict-handling behavior among applicable instructions
-- prompt use and workflow-boundary design
+- route-contract and workflow-boundary design
 - governance-side context, state, and memory decisions
 - governance-side tool, permission, and approval concerns
 - governance-side failure, recovery, and bounded-autonomy behavior
@@ -63,13 +62,14 @@ Observability, tracing, and eval design remain first-class concerns in the sourc
 - there is no explicit delegation or handoff model; multi-pass behavior is expressed as one prompt invoking others inside the same surface
 - current status: partly covered
 
-#### Instruction Applicability, Scope, And Local Customization Boundaries
+#### Trust, Scope, And Carry-Forward Boundaries
 
 - the live source-of-truth docs prefer explicit routing, explicit local follow-up prompts, and explicit local exceptions over broad additive-composition claims
 - local and shared customization is still mostly structural through `AGENTS.md` files, subtree routing, and explicit routing into `agents/`, not through a richer extension-point model
 - the documentation-surface-profile selector remains the clearest explicit local customization surface in the shared library
-- the recommended downstream workspace model still optimizes for portability and generic routing wording, so runtime applicability remains more implicit than fully governed
-- validation selectors often prefer the narrowest matching review, but the project intentionally leaves broader instruction-applicability semantics to platform behavior and later runtime design work
+- the recommended downstream workspace model still optimizes for portability and generic routing wording, so trust, scope, and carry-forward boundaries remain more implicit than fully governed
+- validation selectors often prefer the narrowest matching review, but the project intentionally leaves deeper instruction-applicability semantics to platform behavior and later runtime design work
+- the larger unresolved issue is not raw applicability theory, but when route narrowing, local customization, or newer source material should change what may still carry forward into the active branch
 - current status: partly covered
 
 #### Conflict Resolution And Ownership Transfer
@@ -144,10 +144,10 @@ Use these representative routes to compare the current governance model against 
 
 - the current live surface keeps authority-heavy claims light, clearly distinguishes public versus internal review paths, and keeps the routing model intentionally minimal
 - preserve that lighter live surface as the baseline rather than reintroducing a stronger repo-local runtime theory into `AGENTS.md`, `README.md`, `docs/usage.md`, or the shared review entrypoints
-- if the integrated runtime design needs it, define a runtime authority model that distinguishes active `Instructions`, supporting `Context`, and untrusted or merely informative context
-- if the integrated runtime design needs stronger source-of-truth delegation rules, define when named docs stay supporting `Context` and when higher-authority `Instructions` may explicitly delegate narrower authority to them
-- decide whether the integrated runtime design should use one task-owning prompt after the relevant `Route` or `Handoff`, or whether a different coordination model is more appropriate
-- treat routing as a workflow-control problem, not only a folder-selection problem; define when a path is a direct route, when it orchestrates internal passes, and when ownership should transfer
+- define a route-contract bundle for each representative branch: route pattern, owner of the next user-facing output, allowed specialists or tools, allowed carried-forward state, approval boundaries, and expected result surface
+- treat routing as a workflow-control problem, not only a folder-selection problem; define when a path is a direct route, when it orchestrates internal passes, when it uses a manager-calls-specialist pattern, and when a true handoff is justified
+- add specialists only when the contract changes materially through different tools, instructions, policy, or approval surfaces
+- if the integrated runtime design needs it, define a runtime trust model that distinguishes active instructions, supporting context, and lower-trust or untrusted context
 - if the integrated runtime design adopts stronger applicability semantics, define when instructions or context become applicable, when narrower scope removes broader applicability, and what limited multi-source coordination is still allowed
 - use explicit local customization boundaries for repo-local and workspace-local customization if the future runtime design moves beyond the current lighter structural model
 - keep local and workspace customization bounded to named extension points instead of allowing open-ended matching across the active subtree
@@ -156,22 +156,22 @@ Use these representative routes to compare the current governance model against 
 - settle more conflicts early through route choice, scope narrowing, local customization design, and clearer output ownership instead of relying only on late conflict handling among loaded instructions
 - require common routing paths to be recomputable from the current request and current repo state
 - treat `compaction resilience` as a governance requirement rather than as a secondary runtime concern
-- define an explicit runtime state model covering carried-forward context, compacted summaries, rediscovered repo state, and any longer-lived memory assumptions
+- define an explicit runtime state model covering stable policy, task-local state, compacted summaries, rediscovered repo state, retrieved context, and any longer-lived memory assumptions
 - define what becomes stale after route changes, narrower routing, compaction, or failed rediscovery
-- decide whether tool and interface governance remains out of scope for the first integrated runtime design or needs an initial contract model now
+- define a first tool and interface contract model covering names, schemas, return-shape expectations, and which tools may be called directly versus through a manager path
 - decide whether human-control, permission, and approval boundaries should be minimally defined now or explicitly deferred
 - define explicit failure, degradation, and recovery behavior for ambiguous routes, missing implementations, rediscovery failures, partial recovery, and context loss
-- use `validation/` as the first pilot area because it currently combines the deepest common request paths, the weakest prompt-use boundaries, and the highest context cost
+- choose the first pilot area using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a strong candidate for routing and visibility work, but not the only option for tool, approval, or safety design
 - preserve the direct route patterns that already work well in `authoring/` and in source-of-truth-driven design work such as `docs/upgrade-design.md`
 - if downstream templates later need a stronger runtime model, revise them from the current direct-routing baseline rather than reintroducing broad additive overlay language
-- define concrete governance guardrails, including acceptable route depth for common requests, which prompts may remain active inside one `Workflow`, what may persist across longer threads, and which prompts are never meant to stay on the normal runtime path
+- define concrete governance guardrails, including acceptable route depth for common requests, which prompts may remain active inside one `Workflow`, what may persist across longer threads, and which route contracts require explicit approval or richer evidence
 - make governance decisions explicit enough that the observability and validation workstreams can trace and test them directly
 
 ### Open Governance Questions
 
-- what route-structure model should shape runtime behavior beyond document instruction authority, especially for supporting docs, internal reusable prompts, and carried-forward context
-- what should count as active `Instructions` at runtime versus supporting, discoverable, or untrusted context
-- in what narrow cases, if any, should higher-authority `Instructions` explicitly delegate narrower authority to a loaded source-of-truth doc beyond its default role as supporting `Context`
+- what route-contract bundle should be defined for each representative branch, especially ownership of the next reply, allowed tools or specialists, and allowed carry-forward
+- which routes should stay direct, which should use manager-style specialist calls, and which would justify a true handoff
+- what should count as active instructions at runtime versus supporting, discoverable, or untrusted context
 - is the current public-entrypoint versus internal-workflow split in `validation/` the right long-term boundary, or should some selectors become thinner or more internal
 - when should a task stay on a direct route, when should it orchestrate multiple internal passes, and when would explicit delegation or ownership transfer be justified
 - when should instructions or context stop being applicable, especially after route changes, scope narrowing, compaction, or longer-thread summarization
@@ -184,7 +184,7 @@ Use these representative routes to compare the current governance model against 
 - what the future runtime model should expose about repo-local follow-on review inclusion after the shared validation path is active
 - whether the first integrated runtime design should treat tool and interface governance as intentionally out of scope or define an initial contract model
 - whether the first integrated runtime design should define any permission or approval model for consequential actions, or explicitly defer that surface
-- how should carried-forward context, compacted summaries, rediscovered repo state, and any longer-lived memory be distinguished in this repo's runtime model
+- how should stable policy, task-local state, compacted summaries, rediscovered repo state, retrieved context, and any longer-lived memory be distinguished in this repo's runtime model
 - what becomes stale after route changes, scope narrowing, or context resets
 - what explicit recovery and degraded-operation behavior should exist when a preferred route is ambiguous, unavailable, too expensive to keep composing, or cannot be re-established cleanly
 
@@ -192,22 +192,22 @@ Use these representative routes to compare the current governance model against 
 
 ### Stage 1 — Clarify Current-State Governance
 
-- apply the shared program frame to authority, routing, instruction applicability, customization behavior, state boundaries, and bounded runtime control
+- apply the shared program frame to route contracts, trust boundaries, customization behavior, state classes, and bounded runtime control
 - identify which governance questions remain local to this workstream after the cross-workstream audit
 - refine the current-state governance model for this repo using the shared terminology and recommendation set
 - carry the clarified current-state governance reading into `docs/future/runtime-design.md`
 
 ### Stage 2 — Define The Governance Model
 
-- define the runtime authority model and the boundary between active `Instructions`, supporting `Context`, and lower-trust context
-- define any ownership or handoff model after the relevant `Route` or `Handoff`, plus prompt roles, route types, conflict handling among applicable instructions, local customization boundaries, and synthesized-output ownership
-- define governance-side context, state, carry-forward, stale-context, rediscovery-failure, tool, permission, approval, and failure-recovery expectations
+- define the route-contract model for representative branches, including direct routes, manager-style specialist calls, and any true handoffs
+- define the runtime trust model and the boundary between active instructions, supporting context, and lower-trust context
+- define governance-side context, state classes, carry-forward, stale-context, rediscovery-failure, tool, permission, approval, and failure-recovery expectations
 - carry the first governance decision set into `docs/future/runtime-design.md`
 
 ### Stage 3 — Define Representative Target Routes
 
 - reduce routing hops for common requests while preserving the direct-route patterns that already work in `authoring/` and source-of-truth-driven design work
-- redesign the common validation route as the first pilot area
+- choose a first pilot area with clear runtime control boundaries and objective feedback; `validation/` remains one candidate, especially for routing and visibility work
 - define which shared review prompts stay directly user-addressable, which become thinner coordinating prompts, and which become internal-only reusable prompts
 - compare current routes against target routes for representative tasks and carry the target-route inputs into `docs/future/runtime-design.md`
 
@@ -221,11 +221,11 @@ Use these representative routes to compare the current governance model against 
 ## Deliverables
 
 - a runtime-governance workstream plan with stable current-state findings and target questions
-- a target governance model for authority, routing, instruction applicability, local customization behavior, local customization boundaries, prompt-use boundaries, state boundaries, and bounded runtime control
+- a target governance model for route contracts, routing, instruction applicability, local customization behavior, prompt-use boundaries, state boundaries, tool contracts, and bounded runtime control
 - governance guardrails and target-route inputs for `docs/future/runtime-design.md`
 
 ## Assumptions And Deferred Decisions
 
-- Validation remains the first pilot area unless later governance review shows a different path offers larger runtime gains.
+- No pilot area is assumed globally; the first pilot should be chosen for signal quality, control-boundary clarity, and validation value.
 - This plan defines intended runtime behavior. It does not define the test harness or regression strategy for proving that behavior.
 - The exact implementation-facing format of governance decisions is deferred to `docs/future/runtime-design.md`.

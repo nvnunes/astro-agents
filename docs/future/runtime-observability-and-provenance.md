@@ -39,11 +39,11 @@ This section describes the current runtime observability and provenance state of
 - this gap is most visible in `validation/`, where reviewers can see the declared review path but still cannot replay discovery or runtime instruction loading from evidence
 - current status: partly covered
 
-#### Instruction Applicability Visibility
+#### Trust, Source, And Scope Visibility
 
 - `docs/runtime-model.md` grounds instruction authority and conflict behavior in platform guidance, while the live repo docs intentionally avoid a stronger local applicability doctrine
-- the project does not expose which prompts supplied active `Instructions` or which supporting docs were loaded as `Context` in any specific run, nor when broader guidance should stop applying after narrower routing
-- instruction applicability is therefore grounded conceptually, but not visible as runtime evidence
+- the project does not expose which runtime sources supplied the active route contract, which sources contributed supporting context, or when broader guidance should stop shaping a narrower branch
+- a deeper view of which instructions were effectively active is therefore still a derived debugging question rather than a directly observable runtime surface
 - current status: weakly covered
 
 #### Route-Decision Visibility
@@ -122,25 +122,25 @@ This section describes the current runtime observability and provenance state of
 
 - the current baseline is lightweight observability: static routing and source-of-truth visibility plus `Route Summary` on shared selector and combined-review outputs
 - preserve that lightweight baseline, but add explicit runtime evidence surfaces rather than relying on reconstruction from files alone
-- define a small runtime event model that makes route choice, instruction loading and applicability, customization behavior, source-of-truth loading, and route changes inspectable
-- define what the observable runtime state should include, especially active route, active `Instructions`, supporting `Context`, carry-forward state class, and stale-state markers
-- make the active governing path and contributing prompts or docs visible after the relevant `Route` or `Handoff` so later inspection does not have to infer them indirectly
+- define a small runtime event model that makes route choice, handoffs, tool calls, guardrails, approval interruptions, source loading, state-class transitions, and route changes inspectable
+- define a shared runtime state taxonomy covering stable policy, task-local state, carried-forward thread state, compaction summaries, rediscovered repo state, retrieved context, and any longer-lived memory
+- make route contracts, tool boundaries, approval boundaries, and contributing source provenance visible enough that later inspection does not have to infer them indirectly
 - define how runtime context should retain provenance when it comes from source-of-truth docs, carried-forward thread state, compaction summaries, rediscovery, or later external retrieval
 - define what evidence should survive compaction, reset, rerouting, partial recovery, and rediscovery failure
-- make customization outcomes and any future conflict-handling or narrowing outcomes visible enough that validation and later debugging do not have to infer them from file structure alone
-- define the minimum observability surface needed to support routing and instruction-applicability validation without turning ordinary repo work into a heavy tracing workflow
-- define what failure-analysis evidence should exist for wrong-route instruction applicability, stale carried-forward context, lost narrowing, unsupported profile handling, and degraded runtime cases
+- make customization outcomes and any future narrowing or delegation outcomes visible enough that validation and later debugging do not have to infer them from file structure alone
+- define the minimum observability surface needed to support routing, tool-boundary, approval, and state-behavior validation without turning ordinary repo work into a heavy tracing workflow
+- define what failure-analysis evidence should exist for wrong-route behavior, stale carried-forward context, lost narrowing, unsupported profile handling, approval interruptions, and degraded runtime cases
 - define explicit reconstructability requirements for longer-thread and compaction-sensitive paths
 - treat observability as a cross-workstream dependency: expose what validation needs to check, what safety needs to audit, and what governance decisions must be externally visible
 - make privacy and data-minimization tradeoffs explicit instead of letting low observability act as an accidental policy
-- use `validation/` as the first pilot area because it combines the deepest multi-step workflows with the weakest current runtime evidence
+- choose the first observability pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is strong for route visibility, but other tool-using or approval-bearing paths may be better for richer traces
 
 ### Open Observability Questions
 
 - what is the minimum runtime event set that would materially improve traceability without over-instrumenting ordinary repo work
-- what should count as the observable source of truth for a concrete run: discovered files, loaded files, files contributing active `Instructions`, files used as supporting `Context`, or all of the above with different roles
-- how should the system distinguish active `Instructions` from supporting `Context` and merely discovered but unused `Context`
-- what should be visible when a route narrows, broadens, delegates internally, or is partially recovered after failure, especially how the active governing path should be exposed
+- what should count as the observable source of truth for a concrete run: discovered files, loaded files, files that contributed source material, or all of the above with different roles
+- how much of the instruction or context picture needs to be directly exposed in the first stage, and how much can remain a later derived view built on event and provenance surfaces
+- what should be visible when a route narrows, broadens, delegates internally, or is partially recovered after failure, especially how the active route contract should be exposed
 - if the future governance model allows multiple active prompts or other multi-source coordination, how should those outcomes be surfaced without collapsing back into file-structure inference
 - how should carried-forward thread context, compacted summaries, rediscovered repo facts, and any future retrieved evidence be distinguished for provenance purposes
 - what evidence must survive compaction, reset, and rerouting for later reconstruction to remain trustworthy
@@ -156,22 +156,22 @@ This section describes the current runtime observability and provenance state of
 
 - use the current assessment in this document, the shared program frame in `docs/future/runtime-design.md`, and the current `Route Summary` surface as the basis for observability scope
 - define the first explicit target set for what runtime behavior must become externally visible
-- identify a first runtime event and state inventory for route choice, instruction loading and applicability, customization behavior, source loading, and route transitions
+- identify a first runtime event and state inventory for route choice, handoffs, tool calls, approvals, source loading, state transitions, and route transitions
 - separate common-path observability needs from longer-thread, compaction, and degraded-case needs so the first design stays proportional
 
 ### Evidence Surfaces
 
 - treat the current `Route Summary` surface as the starting point for lightweight observability rather than as the finished observability model
-- define what should be visible about instruction loading and applicability, route decisions, customization behavior, source-of-truth loading, and context additions
-- define what observable runtime state should exist for active route, active `Instructions`, supporting `Context`, and stale-state markers
+- define what should be visible about route decisions, tool use, approvals, customization behavior, source-of-truth loading, and context additions
+- define what observable runtime state should exist for active route contract, state class, stale-state markers, and resumable interruptions or checkpoints
 - define what source linkage or provenance is needed for carried-forward, compacted, rediscovered, or later retrieved context
 - define what evidence should remain recoverable after compaction, reset, rerouting, or partial recovery
 
 ### Reconstruction And Audit Requirements
 
 - define what it should mean to reconstruct a runtime path after a long thread, a summarized history, a reroute, or an unexpected result
-- define how inspectable instruction applicability, route transitions, and source linkage should support later validation and failure analysis
-- define what evidence should exist for wrong-route instruction applicability, stale carried-forward context, lost narrowing, and degraded recovery cases
+- define how inspectable route contracts, route transitions, tool boundaries, and source linkage should support later validation and failure analysis
+- define what evidence should exist for wrong-route behavior, stale carried-forward context, lost narrowing, interrupted approvals, and degraded recovery cases
 - define the observability constraints that the governance design must satisfy
 
 ### Cross-Workstream Constraints

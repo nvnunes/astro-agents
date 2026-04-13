@@ -10,7 +10,7 @@ Current working recommendation, pending later review: after the relevant `Route`
 
 This workstream owns:
 
-- instruction-source ordering and authority behavior
+- instruction-source ordering and scope behavior
 - routing, orchestration, and local customization behavior
 - conflict-handling behavior among applicable instructions
 - prompt use and workflow-boundary design

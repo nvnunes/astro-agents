@@ -37,7 +37,7 @@ When running this review:
 Build one combined assessment from this shared review surface:
 
 - `validation/review/full-agent-surface-review.md`
-  - use as the baseline combined read on the repo's current agent surface, including the applicable shared documentation path, documentation profile context, current-state coverage snapshot, and any applicable repo-local validation prompts
+  - use as the baseline combined read on the repo's current agent surface, including the applicable shared documentation path, documentation profile context, current-state coverage snapshot, and any applicable repo-local review files
 
 Use that combined review as the evidence base for one upgrade assessment rather than returning separate review reports or rerunning its internal review steps independently.
 

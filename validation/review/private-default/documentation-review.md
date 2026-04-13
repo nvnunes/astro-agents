@@ -5,6 +5,8 @@ Use this prompt to run the `private-default` documentation review workflow.
 
 Use it when the repo has no declared non-default `documentation surface profile`, or when the user explicitly asks for the private-default documentation review path.
 
+Treat this file as an internal documentation workflow normally reached via `validation/review/documentation-review.md`, not as the normal generic docs-review starting point.
+
 ## Inputs
 
 - target root or target paths to review

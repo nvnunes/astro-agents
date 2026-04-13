@@ -17,12 +17,12 @@ Key sections:
   - baseline document set for nontrivial repos
 - `Document Naming And Cross-Linking`
   - stable naming and source-of-truth visibility rules
-- `Routing And Workflow Architecture`
-  - repo, workspace root, and workspace-global `AGENTS.md` patterns
+- `Bootstrap Model`
+  - minimal bootstrap patterns for repo-local and global use
 - `Starter Requests`
   - short prompts for invoking shared validation reviews in fresh threads
-- `Recommended docs/testing.md Pattern`
-  - validation contract structure and trigger design
+- `Shared Validation from astro-agents`
+  - minimal downstream reference pattern for shared validation
 
 ## Minimum Document Set
 
@@ -96,109 +96,78 @@ Do not use `docs/data-sources.md` as the owner for:
 
 When a repo needs a stable source of truth for data contracts or persistence rules, use a more explicit owner such as `docs/architecture.md`, `docs/api.md`, or a narrower document whose name makes that contract role clear.
 
-## Routing And Workflow Architecture
+## Bootstrap Model
 
-Use this section as the practical companion to `docs/architecture.md`. For the formal routing and workflow model, instruction authority, and scope ownership, use `docs/architecture.md`. In that model, applicable prompts compose by default, and higher-authority instructions settle conflicts between applicable instructions. The templates below show how to establish that routing and workflow model at the repo and workspace levels.
+Use this section when deciding how little bootstrap a repo or user setup needs in order to use `astro-agents`. The goal is to keep bootstrap minimal and keep reusable routing, terminology, and workflow context inside `astro-agents` itself.
 
-### Repo AGENTS Template
+In both cases below, the suggested bootstrap prompt should do only three things:
 
-The workspace `Projects/AGENTS.md` file is a thin starting file that helps dispatch into the broader instruction-authority chain, not the main reusable prompt set inside it. Repo-level `AGENTS.md` files should stay focused on repo-local routing-and-workflow guidance, source-of-truth references, and broad routing into applicable shared prompts that may exist outside the repo.
+- route into `astro-agents`
+- make it clear that `astro-agents` is the shared prompt library in use
+- provide only the minimum local context needed to make that routing intelligible
+
+Bootstrap prompts should stay limited to routing, library identification, and the minimum local context needed for that route.
+
+### Case 1: Single-Repo Use
+
+When only one repo should use `astro-agents`, put the bootstrap in that repo's root `AGENTS.md`.
+
+Use a minimal repo-level bootstrap such as:
 
 ```md
-# <Repo> Agent Brief
-
-## Prompt Routing And Workflow
-- Follow any higher-level workspace routing-and-workflow instructions when present.
-- When higher-level instructions route work into a higher-level prompt subtree, check the corresponding subtree under `agents/` for matching local prompts.
-- Keep applicable higher-level and matching local prompts active together.
-- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
-- Use other prompts under `agents/` when they directly match the request and do not correspond to a higher-level counterpart.
-
-## Instruction Authority And Conflict Handling
-- More specific subtree-level `AGENTS.md` files have higher instruction authority within their scope.
-- Otherwise instructions in this file apply by default within this repository.
-- When matching local prompts under `agents/` and higher-level prompts both apply, keep compatible guidance from both.
-- When their instructions conflict, follow the higher-authority instruction.
-
-## Source Of Truth
-- Use `README.md` for the repo overview and major starting documents.
-- Use `docs/architecture.md` for structure, ownership, and interfaces when present.
-- Use `docs/testing.md` for validation requirements and canonical checks when present.
-- Use any other named local source-of-truth docs directly.
+## Astro-Agents Bootstrap
+- Use `astro-agents` for reusable authoring, review, and routing guidance in this repo.
 ```
 
-Add sections like these only when inline local guidance materially improves runtime use:
+This keeps the repo-specific bootstrap local to the repo without requiring any global Codex setup.
+
+### Case 2: Global Use
+
+When `astro-agents` should be the user's shared default across repos, put the bootstrap in `$CODEX_HOME/AGENTS.md`, commonly `~/.codex/AGENTS.md`.
+
+Use a minimal global bootstrap such as:
+
+```md
+## Astro-Agents Bootstrap
+- Use `astro-agents` by default for reusable authoring, review, and routing guidance across repos.
+```
+
+In this mode, repo root `AGENTS.md` files should add only repo-local guidance, source-of-truth docs, or narrower routing that the repo itself needs. If one repo should not use the global default, keep the global bootstrap in `$CODEX_HOME/AGENTS.md` and use the repo root `AGENTS.md` to opt out or redirect for that repo with a minimal repo-level exception such as:
+
+```md
+## Astro-Agents Bootstrap
+- Do not use the shared `astro-agents` prompt library in this repo.
+- Follow this repo's local guidance and source-of-truth documents instead.
+```
+
+## Local Customization Entry Points
+
+Use this section when a repo or user setup needs local customization beyond the shared defaults in `astro-agents`.
+
+Recommended entry points are:
+
+- `$CODEX_HOME/AGENTS.md` for global bootstrap
+- explicitly routed prompts under `<global>/agents`
+- the repo root `AGENTS.md`
+- narrower subtree `AGENTS.md` files
+- explicitly routed prompts under `agents/`
+
+To use one of these entry points, route to it explicitly from the nearest enclosing `AGENTS.md` that governs the work.
+
+For example:
+
+```md
+## Prompt Routing And Workflow
+- Use agents/review/astrophysics-notebook-review.md for astrophysics Jupyter notebook review in this repo.
+```
+
+## Documentation Surface Profile
+
+When a downstream repo uses `Documentation surface profile`, declare it in a short `## Scope` section near the top of the root `AGENTS.md`, for example:
 
 ```md
 ## Scope
-- This repo owns `<repo role>`.
-- Prefer `<main change discipline>` for changes in this repo.
-- Documentation surface profile: `<profile-name>`.
-
-## Architecture
-- Use `docs/architecture.md` for boundaries, ownership, and interfaces when present.
-- Treat this section as a short local summary, not a replacement for `docs/architecture.md`.
-- Treat `<public API boundary>` as the intended public interface.
-- Keep `<behavior or asset>` in `<scope, module, or path>`.
-
-## Contracts
-- Preserve `<important contract>`.
-- Preserve `<validation or compatibility expectation>`.
-
-## Workflow
-- Use `<repo-specific command or environment rule>`.
-- Respect `<deployment or operational constraint>`.
-
-## Testing Expectations
-- Use `docs/testing.md` for validation requirements and canonical checks when present.
-- Treat this section as a short local summary, not a replacement for `docs/testing.md`.
-- Run `<canonical repo-specific command>` for meaningful changes.
-
-## Review Criteria
-- Prioritize `<repo-specific review concern>`.
-- Watch for `<repo-specific risk>`.
-```
-
-Use this document as the source of truth for how a downstream repo declares `Documentation surface profile` in its root `AGENTS.md`.
-
-When a repo declares `Documentation surface profile`, that value should be implemented either by the shared validation library or by higher-authority local prompt files.
-
-When present, keep that `Documentation surface profile` declaration in a short `## Scope` section near the top of the root `AGENTS.md` so shared upgrade review and later repo editing work can read it reliably.
-
-For repo files that may later become public, prefer this kind of generic routing wording over hardcoded workspace paths. The repo file can name the kind of shared guide that should apply locally without assuming a specific private prompt-library location.
-
-When deeper source-of-truth docs exist, repo `AGENTS.md` should point to them explicitly instead of assuming the agent will inspect them on its own.
-
-### Workspace Root AGENTS Template
-
-At the workspace level, for example under `Projects/`, prefer a much thinner initial dispatcher whose job is to route into the shared dispatcher, not to compete with the prompt library or repo-local files. Keep workspace-global reusable preferences and defaults in `Projects/agents/` instead:
-
-```md
-# Workspace Root Agent Brief
-
-## Prompt Routing And Workflow
-- When available, use `agents/AGENTS.md` to apply any applicable workspace-global prompts.
-- Use `astro-agents/AGENTS.md` to dispatch into the shared prompt library.
-- Keep applicable workspace-global and shared prompts active together.
-- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
-```
-
-### Workspace Global AGENTS Template
-
-When reusable prompts or user preferences should apply across multiple repos in one workspace without belonging in the shared library, prefer a separate `Projects/agents/AGENTS.md` scope:
-
-```md
-# Workspace Global Agent Brief
-
-## Prompt Routing And Workflow
-- When higher-level instructions route work into a subtree under `astro-agents/`, check the corresponding subtree here for matching local prompts.
-- Keep applicable shared and matching local prompts active together.
-- When applicable instructions conflict, use the applicable instruction-authority rules to decide which instruction applies.
-- Use other prompts here when they directly match the request and do not correspond to a shared counterpart under `astro-agents/`.
-
-## Instruction Authority And Conflict Handling
-- When matching local prompts here and shared prompts under `astro-agents/` both apply, keep compatible guidance from both.
-- When their instructions conflict, follow the higher-authority instruction.
+- Documentation surface profile: public-python.
 ```
 
 ## Starter Requests
@@ -212,88 +181,32 @@ Common examples:
 - `Revise manuscript.tex using the shared science writing guide`
 
 For additional examples, see:
-- `validation/README.md` for validation- and review-related starter requests
+- `validation/README.md` for the public shared review entrypoints and upgrade-specific starter requests
 
-## Pattern For Repos Using Shared Validation
+## Shared Validation from astro-agents
 
-When a repo uses shared validation from this prompt library, its `docs/testing.md` should define when validation is required, which shared reviews apply, and what completion bar the repo uses.
-
-The example below is a recommended starter template for downstream repos importing shared validation from `astro-agents`. It is not the concrete validation contract for `astro-agents` itself; for this repo, use `docs/testing.md`.
-
-For example, in `docs/testing.md` include a structure like:
+When a downstream repo wants to rely on shared validation from `astro-agents`, its `docs/testing.md` can be as small as:
 
 ```md
 # Testing
 
-This document is the human-facing source of truth for validation requirements in this repo.
-
-## Purpose
-
-Use this document to decide what validation is required when changing:
-
-- `AGENTS.md`
-- `README.md`
-- files under `docs/`
-- other files that change how agents should navigate, interpret, or apply the repo
-
-## Canonical Checks
-
-The canonical shared checks for this repo are the shared review prompts it relies on.
+## Shared Validation from astro-agents
+Use the shared base testing guidance in `astro-agents/validation/base-testing.md`.
 
 ## Repo-Local Validation
-
-When a repo needs validation prompts that are specific to its own structure, examples, or exceptions, keep them under `agents/validation/` rather than in the shared validation library, and point to them from `docs/testing.md` or repo `AGENTS.md` as appropriate.
-
-## Agent Surface Validation
-
-Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, `README.md`, relevant files under `docs/`, or other agent-facing prompt files.
-
-### Required Reviews
-
-- Changes to `AGENTS.md` files:
-  - run prompt-writing review
-  - run routing-and-authority review (`validation/review/routing-and-authority-review.md`)
-
-- Changes to `README.md` or files under `docs/`:
-  - run the shared documentation review selector
-  - let it determine the repo's declared documentation surface profile, or `private-default` when none is declared
-
-- Changes to other agent-facing prompt files:
-  - run prompt-writing review
-  - run routing-and-authority review (`validation/review/routing-and-authority-review.md`)
-
-- Changes that substantially alter prompt or instruction structure:
-  - run a full agent surface review
-
-### Completion Standard
-
-- Do not treat agent surface work as complete while direct validation findings remain unresolved.
-
-## Regression Priorities
-
-- prioritize preventing regressions in route-structure clarity, source-of-truth visibility, and consistency across the repo's agent surface
+Run repo-local review files under `agents/validation/` only when the changed scope makes them applicable after the shared review path is active.
 ```
-
-Once adapted in a target repo, that repo's own `docs/testing.md` becomes the source of truth for its actual validation contract.
-
-When a repo can safely depend on this shared library in its workspace context, the repo's `docs/testing.md` may name the specific shared validation prompts directly. Keep repo-local agent-facing validation prompts under `agents/validation`. Likewise, at the workspace level, keep validation prompts in `Projects/agents/validation` where practical.
 
 ## Repo AGENTS.md Guidance
 
-Keep in repo `AGENTS.md`:
+Prefer repo `AGENTS.md` content such as:
 
 - repo purpose and boundaries
 - important interface boundaries, architecture and ownership rules, and any important data or format assumptions the repo depends on
 - repo-specific environment or deployment constraints, validation commands, completion expectations, and review priorities
-
-Keep out of repo `AGENTS.md`:
-
-- private absolute paths to the workspace prompt library
-- assumptions that another repo's `AGENTS.md` will always be available
-- generic authoring rules already covered by `astro-agents/authoring/*`
-- generic coding-style defaults already covered by `astro-agents/authoring/code/*`
-- subtree-specific rules that belong in a deeper `AGENTS.md`
-- long background documentation that repo docs should own instead
+- generic routing wording that keeps shared guides portable across setups
+- subtree-local rules in deeper `AGENTS.md` files when the guidance belongs to a narrower scope
+- long background explanation in repo docs when that material needs a stable source-of-truth location
 
 ## Documentation Surface Considerations for Public Python Projects
 
@@ -326,10 +239,10 @@ Use `docs/public-python-docs-design.md` for the deeper design rationale and sour
 
 ## Agent Surface Considerations for Public Projects
 
-For a public project, keep its agent surface from depending too heavily on workspace-global prompting, particularly when other contributors are expected.
+For a public project, keep its agent surface from depending too heavily on user-specific global prompting, particularly when other contributors are expected.
 
 - keep project-specific guidance visible inside the project's own agent surface
 - do not hardcode absolute paths to the private workspace prompt library
-- use a generic bootstrap line such as `Follow any higher-level workspace routing-and-workflow instructions when present.`
+- use a generic bootstrap line such as `Use the shared astro-agents prompt library for reusable authoring, review, and routing guidance.`
 
-This allows a private workspace to supply higher-level routing-and-workflow guidance and shared prompts without baking private path assumptions into public repositories.
+This allows a user to keep a reusable shared prompt library without baking private path assumptions or user-specific bootstrap structure into public repositories.

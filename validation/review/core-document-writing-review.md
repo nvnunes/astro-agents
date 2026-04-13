@@ -5,6 +5,8 @@ Use this prompt as the shared prose-review file for profile-specific documentati
 
 This prompt reviews writing quality only. It does not decide which documentation surface belongs in scope.
 
+Treat this file as an internal reusable review file, not as a normal starter review.
+
 ## Inputs
 
 - target root or target paths to review

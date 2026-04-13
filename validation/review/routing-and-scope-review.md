@@ -1,7 +1,7 @@
-# Routing And Authority Behavior Review
+# Routing And Scope Review
 
 ## Purpose
-Use this prompt to review whether the prompt system's routing and authority behavior works as designed when treated as one instruction system.
+Use this prompt to review whether the prompt system's routing and scope behavior works as designed when treated as one instruction system.
 
 ## Inputs
 
@@ -18,7 +18,7 @@ When running this review:
 - determine applicable repo and subtree `AGENTS.md` files dynamically from the target root
 - inspect folder-level routing-and-workflow files and other prompts within the requested scope
 - inspect `docs/architecture.md` as the source of truth for the route structure model
-- inspect linked supporting docs only when needed to judge routing and authority behavior
+- inspect linked supporting docs only when needed to judge routing and scope behavior
 
 ## Review Criteria
 
@@ -28,26 +28,28 @@ Required review criteria:
 
 - scope ownership
 - `AGENTS.md` as routing-and-workflow files
-- actual routing and authority behavior vs `docs/architecture.md`
+- actual routing and scope behavior vs `docs/architecture.md`
 - folder coherence
 - prompt role drift
 - shared-versus-local duplication
 - `AGENTS.md` as map versus prompt substitute
 - routing-and-workflow clarity and progressive disclosure
+- source-of-truth references that stay discoverable without making deeper docs sound like implicit prompt instructions
+- drift away from the intended prompt-writing pattern, including repo exceptions that restate shared defaults, private path assumptions, and broad `AGENTS.md` files that absorb material better carried by deeper docs or shared prompts
 
 ## Exclusions
 
 Do not treat the following as the default task:
 
 - generic prose review
-- documentation-set completeness outside what affects routing and authority behavior
+- documentation-set completeness outside what affects routing and scope behavior
 - application-code quality review
 
 ## Output
 
 Return:
 
-1. A brief overall judgment of routing and authority behavior within the requested scope.
+1. A brief overall judgment of routing and scope behavior within the requested scope.
 2. Findings ordered by severity.
 3. Concrete corrective actions after the findings.
 
@@ -59,4 +61,4 @@ For each finding:
 - state the recommended move
 - distinguish direct violations from softer improvement opportunities
 
-Keep the review focused on whether the routing and authority behavior still matches the designed system rather than on general writing quality.
+Keep the review focused on whether the routing and scope behavior still matches the designed system rather than on general writing quality.

@@ -3,6 +3,8 @@
 ## Purpose
 Use this prompt to determine the `private-default` documentation surface and apply the shared core document-writing review to it.
 
+Treat this file as an internal workflow step normally reached via `validation/review/private-default/documentation-review.md`.
+
 ## Inputs
 
 - target root or target paths to review

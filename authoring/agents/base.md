@@ -10,7 +10,7 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 - Keep the prompt scoped to the kind of work it is meant to guide.
 - Define enough structure that the prompt does not collapse into generic behavior.
 - Make inputs, constraints, and output expectations explicit when they matter.
-- Keep the prompt operational rather than descriptive.
+- State the required actions as instructions rather than as background description.
 
 ## Common Reuse Rules
 - Preserve the prompt's role before improving its wording.
@@ -19,16 +19,18 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 - Repeat a base rule in a specialized guide only when that guide needs to sharpen, qualify, or replace it.
 
 ## Style
-- Use direct, operational language.
+- Use direct, imperative language for operational instructions.
 - Prefer short sections and flat bullets.
 - Lead with the prompt's purpose and task.
 - Keep instructions concrete enough that the prompt can be applied consistently.
+- State one instruction or constraint clearly instead of implying it through abstract framing.
+- Avoid vague, hedged, or internally conflicting instructions.
 - Prefer explicit references to the applicable source-of-truth document or comparison standard when one exists.
 
 ## Prompt-Specific Requirements
-- Define the task the prompt is meant to perform.
+- Define the task the prompt is meant to perform with explicit action verbs.
 - Define inputs only when they materially affect how the prompt should be applied.
-- Define constraints or exclusions when they are needed to prevent role drift or weak task boundaries.
+- State constraints or exclusions directly when they are needed to prevent role drift or weak task boundaries.
 - Define output behavior when the prompt's result shape matters.
 - Avoid turning the prompt into a broad background note.
 
@@ -55,7 +57,10 @@ When revising prompts:
 - Keep the prompt aligned with its file name and stated purpose.
 - Remove broad explanation when a README or design doc should carry it instead.
 - Remove duplicated behavior when a more specific or deeper prompt should carry it.
-- Improve directness, operational clarity, and output specificity.
+- Prefer replacing weaker or outdated guidance with clearer guidance rather than layering additional overlapping instructions on top.
+- Replace descriptive or hedged wording with direct instructions.
+- Remove conflicting or overlapping guidance instead of layering more text onto it.
+- Improve operational clarity and output specificity.
 
 ## Output
 - When writing or revising prompts, return the revised prompt directly unless explanation is requested.

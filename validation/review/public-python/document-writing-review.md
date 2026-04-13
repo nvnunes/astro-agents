@@ -3,6 +3,8 @@
 ## Purpose
 Use this prompt to determine the reachable public documentation surface of a Python project and apply the shared core document-writing review to it.
 
+Treat this file as an internal workflow step normally reached via `validation/review/public-python/documentation-review.md`.
+
 ## Inputs
 
 - target root or target paths to review

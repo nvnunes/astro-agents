@@ -6,7 +6,7 @@ Use this prompt to review whether agent-facing prompts follow the applicable sha
 ## Inputs
 
 - target root or target paths to review
-- optional focus on writing prompts, writing-guide prompts, coding prompts, validation prompts, repo-local prompts, or all prompts
+- optional focus on writing prompts, writing-guide prompts, coding prompts, shared review files, repo-local review files, or all prompts
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, review the applicable prompts within the requested scope.
@@ -34,8 +34,8 @@ Required review criteria:
 - `AGENTS.md` vs `authoring/agents/agents-md.md`
 - prompt role clarity versus the applicable guide under `authoring/agents/`
 - scope discipline and prompt-type fit
-- simultaneous-applicability clarity when broader and local prompts can both apply
-- conflict-resolution clarity when applicable instructions may conflict
+- explicit routing and next-step references when prompts dispatch or narrow the work
+- explicit local-boundary statements when broader and local prompts are both intended to matter
 - structure proportionality
 - output definition and operational clarity
 - duplication versus deeper prompt or source-of-truth references

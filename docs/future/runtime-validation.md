@@ -34,7 +34,7 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 #### Validation Objective Coverage
 
-- the project defines a clear validation contract for the current agent surface: prompt-writing quality, routing and authority behavior, documentation review, and combined review are all explicit in `docs/testing.md` and `validation/README.md`
+- the project defines a clear validation contract for the current agent surface: prompt-writing quality, routing and scope behavior, documentation review, and combined review are all explicit in `docs/testing.md` and `validation/README.md`
 - profile-specific documentation validation objectives are also explicit: the shared family distinguishes `private-default` and `public-python` documentation surfaces and defines separate writing and architecture checks for each
 - runtime behaviors that matter most to the next design phase are now named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
 - those runtime behaviors are still defined mainly as design concerns to validate later, not as a current test objective set with explicit success criteria, evaluator types, or thresholds
@@ -48,7 +48,7 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 #### Behavior-Facing Coverage
 
 - the current validation model is still primarily review-driven: the prompts inspect files, compare them against source-of-truth docs and guides, and synthesize findings from static evidence
-- even the strongest behavior-oriented prompt, `validation/review/routing-and-authority-review.md`, evaluates whether routing and authority behavior work as designed by reading the route structure and its source-of-truth docs rather than by checking live runtime instruction loading and applicability
+- even the strongest behavior-oriented prompt, `validation/review/routing-and-scope-review.md`, evaluates whether routing and scope behavior work as designed by reading the route structure and its source-of-truth docs rather than by checking live runtime instruction loading and applicability
 - there is no stable method yet for checking that the intended task-owning prompt actually provides the active instructions in a live runtime path
 - instruction-loading and applicability checks, routing tests, and longer-thread behavior checks are still planning items rather than established validation methods
 

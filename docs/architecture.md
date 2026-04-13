@@ -2,7 +2,7 @@
 
 This document is the human-facing source of truth for the `astro-agents` route structure and scope model. Use it when designing or revising the library's own structure, or when reasoning about how the library fits into a broader workspace routing and workflow model.
 
-Use `docs/glossary.md` for shared local vocabulary such as `agent surface`, `documentation surface`, `documentation surface profile`, and `source of truth`. Use `docs/runtime-model.md` for runtime and control-flow terms such as `route`, `handoff`, `dispatcher`, `selector`, `orchestrator`, `prompt`, `instructions`, `context`, and `authority`.
+Use `docs/glossary.md` for shared local vocabulary such as `agent surface`, `documentation surface`, `documentation surface profile`, and `source of truth`. Use `docs/runtime-model.md` for runtime and control-flow terms such as `route`, `handoff`, `dispatcher`, `selector`, `orchestrator`, `prompt`, `instructions`, and `context`.
 
 Use `docs/usage.md` when applying this library in another repo or workspace.
 
@@ -12,7 +12,7 @@ The prompt library holds reusable prompts, guides, routing and workflow conventi
 
 The route structure is built around three recurring roles:
 
-- `AGENTS.md` files direct routing and workflow by routing into prompt families, choosing narrower prompts when needed, and identifying applicable instructions
+- `AGENTS.md` files direct routing and workflow by routing into prompt families, choosing narrower prompts when needed, and pointing to the next prompt or source-of-truth document
 - `README.md` files explain folder purpose, supporting guidance, and rationale
 - prompt files carry the substantive reusable behavior
 
@@ -20,11 +20,9 @@ That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such as
 
 ## AGENTS.md As Map, Docs As Source Of Truth
 
-`AGENTS.md` should help an agent find the right constraints quickly. It should not try to become the full knowledge base for the repo.
+`AGENTS.md` should be a quick operational map to the right constraints, routes, and source-of-truth docs.
 
 Prefer progressive disclosure: start with short operational guidance and point to deeper source-of-truth documents only when more detail is needed.
-
-When `AGENTS.md` points to a deeper source-of-truth document, treat that document as supporting `Context` by default. Treat it as active `Instructions` only when higher-authority instructions explicitly delegate narrower authority to it.
 
 In practice:
 
@@ -36,7 +34,7 @@ In practice:
 - keep long plans, migration notes, and design rationale in dedicated docs
 - point from `AGENTS.md` to those deeper documents when recurring detail matters
 
-The goal is not to put everything in `AGENTS.md`. The goal is to make the right information easy to find and hard to misapply.
+The goal is to make the right information easy to find and hard to misapply.
 
 ## Library Structure
 
@@ -65,20 +63,27 @@ Within that split:
 - `authoring/` and `validation/`
   - the two main shared prompt families in the library
 
+## Bootstrap Model
+
+At user-global or repo entry, a root `AGENTS.md` file should act as a bootstrap file: it establishes the immediate scope, points to the next starting document or prompt family, and surfaces any local constraints that must be known before the next route is chosen.
+
+Within that model:
+
+- `$CODEX_HOME/AGENTS.md` is the canonical global bootstrap file when a user wants `astro-agents` available by default across repos
+- a repo root `AGENTS.md` is the bootstrap file for repo-specific adoption or for repo-specific exceptions to a global default
+- bootstrap files should stay brief and focus on immediate scope, the next route, and any local constraints needed for that route
+
 ## Workspace Context
 
-When the library is used within a broader workspace, the routing and workflow model commonly spans four levels of dispatch and bounded choice:
+When the library is used beyond a single repo, the practical bootstrap model is intentionally simple:
 
-- workspace root routing in `Projects/AGENTS.md`
-- workspace-wide reusable prompts, preferences, or defaults in `Projects/agents/AGENTS.md` when present
-- top-level intent dispatch in `Projects/astro-agents/AGENTS.md`
-- narrower local prompts in repo or subtree `AGENTS.md` files, where broader and local prompts may both remain applicable and higher-authority instructions settle any conflicting instructions
+- global bootstrap belongs in `$CODEX_HOME/AGENTS.md`
+- repo-specific bootstrap belongs in the repo root `AGENTS.md`
+- repo-local prompts under `agents/` provide the repo-local prompt structure inside a repo
 
-In these examples, `Projects/` is only an illustrative workspace root. The same model can apply under a different top-level workspace path.
+This model depends on the participating bootstrap files actually performing the intended routing and bounded choice. Use `docs/usage.md` for the recommended minimum bootstrap prompts that make that model hold together.
 
-This model depends on the participating `AGENTS.md` files actually performing the intended routing and bounded choice. Use `docs/usage.md` for the recommended minimum `AGENTS.md` prompts that make that model hold together.
-
-These workspace layers are integration context around `astro-agents`, not part of the repo's own top-level structure. In that broader model, the prompt system stays discoverable from the top level while still allowing local `AGENTS.md` files to direct the agent straight into a specific shared prompt when that is the stable local default.
+These user-global and repo-local bootstrap layers are integration context around `astro-agents`, not part of the repo's own top-level structure. In that broader model, the prompt system stays discoverable while still allowing a bootstrap file to direct the agent straight into a specific shared prompt when that is the stable local default.
 
 ## Path Convention
 
@@ -87,62 +92,50 @@ In repo-facing docs and prompt files in this repo, prefer repo-root-relative pat
 Within this repo:
 
 - use forms such as `docs/architecture.md`, `authoring/agents/agents-md.md`, and `validation/review/full-agent-surface-review.md`
-- do not use file-location-relative forms such as `./...`, `../...`, or `../../...` for internal references
-- keep conceptual route-structure examples such as `Projects/<repo>/AGENTS.md` as conceptual examples rather than local file references
 
 In the agent-facing files of other repos, when referring to prompts from this library:
 
 - prefer generic routing wording over hardcoded workspace paths, such as `For docs review, use the shared documentation review.`, which is intended to route into `astro-agents/validation/review/documentation-review.md` when the recommended shared prompts are present
-- use explicit `astro-agents/...` references only when the local setup intentionally depends on this repo as a named shared prompt library rather than on a portable routing pattern
+- use explicit `astro-agents/...` references when the local setup intentionally depends on this repo as a named shared prompt library
 
-## Instruction Authority And Conflict Handling
+## Prompt-Writing Guidance For Layered Context
 
 The prompt library is shared and reusable. It does not replace repo-level or subtree-level `AGENTS.md` files.
 
-This section is about which applicable instruction has higher authority, not where a rule should live.
+This section explains how to write prompt files in this library so layered guidance stays legible when multiple prompt files are present and local routing remains clear.
 
-Applicable prompts compose by default. When more than one prompt applies in the same context, keep compatible guidance from all of them active together.
+When writing shared prompt files:
 
-Use instruction authority when applicable instructions conflict in the same context: authority determines which instruction applies.
-
-Instruction authority resolves conflicts between active instructions. It is not automatic whole-file replacement.
-
-When all applicable points in the prompt chain are present, read instruction authority from highest to lowest as:
-
-1. applicable repo or subtree prompts in the target repo
-2. matching prompts under the repo's `agents/` folder when present
-3. matching prompts under the workspace `Projects/agents/` folder when present
-4. matching shared prompts in `astro-agents/`
-
-This chain determines which conflicting instruction applies when prompts at different levels both apply. If two applicable prompts exist at the same subtree level, the narrower conflicting guidance should win.
+- prefer direct routing and specific prompt references
+- make local exceptions and local follow-up prompts explicit
+- name the specific local prompt or follow-up prompt directly when local guidance is needed
+- state any real local exception directly when it matters
 
 ## Scope Ownership
 
-This section is about placement in the broader prompt system: it answers where a rule should live, not which applicable instruction has higher authority.
-
-As above, the examples below use `Projects/` as an illustrative workspace root. The same ownership model can apply under a different top-level workspace path.
+This section is about placement in the broader prompt system: it answers where a rule should live.
 
 Use each scope in the broader prompt system for a distinct kind of instruction:
 
-- `Projects/AGENTS.md`
-  - workspace root routing that directs agents into workspace-wide prompts or the shared prompt library
-- `Projects/agents`
-  - workspace-global reusable prompts and user preferences or defaults that should apply across multiple repos in one workspace
-- `Projects/astro-agents`
+- `$CODEX_HOME/AGENTS.md`
+  - global bootstrap that can direct agents into shared guidance across repos
+- `<global>/agents`
+  - optional global prompt assets that should be used only through explicit routing rather than through an `agents/AGENTS.md` routing layer
+- `<astro-agents-path>`
   - the shared prompt library repo, typically used as reusable infrastructure by other repos rather than modified during ordinary repo work
-- `Projects/<repo>/AGENTS.md`
+- `<repo>/AGENTS.md`
   - repo-specific architecture, contract boundaries, workflow commands, testing expectations, deployment or environment rules, and review priorities
-- `Projects/<repo>/agents`
-  - repo-local prompts that are too specific for the shared library but reusable across multiple tasks in one repo, including prompts that add compatible local guidance and prompts whose conflicting instructions should apply locally
-- `Projects/<repo>/<subtree>/AGENTS.md`
+- `<repo>/agents`
+  - repo-local reusable prompts that are too specific for the shared library and should be invoked through explicit repo-local routing
+- `<repo>/<subtree>/AGENTS.md`
   - narrow local routing or bounded-choice behavior, or local constraints tied to a subtree's document type, notation, data, tooling, or workflow
 
 When deciding where a rule belongs:
 
 - if it is truly reusable across users, repos, and tasks without depending on one repo's internal design, it is a good candidate for inclusion in the `astro-agents` prompt library
-- if it is workspace-root routing that should direct work across the workspace, keep it in `Projects/AGENTS.md`
-- if it is a workspace-wide user preference, reusable default, or reusable prompt that should apply across repos in one workspace, keep it in `Projects/agents`
-- if it is reusable within one repo but too local for the shared library, keep it in that repo's `agents/`
+- if it is global bootstrap guidance that should direct work across repos, keep it in `$CODEX_HOME/AGENTS.md`
+- if it is a global reusable prompt or user preference that should be used across repos through explicit routing, keep it in `<global>/agents`
+- if it is reusable within one repo but too local for the shared library, keep it in that repo's `agents/` and route to it explicitly from repo-local guidance when needed
 - if it depends on a repo's architecture, API, testing strategy, deployment path, or domain contracts, keep it in that repo's source-of-truth docs or root `AGENTS.md`
 - if it matters only inside one subtree, keep it in that subtree's `AGENTS.md` or source-of-truth docs
 

@@ -12,9 +12,10 @@ Use this style for prompts that define writing or revision behavior for document
 
 ## Writing-Specific Requirements
 - State the document type and audience.
-- Define success criteria directly.
+- Define success criteria as direct instructions rather than as abstract aspirations.
 - Specify tone and stylistic defaults explicitly.
 - Name common failure modes and what to avoid.
+- Avoid vague style language when a clearer instruction about tone, structure, or preservation is possible.
 - Add preservation rules when technical or scientific meaning must not change.
 - Add adaptation rules when one prompt applies across related document types.
 - Define output behavior explicitly.
@@ -35,6 +36,7 @@ When revising writing prompts:
 - Keep the prompt tied to the document role it claims to serve.
 - Do not let it drift into route-structure design or repo-organization guidance.
 - Keep preservation rules explicit where meaning, notation, or document role must be preserved.
+- Replace soft descriptive wording with direct revision instructions when possible.
 - Keep examples selective and only when they address real ambiguity.
 
 ## Output

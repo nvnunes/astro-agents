@@ -7,6 +7,8 @@ Use it for generic documentation review requests that do not explicitly name a n
 
 Use it as the shared determination path for the active `documentation surface profile`.
 
+Treat this file as the normal public review entrypoint for shared documentation review, not as a profile-specific documentation workflow.
+
 ## Inputs
 
 - target root or target paths to review
@@ -27,7 +29,7 @@ When running this review:
   1. explicit documentation surface profile choice
   2. repo-declared `documentation surface profile` from the target repo's root `AGENTS.md`
   3. `private-default`
-- inspect higher-authority local routing-and-workflow files and review files when the chosen documentation surface profile is not one of the shared built-in profiles
+- inspect explicitly provided workspace-local or repo-local review files when the chosen documentation surface profile is not one of the shared built-in profiles
 - use these shared built-in workflow starting files:
   - `validation/review/private-default/documentation-review.md`
   - `validation/review/public-python/documentation-review.md`
@@ -36,8 +38,8 @@ When running this review:
 
 - if the chosen documentation surface profile is `private-default`, run `validation/review/private-default/documentation-review.md`
 - if the chosen documentation surface profile is `public-python`, run `validation/review/public-python/documentation-review.md`
-- if the chosen documentation surface profile is another value, treat it as requiring a higher-authority local implementation
-- if no higher-authority local prompt set provides that implementation, return a validation-architecture finding that the declared documentation surface profile is unsupported in the active prompt set
+- if the chosen documentation surface profile is another value, treat it as requiring an explicitly provided local implementation
+- if no explicit local prompt set provides that implementation, return a validation-architecture finding that the declared documentation surface profile is unsupported in the active prompt set
 - return one combined assessment rather than separate subreports
 
 ## Exclusions
@@ -54,9 +56,18 @@ Do not treat the following as the default task:
 Return:
 
 1. The selected documentation surface profile.
-2. A brief overall judgment within the requested scope.
-3. Findings ordered by severity.
-4. Concrete corrective actions after the findings.
+2. A `Route Summary`.
+3. A brief overall judgment within the requested scope.
+4. Findings ordered by severity.
+5. Concrete corrective actions after the findings.
+
+For the `Route Summary`:
+
+- name the selected public review entrypoint
+- name the selected documentation surface profile
+- name the selected internal documentation workflow
+- name only the source-of-truth docs that materially shaped the result
+- keep the section short and current-state only
 
 For each finding:
 

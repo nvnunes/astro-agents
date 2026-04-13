@@ -1,6 +1,8 @@
 # Runtime Model
 
-This document is evolving into a working source of truth for runtime-related terminology and control-flow concepts in this repo, grounded in current agentic AI guidance.
+This document is the source of truth for runtime-related terminology and control-flow concepts in this repo, grounded in current agentic AI guidance.
+
+Use this document to understand the runtime mechanics current agent systems actually provide, then design prompt files and repo guidance to work with those mechanics toward the intended result.
 
 ## Common Agent Runtime Ontology
 
@@ -102,6 +104,8 @@ Codex also injects each discovered instruction file near the top of the conversa
 
 For overall guidance, the standard Codex location is still Codex home, where Codex checks `AGENTS.override.md` before `AGENTS.md`. If you want that guidance to live somewhere else, the documented Codex mechanism is to set `CODEX_HOME` before launch so Codex uses a different home directory. [\[1\]](#ref-1)[\[2\]](#ref-2) If changing `CODEX_HOME` is inconvenient, a practical local workaround is to keep Codex on the default `~/.codex` path and symlink `~/.codex/AGENTS.md` to the real file you want to maintain elsewhere. That symlink approach is a filesystem convenience, not a Codex-specific feature.
 
+In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Repo-specific adoption, or repo-specific exceptions to a global default, belong in the repo root `AGENTS.md`.
+
 Example hierarchy:
 
 ```text
@@ -135,11 +139,11 @@ As a practical summary of the model behavior described in the sources below, mod
 5. Contradictions usually degrade performance instead of producing a clean winner. OpenAI's GPT-5 prompting guide explicitly says contradictory or vague prompts can hurt performance because the model may spend effort trying to reconcile them rather than simply picking one. [\[14\]](#ref-14)
 6. Other model vendors describe the same failure mode in prompt-design terms. Anthropic advises that if a prompt would confuse a minimally informed colleague, it will likely confuse the model, and Google's prompt-design guidance explicitly calls out conflicting instructions, conflicting examples, and conflicting internal references as prompt problems. [\[15\]](#ref-15)[\[16\]](#ref-16)
 
-The practical implication for this repo is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while repo-local precedence is mostly design intent unless the prompt surface makes the choice explicit through direct routing, explicit handoff, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
+The practical implication for this repo is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while repo-local precedence is mostly design intent unless the prompt surface makes the choice explicit through direct routing, explicit follow-up prompt references, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
 
 ## Repo Control-Flow Example
 
-For a full review requested in a repo like `girmos-aosims`, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the repo root down to the current directory according to its normal search rules. If the repo's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-repo step is no longer Codex discovery. It is a repo-local `Route` into the shared prompt library. From there, the remaining behavior is repo control flow layered on top of Codex: the system may `Select` the appropriate review `Workflow`, perform a `Handoff` to the prompt that should own the `Task`, determine any applicable documentation surface profile, and apply any explicitly named local validation step. Those later steps are repo conventions, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+For a full review requested in a repo like `girmos-aosims`, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the repo root down to the current directory according to its normal search rules. If the repo's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-repo step is no longer Codex discovery. It is a repo-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the repo and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are repo conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
 ## References
 

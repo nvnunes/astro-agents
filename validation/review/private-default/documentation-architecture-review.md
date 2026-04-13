@@ -3,6 +3,8 @@
 ## Purpose
 Use this prompt to review whether `private-default` documentation is organized and linked in the way the shared usage guidance recommends.
 
+Treat this file as an internal workflow step normally reached via `validation/review/private-default/documentation-review.md`.
+
 ## Inputs
 
 - target root or target paths to review

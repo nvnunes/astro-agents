@@ -1,14 +1,16 @@
 # Full Agent-Surface Review
 
 ## Purpose
-Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across prompt-writing quality, routing and authority behavior, and the applicable profile-scoped documentation review workflow.
+Use this prompt to review the repo's agent surface as one combined validation target. Use it when the user wants a combined validation pass across prompt-writing quality, routing and scope behavior, and the applicable profile-scoped documentation review workflow.
 
 Treat the requested repo or target root as the primary review object. Review-system or validation-contract issues are secondary findings and should be included only when they materially affect the completeness, correctness, or discoverability of the requested review.
+
+Treat this file as a public combined-review entrypoint that coordinates narrower internal review steps.
 
 ## Inputs
 
 - target root or target paths to review
-- optional focus areas such as writing quality, prompt-writing quality, routing and authority behavior, documentation architecture, or full agent-surface synthesis
+- optional focus areas such as writing quality, prompt-writing quality, routing and scope behavior, documentation architecture, or full agent-surface synthesis
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, default to the requested repo or target root rather than the whole workspace.
@@ -30,7 +32,7 @@ Run the following internal review steps within the requested scope:
 
 - `validation/review/prompt-writing-review.md`
   - for `AGENTS.md` and prompts vs the applicable guides under `authoring/`
-- `validation/review/routing-and-authority-review.md`
+- `validation/review/routing-and-scope-review.md`
   - for routing-and-workflow discipline, design adherence, folder coherence, and prompt role drift
 - `validation/review/documentation-review.md`
   - for the shared documentation chooser and the applicable profile-scoped documentation review workflow
@@ -38,7 +40,7 @@ Run the following internal review steps within the requested scope:
 After the shared internal review steps are active:
 
 - determine applicable repo-local review files under `agents/validation/`
-- run applicable local review files when they exist beneath the target root being reviewed
+- run applicable local review files when they exist beneath the target root being reviewed as follow-on checks rather than as replacements for the shared review steps
 
 Use these internal review steps to build one combined assessment rather than returning separate reports.
 
@@ -59,11 +61,21 @@ Do not treat the following as the default task:
 Return:
 
 1. The selected documentation surface profile.
-2. Documentation profile context.
-3. A brief overall judgment of the system within the requested scope.
-4. Findings ordered by severity.
-5. A current-state coverage snapshot.
-6. Concrete corrective actions after the findings.
+2. A `Route Summary`.
+3. Documentation profile context.
+4. A brief overall judgment of the system within the requested scope.
+5. Findings ordered by severity.
+6. A current-state coverage snapshot.
+7. Concrete corrective actions after the findings.
+
+For the `Route Summary`:
+
+- name the selected public review entrypoint
+- name the resolved documentation surface profile
+- name the internal review steps used
+- name the included repo-local review files when any were included
+- name only the source-of-truth docs that materially shaped the result
+- keep the section short and current-state only
 
 For documentation profile context:
 

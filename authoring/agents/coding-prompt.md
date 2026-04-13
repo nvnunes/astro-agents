@@ -12,9 +12,10 @@ Use this style for prompts that define coding, code-editing, refactoring, or cod
 
 ## Coding-Specific Requirements
 - State the language, task type, or coding context clearly.
-- Define success criteria directly.
+- Define success criteria as direct instructions.
 - Specify structure and editing defaults explicitly.
 - Name common failure modes and what to avoid.
+- Avoid vague refactor or cleanup language when the required scope or boundary can be stated directly.
 - Add preservation rules for APIs, schemas, numerical behavior, or other critical contracts.
 - Add adaptation rules for local codebase conventions.
 - Define output behavior explicitly.
@@ -34,7 +35,7 @@ When revising coding prompts:
 - Keep the prompt tied to the coding context it claims to serve.
 - Do not let it drift into repo-specific architecture or workflow rules that belong elsewhere.
 - Keep preservation rules explicit when behavior or contracts must not change.
-- Keep local simultaneous-applicability and conflict-resolution behavior clear.
+- Replace abstract or hedged editing guidance with direct scope and preservation rules.
 
 ## Output
 - When writing or revising a coding prompt, return the revised prompt directly unless explanation is requested.

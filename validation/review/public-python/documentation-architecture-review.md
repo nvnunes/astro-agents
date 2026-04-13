@@ -3,6 +3,8 @@
 ## Purpose
 Use this prompt to review whether the reachable public documentation surface of a Python project is organized and linked in the way the shared usage guidance and the `public-python` documentation surface model recommend.
 
+Treat this file as an internal workflow step normally reached via `validation/review/public-python/documentation-review.md`.
+
 ## Inputs
 
 - target root or target paths to review

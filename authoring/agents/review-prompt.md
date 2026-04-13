@@ -11,11 +11,12 @@ Use this style for prompts that review prompts, `AGENTS.md` files, and related d
 - Define an output shape that produces findings first and corrective actions second.
 
 ## Style
-- Use direct, operational language.
+- Use direct, imperative language for review steps and exclusions.
 - Prefer short sections and flat bullets.
 - Lead with the review target and scope.
 - State the applicable source-of-truth document or comparison standard explicitly.
 - Keep instructions specific enough that the review does not collapse into generic critique.
+- Avoid vague review verbs when a concrete check or comparison can be named.
 
 ## Review-Specific Requirements
 - Define the review target.
@@ -23,6 +24,7 @@ Use this style for prompts that review prompts, `AGENTS.md` files, and related d
 - Name the review criteria explicitly.
 - Name the exclusions explicitly.
 - Keep the review aligned with its intended role and scope.
+- Avoid mixing incompatible review scopes or conflicting review standards in one prompt.
 - Do not silently expand a narrower review into adjacent lower-level, sibling, or broader review categories.
 - If combined review behavior is intended, state that explicitly.
 - If limited overlap is necessary, keep it justified by the requested review criterion rather than allowing open-ended expansion.

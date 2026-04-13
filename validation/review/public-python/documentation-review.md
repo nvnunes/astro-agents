@@ -3,6 +3,8 @@
 ## Purpose
 Use this prompt as the profile-scoped documentation review workflow for the `public-python` documentation surface profile.
 
+Treat this file as an internal documentation workflow normally reached via `validation/review/documentation-review.md`, not as the normal generic docs-review starting point.
+
 ## Inputs
 
 - target root or target paths to review

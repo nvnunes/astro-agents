@@ -26,9 +26,9 @@ Do not use this plan to define the intended runtime policy. Use `docs/future/run
 - Feed behavior evidence and acceptance criteria into `docs/future/runtime-safety.md`.
 - Contribute the validation portions of `docs/future/runtime-design.md`.
 
-## Current Project Audit
+## Current Project Assessment
 
-This section records the Runtime Validation output for Phase 1 in `docs/future/runtime-design.md`. Keep it current as the project audit evolves.
+This section describes the current runtime-validation state of `astro-agents`.
 
 ### Findings
 
@@ -36,12 +36,12 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 - the project defines a clear validation contract for the current agent surface: prompt-writing quality, routing and scope behavior, documentation review, and combined review are all explicit in `docs/testing.md` and `validation/README.md`
 - profile-specific documentation validation objectives are also explicit: the shared family distinguishes `private-default` and `public-python` documentation surfaces and defines separate writing and architecture checks for each
-- runtime behaviors that matter most to the next design phase are now named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
+- runtime behaviors that matter most to the next design phase are named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
 - those runtime behaviors are still defined mainly as design concerns to validate later, not as a current test objective set with explicit success criteria, evaluator types, or thresholds
 
 #### Current Review-Surface Adequacy
 
-- for the current prompt-library repo, the shared review family is strong: narrow review prompts are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and repo-local consistency reviews catch drift in the most important downstream templates
+- for the current prompt-library repo, the shared review family is strong: narrow review prompts are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and repo-local consistency reviews catch drift in the root dispatcher and shared validation surface
 - this review surface is adequate for maintaining prompt-writing quality, route-structure discipline, documentation structure, and validation-contract consistency in the repo as it exists today
 - it is not adequate on its own for proving runtime behavior once the project starts making stronger claims about instruction applicability, route choice, carried-forward context, or degraded execution paths
 
@@ -49,14 +49,14 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 - the current validation model is still primarily review-driven: the prompts inspect files, compare them against source-of-truth docs and guides, and synthesize findings from static evidence
 - even the strongest behavior-oriented prompt, `validation/review/routing-and-scope-review.md`, evaluates whether routing and scope behavior work as designed by reading the route structure and its source-of-truth docs rather than by checking live runtime instruction loading and applicability
-- there is no stable method yet for checking that the intended task-owning prompt actually provides the active instructions in a live runtime path
+- there is no stable method yet for checking which loaded instructions, internal steps, or carried-forward context actually shaped a live runtime path
 - instruction-loading and applicability checks, routing tests, and longer-thread behavior checks are still planning items rather than established validation methods
 
 #### Scenario Representativeness
 
-- the repo has useful scenario seeds in practice: validation starter requests, the review matrix in `docs/testing.md`, the profile-scoped documentation branches, repo-local consistency checks, and the representative route examples in `docs/future/runtime-governance.md`
-- those seeds are not yet turned into a maintained scenario set with named baseline cases for virgin threads, repeated regressions, or cross-profile comparisons
-- the current project does not yet define representative runtime edge-case scenarios for unsupported profiles, rediscovery failures, longer threads, compaction-sensitive routes, or ambiguous multi-level routing
+- the repo has a maintained validation-path scenario baseline in `docs/testing.md` and `agents/validation/validation-path-scenarios.md`
+- that baseline covers public review entrypoint selection, documentation-profile resolution, internal review-step selection, repo-local review-file inclusion, and `Route Summary` expectations on the current validation surface
+- it is still intentionally narrower than a full runtime scenario set: broader degraded cases such as rediscovery failure, longer threads, compaction-sensitive routes, and wider ambiguity handling remain future validation work
 
 #### Evidence And Inspectability
 
@@ -80,9 +80,10 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 #### Regression Discipline
 
-- the repo already has a useful regression structure for prompt-surface maintenance: required review categories are explicit, regression priorities are named, starter requests make the main reviews reusable, and repo-local consistency reviews add a small but meaningful stage of stable repeatability for the root dispatcher and shared-validation template
+- the repo already has a useful regression structure for prompt-surface maintenance: required review categories are explicit, regression priorities are named, starter requests make the main reviews reusable, and repo-local consistency reviews add a small but meaningful stage of stable repeatability for the root dispatcher and current shared validation surface
 - public-profile branching and narrow-review independence also reduce accidental broadening, which helps preserve regression meaning inside the current review family
-- regression discipline is still weak for runtime behavior itself because there is no stable scenario set, dataset, or harness to rerun against the same behavior questions after changes
+- the validation-path scenario baseline adds a small maintained regression map for the current validation surface
+- regression discipline is still weak for broader runtime behavior because there is no dataset, harness, or behavior-facing evidence surface to rerun against longer-thread, instruction-applicability, or degraded-case questions
 
 #### Failure And Edge-Case Coverage
 
@@ -100,11 +101,12 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 **TO BE REVIEWED**
 
+- the current baseline is a lightweight shared-review family, visible review-path summaries, and a maintained validation-path scenario baseline for the current validation surface
 - preserve the current shared review family as the lightweight baseline for prompt-surface maintenance rather than replacing it with a heavier runtime harness
 - define an explicit validation target set for the runtime behaviors named in `docs/future/runtime-governance.md`, especially routing, instruction applicability, conflict handling among applicable instructions, customization behavior, prompt-use boundaries, and degraded routing cases
-- turn the current scenario seeds into a maintained baseline scenario set, starting with common virgin-thread routes and the highest-risk validation routes
+- build on the maintained validation-path scenario baseline, starting with common virgin-thread routes and the highest-risk validation routes
 - define behavior-facing checks for routing and instruction applicability, rather than relying only on design review and static file inspection
-- define checks that confirm one task-owning prompt provides the active instructions after the relevant `Route` or `Handoff` on normal paths
+- if the future governance model adopts stronger ownership or handoff semantics, define how validation should confirm the intended governing path and active instructions after the relevant `Route` or `Handoff`
 - define a small set of degraded and edge-case scenarios, including unsupported profiles, undefined upgrade paths, rediscovery failure, compaction-sensitive routes, and stale-context cases
 - define what observable runtime evidence validation will require from the observability workstream before behavior checks can be trusted
 - define a practical measurement method for runtime-context size and other runtime-cost signals that materially affect route design
@@ -119,13 +121,13 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 - which runtime behaviors should be in the first explicit validation target set, and which can remain design-only until later
 - what should the initial baseline scenario set include for common routes, narrow reviews, combined reviews, and degraded cases
 - how should virgin-thread routing checks be structured so they are stable and reusable without overfitting to one prompt wording
-- what evidence must be visible to validate route choice, task ownership after `Route` or `Handoff`, instruction applicability, conflict handling among applicable instructions, and carried-forward context with confidence
+- what evidence must be visible to validate route choice, any future ownership or handoff model, instruction applicability, conflict handling among applicable instructions, and carried-forward context with confidence
 - which behaviors can be validated through static inspection plus traces, and which need direct runtime replay or scenario execution
 - what should count as success or failure for routing correctness, instruction-applicability correctness, and degraded-route recovery
 - how should runtime-context size and runtime-cost concerns affect validation thresholds and representative scenarios
 - how much longer-thread and compaction coverage is needed in the first validation stage before the observability workstream matures further
 - which current review prompts should remain purely qualitative and which should later feed into more structured evaluators or scoring
-- how should repo-local review prompts under `agents/validation/` be incorporated into future behavior-facing validation without duplicating the shared methods
+- how should repo-local review files under `agents/validation/` participate in future behavior-facing validation beyond their current follow-on role without duplicating the shared methods
 - what minimum regression suite would materially improve confidence without making ordinary prompt-surface changes too expensive to validate
 - where should the line be drawn between validation work, observability requirements, and governance decisions when one is blocked on the others
 
@@ -133,9 +135,9 @@ This section records the Runtime Validation output for Phase 1 in `docs/future/r
 
 ### Stage 1 — Define Target Set And Baseline Scenarios
 
-- use the current-project audit output in this document and the shared runtime audit in `docs/future/runtime-design.md` as the basis for scenario and method selection
+- use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for scenario and method selection
 - define the first explicit validation target set for runtime behavior
-- turn the current route examples, starter requests, and known degraded cases into a small maintained baseline scenario set
+- extend the current validation-path scenario baseline with route examples, starter requests, and known degraded cases that matter to the future runtime design
 - separate common-path scenarios from degraded or edge-case scenarios so later validation can stay proportional
 
 ### Stage 2 — Define Behavior Checks And Evidence Requirements

@@ -27,9 +27,9 @@ Do not use this plan to redefine routing policy, observability surfaces, or vali
 - Use `docs/future/runtime-validation.md` for the checks that should exercise safety-relevant runtime behavior.
 - Contribute the safety portions of `docs/future/runtime-design.md`.
 
-## Current Project Audit
+## Current Project Assessment
 
-This section records the Runtime Safety output for Phase 1 in `docs/future/runtime-design.md`. Keep it current as the project audit evolves.
+This section describes the current runtime-safety state of `astro-agents`.
 
 ### Assessment Criteria
 
@@ -65,15 +65,15 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Instruction And Trust Boundaries
 
 - the repo does distinguish routing files from deeper source-of-truth docs, which is a useful first trust boundary because it reduces accidental reliance on one large undifferentiated prompt surface
-- that boundary is still incomplete at runtime: the project now distinguishes active `Instructions` from supporting `Context` at a high level, but it does not yet define a fuller trust model for untrusted context, carried-forward context, or stale-state handling once multiple prompts and docs have been discovered
+- the live surface keeps that boundary intentionally lightweight instead of defining a stronger local trust model, so it still does not specify how untrusted context, carried-forward context, or stale-state handling should work once multiple prompts and docs have been discovered
 - there is also no explicit rule for when carried-forward context should be downgraded to supporting `Context` or discarded after narrower guidance or newly loaded source-of-truth docs appear
 - current status: partly covered
 
 #### Routing And Instruction-Applicability Safety
 
 - direct routes in `authoring/` and source-of-truth-driven upgrade design work are relatively bounded and therefore lower-risk than the deeper multi-step workflow paths in `validation/`
-- the main current safety risk is implicit simultaneous applicability: broader and local prompts may remain active together, and the project does not yet define clearly when broader guidance should deactivate after narrowing
-- some bounded fail-safe behavior already exists, such as unsupported documentation profiles returning a finding and upgrade review defaulting to review-first handling when no profile is declared, but this is not yet a general safety discipline for routing
+- the live surface prefers explicit routing and explicit local follow-on paths over broad additive applicability claims, which reduces one source of ambiguity on the current review surface
+- some bounded review-surface defaults already exist, such as unsupported documentation profiles returning a finding and upgrade review defaulting to review-first handling when no profile is declared, but this is not yet a general safety discipline for routing or carry-forward state
 - current status: partly covered
 
 #### Untrusted Context And Injection Exposure
@@ -114,14 +114,16 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Incident Visibility And Forensics
 
 - safety-relevant design issues are reasonably inspectable from the static repo surface because routing, instruction authority, and source-of-truth structure are documented clearly
-- runtime forensics are much weaker: there is still no evidence surface showing which `Instructions` were active, what route was taken, what context was carried forward, or when a risky transition occurred
+- shared selector and combined-review outputs expose a short `Route Summary`, which modestly improves review-path visibility on the current validation surface
+- runtime forensics are still much weaker: there is no evidence surface showing which `Instructions` were active, what context was carried forward, or when a risky transition occurred
 - this means investigation of safety incidents would still depend heavily on reconstruction after the fact
 - current status: weakly covered
 
 #### Safety Validation Support
 
 - the current validation library is good at reviewing route structure, prompt-writing quality, documentation structure, and some bounded design failures that matter to safety indirectly
-- it does not yet validate safety-relevant runtime behavior directly, such as wrong-route instruction applicability, stale carried-forward or active context, compaction-sensitive failures, or unsafe carry-forward
+- the repo also has a lightweight validation-path scenario baseline for the current shared review surface
+- it still does not validate safety-relevant runtime behavior directly, such as wrong-route instruction applicability, stale carried-forward or active context, compaction-sensitive failures, or unsafe carry-forward
 - safety review therefore has a decent structural baseline but not yet a behavior-facing validation stage
 - current status: weakly covered
 
@@ -143,10 +145,11 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 **TO BE REVIEWED**
 
+- the live surface stays intentionally lightweight, so the actions below describe future control-model work rather than missing live-surface doctrine
 - define an explicit runtime trust model that distinguishes active `Instructions`, supporting `Context`, untrusted context, and lower-trust carried-forward state
 - define when carried-forward, compacted, or rediscovered context must be revalidated, downgraded in authority, or discarded
-- constrain risky routing behavior by reducing reliance on implicit simultaneous applicability, especially on deeper `validation/` paths
-- prefer one task-owning prompt after the relevant `Route` or `Handoff`, with other material treated as supporting `Context` or bounded internal workflow input unless explicitly retained
+- if the future runtime grows deeper coordination paths, constrain risky routing behavior so the active governing path stays explicit and carry-forward stays bounded
+- if the future governance model adopts stronger ownership or handoff semantics, define how that model should limit unsafe carry-forward and ambiguous control after the relevant `Route` or `Handoff`
 - define fail-safe behavior for ambiguous routes, unsupported implementations, failed rediscovery, stale carried-forward context, and partial recovery after context loss
 - define how untrusted or externally supplied content should be isolated from active `Instructions` even before the runtime grows more tool-capable
 - decide the minimum least-privilege and approval posture required in the first integrated runtime design, even if full tool governance is deferred
@@ -163,6 +166,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - which context sources should be treated as lower-trust by default, and what would raise or lower that trust
 - when should carried-forward context be dropped, downgraded, or revalidated after narrowing, rerouting, compaction, or partial recovery
 - what minimum fail-safe behavior should exist when the preferred route is ambiguous, unavailable, or too weakly recovered to trust
+- if the future governance design adopts stronger ownership or handoff semantics, what safety guarantees should that model provide
 - what minimum least-privilege model is needed in the first integrated runtime design even if the repo remains mostly prompt-centric
 - whether approval checkpoints should be defined now as a general control surface or explicitly deferred until tool and action surfaces are more concrete
 - what safety-relevant runtime evidence must be visible before the project can claim that routing and state risks are reviewable rather than inferred
@@ -174,7 +178,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 ### Runtime Threat Model And Trust Boundaries
 
-- use the current-project audit in this document and the shared runtime audit in `docs/future/runtime-design.md` as the basis for safety scope
+- use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for safety scope
 - define the first explicit runtime threat inventory for routing, instruction applicability, trust boundaries, carry-forward state, and degraded operation
 - define the first trust classes for active `Instructions`, supporting `Context`, lower-trust context, and untrusted context
 - separate current risks from forward-looking risks that only become material when the runtime grows more tool-capable or more stateful

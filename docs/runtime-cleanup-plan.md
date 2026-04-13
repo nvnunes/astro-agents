@@ -27,13 +27,13 @@ The `docs/future/` folder is the forward-looking redesign space for deeper runti
    - Instead of installing a stronger repo-local doctrine, remove wording that makes deeper source-of-truth docs sound like implicitly active instructions and move that failure-mode handling into authoring and review guidance.
 5. Add a lightweight route trace to combined review outputs.
    - The current outputs in [validation/review/documentation-review.md:52](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/validation/review/documentation-review.md#L52), [validation/review/full-agent-surface-review.md:57](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/validation/review/full-agent-surface-review.md#L57), and [validation/review/private-default/documentation-review.md:42](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/validation/review/private-default/documentation-review.md#L42) report findings but not the actual prompt path used.
-   - Add a short `Route Summary` block with selected starting document, resolved profile, internal review steps invoked, repo-local prompts included, and source-of-truth docs consulted.
+   - Add a short `Route Summary` block with selected starting document, resolved profile, internal review steps invoked, repo-local review files included, and source-of-truth docs consulted.
    - That gives immediate observability aligned with [docs/future/runtime-observability-and-provenance.md:122](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/docs/future/runtime-observability-and-provenance.md#L122).
 6. Create a small maintained scenario set for routing and validation-path coverage.
    - The runtime validation plan already calls for a baseline scenario set in [docs/future/runtime-validation.md:103](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/docs/future/runtime-validation.md#L103).
    - The governance plan already has representative routes in [docs/future/runtime-governance.md:135](/Users/nelsonnunes/Library/CloudStorage/Dropbox/Projects/astro-agents/docs/future/runtime-governance.md#L135).
    - A short scenario file under `agents/validation/` with 6-8 cases would be enough to start.
-   - Include: common docs review, full agent-surface review, `public-python` review, unsupported profile, ambiguous routing, repo-local validation inclusion, and missing upgrade-review implementation.
+   - Include: common docs review, full agent-surface review, `public-python` review, unsupported profile, broad generic validation requests, repo-local review-file inclusion, and the separate upgrade-specific review path.
 
 ### Broad Design Improvements
 
@@ -269,7 +269,7 @@ Primary outputs: `docs/testing.md`, a maintained scenario file under `agents/val
 ##### Pass 3B — Seed The Initial Scenario Set
 
 - Create the first maintained scenario set under `agents/validation/`.
-- Add the initial cases for common review paths, profile-specific paths, repo-local validation inclusion, ambiguous routing, unsupported profiles, and other validation-path edge cases that materially affect the shared review surface.
+- Add the initial cases for common review paths, profile-specific paths, repo-local validation inclusion, broad generic validation requests, unsupported profiles, the upgrade-specific review path, and other validation-path edge cases that materially affect the shared review surface.
 - Record the expected public review entrypoint, internal review path, repo-local validation inclusion, and route summary for each scenario.
 - Cross-link the new file from `docs/testing.md`.
 
@@ -277,7 +277,7 @@ Primary outputs: `docs/testing.md`, a maintained scenario file under `agents/val
 
 - Decide how the scenario set fits into the validation contract without requiring a full harness.
 - Persist that rule in `docs/testing.md`.
-- Rewrite `docs/usage.md` and the repo-local validation guidance so routing, validation-surface, and source-of-truth changes explicitly re-check the maintained scenarios.
+- Keep the recheck rule repo-local in `docs/testing.md` so routing, validation-surface, and source-of-truth changes explicitly re-check the maintained scenarios without turning that baseline into downstream guidance.
 - Record in the future runtime-validation docs how later scenario and regression assets should extend rather than replace the baseline.
 
 #### Phase 4 — Refresh Future Runtime Docs

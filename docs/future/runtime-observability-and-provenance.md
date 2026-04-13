@@ -25,36 +25,37 @@ Do not use this plan to redefine routing policy, conflict-handling behavior amon
 - Expose provenance and traceability surfaces needed by `docs/future/runtime-safety.md`.
 - Contribute the observability and provenance portions of `docs/future/runtime-design.md`.
 
-## Current Project Audit
+## Current Project Assessment
 
-This section records the Runtime Observability And Provenance output for Phase 1 in `docs/future/runtime-design.md`. Keep it current as the project audit evolves.
+This section describes the current runtime observability and provenance state of `astro-agents`.
 
 ### Findings
 
 #### Traceability
 
 - the project is reasonably traceable at the static document level: `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and `validation/README.md` make the intended routing and review surface legible to a human reviewer
-- actual runtime traceability is weak: the project has no trace, span, or run record showing which dispatchers, selectors, prompts, or source-of-truth docs were actually discovered, loaded, or superseded during a concrete task
-- this gap is most visible in `validation/`, where combined review paths can be understood from files but not replayed from runtime evidence
+- shared selector and combined-review outputs expose a short `Route Summary`, which makes the chosen validation path more legible than before
+- actual runtime traceability is still weak: the project has no trace, span, or run record showing which dispatchers, selectors, prompts, or source-of-truth docs were actually discovered, loaded, or superseded during a concrete task
+- this gap is most visible in `validation/`, where reviewers can see the declared review path but still cannot replay discovery or runtime instruction loading from evidence
 - current status: partly covered
 
 #### Instruction Applicability Visibility
 
-- the architecture docs clearly say that applicable prompts compose by default and that `AGENTS.md` files route, scope, and make instructions applicable
+- `docs/runtime-model.md` grounds instruction authority and conflict behavior in platform guidance, while the live repo docs intentionally avoid a stronger local applicability doctrine
 - the project does not expose which prompts supplied active `Instructions` or which supporting docs were loaded as `Context` in any specific run, nor when broader guidance should stop applying after narrower routing
-- instruction applicability is therefore visible as a design rule, not as runtime evidence
+- instruction applicability is therefore grounded conceptually, but not visible as runtime evidence
 - current status: weakly covered
 
 #### Route-Decision Visibility
 
 - root dispatchers and family selectors describe intended route-selection rules clearly, and selectors such as `validation/review/documentation-review.md` make some branch logic explicit
-- the project does not record why one route or selector branch won in a concrete run, what competing branches were considered, or whether a route narrowed, broadened, or delegated work internally
-- the generic applicability wording recommended in `docs/usage.md` improves portability, but it also reduces visibility into the exact shared route a downstream repo expects to choose and the `Instructions` it expects to apply
+- shared selector and combined-review outputs expose the active review path through a `Route Summary`, but they do not record why one route or selector branch won, what competing branches were considered, or whether a route narrowed, broadened, or delegated work internally
+- the generic routing wording recommended in `docs/usage.md` improves portability, but it also reduces visibility into the exact shared route a downstream repo expects to choose
 - current status: partly covered
 
 #### Local Customization And Instruction Authority Visibility
 
-- `docs/architecture.md` defines a clear instruction authority chain across repo, local, workspace, and shared layers, and the routing templates repeat that model consistently
+- `docs/runtime-model.md` and `docs/architecture.md` make the platform authority model and the repo's structural customization surfaces reasonably legible at design time
 - local customization remains structural and inferred: the project has no runtime evidence surface showing when a local prompt superseded or supplemented a shared one or which conflicting `Instructions` actually applied
 - explicit local customization boundaries are still limited, so most local customization behavior would have to be reconstructed from file layout and instruction authority rules
 - current status: partly covered
@@ -68,16 +69,16 @@ This section records the Runtime Observability And Provenance output for Phase 1
 
 #### State Visibility
 
-- the current shared model has almost no explicit runtime state surface beyond the idea that applicable prompts remain active together
+- the current shared model has almost no explicit runtime state surface beyond review-path visibility and document-level routing
 - there is no inspectable notion of active route, active `Instructions`, supporting `Context`, carry-forward state class, or stale-state marker
-- the planning docs now name these needs, but the current project does not yet expose them
+- the design docs name these needs, but the current project does not yet expose them
 - current status: not meaningfully covered
 
 #### Reconstructability
 
-- in a fresh audit, a reviewer can often reconstruct the intended route from the repo structure, source-of-truth docs, and validation selectors
+- in a fresh audit, a reviewer can often reconstruct the intended route from the repo structure, source-of-truth docs, validation selectors, and the `Route Summary` emitted by shared selector and combined-review outputs
 - reconstructing which `Instructions` were active in a longer or compacted thread would still be inference-heavy because no runtime history preserves route choice, changes in instruction applicability, or state transitions
-- simultaneous-applicability language and generic routing language make post hoc reconstruction more fragile once a thread diverges from the simplest direct path
+- the current review-path visibility helps on ordinary validation runs, but longer or divergent threads still lack the runtime history needed for reliable reconstruction
 - current status: partly covered
 
 #### Compaction And Reset Evidence
@@ -111,7 +112,7 @@ This section records the Runtime Observability And Provenance output for Phase 1
 #### Proportionality And Privacy
 
 - the current repo is lightweight by design: it imposes almost no tracing overhead, preserves little extra runtime data, and keeps the prompt-library maintenance path cheap
-- that proportionality is useful for ordinary repo work and lower-budget runtime paths, but it also leaves the project under-instrumented for the runtime-design program now underway
+- that proportionality is useful for ordinary repo work and lower-budget runtime paths, but it also leaves the project under-instrumented for this runtime-design program
 - privacy and data-minimization tradeoffs are not yet explicitly designed; the current low-retention model is a consequence of missing observability surfaces rather than a stated policy
 - current status: partly covered
 
@@ -119,13 +120,14 @@ This section records the Runtime Observability And Provenance output for Phase 1
 
 **TO BE REVIEWED**
 
-- preserve the current static source-of-truth traceability model, but add explicit runtime evidence surfaces rather than relying on reconstruction from files alone
+- the current baseline is lightweight observability: static routing and source-of-truth visibility plus `Route Summary` on shared selector and combined-review outputs
+- preserve that lightweight baseline, but add explicit runtime evidence surfaces rather than relying on reconstruction from files alone
 - define a small runtime event model that makes route choice, instruction loading and applicability, customization behavior, source-of-truth loading, and route changes inspectable
 - define what the observable runtime state should include, especially active route, active `Instructions`, supporting `Context`, carry-forward state class, and stale-state markers
-- make the task-owning prompt visible after the relevant `Route` or `Handoff` so later inspection does not have to infer ownership indirectly
+- make the active governing path and contributing prompts or docs visible after the relevant `Route` or `Handoff` so later inspection does not have to infer them indirectly
 - define how runtime context should retain provenance when it comes from source-of-truth docs, carried-forward thread state, compaction summaries, rediscovery, or later external retrieval
 - define what evidence should survive compaction, reset, rerouting, partial recovery, and rediscovery failure
-- make customization outcomes and conflict-handling outcomes visible enough that validation and later debugging do not have to infer them from file structure alone
+- make customization outcomes and any future conflict-handling or narrowing outcomes visible enough that validation and later debugging do not have to infer them from file structure alone
 - define the minimum observability surface needed to support routing and instruction-applicability validation without turning ordinary repo work into a heavy tracing workflow
 - define what failure-analysis evidence should exist for wrong-route instruction applicability, stale carried-forward context, lost narrowing, unsupported profile handling, and degraded runtime cases
 - define explicit reconstructability requirements for longer-thread and compaction-sensitive paths
@@ -138,8 +140,8 @@ This section records the Runtime Observability And Provenance output for Phase 1
 - what is the minimum runtime event set that would materially improve traceability without over-instrumenting ordinary repo work
 - what should count as the observable source of truth for a concrete run: discovered files, loaded files, files contributing active `Instructions`, files used as supporting `Context`, or all of the above with different roles
 - how should the system distinguish active `Instructions` from supporting `Context` and merely discovered but unused `Context`
-- what should be visible when a route narrows, broadens, delegates internally, or is partially recovered after failure, especially which prompt owns the `Task`
-- how should customization behavior and conflict handling among applicable instructions be surfaced when multiple prompts remain active together as an explicit exception
+- what should be visible when a route narrows, broadens, delegates internally, or is partially recovered after failure, especially how the active governing path should be exposed
+- if the future governance model allows multiple active prompts or other multi-source coordination, how should those outcomes be surfaced without collapsing back into file-structure inference
 - how should carried-forward thread context, compacted summaries, rediscovered repo facts, and any future retrieved evidence be distinguished for provenance purposes
 - what evidence must survive compaction, reset, and rerouting for later reconstruction to remain trustworthy
 - what observable state is needed to tell when context has become stale after narrower routing, source-of-truth loading, or failed rediscovery
@@ -152,13 +154,14 @@ This section records the Runtime Observability And Provenance output for Phase 1
 
 ### Observable Runtime Target Set And Event Inventory
 
-- use the current-project audit in this document and the shared runtime audit in `docs/future/runtime-design.md` as the basis for observability scope
+- use the current assessment in this document, the shared program frame in `docs/future/runtime-design.md`, and the current `Route Summary` surface as the basis for observability scope
 - define the first explicit target set for what runtime behavior must become externally visible
 - identify a first runtime event and state inventory for route choice, instruction loading and applicability, customization behavior, source loading, and route transitions
 - separate common-path observability needs from longer-thread, compaction, and degraded-case needs so the first design stays proportional
 
 ### Evidence Surfaces
 
+- treat the current `Route Summary` surface as the starting point for lightweight observability rather than as the finished observability model
 - define what should be visible about instruction loading and applicability, route decisions, customization behavior, source-of-truth loading, and context additions
 - define what observable runtime state should exist for active route, active `Instructions`, supporting `Context`, and stale-state markers
 - define what source linkage or provenance is needed for carried-forward, compacted, rediscovered, or later retrieved context

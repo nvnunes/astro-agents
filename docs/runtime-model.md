@@ -1,8 +1,19 @@
 # Runtime Model
 
-This document is the source of truth for runtime-related terminology and control-flow concepts in this repo, grounded in current agentic AI guidance.
+This document is the source of truth for runtime-related terminology, current-support boundaries, and control-flow concepts in this repo, grounded in current agentic AI guidance.
 
-Use this document to understand the runtime mechanics current agent systems actually provide, then design prompt files and repo guidance to work with those mechanics toward the intended result.
+Use this document to understand the runtime mechanics current agent systems actually provide, the vocabulary `astro-agents` uses to describe them, and which parts of that model the repo currently supports directly.
+
+## Scope And Current Support
+
+This document uses OpenAI, Anthropic, and Google material to derive shared runtime vocabulary and compare common agent-system patterns.
+
+Within `astro-agents`:
+
+- that broader comparison supports vocabulary, design work, and future planning
+- it does not mean `astro-agents` currently provides equally detailed operational guidance for every runtime discussed here
+- the concrete runtime path documented for direct use today is Codex with `AGENTS.md`
+- references to other runtimes in this document should be read as design input unless another `astro-agents` document says otherwise
 
 ## Common Agent Runtime Ontology
 
@@ -96,7 +107,7 @@ The terms below are also common in agent and prompt-system discussions, but they
 - `orchestrator`
   - An `Agent` performing `Orchestration`. [\[4\]](#ref-4)[\[17\]](#ref-17)[\[19\]](#ref-19)
 
-## What Codex Does
+## Current Concrete Runtime Support: Codex
 
 Codex has built-in instruction discovery behavior. It can load guidance from your Codex home directory and from repo-local instruction files. In project scope, it starts at the project root, walks down to the current working directory, checks `AGENTS.override.md` first, then `AGENTS.md`, then any configured fallback filenames, includes at most one file per directory, and skips empty files. Files closer to the current working directory override earlier guidance because they appear later in the merged instruction chain. Codex stops searching once it reaches the current directory. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
@@ -143,7 +154,7 @@ The practical implication for this repo is an inference from those sources: Code
 
 ## Repo Control-Flow Example
 
-For a full review requested in a repo like `girmos-aosims`, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the repo root down to the current directory according to its normal search rules. If the repo's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-repo step is no longer Codex discovery. It is a repo-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the repo and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are repo conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+For a full review requested in a downstream repo, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the repo root down to the current directory according to its normal search rules. If the downstream repo's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-repo step is no longer Codex discovery. It is a repo-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the downstream repo and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are repo conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
 ## References
 

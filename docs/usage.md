@@ -1,13 +1,31 @@
 # Usage
 
 This document is the human-facing source of truth for how repos and workspaces
-should apply the shared prompt library.
+should apply `astro-agents`.
 
 Use it when adopting `astro-agents`, choosing bootstrap location, declaring a
 documentation surface profile, and wiring shared validation.
 
 Use `docs/glossary.md` when usage guidance depends on shared prompt-system
 terms that need one stable meaning across repos.
+
+`astro-agents` is a checked-out prompt library, not a package install. The
+concrete documented adoption path in this repo is Codex plus `AGENTS.md`.
+Some repo-structure guidance may still transfer to other runtimes, but those
+setups may require local adaptation.
+
+## Before You Start
+
+Before adopting `astro-agents` in another repo:
+
+- make the `astro-agents` repo available at a stable path in the workspace
+  where you use your agent tooling
+- decide whether the shared bootstrap should be repo-local or user-global
+- keep repo-specific commands, package boundaries, persisted contracts,
+  lifecycle rules, and local exceptions in the downstream repo's own docs
+
+In the example path references below, use `<astro-agents-path>` as a placeholder
+for the stable path to your `astro-agents` checkout.
 
 ## Bootstrapping Astro-Agents
 
@@ -53,6 +71,18 @@ In this mode, repo root `AGENTS.md` files should add only repo-local guidance, s
 - Follow this repo's local guidance and source-of-truth documents instead.
 ```
 
+## Minimal Adoption Path
+
+For a small initial adoption in a downstream repo:
+
+1. Add one of the bootstrap snippets above.
+2. Keep the downstream repo's own `README.md`, `AGENTS.md`, and source-of-truth
+   docs responsible for repo-specific facts.
+3. Add shared guidance references only when you want those recommendations
+   visible in the downstream working surface.
+4. Add shared validation only when the downstream repo wants the shared review
+   library to be part of its normal validation path.
+
 ## Documentation Surface Profile
 
 When a downstream repo uses `Documentation surface profile`, declare it in a short `## Scope` section near the top of the root `AGENTS.md`, for example:
@@ -70,11 +100,15 @@ When a downstream repo wants to rely on shared validation from `astro-agents`, i
 # Testing
 
 ## Shared Validation
-Use the shared base testing guidance in `astro-agents/validation/base-testing.md`.
+Use the shared base testing guidance in `<astro-agents-path>/validation/base-testing.md`.
 
 ## Repo-Local Verification
 Add repo-local verification commands and completion expectations below as needed.
 ```
+
+Use `validation/README.md` for the public shared review entrypoints and starter
+requests. Keep repo-specific commands and completion expectations in the
+downstream repo's own `docs/testing.md`.
 
 ## Shared Guidance
 
@@ -99,9 +133,9 @@ For example, a repo root `AGENTS.md` may include:
 
 ```md
 ## Shared Guidance
-- Use `astro-agents/guidance/agent-surface.md` for shared agent-surface guidance.
-- Use `astro-agents/guidance/public-python-projects.md` for shared public Python repo guidance.
-- Use `astro-agents/guidance/python-development.md` for shared Python development guidance.
+- Use `<astro-agents-path>/guidance/agent-surface.md` for shared agent-surface guidance.
+- Use `<astro-agents-path>/guidance/public-python-projects.md` for shared public Python repo guidance.
+- Use `<astro-agents-path>/guidance/python-development.md` for shared Python development guidance.
 ```
 
 And a local source-of-truth doc such as `docs/architecture.md` may include:
@@ -110,9 +144,9 @@ And a local source-of-truth doc such as `docs/architecture.md` may include:
 ## Shared Guidance
 
 This repo adopts the shared guidance in:
-- `astro-agents/guidance/agent-surface.md`
-- `astro-agents/guidance/public-python-projects.md`
-- `astro-agents/guidance/python-development.md`
+- `<astro-agents-path>/guidance/agent-surface.md`
+- `<astro-agents-path>/guidance/public-python-projects.md`
+- `<astro-agents-path>/guidance/python-development.md`
 
 Repo-local commands, package boundaries, contracts, lifecycle rules, and exceptions in this repo's own docs remain the source of truth.
 ```
@@ -127,10 +161,10 @@ For example:
 
 ```md
 ## Authoring Requirements
-- For Python code, follow `astro-agents/authoring/code/python.md`.
-- For repo docs such as `docs/architecture.md`, `docs/testing.md`, `docs/development.md`, and similar long-lived repo documents, follow `astro-agents/authoring/writing/repo-docs.md`.
-- For `README.md`, follow `astro-agents/authoring/writing/readme-md.md` in addition to `astro-agents/authoring/writing/repo-docs.md`.
-- For plan documents or phased execution docs when they are created or revised, follow `astro-agents/authoring/writing/plan.md`.
+- For Python code, follow `<astro-agents-path>/authoring/code/python.md`.
+- For repo docs such as `docs/architecture.md`, `docs/testing.md`, `docs/development.md`, and similar long-lived repo documents, follow `<astro-agents-path>/authoring/writing/repo-docs.md`.
+- For `README.md`, follow `<astro-agents-path>/authoring/writing/readme-md.md` in addition to `<astro-agents-path>/authoring/writing/repo-docs.md`.
+- For plan documents or phased execution docs when they are created or revised, follow `<astro-agents-path>/authoring/writing/plan.md`.
 ```
 
 ## Starter Requests

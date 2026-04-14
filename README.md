@@ -1,31 +1,41 @@
-# Astro Agents
+# astro-agents
 
-Astro Agents is a reusable library for authoring, routing, reviewing, and
-supporting AI-agent guidance in repositories.
-It also includes source-of-truth design docs for repo-upgrade guidance,
-downstream shared recommendation docs, and related agent-surface patterns.
+`astro-agents` is a shared prompt and documentation library for repo-level agent guidance. It collects reusable authoring prompts, validation routes, downstream guidance docs, and design references for people who want a more structured agent surface across repositories.
 
-## Overview
+> [!NOTE]
+> `astro-agents` is public and pre-1.0. The repo is usable today, but its file-level contracts and structure may still change as the public surface settles.
 
-It currently includes:
+## What It Is
 
-- authoring prompts and guides in `authoring/`
-- shared downstream recommendation docs in `guidance/`
+- shared authoring prompts and guides in `authoring/`
 - shared validation review entrypoints and workflows in `validation/`
-- upgrade design guidance in `docs/upgrade-design.md`
-- top-level and folder-level `AGENTS.md` guidance
+- shared downstream recommendation docs in `guidance/`
+- source-of-truth design docs for the library itself in `docs/`
+- repo-local validation files for `astro-agents` itself in `agents/`
 
-This repo also includes repo-local validation review files for `astro-agents` itself under `agents/`.
+## Who It Is For
 
-## Start Here
+- repo owners using `AGENTS.md`-style repo guidance
+- people standardizing prompt, documentation, and review structure across repos
+- teams experimenting with reusable repo-level agent workflows
 
-- To understand the library's route structure and design, start with `docs/architecture.md`.
-- To use the library in another repo, start with `docs/usage.md`.
-- To use the shared downstream recommendation docs, start with `guidance/README.md`.
-- To author or revise prompts and guides, start with `authoring/README.md`.
-- To review prompts, documentation, or route structure, start with `validation/README.md`.
-- To assess a repo or propose how to group the upgrade work, start with the upgrade path in `validation/README.md`.
-- To revise the shared upgrade model, start with `docs/upgrade-design.md`.
+## What It Is Not
+
+- not a package API or SDK
+- not a hosted service or docs site
+- not a replacement for repo-local architecture, testing, or workflow docs
+- not a claim that every agent runtime named in this repo has equal operational support today
+
+## Current Support
+
+The most complete documented path today is Codex plus `AGENTS.md`. The repo also tracks broader agent-runtime vocabulary and design ideas so the library can stay portable, but those broader references do not currently imply equal adoption or validation support across runtimes.
+
+## Quickstart
+
+1. Make a checkout of `astro-agents` available in the workspace where you want to use it.
+2. Use `docs/usage.md` to choose a bootstrap path and adopt the parts of `astro-agents` that fit your repo.
+
+`docs/usage.md` owns the exact repo-local and global bootstrap snippets, the minimal adoption path, and the optional shared-validation and shared-guidance layers.
 
 ## Repository Layout
 
@@ -36,38 +46,31 @@ This repo also includes repo-local validation review files for `astro-agents` it
 - `validation/`
   - shared validation review entrypoints, workflows, and upgrade assessment paths
 - `docs/`
-  - architecture, usage, testing, glossary, and upgrade-design documentation
+  - architecture, usage, testing, glossary, runtime, and upgrade-design docs
 - `agents/`
   - repo-local validation review files for `astro-agents`
 
-## Key Documents
+`docs/future/` holds roadmap and design material for later runtime work. Keep it out of the normal onboarding path unless you are working on that future design directly.
 
-For deeper architecture, usage, downstream guidance, and validation material,
-see:
+## Start Here
 
-- `docs/architecture.md`
-  - route structure, rationale, scope ownership, validation, maintenance, and starting documents
 - `docs/usage.md`
-  - bootstrap, documentation surface profile declaration, starter requests, and shared validation wiring
-- `guidance/README.md`
-  - boundary and entrypoint for the shared downstream recommendation-doc family
-- `guidance/agent-surface.md`
-  - shared agent-surface starter, placement, and local/shared structure guidance
-- `guidance/public-python-projects.md`
-  - shared public Python repo-shape, source-of-truth, and public-surface guidance
-- `guidance/python-development.md`
-  - shared Python architecture, coding-policy, and development-workflow guidance
-- `docs/glossary.md`
-  - shared terminology, term boundaries, and rules for when a term stays local versus becoming repo-wide
-- `docs/runtime-model.md`
-  - runtime terminology, control-flow concepts, instruction authority, and terminology-reframing guidance for this repo
-- `docs/testing.md`
-  - the repo-local validation contract for this repo, including when repo-local review files apply
-- `validation/base-testing.md`
-  - the shared validation baseline: review mapping, completion expectations, and regression priorities for agent-surface work
-- `docs/upgrade-design.md`
-  - the shared review-led upgrade model and guidance for grouping the work
+  - concrete adoption path for downstream repos and user-global bootstrap
+- `docs/architecture.md`
+  - route structure, scope ownership, validation model, and maintenance expectations for this repo
 - `authoring/README.md`
-  - authoring-guide design, including the special note on `authoring/agents/agents-md.md`
+  - entrypoint for the shared authoring prompts and guides
 - `validation/README.md`
-  - folder-level guidance for the public shared review entrypoints, the upgrade-specific path, and the internal workflow map
+  - shared validation library, review entrypoints, and upgrade path
+- `guidance/README.md`
+  - entrypoint for the shared downstream recommendation docs
+- `docs/runtime-model.md`
+  - runtime vocabulary, current support boundary, and concrete Codex behavior
+- `docs/testing.md`
+  - validation requirements for changes inside `astro-agents`
+
+## Project Status
+
+- Use `CHANGELOG.md` for the public change history.
+- This repo is public and pre-1.0.
+- The public surface is still settling.

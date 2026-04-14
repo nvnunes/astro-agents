@@ -28,7 +28,10 @@ This guide is intended for codebases that value stable contracts, explicit owner
   - composed helpers next
   - public starting documents last
 - If a module follows a strong lifecycle, order methods by lifecycle instead.
-- Separate logical blocks with clear section comments.
+- Separate logical blocks with clear section comments when file size,
+  lifecycle shape, or ownership grouping would otherwise make scanning harder.
+- Name section comments after real ownership or lifecycle groups rather than as
+  decorative separators.
 - Keep helpers in the narrowest module that owns the behavior.
 
 ## Contracts And Validation
@@ -53,8 +56,36 @@ This guide is intended for codebases that value stable contracts, explicit owner
 - Keep comments concise and technical.
 - Avoid historical or conversational comments.
 - Keep docstrings aligned with current behavior and ownership.
-- Public functions and core validators should document the contract they enforce, not implementation history.
-- Underscore-prefixed hooks or extension points that are part of a class contract should have full docstrings covering purpose, inputs, return value, mutation expectations, and error behavior.
+- Public modules, classes, functions, methods, and typed contract objects
+  should document the contract they expose, not just the action they perform.
+- Public functions and core validators should document the contract they
+  enforce, not implementation history.
+- Use a one-line public docstring only when the full caller contract is obvious
+  from the name, signature, defaults, types, and surrounding context.
+- Otherwise use a multi-line contract docstring.
+- When contract details materially affect correct use, document the relevant
+  role or ownership in the module or lifecycle, important inputs and return
+  form, persisted paths, keys, or schema surfaces, relevant units, shapes, or
+  cardinality, side effects or mutation expectations, important non-goals or
+  exclusions, and error behavior.
+- For public dataclasses and other typed config, request, result, or status
+  objects, document field-level contract details individually when those fields
+  materially affect correct use.
+- Prefer a structured `Attributes:` block when it improves scanability,
+  supports generated reference docs, or keeps peer public surfaces consistent.
+- A prose-only summary is acceptable only when the object is small and each
+  public field's contract is otherwise obvious.
+- Document public hooks or extension points as real contracts.
+- When underscore-prefixed hooks are part of a class contract, give them full
+  docstrings covering purpose, inputs, return value, mutation expectations, and
+  error behavior.
+- Keep peer public APIs and typed contract objects in the same module at a
+  comparable contract/reference level.
+- In contract-heavy modules, document private helpers when they own schema
+  shaping, persisted-path behavior, or other non-obvious invariants that are
+  not obvious from code alone.
+- When docstrings feed published reference docs, also apply
+  `authoring/writing/repo-docs.md`.
 
 ## Preservation And Revision
 When revising existing Python code:
@@ -76,6 +107,17 @@ When revising existing Python code:
 - Editing existing code: follow established local patterns unless they are clearly harmful or the user asks for a deliberate style change.
 - Writing new modules: use the default module organization in this guide unless the codebase already uses a different stable pattern.
 - Reviewing code: prefer concrete findings over speculative redesigns.
+- Reviewing public code: flag action-only docstrings where contract details are
+  needed.
+- Reviewing public code: flag missing lifecycle or ownership context in public
+  module or class docstrings.
+- Reviewing public code: flag inconsistent docstring completeness or structure
+  across peer public APIs or typed contract objects.
+- Reviewing large, lifecycle-heavy, or contract-heavy modules: flag missing
+  structural section comments when they would materially improve scanability or
+  ownership clarity.
+- Reviewing contract-heavy modules: flag undocumented private helpers that own
+  schema shaping, persisted-path behavior, or other non-obvious contract logic.
 - Refactoring code: prioritize clarity, ownership, lifecycle order, and contract preservation over stylistic novelty.
 
 ## Output

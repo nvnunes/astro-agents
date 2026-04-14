@@ -1,6 +1,9 @@
 # Architecture
 
-This document is the human-facing source of truth for the `astro-agents` route structure and scope model. Use it when designing or revising the library's own structure, or when reasoning about how the library fits into a broader workspace routing and workflow model.
+This document is the human-facing source of truth for the `astro-agents` route
+structure and scope model. Use it when designing or revising the library's own
+structure, or when reasoning about how the library fits into a broader
+workspace routing and workflow model.
 
 Use `docs/glossary.md` for shared local vocabulary such as `agent surface`, `documentation surface`, `documentation surface profile`, and `source of truth`. Use `docs/runtime-model.md` for runtime and control-flow terms such as `route`, `handoff`, `dispatcher`, `selector`, `orchestrator`, `prompt`, `instructions`, and `context`.
 
@@ -8,15 +11,28 @@ Use `docs/usage.md` when applying this library in another repo or workspace.
 
 ## Architecture Model
 
-The prompt library holds reusable prompts, guides, routing and workflow conventions, and source-of-truth design docs that should not be duplicated across repositories. These include authoring guides, review files, upgrade design guidance, and prompt-family routing conventions.
+The prompt library holds reusable prompts, guides, routing and workflow
+conventions, source-of-truth design docs, and shared downstream recommendation
+docs that should not be duplicated across repositories. These include
+authoring guides, review files, upgrade design guidance, prompt-family routing
+conventions, and `guidance/` reference docs that downstream repos may cite
+directly.
 
-The route structure is built around three recurring roles:
+The routed prompt surface is built around three recurring roles:
 
 - `AGENTS.md` files direct routing and workflow by routing into prompt families, choosing narrower prompts when needed, and pointing to the next prompt or source-of-truth document
 - `README.md` files explain folder purpose, supporting guidance, and rationale
 - prompt files carry the substantive reusable behavior
 
-That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such as `authoring/`, `authoring/code/`, and `validation/`; in this repo, it is a local way of applying the broader recommendation to keep routing and bounded choice brief and explanation in supporting docs.
+That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such
+as `authoring/`, `authoring/code/`, and `validation/`; in this repo, it is a
+local way of applying the broader recommendation to keep routing and bounded
+choice brief and explanation in supporting docs.
+
+Not every reusable document in this repo belongs to that routed prompt
+surface. The `guidance/` family holds shared recommendation docs for downstream
+repos. Those docs are intentionally non-routed and are cited directly by
+downstream repos when useful.
 
 ## AGENTS.md As Map, Docs As Source Of Truth
 
@@ -36,13 +52,34 @@ In practice:
 
 The goal is to make the right information easy to find and hard to misapply.
 
+## Guidance As Downstream Reference
+
+The `guidance/` family is intentionally outside the routed prompt surface.
+
+It holds shared recommendation docs that downstream repos may reference
+directly from local `AGENTS.md` files or local source-of-truth docs when they
+choose to adopt a shared recommendation.
+
+Within this repo:
+
+- `guidance/` docs are `astro-agents`-aware rather than generic detached
+  templates
+- this repo's own `AGENTS.md` files should not route into `guidance/`
+- repo-local facts for a downstream repo should remain in that downstream
+  repo's own source-of-truth docs
+
 ## Library Structure
 
-At the repo root, the architecture separates source-of-truth docs in `docs/`, shared prompt families in `authoring/` and `validation/`, and repo-local prompts in `agents/`, with `README.md` and `AGENTS.md` providing the starting documents and top-level routing and workflow guidance.
+At the repo root, the architecture separates source-of-truth docs in `docs/`,
+shared downstream recommendation docs in `guidance/`, shared prompt families
+in `authoring/` and `validation/`, and repo-local prompts in `agents/`, with
+`README.md` and `AGENTS.md` providing the starting documents and top-level
+routing and workflow guidance.
 
 Within that split:
 
 - `docs/` holds the stable source-of-truth documents that explain how the library is structured and used
+- `guidance/` holds shared human-and-agent recommendation docs for downstream repos and is intentionally outside the routed prompt surface
 - `authoring/` and `validation/` hold the reusable shared prompt families that the library is organized around
 - `docs/upgrade-design.md` holds the shared human-facing design for review-led repo upgrades
 - folder-level `AGENTS.md` and `README.md` files in those areas repeat the same routing-and-guidance pattern at a narrower scope
@@ -56,6 +93,8 @@ Within that split:
   - the main agent starting document for prompt-family dispatch and bounded choice
 - `docs/usage.md`
   - the main companion document for applying this library in other repos and workspaces
+- `guidance/README.md`
+  - the main human-and-agent entrypoint for shared downstream recommendation docs
 - `validation/README.md`
   - the human-facing guide to the shared validation library, including reusable starter requests
 - `docs/upgrade-design.md`
@@ -93,10 +132,11 @@ Within this repo:
 
 - use forms such as `docs/architecture.md`, `authoring/agents/agents-md.md`, and `validation/review/full-agent-surface-review.md`
 
-In the agent-facing files of other repos, when referring to prompts from this library:
+In the agent-facing files of other repos, when referring to reusable material
+from this library:
 
 - prefer generic routing wording over hardcoded workspace paths, such as `For docs review, use the shared documentation review.`, which is intended to route into `astro-agents/validation/review/documentation-review.md` when the recommended shared prompts are present
-- use explicit `astro-agents/...` references when the local setup intentionally depends on this repo as a named shared prompt library
+- use explicit `astro-agents/...` references when the local setup intentionally depends on this repo as a named shared prompt library, including direct references to non-routed docs under `astro-agents/guidance/`
 
 ## Prompt-Writing Guidance For Layered Context
 
@@ -123,6 +163,8 @@ Use each scope in the broader prompt system for a distinct kind of instruction:
   - optional global prompt assets that should be used only through explicit routing rather than through an `agents/AGENTS.md` routing layer
 - `<astro-agents-path>`
   - the shared prompt library repo, typically used as reusable infrastructure by other repos rather than modified during ordinary repo work
+- `<astro-agents-path>/guidance`
+  - shared human-and-agent recommendation docs for downstream repos; non-routed, `astro-agents`-aware, and directly referenceable from downstream repo surfaces
 - `<repo>/AGENTS.md`
   - repo-specific architecture, contract boundaries, workflow commands, testing expectations, deployment or environment rules, and review priorities
 - `<repo>/agents`
@@ -135,6 +177,7 @@ When deciding where a rule belongs:
 - if it is truly reusable across users, repos, and tasks without depending on one repo's internal design, it is a good candidate for inclusion in the `astro-agents` prompt library
 - if it is global bootstrap guidance that should direct work across repos, keep it in `$CODEX_HOME/AGENTS.md`
 - if it is a global reusable prompt or user preference that should be used across repos through explicit routing, keep it in `<global>/agents`
+- if it is reusable downstream guidance that repos may cite directly but it should not be part of the routed prompt surface or this repo's own source-of-truth docs, keep it in `guidance/`
 - if it is reusable within one repo but too local for the shared library, keep it in that repo's `agents/` and route to it explicitly from repo-local guidance when needed
 - if it depends on a repo's architecture, API, testing strategy, deployment path, or domain contracts, keep it in that repo's source-of-truth docs or root `AGENTS.md`
 - if it matters only inside one subtree, keep it in that subtree's `AGENTS.md` or source-of-truth docs

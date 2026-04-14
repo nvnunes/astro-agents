@@ -1,7 +1,14 @@
 # Repo Docs
 
 ## Purpose
-Use this style for repository-facing documentation such as `README.md`, `docs/architecture.md`, `docs/testing.md`, `docs/api.md`, `docs/glossary.md`, `CONTRIBUTING.md`, and similar long-lived operational, reference, or design documents. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the additional rules below.
+Use this style for repository-facing documentation such as `README.md`,
+`docs/architecture.md`, `docs/testing.md`, `docs/api.md`,
+`docs/glossary.md`, `CONTRIBUTING.md`, and similar long-lived operational,
+reference, or design documents. Use it as well for generated
+reference-doc inputs such as docstrings or docs-generation config when they
+define published repo docs. Inherit the common documentation-writing
+discipline from `authoring/writing/base.md`, then apply the additional rules
+below.
 
 ## Success Criteria
 - Make the document easy to scan and use as an orientation, source-of-truth, or operational reference.
@@ -14,6 +21,7 @@ Use this style for repository-facing documentation such as `README.md`, `docs/ar
 - Keep setup, commands, and where-to-go-next guidance close to the sections that depend on them.
 - Keep commands, paths, interfaces, boundaries, and source-of-truth references explicit.
 - Keep source-of-truth boundaries explicit between `README.md`, `AGENTS.md`, architecture docs, testing docs, and plans.
+- Treat generated reference-doc inputs as part of the same source-of-truth system when they define published docs.
 - Link to deeper documents instead of duplicating them.
 - Do not let one repo doc drift into doing the job of another.
 

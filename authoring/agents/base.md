@@ -21,9 +21,11 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 ## Style
 - Use direct, imperative language for operational instructions.
 - Prefer short sections and flat bullets.
+- Optimize for fewer ideas, not fewer lines.
 - Lead with the prompt's purpose and task.
 - Keep instructions concrete enough that the prompt can be applied consistently.
-- State one instruction or constraint clearly instead of implying it through abstract framing.
+- Keep one real instruction or constraint per bullet when possible.
+- Use a longer bullet only when the extra clause is a tight qualifier, not a second rule.
 - Avoid vague, hedged, or internally conflicting instructions.
 - Prefer explicit references to the applicable source-of-truth document or comparison standard when one exists.
 
@@ -60,6 +62,7 @@ When revising prompts:
 - Prefer replacing weaker or outdated guidance with clearer guidance rather than layering additional overlapping instructions on top.
 - Replace descriptive or hedged wording with direct instructions.
 - Remove conflicting or overlapping guidance instead of layering more text onto it.
+- Do not compress multiple independent rules into one dense bullet just to reduce line count.
 - Improve operational clarity and output specificity.
 
 ## Output

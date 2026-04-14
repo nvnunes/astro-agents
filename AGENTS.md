@@ -16,6 +16,7 @@ This repo is the shared prompt library itself, so this root `AGENTS.md` acts as 
 ## Source Of Truth
 - Use `README.md` for the repo overview and major starting documents.
 - Use `docs/architecture.md` for route structure, scope ownership, validation model, and maintenance expectations in this repo.
+- Use `docs/usage.md` for downstream adoption, shared guidance inclusion, shared validation usage, and starter-request patterns.
 - Use `docs/runtime-model.md` for runtime terminology, control-flow concepts, and terminology-reframing guidance in this repo.
 - Use `docs/testing.md` for validation requirements and canonical review checks in this repo.
 - Use `docs/upgrade-design.md` for the upgrade process design and next steps.

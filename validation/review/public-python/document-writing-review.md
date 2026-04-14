@@ -17,7 +17,7 @@ If the review scope is not specified, review the human-facing documents inside t
 
 When running this review:
 
-- inspect `docs/public-python-docs-design.md` as the source of truth for the `public-python` documentation surface model
+- inspect `guidance/public-python-projects.md`, especially `## Shared Public-Python Docs Review Model`, as the source of truth for the `public-python` documentation surface model
 - inspect `docs/usage.md` for the shared operational guidance on the `public-python` profile
 - start from the public starting documents and reachability rules defined there
 - identify the human-facing documents within that reachable public documentation surface

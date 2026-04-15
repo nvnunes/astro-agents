@@ -34,7 +34,7 @@ Covered behaviors:
 
 - public shared review entrypoint selection
 - documentation surface profile resolution when relevant
-- internal documentation workflow selection when relevant
+- internal documentation or code-quality workflow selection when relevant
 - repo-local review-file inclusion when relevant
 - high-level `Route Summary` expectations for shared selector and combined-review outputs
 

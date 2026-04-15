@@ -10,6 +10,8 @@ For the repo-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/archi
 
 Use these as the normal directly user-addressable shared review entrypoints:
 
+- `validation/review/code-quality-review.md`
+  - prompt that chooses the applicable shared built-in code-quality workflow for the requested current-state source-code scope
 - `validation/review/full-agent-surface-review.md`
   - coordinating review file for a combined review of prompt-writing quality, routing and scope behavior, and the applicable documentation-review workflow
 - `validation/review/documentation-review.md`
@@ -42,17 +44,21 @@ Use these as the normal directly user-addressable shared review entrypoints:
   - public-Python document-writing step used within that workflow
 - `validation/review/public-python/documentation-architecture-review.md`
   - public-Python documentation-architecture step used within that workflow
+- `validation/review/python/code-quality-review.md`
+  - Python code-quality workflow used internally by the shared code-quality review
 
 In this folder:
 
 - `validation/base-testing.md`
   - defines the shared validation baseline that downstream repos can import into `docs/testing.md`
-- the public shared review surface is the four entrypoints listed above
+- the public shared review surface is the five entrypoints listed above
 - shared selector and combined-review outputs should include a short `Route Summary` showing the active review path
 - upgrade review stays user-facing, but as a separate upgrade-specific path rather than as part of the core public review set
 - the shared validation library currently provides these documentation surface profiles through internal workflows:
   - implicit `private-default`
   - explicit `public-python`
+- the shared validation library currently provides these built-in code-quality workflows:
+  - explicit `python`
 - other documentation surface profiles may be implemented by explicitly provided workspace- or repo-local review files
 
 ## Review Independence
@@ -66,7 +72,7 @@ In this folder:
 - broader synthesis belongs in `validation/review/full-agent-surface-review.md`, not in the narrower reviews
 - if a narrower review repeatedly needs broader scoping to be useful, treat that as a validation-design problem rather than silently broadening the starter request
 - `validation/review/core-document-writing-review.md` is a shared building block, not a starter request for generic docs review
-- profile-specific documentation workflows are internal workflow files, not normal starter requests
+- profile-specific documentation workflows and language-specific code-quality workflows are internal workflow files, not normal starter requests
 
 ## Starter Requests
 
@@ -74,6 +80,8 @@ Use these short prompts in fresh threads when you want the validation dispatcher
 
 - `Do a full agent surface review.`
   - intended to trigger `validation/review/full-agent-surface-review.md` and return one combined assessment across the repo's full agent surface
+- `Do a code quality review.`
+  - intended to trigger `validation/review/code-quality-review.md` and select the shared Python workflow when the requested scope is clearly Python
 - `Review this repository's docs using the shared documentation review.`
   - intended to trigger `validation/review/documentation-review.md` and determine the repo's declared documentation surface profile, or `private-default` when none is declared
 - `Review this repository's AGENTS.md files and prompts using the shared prompt-writing review.`

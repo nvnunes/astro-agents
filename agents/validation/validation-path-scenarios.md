@@ -10,7 +10,7 @@ Keep it focused on the current validation surface rather than on broader runtime
 
 - public shared review entrypoint selection
 - documentation surface profile resolution when relevant
-- internal documentation workflow selection when relevant
+- internal documentation or code-quality workflow selection when relevant
 - repo-local review-file inclusion when relevant
 - high-level `Route Summary` expectations for shared selector and combined-review outputs
 
@@ -39,6 +39,28 @@ Use this minimum shape for each maintained scenario:
 Add concrete scenarios in later passes rather than expanding this file with broader runtime doctrine.
 
 ## Maintained Scenarios
+
+### Scenario
+
+- `Python code-quality review`
+- `Trigger`: `Do a code quality review.` for a target repo or target scope that is clearly Python
+- `Expected Public Review Entrypoint`: `validation/review/code-quality-review.md`
+- `Expected Documentation Surface Profile`: not applicable
+- `Expected Internal Review Steps`: `validation/review/python/code-quality-review.md`
+- `Expected Repo-Local Review Files`: none by default
+- `Expected Route Summary`: includes the public review entrypoint, the selected internal code-quality workflow, and only the material source-of-truth docs
+- `Notes`: this covers the built-in shared code-quality workflow when the requested scope clearly resolves to Python
+
+### Scenario
+
+- `Unsupported-language code-quality review`
+- `Trigger`: `Do a code quality review.` for a target repo or target scope that does not clearly resolve to Python
+- `Expected Public Review Entrypoint`: `validation/review/code-quality-review.md`
+- `Expected Documentation Surface Profile`: not applicable
+- `Expected Internal Review Steps`: none from the shared built-in code-quality workflows
+- `Expected Repo-Local Review Files`: none by default
+- `Expected Route Summary`: includes the public review entrypoint and notes that no shared internal code-quality workflow was available
+- `Notes`: the expected outcome is a validation-design finding for unsupported shared code-quality handling
 
 ### Scenario
 

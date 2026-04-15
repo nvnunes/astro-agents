@@ -174,6 +174,7 @@ Use starter requests when you want a fresh thread to invoke a shared path with m
 Common examples:
 
 - `Do a full agent surface review using astro-agents`
+- `Do a code quality review using astro-agents`
 - `Review the repo docs using the shared documentation review using astro-agents`
 - `Revise manuscript.tex using the shared science writing guide using astro-agents`
 

@@ -11,6 +11,7 @@ When a request asks to upgrade a repo, review a repo for upgrade readiness, plan
 
 When a request explicitly asks for one of the shared validation reviews:
 
+- use `validation/review/code-quality-review.md` for current-state source-code quality review through the applicable shared built-in workflow
 - use `validation/review/documentation-review.md` for documentation review chosen from the repo's documentation surface profile
 - use `validation/review/prompt-writing-review.md` for `AGENTS.md` files and prompts
 - use `validation/review/routing-and-scope-review.md` for routing, workflow, and scope behavior
@@ -25,6 +26,10 @@ When a request asks to review human-facing docs or folder-level `README.md` file
 When a request asks to review prompts or `AGENTS.md` files without naming a review:
 
 - use `validation/review/prompt-writing-review.md` unless the request clearly focuses on routing and workflow, scope behavior, explicit local exceptions, or route-structure behavior
+
+When a request asks to review code quality or source-code quality without naming a review:
+
+- use `validation/review/code-quality-review.md`
 
 When a request asks to validate route structure, assess scope ownership, or evaluate prompt routing and workflow without naming a review:
 
@@ -44,10 +49,11 @@ When the review scope is not specified:
 
 - Use `validation/review/core-document-writing-review.md` only as a reusable internal building block, not as a normal starter review.
 - Use files under `validation/review/private-default/` and `validation/review/public-python/` as internal documentation-workflow files unless a narrower implementation task explicitly requires them.
+- Use files under `validation/review/python/` as internal code-quality workflow files unless a narrower implementation task explicitly requires them.
 
 ## Use Of Shared Review Prompts
 
-- Use shared review prompts for agent surface review, not application-code quality or generic prose quality.
+- Use shared review prompts for agent surface review and explicit shared code-quality review, not generic prose quality or broad application audits.
 - More specific repo or subtree `AGENTS.md` files may apply narrower local review prompts within their scope.
 - Follow local instructions when the review must account for narrower domain, workflow, or document constraints.
 

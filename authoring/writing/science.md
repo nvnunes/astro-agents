@@ -16,11 +16,12 @@ Use this style for scientific research writing intended for direct inclusion in 
 
 ## Language Discipline
 - Prefer direct, concrete phrasing over abstract or conceptual language.
-- Minimize adjectives and qualifiers. Keep them only if they change technical meaning.
+- Use adjectives and qualifiers sparingly. Keep them when they clarify supported novelty, scale, limitation, comparison, uncertainty, or interpretive weight; remove them when they are vague, decorative, or unsupported.
 - Avoid vague terms unless they are specified or quantified (e.g., “significant,” “important,” “broad,” “various”).
 - Avoid abstract or institutional-sounding nouns unless they are necessary and clearly defined (e.g., “capability,” “functionality,” “operability,” “viability”). Replace them with what is actually measured, computed, selected, or compared.
 - Use the simplest correct terminology. Prefer simpler terms over jargon unless the jargon is necessary and defined.
 - Make specific claims. Do not write “traditional approaches” or “improves performance” without saying what approach or what improvement.
+- Do not bury the main contribution in neutral exposition. When the source supports novelty, contrast, or interpretive importance, state it plainly and specifically.
 - Give examples or citations instead of vague references to prior work.
 - Do not restate the same point in multiple ways.
 

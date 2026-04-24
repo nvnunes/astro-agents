@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Run an entry-local Python command with research-log token resolution."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import re
+from pathlib import Path
+
+
+TOKEN_RE = re.compile(r"<([^<>]+)>")
+
+
+def usage() -> int:
+    print("usage: pyrun <script> [args...]", file=sys.stderr)
+    return 2
+
+
+def clean_cell(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == "`" and value[-1] == "`":
+        return value[1:-1].strip()
+    return value
+
+
+def repo_root(cwd: Path) -> Path:
+    try:
+        output = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit("pyrun: could not resolve repository root with git") from exc
+    return Path(output.strip())
+
+
+def python_executable(root: Path) -> str:
+    repo_conda = root / ".conda" / "bin" / "python"
+    if repo_conda.exists():
+        return str(repo_conda)
+    return sys.executable
+
+
+def theme_root(cwd: Path) -> Path:
+    for candidate in [cwd, *cwd.parents]:
+        if (candidate / "index.md").is_file() and (candidate / "entries").is_dir():
+            return candidate
+    raise SystemExit(
+        "pyrun: could not resolve theme root; expected an ancestor with index.md and entries/"
+    )
+
+
+def manifest_candidates(cwd: Path) -> list[Path]:
+    return [
+        cwd / "manifest.md",
+        cwd / "data" / "manifest.md",
+        cwd.parent / "data" / "manifest.md",
+    ]
+
+
+def find_manifest(cwd: Path) -> Path | None:
+    for candidate in manifest_candidates(cwd):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def table_rows(manifest: Path) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+        rows.append([clean_cell(cell) for cell in line.strip("|").split("|")])
+    return rows
+
+
+def is_separator(row: list[str]) -> bool:
+    return all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
+
+
+def manifest_locations(manifest: Path | None) -> dict[str, str]:
+    if manifest is None:
+        return {}
+
+    rows = table_rows(manifest)
+    if len(rows) < 2:
+        raise SystemExit(f"pyrun: no manifest table found: {manifest}")
+
+    headers = [cell.strip().lower() for cell in rows[0]]
+    try:
+        name_index = headers.index("name")
+        location_index = headers.index("location")
+    except ValueError as exc:
+        raise SystemExit(
+            f"pyrun: manifest table must include Name and Location columns: {manifest}"
+        ) from exc
+
+    locations: dict[str, str] = {}
+    for row in rows[1:]:
+        if is_separator(row) or len(row) <= max(name_index, location_index):
+            continue
+        name = row[name_index]
+        location = row[location_index]
+        if name:
+            locations[name] = location
+    return locations
+
+
+def resolve_arg(arg: str, root: Path, theme: Path, locations: dict[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name == "repo":
+            return str(root)
+        if name == "theme":
+            return str(theme)
+        if name in locations:
+            location = locations[name]
+            if not location:
+                raise SystemExit(f"pyrun: empty location for manifest name: {name}")
+            return location
+        raise SystemExit(f"pyrun: unresolved token: <{name}> in argument: {arg}")
+
+    return TOKEN_RE.sub(replace, arg)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        return usage()
+
+    cwd = Path.cwd()
+    root = repo_root(cwd)
+    theme = theme_root(cwd)
+    locations = manifest_locations(find_manifest(cwd))
+    resolved = [resolve_arg(arg, root, theme, locations) for arg in argv[1:]]
+
+    return subprocess.run([python_executable(root), *resolved], cwd=cwd).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

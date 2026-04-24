@@ -22,6 +22,8 @@ When running this review:
 - use `authoring/agents/writing-prompt.md` when reviewing prompts under `authoring/writing/`, because those files are still agent-facing writing guides even though they target human-facing writing
 - use `authoring/agents/coding-prompt.md` when reviewing prompts under `authoring/code/` or repo-local `agents/authoring/code/`
 - use `authoring/agents/review-prompt.md` when reviewing prompts under `validation/` or repo-local `agents/validation/`, except where a more specific local standard explicitly takes instruction authority
+- use `authoring/agents/agents-md.md` when reviewing `AGENTS.md` files under `research-log/`
+- use `authoring/agents/base.md` when reviewing mode, file, or operation prompts under `research-log/themes/instructions/`
 - use `authoring/agents/base.md` for other repo-local prompts under `agents/`
 - inspect surrounding local context only when needed to determine prompt role or applicable comparison guide
 

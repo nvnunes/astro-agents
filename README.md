@@ -1,6 +1,6 @@
 # astro-agents
 
-`astro-agents` is a shared prompt and documentation library for repo-level agent guidance. It collects reusable authoring prompts, validation routes, downstream guidance docs, and design references for people who want a more structured agent surface across repositories.
+`astro-agents` is a shared prompt and documentation library for repo-level agent guidance. It collects reusable authoring prompts, validation routes, research-log guidance, downstream guidance docs, and design references for people who want a more structured agent surface across repositories.
 
 > [!NOTE]
 > `astro-agents` is public and pre-1.0. The repo is usable today, but its file-level contracts and structure may still change as the public surface settles.
@@ -9,6 +9,7 @@
 
 - shared authoring prompts and guides in `authoring/`
 - shared validation review entrypoints and workflows in `validation/`
+- reusable research-log guidance in `research-log/`
 - shared downstream recommendation docs in `guidance/`
 - source-of-truth design docs for the library itself in `docs/`
 - repo-local validation files for `astro-agents` itself in `agents/`
@@ -45,6 +46,8 @@ The most complete documented path today is Codex plus `AGENTS.md`. The repo also
   - shared recommendation docs for downstream repos
 - `validation/`
   - shared validation review entrypoints, workflows, and upgrade assessment paths
+- `research-log/`
+  - reusable research-log and theme-document guidance
 - `docs/`
   - architecture, usage, testing, glossary, runtime, and upgrade-design docs
 - `agents/`
@@ -62,6 +65,8 @@ The most complete documented path today is Codex plus `AGENTS.md`. The repo also
   - entrypoint for the shared authoring prompts and guides
 - `validation/README.md`
   - shared validation library, review entrypoints, and upgrade path
+- `research-log/README.md`
+  - reusable research-log guidance and theme-document maintenance entrypoint
 - `guidance/README.md`
   - entrypoint for the shared downstream recommendation docs
 - `docs/runtime-model.md`

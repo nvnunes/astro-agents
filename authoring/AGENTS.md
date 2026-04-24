@@ -19,6 +19,7 @@ When choosing among shared authoring guides in this folder:
 - for other repo-facing documentation such as `docs/architecture.md`, `docs/testing.md`, `docs/api.md`, or `CONTRIBUTING.md`, prefer `authoring/writing/repo-docs.md`
 - for glossary or terminology-reference docs such as `docs/glossary.md`, prefer `authoring/writing/repo-docs.md`
 - for scientific manuscripts, theses, proceedings, or proposals, prefer `authoring/writing/science.md`
+- for research-log entries, prefer `authoring/writing/research-log-entry.md`
 - for framework overviews, concept notes, design charters, or guiding documents, prefer `authoring/writing/foundation.md`
 - for working plans, phased roadmaps, or implementation plans, prefer `authoring/writing/plan.md`
 - for ad hoc planning requests such as `plan this work`, `next steps`, `execution plan`, sequencing, roadmap drafting, or review planning, prefer `authoring/writing/plan.md` even when no plan file exists yet

@@ -61,7 +61,10 @@ Use a minimal global bootstrap such as:
 ```md
 ## Astro-Agents Bootstrap
 - Use `astro-agents` by default for reusable authoring, review, and routing guidance across repos.
+- Resolve `astro-agents/...` references to `<astro-agents-path>/...`.
 ```
+
+Use an absolute path for `<astro-agents-path>` in the actual global bootstrap.
 
 In this mode, repo root `AGENTS.md` files should add only repo-local guidance, source-of-truth docs, or narrower routing that the repo itself needs. If one repo should not use the global default, keep the global bootstrap in `$CODEX_HOME/AGENTS.md` and use the repo root `AGENTS.md` to opt out or redirect for that repo with a minimal repo-level exception such as:
 
@@ -109,6 +112,29 @@ Add repo-local verification commands and completion expectations below as needed
 Use `validation/README.md` for the public shared review entrypoints and starter
 requests. Keep repo-specific commands and completion expectations in the
 downstream repo's own `docs/testing.md`.
+
+## Research Log Routing
+
+A downstream repo may add a short `## Research Logs` section to root
+`AGENTS.md` when it wants natural research-log requests to resolve to known
+local theme files and folders.
+
+Keep theme names, aliases, and paths in the downstream repo because they are
+repo-specific facts. Use `astro-agents` for the reusable research-log behavior.
+
+For example:
+
+```md
+## Research Logs
+- For capture, summary update, summary check, concept maintenance, or source-document upgrade work in `adaptive optics` (`docs/research/adaptive-optics.md`, `docs/research/adaptive-optics/`) or `telemetry` (`docs/research/telemetry.md`, `docs/research/telemetry/`), use `<astro-agents-path>/research-log/AGENTS.md`.
+```
+
+This enables natural prompts such as:
+
+- `Let's work on adaptive optics.`
+- `Capture this in telemetry.`
+- `Update the adaptive optics summary.`
+- `Rebuild telemetry.`
 
 ## Shared Guidance
 
@@ -180,3 +206,4 @@ Common examples:
 
 For additional examples, see:
 - `validation/README.md` for the public shared review entrypoints and upgrade-specific starter requests
+- `research-log/README.md` for research-log activation and operation starter requests

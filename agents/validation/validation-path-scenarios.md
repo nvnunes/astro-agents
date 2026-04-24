@@ -30,6 +30,7 @@ Use this minimum shape for each maintained scenario:
 - `Scenario`
 - `Trigger`
 - `Expected Public Review Entrypoint`
+- `Expected Upgrade-Specific Review Path`, only for upgrade-specific scenarios
 - `Expected Documentation Surface Profile`
 - `Expected Internal Review Steps`
 - `Expected Repo-Local Review Files`
@@ -143,9 +144,10 @@ Add concrete scenarios in later passes rather than expanding this file with broa
 
 - `Upgrade-specific review path`
 - `Trigger`: `Review this repository for upgrade readiness using the shared upgrade review.`
-- `Expected Public Review Entrypoint`: `validation/review/upgrade-review.md`
+- `Expected Public Review Entrypoint`: not applicable
+- `Expected Upgrade-Specific Review Path`: `validation/review/upgrade-review.md`
 - `Expected Documentation Surface Profile`: `private-default` when no root `AGENTS.md` declares another profile, unless the reviewed repo declares another profile
 - `Expected Internal Review Steps`: `validation/review/full-agent-surface-review.md` as the evidence-gathering review path
 - `Expected Repo-Local Review Files`: whatever repo-local review files the internal full agent-surface review includes for the reviewed scope
 - `Expected Route Summary`: not required by `validation/review/upgrade-review.md` itself; any route summary comes from the internal full agent-surface review when that output is surfaced or summarized
-- `Notes`: this is user-facing, but it stays separate from the four public shared review entrypoints and uses the combined review as evidence rather than as a direct replacement for the upgrade assessment
+- `Notes`: this is user-facing, but it stays separate from the five normal public shared review entrypoints and uses the combined review as evidence rather than as a direct replacement for the upgrade assessment

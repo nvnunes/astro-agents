@@ -33,6 +33,8 @@ For the repo-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/archi
   - authoring guide for repo-facing documentation other than `README.md`, such as architecture docs, testing docs, API docs, and contribution guides
 - `authoring/writing/science.md`
   - authoring guide for scientific papers, theses, proceedings, and proposals
+- `authoring/writing/research-log-entry.md`
+  - authoring guide for research-log entries as evidence records
 - `authoring/writing/foundation.md`
   - authoring guide for conceptual or guiding framework documents
 - `authoring/writing/plan.md`
@@ -63,6 +65,7 @@ Use the most specific applicable prompt or guide from the families above.
 - For AI-facing prompts that define coding or code-review behavior, prefer `authoring/agents/coding-prompt.md`.
 - For review prompts under `validation/`, prefer `authoring/agents/review-prompt.md`.
 - For other human-facing repo docs, prefer the most specific authoring guide under `authoring/writing/`.
+- For research-log entries, prefer `authoring/writing/research-log-entry.md`.
 - For source-code authoring, use `authoring/code/python.md` when Python is the applicable language.
 
 ## Design Reference

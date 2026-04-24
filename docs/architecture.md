@@ -12,11 +12,11 @@ Use `docs/usage.md` when applying this library in another repo or workspace.
 ## Architecture Model
 
 The prompt library holds reusable prompts, guides, routing and workflow
-conventions, source-of-truth design docs, and shared downstream recommendation
-docs that should not be duplicated across repositories. These include
-authoring guides, review files, upgrade design guidance, prompt-family routing
-conventions, and `guidance/` reference docs that downstream repos may cite
-directly.
+conventions, source-of-truth design docs, research-log guidance, and shared
+downstream recommendation docs that should not be duplicated across
+repositories. These include authoring guides, review files, upgrade design
+guidance, research-log prompt surfaces, prompt-family routing conventions, and
+`guidance/` reference docs that downstream repos may cite directly.
 
 The routed prompt surface is built around three recurring roles:
 
@@ -25,9 +25,9 @@ The routed prompt surface is built around three recurring roles:
 - prompt files carry the substantive reusable behavior
 
 That `AGENTS.md`/`README.md` split repeats at narrower scopes in folders such
-as `authoring/`, `authoring/code/`, and `validation/`; in this repo, it is a
-local way of applying the broader recommendation to keep routing and bounded
-choice brief and explanation in supporting docs.
+as `authoring/`, `authoring/code/`, `validation/`, and `research-log/`; in this
+repo, it is a local way of applying the broader recommendation to keep routing
+and bounded choice brief and explanation in supporting docs.
 
 Not every reusable document in this repo belongs to that routed prompt
 surface. The `guidance/` family holds shared recommendation docs for downstream
@@ -72,15 +72,16 @@ Within this repo:
 
 At the repo root, the architecture separates source-of-truth docs in `docs/`,
 shared downstream recommendation docs in `guidance/`, shared prompt families
-in `authoring/` and `validation/`, and repo-local prompts in `agents/`, with
-`README.md` and `AGENTS.md` providing the starting documents and top-level
-routing and workflow guidance.
+in `authoring/`, `validation/`, and `research-log/`, and repo-local prompts in
+`agents/`, with `README.md` and `AGENTS.md` providing the starting documents
+and top-level routing and workflow guidance.
 
 Within that split:
 
 - `docs/` holds the stable source-of-truth documents that explain how the library is structured and used
 - `guidance/` holds shared human-and-agent recommendation docs for downstream repos and is intentionally outside the routed prompt surface
-- `authoring/` and `validation/` hold the reusable shared prompt families that the library is organized around
+- `authoring/`, `validation/`, and `research-log/` hold the reusable shared prompt families that the library is organized around
+- `research-log/` holds reusable research-log and theme-document guidance for source-plus-summary research records
 - `docs/upgrade-design.md` holds the shared human-facing design for review-led repo upgrades
 - folder-level `AGENTS.md` and `README.md` files in those areas repeat the same routing-and-guidance pattern at a narrower scope
 - `agents/` holds repo-local prompts that apply specifically to `astro-agents`
@@ -97,10 +98,12 @@ Within that split:
   - the main human-and-agent entrypoint for shared downstream recommendation docs
 - `validation/README.md`
   - the human-facing guide to the shared validation library, including reusable starter requests
+- `research-log/README.md`
+  - the human-facing guide to reusable research-log and theme-document guidance
 - `docs/upgrade-design.md`
   - the human-facing source of truth for the shared upgrade model
-- `authoring/` and `validation/`
-  - the two main shared prompt families in the library
+- `authoring/`, `validation/`, and `research-log/`
+  - the main shared prompt families in the library
 
 ## Bootstrap Model
 

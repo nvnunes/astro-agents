@@ -22,7 +22,9 @@ For repo-specific validation, use the shared checks as the baseline review seque
 ## Agent Surface Validation
 
 - Changes to `AGENTS.md` files:
-  - then run `agents/validation/root-agents-consistency-review.md` when the root repo `AGENTS.md` is changed and the shared `AGENTS.md` review path is already active
+  - run the shared prompt-writing review
+  - run the shared routing-and-scope review
+  - when the root repo `AGENTS.md` is changed, then run `agents/validation/root-agents-consistency-review.md`
 
 ## Validation-Path Scenario Baseline
 

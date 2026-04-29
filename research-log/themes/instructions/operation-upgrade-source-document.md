@@ -27,8 +27,8 @@ Draft `<theme>.md` through `research-log/themes/instructions/file-summary.md`. T
 9. Include tests that appear to cover only scripts being moved, with a proposed stay, move, or remove action.
 10. Include entries that need `data/manifest.md` for external, large, canonical, or move-prone data assets.
 11. Write entry commands from the perspective of the entry root as the working directory.
-12. If entry Python commands will use manifest-backed assets, theme-shared scripts, repo-level scripts, modules, or other code, include an entry-root `pyrun` symlink for those entries and write commands with `./pyrun`, `<Name>` data tokens, `<theme>/...` theme-code tokens, and `<repo>/...` repo-code tokens rather than raw external paths, relative `../../scripts` paths, hard-coded repo paths, environment activation lines, or `repo=$PWD` setup.
-13. Include whether repo-local `Research Logs` routing in `AGENTS.md` should be updated for the new theme. If the downstream repo has a `## Research Logs` section or another clear research-log theme registry, include the registry update in the plan. If no registry exists, ask before adding one. Add or revise registry entries as compact bullets that route capture, summary update, summary check, concept maintenance, or source-document upgrade work in the named theme to `astro-agents/research-log/AGENTS.md`, with the theme name mapped inline to the `<theme>.md` file and matching `<theme>/` folder.
+12. If entry Python commands will use manifest-backed assets, theme-shared scripts, project-level scripts, modules, or other code, include an entry-root `pyrun` symlink for those entries and write commands with `./pyrun`, `<Name>` data tokens, `<theme>/...` theme-code tokens, and `<project>/...` project-code tokens rather than raw external paths, relative `../../scripts` paths, hard-coded project paths, environment activation lines, or `project=$PWD` setup.
+13. Include whether project-local `Research Logs` routing in `AGENTS.md` should be updated for the new theme. If the downstream project has a `## Research Logs` section or another clear research-log theme registry, include the registry update in the plan. If no registry exists, ask before adding one. Add or revise registry entries as compact bullets that route capture, summary update, summary check, concept maintenance, or source-document upgrade work in the named theme to `astro-agents/research-log/AGENTS.md`, with the theme name mapped inline to the `<theme>.md` file and matching `<theme>/` folder.
 14. Include proposed `AI Use:` labels raised by the source document, or recommend optional human-guided retrospective `AI Use:` review when material AI use cannot be inferred.
 15. Include summary content already present in the source document.
 16. Wait for the human to adjust and approve the plan.
@@ -47,7 +47,7 @@ Draft `<theme>.md` through `research-log/themes/instructions/file-summary.md`. T
 - Add `AI Use:` labels only when approved by the human during the upgrade plan or later explicit direction.
 - If AI involvement is plausible but unapproved or uncertain, preserve only specific, actionable questions in the affected entry as `Question:` or `Follow-up:`.
 - When moving scripts into a research-log folder, identify any tests that appear to cover only those scripts. Ask whether those tests should stay, move with the script, or be removed. Keep tests that still cover public or canonical project behavior.
-- Update repo-local `Research Logs` routing in `AGENTS.md` only when that update was included in the approved upgrade plan. If no registry exists and the human did not approve adding one, leave `AGENTS.md` unchanged and report that the theme is reachable by explicit path only.
+- Update project-local `Research Logs` routing in `AGENTS.md` only when that update was included in the approved upgrade plan. If no registry exists and the human did not approve adding one, leave `AGENTS.md` unchanged and report that the theme is reachable by explicit path only.
 - Draft the initial `<theme>.md` through the summary guide. Preserve source meaning and links to evidence, but do not preserve source wording by default in the summary.
 
 Classify summary-like material as one of:
@@ -73,4 +73,4 @@ If AI involvement remains plausible but unconfirmed, do not speculate. Add `Ques
 
 ## Completion
 
-After the split and draft summary, report entries created, files moved or intentionally left in place, script-only test decisions approved by the human, AI-use notes added or review offered, repo-local `Research Logs` routing updated or intentionally left unchanged, summary content preserved in `<theme>.md`, and items left for human decision.
+After the split and draft summary, report entries created, files moved or intentionally left in place, script-only test decisions approved by the human, AI-use notes added or review offered, project-local `Research Logs` routing updated or intentionally left unchanged, summary content preserved in `<theme>.md`, and items left for human decision.

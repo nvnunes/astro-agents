@@ -33,7 +33,7 @@ Use this style for prompts that define coding, code-editing, refactoring, or cod
 ## Preservation And Revision
 When revising coding prompts:
 - Keep the prompt tied to the coding context it claims to serve.
-- Do not let it drift into repo-specific architecture or workflow rules that belong elsewhere.
+- Do not let it drift into project-specific architecture or workflow rules that belong elsewhere.
 - Keep preservation rules explicit when behavior or contracts must not change.
 - Replace abstract or hedged editing guidance with direct scope and preservation rules.
 

@@ -10,7 +10,7 @@ When choosing among code-authoring guides in this folder:
 - identify the primary language
 - identify the primary task mode, such as writing new code, editing existing code, reviewing code, or refactoring code
 - for Python source files or Python-focused code review, prefer `authoring/code/python.md`
-- check repo-local instructions and existing code conventions first
+- check project-local instructions and existing code conventions first
 - prefer the most specific guide that matches the language and task mode
 
 When the right guide is still not clear after this comparison:
@@ -19,8 +19,8 @@ When the right guide is still not clear after this comparison:
 
 ## Use Of Shared Code Guides
 
-- Use shared code-authoring guides for reusable editing defaults, not for repo-specific architecture or workflow rules.
-- Follow repo-local `AGENTS.md` files when they define architecture, contracts, deployment rules, test commands, or other local conventions.
+- Use shared code-authoring guides for reusable editing defaults, not for project-specific architecture or workflow rules.
+- Follow project-local `AGENTS.md` files when they define architecture, contracts, deployment rules, test commands, or other local conventions.
 - When the task is to revise a coding prompt rather than source code, use `authoring/agents/coding-prompt.md` instead of this folder.
 
 ## Practical Rule

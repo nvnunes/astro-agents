@@ -2,9 +2,9 @@
 
 This folder contains shared reviews and related validation workflows.
 
-Use it to understand the shared reviews in this repo, what each one is for, and which guide or review path to use next.
+Use it to understand the shared reviews in this project, what each one is for, and which guide or review path to use next.
 
-For the repo-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/architecture.md`.
+For the project-wide `AGENTS.md` / `README.md` / prompt role model, use `docs/architecture.md`.
 
 ## Public Review Entrypoints
 
@@ -15,7 +15,7 @@ Use these as the normal directly user-addressable shared review entrypoints:
 - `validation/review/full-agent-surface-review.md`
   - coordinating review file for a combined review of prompt-writing quality, routing and scope behavior, and the applicable documentation-review workflow
 - `validation/review/documentation-review.md`
-  - prompt that chooses documentation review from the repo's documentation surface profile
+  - prompt that chooses documentation review from the project's documentation surface profile
 - `validation/review/prompt-writing-review.md`
   - focused review of `AGENTS.md` and other agent-facing prompts against the applicable prompt-writing guides
 - `validation/review/routing-and-scope-review.md`
@@ -24,7 +24,7 @@ Use these as the normal directly user-addressable shared review entrypoints:
 ## Upgrade-Specific Path
 
 - `validation/review/upgrade-review.md`
-  - shared review file for assessing a repo against `docs/upgrade-design.md`, recommending a documentation surface profile, and suggesting how to group the work
+  - shared review file for assessing a project against `docs/upgrade-design.md`, recommending a documentation surface profile, and suggesting how to group the work
 
 ## Internal Workflow Files
 
@@ -39,7 +39,7 @@ Use these as the normal directly user-addressable shared review entrypoints:
 - `validation/review/private-default/documentation-architecture-review.md`
   - private-default documentation-architecture step used within that workflow
 - `validation/review/public-python/documentation-review.md`
-  - documentation workflow used internally for repos that declare `documentation surface profile: public-python`
+  - documentation workflow used internally for projects that declare `documentation surface profile: public-python`
 - `validation/review/public-python/document-writing-review.md`
   - public-Python document-writing step used within that workflow
 - `validation/review/public-python/documentation-architecture-review.md`
@@ -50,7 +50,7 @@ Use these as the normal directly user-addressable shared review entrypoints:
 In this folder:
 
 - `validation/base-testing.md`
-  - defines the shared validation baseline that downstream repos can import into `docs/testing.md`
+  - defines the shared validation baseline that downstream projects can import into `docs/testing.md`
 - the public shared review surface is the five entrypoints listed above
 - shared selector and combined-review outputs should include a short `Route Summary` showing the active review path
 - upgrade review stays user-facing, but as a separate upgrade-specific path rather than as part of the core public review set
@@ -59,7 +59,7 @@ In this folder:
   - explicit `public-python`
 - the shared validation library currently provides these built-in code-quality workflows:
   - explicit `python`
-- other documentation surface profiles may be implemented by explicitly provided workspace- or repo-local review files
+- other documentation surface profiles may be implemented by explicitly provided workspace- or project-local review files
 
 ## Review Independence
 
@@ -79,25 +79,25 @@ In this folder:
 Use these short prompts in fresh threads when you want the validation dispatcher to invoke a public shared review entrypoint with minimal extra scoping.
 
 - `Do a full agent surface review.`
-  - intended to trigger `validation/review/full-agent-surface-review.md` and return one combined assessment across the repo's full agent surface
+  - intended to trigger `validation/review/full-agent-surface-review.md` and return one combined assessment across the project's full agent surface
 - `Do a code quality review.`
   - intended to trigger `validation/review/code-quality-review.md` and select the shared Python workflow when the requested scope is clearly Python
-- `Review this repository's docs using the shared documentation review.`
-  - intended to trigger `validation/review/documentation-review.md` and determine the repo's declared documentation surface profile, or `private-default` when none is declared
-- `Review this repository's AGENTS.md files and prompts using the shared prompt-writing review.`
+- `Review this project's docs using the shared documentation review.`
+  - intended to trigger `validation/review/documentation-review.md` and determine the project's declared documentation surface profile, or `private-default` when none is declared
+- `Review this project's AGENTS.md files and prompts using the shared prompt-writing review.`
   - intended to trigger `validation/review/prompt-writing-review.md`
-- `Review this repository's prompt routing, workflow, and scope behavior using the shared routing-and-scope review.`
+- `Review this project's prompt routing, workflow, and scope behavior using the shared routing-and-scope review.`
   - intended to trigger `validation/review/routing-and-scope-review.md`
 
 ## Upgrade Starter Requests
 
 Use these when you want the upgrade-specific shared path rather than one of the public review entrypoints above.
 
-- `Upgrade this repository using the shared upgrade review.`
+- `Upgrade this project using the shared upgrade review.`
   - intended to trigger `validation/review/upgrade-review.md` and start from the review-first upgrade path
-- `Review this repository for upgrade readiness using the shared upgrade review.`
+- `Review this project for upgrade readiness using the shared upgrade review.`
   - intended to trigger `validation/review/upgrade-review.md` and return a recommended way to group the work plus a recommended documentation surface profile
-- `How should I split up the upgrade work for this repository?`
+- `How should I split up the upgrade work for this project?`
   - intended to trigger `validation/review/upgrade-review.md` and return upgrade recommendations and a suggested way to group the work
 
 For shared testing-baseline guidance rather than a current-state review, start with `validation/base-testing.md`.

@@ -39,7 +39,7 @@ Specialized document guides should inherit this base and add only the constraint
 - Do not let a human-facing document drift into a neighboring document role.
 - Keep explanatory documents explanatory, operational documents operational, and direct-inclusion prose focused on the target document.
 - When a document needs to point to a deeper source of truth, prefer linking over duplication.
-- For internal file references inside this repo, prefer repo-root-relative paths such as `docs/architecture.md` or `authoring/writing/repo-docs.md`.
+- For internal file references inside this project, prefer project-root-relative paths such as `docs/architecture.md` or `authoring/writing/project-docs.md`.
 
 ## Preservation And Revision
 When revising existing docs:

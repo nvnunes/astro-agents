@@ -3,7 +3,7 @@
 ## Purpose
 Use this style for research-log entry files that preserve dated evidence, work performed, validation, decisions, questions, and follow-up. Inherit the common documentation-writing discipline from `authoring/writing/base.md`, then apply the evidence-record rules below.
 
-Research-log entries are not repo summaries and are not manuscript prose. They should be readable and disciplined, but preservation beats polish.
+Research-log entries are not project summaries and are not manuscript prose. They should be readable and disciplined, but preservation beats polish.
 
 ## Success Criteria
 - Preserve enough evidence for later reconstruction.
@@ -37,7 +37,7 @@ When revising an existing entry:
 
 ## Relationship To Other Guides
 - Use `authoring/writing/science.md` for stronger scientific claim discipline when an entry contains analysis, interpretation, validation, or research conclusions.
-- Do not use `authoring/writing/repo-docs.md` as the primary guide for entries. Entries are evidence records, not repo-facing orientation documents.
+- Do not use `authoring/writing/project-docs.md` as the primary guide for entries. Entries are evidence records, not project-facing orientation documents.
 - Use the local research-log entry instructions for entry schema, callouts, and retrieval conventions.
 
 ## Output

@@ -52,8 +52,8 @@ When adding, reviewing, or revising an `AI Use:` note, read `research-log/themes
 
 Put executable commands in fenced code blocks near the output they generate.
 
-Write entry commands from the perspective of the entry root as the working directory. For Python commands, use `./pyrun` rather than a separate repo-root setup step, environment activation step, raw external path, or hard-coded repo path.
+Write entry commands from the perspective of the entry root as the working directory. For Python commands, use `./pyrun` rather than a separate project-root setup step, environment activation step, raw external path, or hard-coded project path.
 
-Use `<Name>` for external data listed in `data/manifest.md`, `<theme>/...` for theme-shared scripts or code, and `<repo>/...` for repo-level scripts, modules, or other code. Quote arguments that contain angle tokens, including embedded forms such as `"static=<scheduler-series>/file.npz"`.
+Use `<Name>` for external data listed in `data/manifest.md`, `<theme>/...` for theme-shared scripts or code, and `<project>/...` for project-level scripts, modules, or other code. Quote arguments that contain angle tokens, including embedded forms such as `"static=<scheduler-series>/file.npz"`.
 
 Use `Code:` when code state or location matters. Use `Command:` when the executable invocation matters. Most entries need one or the other, not both.

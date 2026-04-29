@@ -1,6 +1,6 @@
 # Base Testing
 
-This document is the shared base testing guidance for repos that use validation from `astro-agents`.
+This document is the shared base testing guidance for projects that use validation from `astro-agents`.
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Use `validation/README.md` for the shared validation library, including the revi
 
 ## Agent Surface Validation
 
-Use agent surface validation when changes affect the repo's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or repo-local prompt files.
+Use agent surface validation when changes affect the project's agent surface, including `AGENTS.md`, human-facing `README.md` files, relevant files under `docs/`, or project-local prompt files.
 
 ### Typical Review Mapping
 
@@ -26,10 +26,10 @@ Use agent surface validation when changes affect the repo's agent surface, inclu
   - run the shared routing-and-scope review
   - run the shared prompt-writing review
 
-- Changes to repo-local prompts under `agents/`:
+- Changes to project-local prompts under `agents/`:
   - run the shared prompt-writing review
   - run the shared routing-and-scope review
-  - then run any applicable repo-local review file under `agents/validation/` as a follow-on check
+  - then run any applicable project-local review file under `agents/validation/` as a follow-on check
 
 - Changes that substantially alter the prompt system, validation structure, route structure, or documentation architecture:
   - run the shared full agent surface review
@@ -47,5 +47,5 @@ Prioritize preventing regressions in:
 - route-structure clarity
 - dispatch discipline
 - source-of-truth visibility
-- examples and templates that remain safe if a repo later becomes public
-- consistency between `AGENTS.md`, `README.md`, `docs/`, and repo-local prompts
+- examples and templates that remain safe if a project later becomes public
+- consistency between `AGENTS.md`, `README.md`, `docs/`, and project-local prompts

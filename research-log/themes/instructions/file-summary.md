@@ -4,7 +4,7 @@ Use this file when creating or revising `<theme>.md`.
 
 `<theme>.md` is a first-class living document. It is human-first, agent-second, and should stay self-contained enough to explain the current state without loading all dated entries.
 
-When writing or revising summary prose, apply `authoring/writing/repo-docs.md`. Treat `<theme>.md` as repo-facing documentation: direct, compressed, scannable, and explicit about current understanding.
+When writing or revising summary prose, apply `authoring/writing/project-docs.md`. Treat `<theme>.md` as project-facing documentation: direct, compressed, scannable, and explicit about current understanding.
 
 Do not make the summary carry every caveat, metric, historical step, or source detail from the entries. If a detail needs lengthy qualification, leave it in the entry and link to it.
 

@@ -48,7 +48,7 @@ Required review criteria:
 Do not treat the following as the default task:
 
 - defaulting to the full `docs/` tree without reachability review
-- defaulting to the private-default repo-doc model
+- defaulting to the private-default project-documentation model
 - built site output such as `site/` as the primary review target
 - generic application-code review
 - architecture review beyond what is needed to judge writing quality

@@ -5,14 +5,14 @@ Use this folder when the task is to choose or run a shared review for the prompt
 
 ## Choosing A Shared Review
 
-When a request asks to upgrade a repo, review a repo for upgrade readiness, plan or propose how to group the upgrade work from current repo state, or assess a repo against the shared upgrade design:
+When a request asks to upgrade a project, review a project for upgrade readiness, plan or propose how to group the upgrade work from current project state, or assess a project against the shared upgrade design:
 
 - use `validation/review/upgrade-review.md`
 
 When a request explicitly asks for one of the shared validation reviews:
 
 - use `validation/review/code-quality-review.md` for current-state source-code quality review through the applicable shared built-in workflow
-- use `validation/review/documentation-review.md` for documentation review chosen from the repo's documentation surface profile
+- use `validation/review/documentation-review.md` for documentation review chosen from the project's documentation surface profile
 - use `validation/review/prompt-writing-review.md` for `AGENTS.md` files and prompts
 - use `validation/review/routing-and-scope-review.md` for routing, workflow, and scope behavior
 - use `validation/review/full-agent-surface-review.md` for combined review
@@ -41,7 +41,7 @@ When a request asks for validation without naming a narrower review, or asks for
 
 When the review scope is not specified:
 
-- default to the requested repo or target root, not the whole workspace
+- default to the requested project or target root, not the whole workspace
 - default to the narrowest matching review path; do not broaden a narrower review request into the combined pass by default
 - do not choose `validation/review/core-document-writing-review.md` for generic document-writing requests; use `validation/review/documentation-review.md` instead
 
@@ -54,7 +54,7 @@ When the review scope is not specified:
 ## Use Of Shared Review Prompts
 
 - Use shared review prompts for agent surface review and explicit shared code-quality review, not generic prose quality or broad application audits.
-- More specific repo or subtree `AGENTS.md` files may apply narrower local review prompts within their scope.
+- More specific project or subtree `AGENTS.md` files may apply narrower local review prompts within their scope.
 - Follow local instructions when the review must account for narrower domain, workflow, or document constraints.
 
 ## Practical Rule

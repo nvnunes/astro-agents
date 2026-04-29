@@ -56,7 +56,7 @@ Assess the current project against these criteria:
 - `Residual Risk And Human Oversight`
   - does the project make clear where human review must remain in the loop because runtime controls are insufficient or intentionally bounded
 - `Proportionality`
-  - are safety controls likely to stay practical for ordinary repo work rather than becoming so heavy that they will be skipped or bypassed
+  - are safety controls likely to stay practical for ordinary project work rather than becoming so heavy that they will be skipped or bypassed
 
 For `astro-agents` now, the primary criteria are `Instruction And Trust Boundaries`, `Routing, Scope, And Carry-Forward Safety`, `Carry-Forward, Memory, And State Safety`, `Failure Containment And Degraded Operation`, and `Incident Visibility And Forensics`. `Least Privilege And Permission Boundaries` and `Approval And Side-Effect Boundaries` are still important, but they are more forward-looking until the runtime model becomes more explicitly tool-capable and action-capable.
 
@@ -64,7 +64,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 #### Instruction And Trust Boundaries
 
-- the repo does distinguish routing files from deeper source-of-truth docs, which is a useful first trust boundary because it reduces accidental reliance on one large undifferentiated prompt surface
+- the project does distinguish routing files from deeper source-of-truth docs, which is a useful first trust boundary because it reduces accidental reliance on one large undifferentiated prompt surface
 - the live surface keeps that boundary intentionally lightweight instead of defining a stronger local trust model, so it still does not specify how untrusted context, carried-forward context, or stale-state handling should work once multiple prompts and docs have been discovered
 - there is also no explicit rule for when carried-forward context should be downgraded to supporting `Context` or discarded after narrower guidance or newly loaded source-of-truth docs appear
 - current status: partly covered
@@ -78,22 +78,22 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 #### Untrusted Context And Injection Exposure
 
-- the current repo is still mostly a prompt-library and documentation system, so it is less exposed to live adversarial input than a tool-using or web-connected runtime
+- the current project is still mostly a prompt-library and documentation system, so it is less exposed to live adversarial input than a tool-using or web-connected runtime
 - even so, the runtime model does not yet define how untrusted context should be isolated from active `Instructions`, whether retrieved or externally supplied content should be lower-trust by default, or how indirect prompt injection would be contained
 - this means the project is safer today mainly because its runtime is narrow, not because the trust model is already explicit
 - current status: weakly covered
 
 #### Carry-Forward, Memory, And State Safety
 
-- the repo already recognizes longer-thread fragility, compaction, and rediscovery as important concerns, and it prefers rediscovery from current repo state over blind dependence on long prompt chains
-- that is not yet a safety model for state: the project does not distinguish stable policy, task-local state, compacted summaries, rediscovered facts, or stale carry-forward context in a way that would prevent contamination or memory-like poisoning
+- the project already recognizes longer-thread fragility, compaction, and rediscovery as important concerns, and it prefers rediscovery from current project state over blind dependence on long prompt chains
+- that is not yet a safety model for state: the project does not distinguish stable policy, task-local state, compaction summaries, rediscovered project facts, or stale carry-forward context in a way that would prevent contamination or memory-like poisoning
 - no current rule defines what becomes stale after rerouting, narrowing, compaction, or partial recovery
 - current status: weakly covered
 
 #### Least Privilege And Permission Boundaries
 
 - the current runtime surface does not yet expose a real tool-permission model, identity model, or least-privilege contract
-- that is understandable because `astro-agents` is still primarily a prompt-system repo, but the first integrated runtime design will need to say explicitly whether these boundaries are deferred or minimally defined now
+- that is understandable because `astro-agents` is still primarily a prompt-system project, but the first integrated runtime design will need to say explicitly whether these boundaries are deferred or minimally defined now
 - until then, least privilege is effectively absent rather than intentionally bounded
 - current status: not meaningfully covered
 
@@ -106,14 +106,14 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 #### Failure Containment And Degraded Operation
 
-- the repo already has a few useful narrow-default and fail-stop behaviors: unsupported documentation profiles produce an explicit finding, upgrade routing stops when no defined path applies, and validation defaults to narrower reviews and the requested target root
+- the project already has a few useful narrow-default and fail-stop behaviors: unsupported documentation profiles produce an explicit finding, upgrade routing stops when no defined path applies, and validation defaults to narrower reviews and the requested target root
 - these local protections do not add up to a broader degraded-operation model for ambiguous routing, failed rediscovery, lost narrowing, stale carried-forward context, or compaction-related context loss
 - the current runtime can therefore fail safely in some bounded selector cases while still remaining underdefined in longer or noisier execution paths
 - current status: partly covered
 
 #### Incident Visibility And Forensics
 
-- safety-relevant design issues are reasonably inspectable from the static repo surface because routing, instruction authority, and source-of-truth structure are documented clearly
+- safety-relevant design issues are reasonably inspectable from the static project surface because routing, instruction authority, and source-of-truth structure are documented clearly
 - shared selector and combined-review outputs expose a short `Route Summary`, which modestly improves review-path visibility on the current validation surface
 - runtime forensics are still much weaker: there is no evidence surface showing which `Instructions` were active, what context was carried forward, or when a risky transition occurred
 - this means investigation of safety incidents would still depend heavily on reconstruction after the fact
@@ -122,21 +122,21 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Safety Validation Support
 
 - the current validation library is good at reviewing route structure, prompt-writing quality, documentation structure, and some bounded design failures that matter to safety indirectly
-- the repo also has a lightweight validation-path scenario baseline for the current shared review surface
+- the project also has a lightweight validation-path scenario baseline for the current shared review surface
 - it still does not validate safety-relevant runtime behavior directly, such as wrong-route instruction applicability, stale carried-forward or active context, compaction-sensitive failures, or unsafe carry-forward
 - safety review therefore has a decent structural baseline but not yet a behavior-facing validation stage
 - current status: weakly covered
 
 #### Residual Risk And Human Oversight
 
-- human oversight is still the effective backstop throughout the current repo: the project is review-driven, source-of-truth driven, and not designed to let the runtime act with broad autonomy
-- that is an important present safety feature, but the repo does not yet state clearly which risks are intentionally left to human judgment and which should later be controlled by runtime mechanisms
+- human oversight is still the effective backstop throughout the current project: the project is review-driven, source-of-truth driven, and not designed to let the runtime act with broad autonomy
+- that is an important present safety feature, but the project does not yet state clearly which risks are intentionally left to human judgment and which should later be controlled by runtime mechanisms
 - residual risk is therefore managed implicitly rather than as an explicit design surface
 - current status: partly covered
 
 #### Proportionality
 
-- the current safety posture is proportionate to the repo as it exists today: lightweight docs, static review prompts, and limited runtime capability keep overhead low
+- the current safety posture is proportionate to the project as it exists today: lightweight docs, static review prompts, and limited runtime capability keep overhead low
 - the tradeoff is that many safety surfaces are presently safe by absence of capability, not by explicit control design
 - that is acceptable for the current prompt-library phase, but it will not be enough once the integrated runtime design starts making stronger claims about routing, state, observability, and eventual tool use
 - current status: partly covered
@@ -160,23 +160,23 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - treat longer-lived memory as a privileged subsystem that needs separate trust, provenance, and monitoring rules rather than as ordinary carry-forward context
 - require validation coverage for the highest-risk runtime behaviors rather than relying only on structural review
 - define where human oversight remains intentionally mandatory because runtime controls are incomplete, expensive, or inappropriate to automate
-- preserve proportionality by keeping the first safety stage lightweight enough for ordinary repo work while still making the main risks explicit
+- preserve proportionality by keeping the first safety stage lightweight enough for ordinary project work while still making the main risks explicit
 - choose the first safety pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a strong candidate for carry-forward and routing risk, but tool-using or approval-bearing paths may be better for least-privilege and side-effect controls
 
 ### Open Safety Questions
 
-- what trust classes should the runtime use for active `Instructions`, supporting docs, carried-forward state, rediscovered repo facts, and future retrieved content
+- what trust classes should the runtime use for active `Instructions`, supporting docs, carried-forward state, rediscovered project facts, and future retrieved content
 - which context sources should be treated as lower-trust by default, and what would raise or lower that trust
 - when should carried-forward context be dropped, downgraded, or revalidated after narrowing, rerouting, compaction, or partial recovery
 - what minimum fail-safe behavior should exist when the preferred route is ambiguous, unavailable, or too weakly recovered to trust
 - if the future governance design adopts stronger ownership or handoff semantics, what safety guarantees should that model provide
-- what minimum least-privilege model is needed in the first integrated runtime design even if the repo remains mostly prompt-centric
+- what minimum least-privilege model is needed in the first integrated runtime design even if the project remains mostly prompt-centric
 - what minimum control matrix should exist for tool calls, external retrieval, state writes, and side-effecting actions
 - whether approval checkpoints should be defined now as a general control surface or explicitly deferred until tool and action surfaces are more concrete
 - what safety-relevant runtime evidence must be visible before the project can claim that routing and state risks are reviewable rather than inferred
 - which runtime behaviors most urgently need safety-focused validation coverage
 - how explicit the project should be about residual risk that remains under human judgment rather than under runtime controls
-- what proportional safety stage would materially improve the design without making common prompt-surface work too heavy
+- what proportional safety stage would materially improve the design without making common context-engineering work too heavy
 
 ## Next Design Steps
 
@@ -185,7 +185,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for safety scope
 - define the first explicit runtime threat inventory for routing, instruction applicability, trust boundaries, carry-forward state, and degraded operation
 - define the first trust classes for active `Instructions`, supporting `Context`, lower-trust context, and untrusted context
-- define the first distinctions among task-local state, compacted summaries, rediscovered state, retrieved context, and any longer-lived memory
+- define the first distinctions among task-local state, compaction summaries, rediscovered project state, retrieved context, and any longer-lived memory
 - separate current risks from forward-looking risks that only become material when the runtime grows more tool-capable or more stateful
 
 ### Safety Control Points

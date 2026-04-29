@@ -34,7 +34,7 @@ Use this style for prompts that define writing or revision behavior for document
 ## Preservation And Revision
 When revising writing prompts:
 - Keep the prompt tied to the document role it claims to serve.
-- Do not let it drift into route-structure design or repo-organization guidance.
+- Do not let it drift into route-structure design or project-organization guidance.
 - Keep preservation rules explicit where meaning, notation, or document role must be preserved.
 - Replace soft descriptive wording with direct revision instructions when possible.
 - Keep examples selective and only when they address real ambiguity.

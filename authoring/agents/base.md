@@ -1,7 +1,7 @@
 # Base Prompt Writing
 
 ## Purpose
-Use this style as the common base for agent-facing prompts, including `AGENTS.md` files, shared prompts under `authoring/` or `validation/`, and repo-local prompts under `agents/`.
+Use this style as the common base for agent-facing prompts, including `AGENTS.md` files, shared prompts under `authoring/` or `validation/`, and project-local prompts under `agents/`.
 
 Specialized prompt-writing guides should inherit this base and add only the constraints, preservation rules, and adaptation behavior that are specific to their prompt type.
 
@@ -51,7 +51,7 @@ Specialized prompt-writing guides should inherit this base and add only the cons
 - Do not let an agent-facing prompt drift into a neighboring prompt role.
 - Do not let a prompt become a README, design-doc, or architecture-doc substitute.
 - When a deeper prompt or source-of-truth document should carry the substantive behavior, prefer pointing to it over duplicating it here.
-- For internal file references inside this repo, prefer repo-root-relative paths such as `authoring/agents/agents-md.md` or `docs/architecture.md`.
+- For internal file references inside this project, prefer project-root-relative paths such as `authoring/agents/agents-md.md` or `docs/architecture.md`.
 
 ## Preservation And Revision
 When revising prompts:

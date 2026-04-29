@@ -23,7 +23,7 @@ When running this review:
 - review only the human-facing documentation files inside that selected surface
 - use the applicable guide under `authoring/writing/` when reviewing human-facing docs
 - default to `authoring/writing/readme-md.md` for `README.md` and folder-level `README.md` files
-- default to `authoring/writing/repo-docs.md` for glossary/reference docs and other repo-facing or public-facing operational docs
+- default to `authoring/writing/project-docs.md` for glossary/reference docs and other project-facing or public-facing operational docs
 - inspect `docs/glossary.md` only when the target docs rely on recurring project terms whose meaning or ownership materially affects writing clarity
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries
 - do not widen the selected documentation surface on your own
@@ -47,10 +47,10 @@ Required review criteria:
 Do not treat the following as the default task:
 
 - deciding which documentation surface profile applies
-- deciding the default documentation surface for the repo
+- deciding the default documentation surface for the project
 - route-structure design review beyond what is needed to judge document writing
 - `AGENTS.md` review
-- prompt-asset writing review for files under `authoring/`, `validation/`, or repo-local `agents/`
+- prompt-asset writing review for files under `authoring/`, `validation/`, or project-local `agents/`
 - application-code review
 - broad content rewrites without first identifying concrete issues
 
@@ -71,4 +71,4 @@ For each finding:
 - distinguish direct violations from softer cleanup opportunities
 
 Keep the review focused on whether the selected documents are written in the right operational style for their role.
-When internal file references appear, apply a repo-specific path convention only when the target repo explicitly defines one.
+When internal file references appear, apply a project-specific path convention only when the target project explicitly defines one.

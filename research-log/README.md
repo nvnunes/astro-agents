@@ -2,13 +2,13 @@
 
 This directory is the shared prompt family for reusable research-log concepts and supporting infrastructure in `astro-agents`.
 
-This area is first-class in the library, but its schema is still evolving. Material here supports agent-first research documentation, source-plus-summary organization, and prompt or template design that can help downstream repos maintain research logs. Do not treat this directory as a finalized research-log schema.
+This area is first-class in the library, but its schema is still evolving. Material here supports agent-first research documentation, source-plus-summary organization, and prompt or template design that can help downstream projects maintain research logs. Do not treat this directory as a finalized research-log schema.
 
 ## Role In Astro-Agents
 
 Use this area when a task concerns reusable research-log guidance, theme-document hierarchies, source-plus-summary research logs, or upgrading an existing source document into a theme record.
 
-This area is part of the routed shared prompt surface. It is not a downstream recommendation-doc family like `guidance/`, and it is not a repo-local validation family like `agents/`.
+This area is part of the routed shared prompt surface. It is not a downstream recommendation-doc family like `guidance/`, and it is not a project-local validation family like `agents/`.
 
 ## Current Contents
 
@@ -39,13 +39,13 @@ To upgrade an existing source document into a research-log theme, use:
 
 - `Upgrade <path-to-source-document> into a research-log theme using astro-agents.`
 
-To continue an existing theme when the downstream repo has local `Research Logs` routing in `AGENTS.md`, use natural prompts such as:
+To continue an existing theme when the downstream project has local `Research Logs` routing in `AGENTS.md`, use natural prompts such as:
 
 - `Let's work on <theme>.`
 - `Capture this in <theme>.`
 - `Update the <theme> summary.`
 
-`<theme>` should be a path to `<theme>.md`, `<theme>/`, a named theme from repo-local `Research Logs` routing, or a theme that is contextually obvious from the chat.
+`<theme>` should be a path to `<theme>.md`, `<theme>/`, a named theme from project-local `Research Logs` routing, or a theme that is contextually obvious from the chat.
 
 After the theme is established, use ordinary research wording such as:
 

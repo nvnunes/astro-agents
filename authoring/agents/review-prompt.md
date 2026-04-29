@@ -45,7 +45,7 @@ Use this style for prompts that review prompts, `AGENTS.md` files, and related d
 
 ## Preservation And Revision
 When revising review prompts:
-- Preserve the distinction between shared reusable reviews and repo-local reviews.
+- Preserve the distinction between shared reusable reviews and project-local reviews.
 - Preserve the intended review boundary between narrower review files and combined review files.
 - Do not let a review file drift into explaining the whole system when a README or design doc should do that job.
 - Do not let a review file drift into generic document editing.

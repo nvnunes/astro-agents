@@ -1,20 +1,20 @@
 # Public Python Projects
 
-This document is a shared recommendation for downstream public Python repos that
+This document is a shared recommendation for downstream public Python projects that
 use `astro-agents`.
 
-Use it when deciding the repo-level document set, source-of-truth boundaries,
+Use it when deciding the project-level document set, source-of-truth boundaries,
 public agent surface, and the shared `public-python` documentation-surface
 model used by validation.
 
-Use `docs/usage.md` for how to include this guidance in a downstream repo.
+Use `docs/usage.md` for how to include this guidance in a downstream project.
 
 Keep commands, package boundaries, persisted contracts, lifecycle rules,
-deployment rules, and repo-specific exceptions in repo-local docs.
+deployment rules, and project-specific exceptions in project-local docs.
 
 ## Minimum Document Set
 
-Every nontrivial public Python repo should provide a small minimum document set
+Every nontrivial public Python project should provide a small minimum document set
 that helps both humans and agents work effectively.
 
 Recommended minimum:
@@ -30,29 +30,29 @@ Recommended minimum:
 - `docs/testing.md` or an equivalent verification document
   - the source of truth for canonical test commands and completion expectations
 
-For repos with local bootstrap, environment setup, hooks, or a recurring
+For projects with local bootstrap, environment setup, hooks, or a recurring
 development toolchain, also add:
 
 - `docs/development.md`
   - the source of truth for local bootstrap, environment, hook, and daily
     workflow commands
 
-If a repo is still too small to justify separate documents, keep the minimum
+If a project is still too small to justify separate documents, keep the minimum
 necessary guidance in `README.md` and `AGENTS.md`. Split it out once the
 content becomes reusable, stable, or operationally important.
 
-Larger repos may also add repo-local prompts under `agents/` and long-lived
+Larger projects may also add project-local prompts under `agents/` and long-lived
 supporting docs under `docs/` when those materials are stable enough to justify
 their own source-of-truth location.
 
 ## Source Of Truth Boundaries
 
-Prefer these document roles unless the repo has a strong reason to use
+Prefer these document roles unless the project has a strong reason to use
 different names.
 
 - `AGENTS.md`
   - short operational guidance, routing and workflow, immediate constraints,
-    source-of-truth references, and any shared-guidance references the repo has
+    source-of-truth references, and any shared-guidance references the project has
     chosen to adopt
 - `README.md`
   - public overview, setup starting points, and where to go next
@@ -72,10 +72,10 @@ different names.
   - stable public interfaces when `docs/architecture.md` would otherwise become
     overloaded
 - `docs/glossary.md`
-  - recurring local terms when the repo depends on stable term meanings or term
+  - recurring local terms when the project depends on stable term meanings or term
     ownership
 - `docs/data-sources.md`
-  - durable data artifacts the repo consumes, produces, ships, or expects users
+  - durable data artifacts the project consumes, produces, ships, or expects users
     or agents to work with
 
 Keep long background explanation out of `AGENTS.md`. Link to local
@@ -87,8 +87,8 @@ Split guidance into a separate source-of-truth doc when:
 - it is explanatory rather than operational
 - it needs to stay stable across many tasks
 - it would otherwise be repeated across multiple files
-- the repo has recurring local terms that justify a dedicated glossary
-- the repo has enough complexity that humans and agents need a persistent
+- the project has recurring local terms that justify a dedicated glossary
+- the project has enough complexity that humans and agents need a persistent
   source of truth
 
 Do not use `docs/data-sources.md` as the owner for:
@@ -98,13 +98,13 @@ Do not use `docs/data-sources.md` as the owner for:
 - persisted schema contracts
 - field-level interface semantics
 
-When a repo needs a stable source of truth for data contracts or persistence
+When a project needs a stable source of truth for data contracts or persistence
 rules, use a more explicit owner such as `docs/architecture.md`, `docs/api.md`,
 or a narrower document whose name makes that contract role clear.
 
 ## Naming And Cross-Linking
 
-Prefer stable, predictable document names when they fit the repo:
+Prefer stable, predictable document names when they fit the project:
 
 - `README.md`
 - `AGENTS.md`
@@ -123,7 +123,7 @@ When these documents exist:
 - make long-lived source-of-truth docs discoverable from `AGENTS.md`,
   `README.md`, or another clear starting document
 - make the role of each doc explicit near the top, especially whether it is
-  operational guidance, repo-local source of truth, or shared recommendation
+  operational guidance, project-local source of truth, or shared recommendation
 - keep cross-references direct and current when doc names, paths, or ownership
   change
 - avoid scattering the same instruction across multiple files without a clear
@@ -139,12 +139,12 @@ expected.
 - do not hardcode absolute paths to a private workspace prompt library
 - use a generic bootstrap line such as `Use the shared astro-agents prompt
   library for reusable authoring, review, and routing guidance.`
-- when the repo adopts shared recommendation docs from `astro-agents`, mention
+- when the project adopts shared recommendation docs from `astro-agents`, mention
   them explicitly rather than assuming they will be rediscovered indirectly
 
 This allows a user to keep a reusable shared prompt library without baking
 private path assumptions or user-specific bootstrap structure into public
-repositories.
+projects.
 
 ## Shared Public-Python Docs Review Model
 
@@ -153,7 +153,7 @@ documentation-surface model used by validation.
 
 ### Public Documentation Surface
 
-For public Python repos, the public documentation surface is the set of
+For public Python projects, the public documentation surface is the set of
 public-facing starting documents, published docs sources, and
 documentation-generation inputs that define what external users and
 contributors actually see.
@@ -242,7 +242,7 @@ surface.
 
 #### Conditionally Required
 
-Treat these as required when the repo clearly exposes or claims the
+Treat these as required when the project clearly exposes or claims the
 corresponding surface:
 
 - `docs/` source pages and docs-site config when the project publishes a docs
@@ -275,7 +275,7 @@ Review the public-Python documentation surface against these principles:
 #### Public Entry And Discovery
 
 - `README.md` should work as a package starting document, not only as an
-  internal repo overview
+  internal project overview
 - public metadata and public docs should not point to missing, stale, or
   contradictory surfaces
 - public docs should be discoverable through reachable links or published
@@ -312,7 +312,7 @@ Review the public-Python documentation surface against these principles:
 
 - `CONTRIBUTING.md` and `CHANGELOG.md` should be treated as part of the public
   docs surface when they are public-facing
-- these documents should align with the public workflow the repo actually
+- these documents should align with the public workflow the project actually
   exposes through metadata, docs, and release mechanics
 
 ### Prompt-Design Consequences

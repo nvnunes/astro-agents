@@ -1,8 +1,8 @@
 # Runtime Model
 
-This document is the source of truth for runtime-related terminology, current-support boundaries, and control-flow concepts in this repo, grounded in current agentic AI guidance.
+This document is the source of truth for runtime-related terminology, current-support boundaries, and control-flow concepts in this project, grounded in current agentic AI guidance.
 
-Use this document to understand the runtime mechanics current agent systems actually provide, the vocabulary `astro-agents` uses to describe them, and which parts of that model the repo currently supports directly.
+Use this document to understand the runtime mechanics current agent systems actually provide, the vocabulary `astro-agents` uses to describe them, and which parts of that model the project currently supports directly.
 
 ## Scope And Current Support
 
@@ -109,35 +109,51 @@ The terms below are also common in agent and prompt-system discussions, but they
 
 ## Current Concrete Runtime Support: Codex
 
-Codex has built-in instruction discovery behavior. It can load guidance from your Codex home directory and from repo-local instruction files. In project scope, it starts at the project root, walks down to the current working directory, checks `AGENTS.override.md` first, then `AGENTS.md`, then any configured fallback filenames, includes at most one file per directory, and skips empty files. Files closer to the current working directory override earlier guidance because they appear later in the merged instruction chain. Codex stops searching once it reaches the current directory. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+Codex has built-in instruction discovery behavior. It can load guidance from your Codex home directory and from project-local instruction files. In project scope, it starts at the project root, walks down to the current working directory, checks `AGENTS.override.md` first, then `AGENTS.md`, then any configured fallback filenames, includes at most one file per directory, and skips empty files. Files closer to the current working directory override earlier guidance because they appear later in the merged instruction chain. Codex stops searching once it reaches the current directory. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
-Codex also injects each discovered instruction file near the top of the conversation history as its own user-role message, in root-to-leaf order. The global file comes first, then the repo root, then deeper directories. [\[2\]](#ref-2)
+Codex also injects each discovered instruction file near the top of the conversation history as its own user-role message, in root-to-leaf order. The global file comes first, then the project root, then deeper directories. [\[2\]](#ref-2)
 
 For overall guidance, the standard Codex location is still Codex home, where Codex checks `AGENTS.override.md` before `AGENTS.md`. If you want that guidance to live somewhere else, the documented Codex mechanism is to set `CODEX_HOME` before launch so Codex uses a different home directory. [\[1\]](#ref-1)[\[2\]](#ref-2) If changing `CODEX_HOME` is inconvenient, a practical local workaround is to keep Codex on the default `~/.codex` path and symlink `~/.codex/AGENTS.md` to the real file you want to maintain elsewhere. That symlink approach is a filesystem convenience, not a Codex-specific feature.
 
-In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Repo-specific adoption, or repo-specific exceptions to a global default, belong in the repo root `AGENTS.md`.
+In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Project-specific adoption, or project-specific exceptions to a global default, belong in the project root `AGENTS.md`.
 
 Example hierarchy:
 
 ```text
 ~/.codex/AGENTS.md
-<repo>/AGENTS.md
-<repo>/services/AGENTS.md
-<repo>/services/payments/AGENTS.override.md
-<repo>/services/payments/AGENTS.md
-<repo>/services/payments/src/
+<project>/AGENTS.md
+<project>/services/AGENTS.md
+<project>/services/payments/AGENTS.override.md
+<project>/services/payments/AGENTS.md
+<project>/services/payments/src/
 ```
 
-If Codex is started from `<repo>/services/payments/src/`, the loaded instruction order is:
+If Codex is started from `<project>/services/payments/src/`, the loaded instruction order is:
 
 1. `~/.codex/AGENTS.md`
-2. `<repo>/AGENTS.md`
-3. `<repo>/services/AGENTS.md`
-4. `<repo>/services/payments/AGENTS.override.md`
+2. `<project>/AGENTS.md`
+3. `<project>/services/AGENTS.md`
+4. `<project>/services/payments/AGENTS.override.md`
 
-In that case, `<repo>/services/payments/AGENTS.md` is ignored because the override file in the same directory takes priority. [\[1\]](#ref-1)
+In that case, `<project>/services/payments/AGENTS.md` is ignored because the override file in the same directory takes priority. [\[1\]](#ref-1)
 
 These behaviors are Codex features. They are not defined by `astro-agents`. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+
+### Current Codex Runtime Mapping
+
+The external context engineering layers in `docs/future/agent-context-engineering-patterns.md` map onto the current Codex path through concrete prompt and runtime surfaces.
+
+| Context engineering layer | Owner | Current operational surface |
+| --- | --- | --- |
+| Runtime Defaults | Runtime | Codex, the app, the model, available tools, and sandbox behavior. |
+| User And Team Defaults | User/team | `$CODEX_HOME/AGENTS.md`, commonly `~/.codex/AGENTS.md`, or other user-level guidance supplied before the project is loaded. |
+| Project Instructions | Project | The project root `AGENTS.md`. |
+| Scoped Instructions | Project | Subtree `AGENTS.md` or `AGENTS.override.md` files loaded by Codex according to the current working directory. |
+| Reusable Workflows | astro-agents | Explicit routes from project guidance into `astro-agents/...` prompt-library files. |
+| Runtime Controls | Runtime | Codex, the app, tool integrations, sandbox behavior, approvals, and available runtime evidence. |
+| Task Prompt And Session Context | Session | The active chat, loaded instruction messages, tool outputs, and any compaction or handoff summaries. User-facing guidance such as `docs/usage.md` helps users provide task prompts that activate the intended project instructions and reusable workflows. |
+
+`astro-agents` can document desired runtime-control behavior, but enforcement belongs to the runtime or to future implementation work.
 
 ## How Models Handle Conflicting Instructions
 
@@ -150,11 +166,11 @@ As a practical summary of the model behavior described in the sources below, mod
 5. Contradictions usually degrade performance instead of producing a clean winner. OpenAI's GPT-5 prompting guide explicitly says contradictory or vague prompts can hurt performance because the model may spend effort trying to reconcile them rather than simply picking one. [\[14\]](#ref-14)
 6. Other model vendors describe the same failure mode in prompt-design terms. Anthropic advises that if a prompt would confuse a minimally informed colleague, it will likely confuse the model, and Google's prompt-design guidance explicitly calls out conflicting instructions, conflicting examples, and conflicting internal references as prompt problems. [\[15\]](#ref-15)[\[16\]](#ref-16)
 
-The practical implication for this repo is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while repo-local precedence is mostly design intent unless the prompt surface makes the choice explicit through direct routing, explicit follow-up prompt references, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
+The practical implication for this project is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while project-local precedence is mostly design intent unless the prompt surface makes the choice explicit through direct routing, explicit follow-up prompt references, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
 
-## Repo Control-Flow Example
+## Project Control-Flow Example
 
-For a full review requested in a downstream repo, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the repo root down to the current directory according to its normal search rules. If the downstream repo's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-repo step is no longer Codex discovery. It is a repo-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the downstream repo and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are repo conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+For a full review requested in a downstream project, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the project root down to the current directory according to its normal search rules. If the downstream project's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-project step is no longer Codex discovery. It is a project-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the downstream project and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are project conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
 ## References
 

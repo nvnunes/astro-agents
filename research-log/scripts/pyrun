@@ -24,7 +24,7 @@ def clean_cell(value: str) -> str:
     return value
 
 
-def repo_root(cwd: Path) -> Path:
+def project_root(cwd: Path) -> Path:
     try:
         output = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
@@ -33,14 +33,14 @@ def repo_root(cwd: Path) -> Path:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise SystemExit("pyrun: could not resolve repository root with git") from exc
+        raise SystemExit("pyrun: could not resolve project root with git") from exc
     return Path(output.strip())
 
 
 def python_executable(root: Path) -> str:
-    repo_conda = root / ".conda" / "bin" / "python"
-    if repo_conda.exists():
-        return str(repo_conda)
+    project_conda = root / ".conda" / "bin" / "python"
+    if project_conda.exists():
+        return str(project_conda)
     return sys.executable
 
 
@@ -113,7 +113,7 @@ def manifest_locations(manifest: Path | None) -> dict[str, str]:
 def resolve_arg(arg: str, root: Path, theme: Path, locations: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
-        if name == "repo":
+        if name == "project":
             return str(root)
         if name == "theme":
             return str(theme)
@@ -132,7 +132,7 @@ def main(argv: list[str]) -> int:
         return usage()
 
     cwd = Path.cwd()
-    root = repo_root(cwd)
+    root = project_root(cwd)
     theme = theme_root(cwd)
     locations = manifest_locations(find_manifest(cwd))
     resolved = [resolve_arg(arg, root, theme, locations) for arg in argv[1:]]

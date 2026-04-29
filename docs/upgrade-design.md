@@ -1,23 +1,23 @@
 # Upgrade
 
-This document is the human-facing source of truth for upgrading existing repos to an `astro-agents`-compatible agent surface.
+This document is the human-facing source of truth for upgrading existing projects to an `astro-agents`-compatible agent surface.
 
 Use it to understand the shared review-led upgrade model, the upgrade taxonomy used in recommendations, and the validation expectations for treating an upgrade as complete.
 
-For a live assessment of a repo, use `validation/review/upgrade-review.md` together with this document. Starting prompt:
+For a live assessment of a project, use `validation/review/upgrade-review.md` together with this document. Starting prompt:
 ```md
-Use the astro-agents prompt library to assess this repository and suggest an upgrade plan.
+Use the astro-agents prompt library to assess this project and suggest an upgrade plan.
 ```
 If the response seems to ignore this upgrade model or drift into a generic code review, try:
 ```md
-Use astro-agents/validation/review/upgrade-review.md with astro-agents/docs/upgrade-design.md to assess this repository and suggest an upgrade plan.
+Use astro-agents/validation/review/upgrade-review.md with astro-agents/docs/upgrade-design.md to assess this project and suggest an upgrade plan.
 ```
 
-This document focuses on the baseline local work needed to make an existing repo usable and effective for agents. Advanced runtime governance, observability, safety, and eval infrastructure usually belong in shared `astro-agents` support rather than in the normal repo-upgrade baseline.
+This document focuses on the baseline local work needed to make an existing project usable and effective for agents. Advanced runtime governance, observability, safety, and eval infrastructure usually belong in shared `astro-agents` support rather than in the normal project-upgrade baseline.
 
 ## Local Terms
 
-Use `docs/glossary.md` for repo-wide terminology. This document also uses a small number of local terms that are specific to the upgrade model.
+Use `docs/glossary.md` for project-wide terminology. This document also uses a small number of local terms that are specific to the upgrade model.
 
 - `work area`: one coherent part of the agent surface that may need work during an upgrade
 - `change scope`: the invasiveness of an intended change, ranging from extraction or cleanup through structural rewrite and framing change
@@ -31,22 +31,22 @@ Use this document to record:
 - the work areas that recommendations should map onto
 - how documentation surface profiles affect upgrade review and later validation
 - the change-scope language used to describe expected upgrade work
-- the validation and completion expectations for repo upgrades
+- the validation and completion expectations for project upgrades
 
 ## Recommended Workflow
 
 The recommended upgrade loop is:
 
-1. assess the repo's current surface
-2. recommend the repo's current docs or public-docs setup and a suggested way to group the work
+1. assess the project's current surface
+2. recommend the project's current docs or public-docs setup and a suggested way to group the work
 3. let the user decide how to group, sequence, and prioritize the work
-4. do the chosen work as ordinary repo editing
-5. rerun the assessment as needed until the user is satisfied the repo is sufficiently upgraded to treat as complete
+4. do the chosen work as ordinary project editing
+5. rerun the assessment as needed until the user is satisfied the project is sufficiently upgraded to treat as complete
 
 In this model:
 
-- `validation/review/upgrade-review.md` is the default shared starting document for assessing a repo against this design
-- upgrade review starts from the current repo surface and the effective documentation review profile
+- `validation/review/upgrade-review.md` is the default shared starting document for assessing a project against this design
+- upgrade review starts from the current project surface and the effective documentation review profile
 - the root `AGENTS.md` should be updated with the chosen `Documentation surface profile` only as part of approved editing work
 
 Across the whole process:
@@ -54,14 +54,14 @@ Across the whole process:
 - create clearer source-of-truth docs before trimming older docs
 - preserve meaning by default
 - keep user control explicit over how the work is grouped, sequenced, and prioritized
-- add repo-local `agents/` only when justified
+- add project-local `agents/` only when justified
 - use shared review output to support user decisions about what to do next
 
 ## Documentation Surface Profile Handling
 
 Use `docs/glossary.md` for the shared meaning of `documentation surface profile`.
 
-Use `docs/usage.md` for how downstream repos declare that value in the root `AGENTS.md`.
+Use `docs/usage.md` for how downstream projects declare that value in the root `AGENTS.md`.
 
 Use `validation/review/documentation-review.md` for how the shared validation library determines the active profile.
 
@@ -72,7 +72,7 @@ The shared validation library currently recognizes:
 
 ### Current-Surface Signals For `public-python`
 
-Use current repo evidence to decide whether the review should recommend a `public-python` profile and include the relevant `public-python` work areas in its recommendations.
+Use current project evidence to decide whether the review should recommend a `public-python` profile and include the relevant `public-python` work areas in its recommendations.
 
 Bounded `public-python` signals include:
 
@@ -91,23 +91,23 @@ For thin public-package scaffolds:
 
 - distinguish between a thin public package scaffold and a broader active public-doc surface
 - treat public package metadata, a basic `README.md`, and a small test surface by themselves as a thin public package scaffold rather than as evidence of a broad public-doc surface
-- do not recommend broad `public-python` work solely because a repo has a package skeleton
-- default the recommendation to `private-default` unless the repo already exposes a materially broader public-facing surface
+- do not recommend broad `public-python` work solely because a project has a package skeleton
+- default the recommendation to `private-default` unless the project already exposes a materially broader public-facing surface
 
 During upgrade review:
 
 - use the root `AGENTS.md` declaration when one already exists as the current contract input
 - default shared documentation review to `private-default` when no declaration exists
-- allow the upgrade review to recommend keeping or changing the profile when current repo evidence supports that recommendation
+- allow the upgrade review to recommend keeping or changing the profile when current project evidence supports that recommendation
 - begin review from the declared profile when present, or from the effective shared default when it is not
 
-The recommended profile should shape later validation and future repo-local guidance. The user still decides whether and when that recommendation becomes an actual repo change.
+The recommended profile should shape later validation and future project-local guidance. The user still decides whether and when that recommendation becomes an actual project change.
 
 In user-facing review output, describe the current docs setup in plain language and only mention internal profile labels when they materially help the user decide what to do next.
 
 ## Work Areas
 
-The work areas below cover most issues that materially affect agent effectiveness. Some documentation surface profiles, such as `public-python`, add additional public-facing work areas. Prefer the names below when they fit the repo well. When a material upgrade concern does not fit them cleanly, the review may introduce project-specific work areas with a plain-language name and a short justification.
+The work areas below cover most issues that materially affect agent effectiveness. Some documentation surface profiles, such as `public-python`, add additional public-facing work areas. Prefer the names below when they fit the project well. When a material upgrade concern does not fit them cleanly, the review may introduce project-specific work areas with a plain-language name and a short justification.
 
 When introducing a project-specific work area:
 
@@ -117,13 +117,13 @@ When introducing a project-specific work area:
 
 ### Core Work Areas
 
-1. minimum repo-level `AGENTS.md`
-   - establish the minimum recommended repo-level `AGENTS.md` surface from `docs/usage.md`
-2. minimum repo-level `README.md`
-   - establish the minimum recommended repo starting document and top-level navigation
+1. minimum project-level `AGENTS.md`
+   - establish the minimum recommended project-level `AGENTS.md` surface from `docs/usage.md`
+2. minimum project-level `README.md`
+   - establish the minimum recommended project starting document and top-level navigation
 3. minimum source-of-truth docs
    - minimum source-of-truth docs including `docs/architecture.md` and `docs/data-sources.md` when needed
-   - use `docs/data-sources.md` only when the repo has meaningful durable data artifacts that need one stable inventory-and-ownership doc; do not use it as the owner for data interfaces or persisted contracts
+   - use `docs/data-sources.md` only when the project has meaningful durable data artifacts that need one stable inventory-and-ownership doc; do not use it as the owner for data interfaces or persisted contracts
 4. minimum environment and execution support
    - document the minimum environment setup, execution commands, and runtime prerequisites needed to support agent operation
 5. minimum testing and validation support
@@ -148,7 +148,7 @@ When introducing a project-specific work area:
 
 ## Change Scopes
 
-For each work area, first assess what the repo needs, then classify the likely change scope. Use change scope to describe how invasive the intended move is:
+For each work area, first assess what the project needs, then classify the likely change scope. Use change scope to describe how invasive the intended move is:
 
 1. `preserve`
    - carry forward, clarify, relink, or lightly improve existing information without materially changing meaning
@@ -183,14 +183,14 @@ In user-facing review output, explain the likely need for user direction in plai
 
 Use this table as guidance when recommending whether proposed work fits review `outputs`, review `plans`, or review `designs`, and when review or planning should pause for user direction before implementation. Once an oversight level is agreed with the user, it should be strictly followed.
 
-If the repo evidence is weak, the ownership is unclear, or the proposed work mixes several concerns, consider pausing sooner than the table suggests.
+If the project evidence is weak, the ownership is unclear, or the proposed work mixes several concerns, consider pausing sooner than the table suggests.
 
 Core work areas:
 
 | Work area | `preserve` | `restructure` | `develop` |
 | --- | --- | --- | --- |
-| `minimum repo-level AGENTS.md` | `plans` | `plans` | `plans` |
-| `minimum repo-level README.md` | `plans` | `plans` | `designs` |
+| `minimum project-level AGENTS.md` | `plans` | `plans` | `plans` |
+| `minimum project-level README.md` | `plans` | `plans` | `designs` |
 | `minimum source-of-truth docs` | `plans` | `plans` | `designs` |
 | `minimum environment and execution support` | `outputs` | `plans` | `plans` |
 | `minimum testing and validation support` | `outputs` | `plans` | `plans` |
@@ -221,16 +221,16 @@ When suggesting how to group the work:
 
 Common ways to group the work include:
 
-- repo entry surface
-  - often combines minimum repo-level `AGENTS.md` and minimum repo-level `README.md`
-- core project docs
+- project entry surface
+  - often combines minimum project-level `AGENTS.md` and minimum project-level `README.md`
+- core project documentation
   - often centers on minimum source-of-truth docs, and may include additional supporting docs when ownership cleanup is tightly coupled
 - setup and verification docs
   - often combines minimum environment and execution support with minimum testing and validation support
 - interface docs
   - usually centers on additional interface docs, with supporting docs only when needed
 - public docs
-  - only when current repo evidence materially justifies `public-python` work
+  - only when current project evidence materially justifies `public-python` work
 
 These are recommendations, not fixed phases. The user decides how to group the work and in what order.
 
@@ -260,11 +260,11 @@ During upgrade work:
 - use `validation/review/upgrade-review.md` as the default shared assessment starting document
 - rerun upgrade review after meaningful progress when the user wants to reassess remaining work
 - use `validation/review/documentation-review.md` for docs-heavy changes or profile-specific documentation checks
-- use `validation/review/full-agent-surface-review.md` before treating the upgraded repo as complete
+- use `validation/review/full-agent-surface-review.md` before treating the upgraded project as complete
 
-For repos with a material `public-python` surface:
+For projects with a material `public-python` surface:
 
 - keep the documentation surface profile recommendation aligned with the exposed public surface
-- use the `public-python` documentation review workflow through the shared documentation chooser when the repo declares or is moving toward that profile
+- use the `public-python` documentation review workflow through the shared documentation chooser when the project declares or is moving toward that profile
 
 Do not treat an upgrade as complete while direct validation findings remain unresolved.

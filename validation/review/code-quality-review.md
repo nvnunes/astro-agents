@@ -13,13 +13,13 @@ Treat this file as the normal public review entrypoint for shared code-quality r
 - optional focus on Python code quality, contract ownership, validation behavior, public API boundaries, lifecycle clarity, abstraction quality, or tests and docs alignment
 - optional target scope that narrows the review below the full target root
 
-If the review scope is not specified, treat the requested repo or target root as the primary code-quality review object.
+If the review scope is not specified, treat the requested project or target root as the primary code-quality review object.
 
 ## Workflow Determination
 
 When running this review:
 
-- determine whether the requested scope is clearly Python from target paths or repo evidence such as `.py` files, `pyproject.toml`, `setup.py`, `setup.cfg`, Python package layout, or Python-first tests and commands
+- determine whether the requested scope is clearly Python from target paths or project evidence such as `.py` files, `pyproject.toml`, `setup.py`, `setup.cfg`, Python package layout, or Python-first tests and commands
 - use these shared built-in workflow starting files:
   - `validation/review/python/code-quality-review.md`
 

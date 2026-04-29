@@ -11,7 +11,7 @@ Treat this file as an internal workflow step normally reached via `validation/re
 - optional focus areas such as public starting documents, package metadata, docs reachability, generated API-doc ownership, contributor, release, or license surfaces, terminology consistency, or combined public-doc architecture
 - optional target scope that narrows the review below the full target root
 
-If the review scope is not specified, review the requested repo or document set as a public-Python documentation system.
+If the review scope is not specified, review the requested project or document set as a public-Python documentation system.
 
 ## Scope Identification
 
@@ -34,8 +34,8 @@ Evaluate the public-Python documentation system against `docs/usage.md`, `guidan
 Apply the tier model from those source documents when judging severity:
 
 - always-expected public-doc surface elements should be treated as the baseline architecture expectation
-- conditionally exposed or claimed public-doc surfaces should be treated as required when the repo presents them publicly
-- recommended public-doc elements for mature packages should be treated as softer improvement opportunities unless the repo explicitly claims them
+- conditionally exposed or claimed public-doc surfaces should be treated as required when the project presents them publicly
+- recommended public-doc elements for mature packages should be treated as softer improvement opportunities unless the project explicitly claims them
 
 Required review criteria:
 
@@ -44,13 +44,13 @@ Required review criteria:
 - always-expected public-Python surface elements such as `README.md`, package-description metadata, and public package URLs when those links are published
 - documentation role clarity and proportional structure for the size of the public docs surface
 - source-of-truth visibility across `README.md`, package metadata, docs pages, generated-reference inputs, and other exposed public-doc surfaces
-- source-of-truth visibility for Python-specific architecture, testing, and development docs when the repo exposes or depends on those workflows or contracts
+- source-of-truth visibility for Python-specific architecture, testing, and development docs when the project exposes or depends on those workflows or contracts
 - reachable docs organization rather than full-tree `docs/` inspection by default
 - redundancy versus stronger source-of-truth ownership within the reachable public surface
 - cross-surface consistency across `README.md`, package metadata, docs-site navigation, contributor or release docs, and exposed examples
 - terminology consistency versus `docs/runtime-model.md` and `docs/glossary.md`, including reintroduction of terms those docs say to avoid
 - generated API-doc ownership when public reference pages are generated from docstrings or docs-generation config
-- public docs and examples aligned with supported package-root imports rather than internal module layout when the repo documents supported Python imports
+- public docs and examples aligned with supported package-root imports rather than internal module layout when the project documents supported Python imports
 - visibility of canonical verification or environment-workflow docs such as `docs/testing.md` and `docs/development.md` when the public surface or contributor path depends on them
 - conditional public-surface expectations such as `CONTRIBUTING.md`, `CHANGELOG.md`, `LICENSE`, and example assets when the public entry surface exposes or depends on them
 - recommended public-doc elements for mature packages such as explicit docs navigation, drift checks, and a stable contributor-facing path into the docs surface

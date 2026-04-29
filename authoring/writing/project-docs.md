@@ -1,12 +1,12 @@
-# Repo Docs
+# Project Documentation
 
 ## Purpose
-Use this style for repository-facing documentation such as `README.md`,
+Use this style for project-facing documentation such as `README.md`,
 `docs/architecture.md`, `docs/testing.md`, `docs/api.md`,
 `docs/glossary.md`, `CONTRIBUTING.md`, and similar long-lived operational,
 reference, or design documents. Use it as well for generated
 reference-doc inputs such as docstrings or docs-generation config when they
-define published repo docs. Inherit the common documentation-writing
+define published project documentation. Inherit the common documentation-writing
 discipline from `authoring/writing/base.md`, then apply the additional rules
 below.
 
@@ -15,7 +15,7 @@ below.
 - Improve clarity, precision, and structure without blurring document boundaries.
 - Keep commands, paths, interfaces, boundaries, and source-of-truth references explicit.
 
-## Repo-Docs-Specific Requirements
+## Project Documentation Requirements
 - Make the document's role obvious near the top.
 - Lead with orientation, scope, or what the document is authoritative for.
 - Keep setup, commands, and where-to-go-next guidance close to the sections that depend on them.
@@ -23,12 +23,12 @@ below.
 - Keep source-of-truth boundaries explicit between `README.md`, `AGENTS.md`, architecture docs, testing docs, and plans.
 - Treat generated reference-doc inputs as part of the same source-of-truth system when they define published docs.
 - Link to deeper documents instead of duplicating them.
-- Do not let one repo doc drift into doing the job of another.
+- Do not let one project document drift into doing the job of another.
 
 ## Preservation And Revision
-When revising existing repo docs:
+When revising existing project documentation:
 - Preserve source-of-truth boundaries between `README.md`, `AGENTS.md`, architecture docs, testing docs, and plans.
-- Do not let repo-document motivation or narrative displace operational clarity.
+- Do not let project-documentation framing or narrative displace operational clarity.
 - Do not turn a narrow operational doc into a general overview.
 - Do not duplicate instructions that should be linked instead.
 - Do not change commands, paths, API names, configuration keys, or workflow steps unless instructed or clearly required to fix an error.
@@ -46,5 +46,5 @@ Adjust emphasis by document type without changing the overall tone:
 - If document type is unclear, infer it from the surrounding material. If it remains unclear, default to `README.md`-style orientation.
 
 ## Output
-- When writing or revising a repo doc, return the revised document directly unless explanation is requested.
-- When reviewing a repo doc, identify role drift, weak source-of-truth boundaries, weak scanability, or weak cross-linking before proposing replacement text.
+- When writing or revising project documentation, return the revised document directly unless explanation is requested.
+- When reviewing project documentation, identify role drift, weak source-of-truth boundaries, weak scanability, or weak cross-linking before proposing replacement text.

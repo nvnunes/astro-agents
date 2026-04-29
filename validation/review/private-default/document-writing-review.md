@@ -8,7 +8,7 @@ Treat this file as an internal workflow step normally reached via `validation/re
 ## Inputs
 
 - target root or target paths to review
-- optional focus on `README.md`, folder-level `README.md`, `docs/`, or other repo-facing human-facing docs
+- optional focus on `README.md`, folder-level `README.md`, `docs/`, or other project-facing human-facing docs
 - optional target scope that narrows the review below the full target root
 
 If the review scope is not specified, review the applicable `README.md`, folder-level `README.md`, and other human-facing docs within the requested scope.
@@ -18,7 +18,7 @@ If the review scope is not specified, review the applicable `README.md`, folder-
 When running this review:
 
 - identify applicable `README.md`, folder-level `README.md` files, and other human-facing docs dynamically from the target root
-- treat repo-facing `README.md` files and repo docs as the default documentation surface for this profile
+- treat project-facing `README.md` files and project documentation as the default documentation surface for this profile
 - use `validation/review/core-document-writing-review.md` as the shared writing-review file after choosing that surface
 - inspect `docs/glossary.md` only when the target docs rely on recurring project terms whose meaning or ownership materially affects writing clarity
 - inspect surrounding local context only when needed to determine document role or source-of-truth boundaries

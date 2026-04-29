@@ -38,8 +38,8 @@ On first use in an entry, create an entry-root symlink named `pyrun` that points
 
 `pyrun` resolves tokens as follows:
 
-- `<repo>` resolves to the repository root.
-- `<repo>/...` resolves to a path under the repository root.
+- `<project>` resolves to the project root.
+- `<project>/...` resolves to a path under the project root.
 - `<theme>` resolves to the theme folder containing `index.md` and `entries/`.
 - `<theme>/...` resolves to a path under that theme folder.
 - `<Name>` resolves to the matching `Location` in the nearest data manifest.

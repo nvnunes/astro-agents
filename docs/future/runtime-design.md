@@ -12,6 +12,8 @@ Use this document as the umbrella design frame and eventual integrated design ta
 
 Use it to keep the workstreams aligned, preserve the intended sequencing, and record the integrated decisions that cannot be settled inside one workstream alone.
 
+Use `docs/future/agent-context-engineering-patterns.md` as an external context engineering input for the runtime design program. That document records current context engineering practice across agent tools and should inform the workstreams without being treated as the integrated design itself.
+
 ## Workstreams
 
 ### Runtime Governance
@@ -36,11 +38,18 @@ Turn safety into a more explicit design and review axis on top of the current li
 - `docs/future/runtime-observability-and-provenance.md` defines which events, state transitions, and provenance links must be visible and reconstructable.
 - `docs/future/runtime-validation.md` defines how representative tasks, observable outcomes, and repeatable checks will be used to test the intended behavior.
 - `docs/future/runtime-safety.md` defines runtime-risk framing, trust classes, and the control points that the design must satisfy.
+- `docs/future/agent-context-engineering-patterns.md` provides the external context engineering layers: runtime defaults, user and team defaults, project instructions, scoped instructions, reusable workflows, runtime controls, and task prompt and session context.
 - This document depends on all four workstreams and should not be treated as implementation-ready until those inputs are mature enough to support integrated decisions.
 
 ## Program Frame
 
-Use the workstream documents for the current project assessment, open questions, and workstream-specific target models. Use this document for shared framing, cross-workstream dependencies, high-level sequencing, and later synthesis.
+Use the workstream documents for the current project assessment, open questions, and workstream-specific target models. Use `docs/future/agent-context-engineering-patterns.md` as source-backed context engineering input for those workstreams. Use this document for shared framing, cross-workstream dependencies, high-level sequencing, and later synthesis.
+
+## Context Engineering Input
+
+Use `docs/future/agent-context-engineering-patterns.md` for the external context engineering layers. Use `docs/runtime-model.md#current-codex-runtime-mapping` for how those layers map onto the current Codex and `AGENTS.md` operational path.
+
+This runtime design should build on those inputs, but its focus is future governance, observability, validation, and safety decisions.
 
 ## Defined Terms
 
@@ -54,7 +63,7 @@ Use the terms below as the shared state taxonomy for the future runtime workstre
 | `Task-local state` | Short-lived working state for the current task or branch, such as intermediate decisions, partial outputs, and current-step bookkeeping. | low to medium | sometimes | medium | carry forward only within the active task or branch |
 | `Session history` | Prior messages, outputs, tool results, and other thread-local interaction history. | medium | no | mixed | carry forward only while still relevant to the active branch and context window |
 | `Compaction summary` | A distilled summary of earlier session history created to preserve continuity after trimming or compaction. | medium | no | medium | carry forward only as an explicitly marked summary artifact, not as equivalent to full history |
-| `Rediscovered repo state` | Facts reloaded from the current repo surface during execution, such as discovered files, current docs, and current routing structure. | medium | yes | medium to high | prefer fresh rediscovery over blind carry-forward when possible |
+| `Rediscovered project state` | Facts reloaded from the current project surface during execution, such as discovered files, current docs, and current routing structure. | medium | yes | medium to high | prefer fresh rediscovery over blind carry-forward when possible |
 | `Retrieved context` | Context fetched during a run from search, retrieval, external systems, or other dynamic sources. | low | sometimes | lower-trust by default | carry forward only with provenance and only while still relevant |
 | `Longer-lived memory` | State intended to persist beyond one task or session, such as reusable preferences, stored notes, or memory-bank content. | variable | no | variable and risk-sensitive | treat as a privileged subsystem with explicit rules for write, read, trust, and monitoring |
 
@@ -106,7 +115,7 @@ Settle cross-workstream dependencies, conflicts, and tradeoffs that cannot be se
 
 ## Sequencing
 
-1. Keep the current project assessments and source-backed comparisons aligned across the four workstreams.
+1. Keep the current project assessments and source-backed comparisons aligned across the four workstreams and `docs/future/agent-context-engineering-patterns.md`.
 2. Define a shared state taxonomy and a first route-contract bundle for one representative pilot path while keeping observability, validation, and safety dependencies explicit.
 3. Advance Runtime Observability And Provenance from the current static visibility plus `Route Summary` baseline, Runtime Validation from the current shared review family plus maintained validation-path scenario baseline, and Runtime Safety from the current lightweight review-driven surface by building around that pilot route contract and its evidence surfaces.
 4. Synthesize the workstream outputs here and settle the integrated design decisions, guardrails, and acceptance criteria.
@@ -133,9 +142,9 @@ Use this rubric across governance, observability, validation, and safety. Differ
 - Which route pattern should be used for the first integrated pilot: direct route, handoff, or manager-calls-specialist?
 - How strong should the first integrated model be on session identity, checkpointing, and handoff artifacts for longer-running or resumed work?
 - Which state classes need to be distinguished in the first integrated model: stable policy, task-local state, retrieved context, compaction summaries, and longer-lived memory?
-- How should the validation workstream extend the maintained validation-path scenario baseline into a fuller eval program without making ordinary repo work too heavy?
-- How should observability extend beyond `Route Summary` and static routing visibility without over-instrumenting ordinary repo work?
-- Which containment layers must the first integrated safety model choose explicitly, even if richer controls remain deferred?
+- How should the validation workstream extend the maintained validation-path scenario baseline into a fuller eval program without making ordinary project work too heavy?
+- How should observability extend beyond `Route Summary` and static routing visibility without over-instrumenting ordinary project work?
+- Which containment boundaries must the first integrated safety model choose explicitly, even if richer controls remain deferred?
 
 ## Completion Conditions
 

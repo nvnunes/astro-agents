@@ -85,7 +85,7 @@ This guide is intended for codebases that value stable contracts, explicit owner
   shaping, persisted-path behavior, or other non-obvious invariants that are
   not obvious from code alone.
 - When docstrings feed published reference docs, also apply
-  `authoring/writing/repo-docs.md`.
+  `authoring/writing/project-docs.md`.
 
 ## Preservation And Revision
 When revising existing Python code:

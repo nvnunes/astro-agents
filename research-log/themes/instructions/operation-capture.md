@@ -45,7 +45,7 @@ Do not copy large canonical datasets or project-level input stores into entries 
 
 Place scripts by reuse scope:
 
-- `<repo>/scripts`: canonical reusable project scripts.
+- `<project>/scripts`: canonical reusable project scripts.
 - `<theme>/scripts`: theme-specific reusable scripts.
 - `<theme>/entries/<start-date>-<concept-slug>-<entry-id>-<descriptive-topic-slug>/scripts`: entry-specific tools.
 

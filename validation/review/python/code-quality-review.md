@@ -1,7 +1,7 @@
 # Python Code-Quality Review
 
 ## Purpose
-Use this prompt to review current-state Python source quality against the shared Python coding guide, shared Python-development guidance, and any relevant repo-local source-of-truth docs.
+Use this prompt to review current-state Python source quality against the shared Python coding guide, shared Python-development guidance, and any relevant project-local source-of-truth docs.
 
 Treat this file as an internal workflow step normally reached via `validation/review/code-quality-review.md`.
 
@@ -18,7 +18,7 @@ If the review scope is not specified, review the applicable Python source files 
 When running this review:
 
 - identify applicable Python source files dynamically from the target root or target paths
-- focus on repo-owned Python code rather than vendored code, build output, or virtual-environment content
+- focus on project-owned Python code rather than vendored code, build output, or virtual-environment content
 - inspect `authoring/code/python.md` as the primary shared review standard
 - inspect `guidance/python-development.md` as the shared architecture, workflow, and review-priority lens
 - inspect root `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and `docs/development.md` when they materially define local contracts, supported public API use, or required verification behavior
@@ -26,7 +26,7 @@ When running this review:
 
 ## Review Criteria
 
-Evaluate the Python code against `authoring/code/python.md` and `guidance/python-development.md`, then apply any stricter relevant repo-local expectations from the target repo's own source-of-truth docs.
+Evaluate the Python code against `authoring/code/python.md` and `guidance/python-development.md`, then apply any stricter relevant project-local expectations from the target project's own source-of-truth docs.
 
 Required review criteria:
 
@@ -48,7 +48,7 @@ Do not treat the following as the default task:
 - prompt-writing review
 - route-structure review
 - generic prose editing
-- broad repo critique outside the reviewed Python scope
+- broad project critique outside the reviewed Python scope
 - style-only cleanup that does not materially affect contracts, ownership, lifecycle clarity, maintainability, or externally visible behavior
 
 ## Output
@@ -61,7 +61,7 @@ Return:
 
 For each finding:
 
-- name the violated shared guide or repo-local source-of-truth expectation
+- name the violated shared guide or project-local source-of-truth expectation
 - name the affected path or paths
 - explain why the issue matters
 - state the recommended move

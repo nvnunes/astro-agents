@@ -127,7 +127,7 @@ Style implication:
 
 The `<theme>.md` file should be self-contained enough to explain the current state of the theme without requiring the reader or agent to open every dated entry.
 
-It should follow the repo-document writing discipline in `authoring/writing/repo-docs.md`: direct, compressed, scannable, and explicit about current understanding. Detailed evidence, lengthy caveats, historical steps, and reconstruction detail belong in entries, with clickable entry-ID links from the summary where the reader may need support.
+It should follow the project-documentation writing discipline in `authoring/writing/project-docs.md`: direct, compressed, scannable, and explicit about current understanding. Detailed evidence, lengthy caveats, historical steps, and reconstruction detail belong in entries, with clickable entry-ID links from the summary where the reader may need support.
 
 It is a living document that must be maintained. Treat user edits, ordering, prose, emphasis, and framing as intentional. Agent edits should normally be targeted updates from a specific entry, clearly identified entry changes, or direct user requests to revise summary text, not broad rewrites.
 
@@ -479,7 +479,7 @@ When research activity happens:
 
 Use three layers for scripts.
 
-- `<repo>/scripts`: canonical reusable project scripts.
+- `<project>/scripts`: canonical reusable project scripts.
 - `<theme>/scripts`: theme-specific reusable scripts.
 - `<theme>/entries/<start-date>-<concept-slug>-<entry-id>-<descriptive-topic-slug>/scripts`: entry-specific tools used for one dated/topic entry.
 
@@ -534,15 +534,15 @@ Example:
 
 Write entry commands from the perspective of the entry root as the working directory. This keeps logged commands local to the entry.
 
-`research-log/scripts/pyrun` is the minimal Python command resolver for entry examples. It runs Python from the entry root, resolves manifest-backed data tokens, resolves theme-code and repo-code tokens, and uses the repo-local `.conda` Python when available.
+`research-log/scripts/pyrun` is the minimal Python command resolver for entry examples. It runs Python from the entry root, resolves manifest-backed data tokens, resolves theme-code and project-code tokens, and uses the project-local `.conda` Python when available.
 
-When an entry first uses Python commands with manifest-backed inputs, repo-level scripts, modules, or other repo code, add an entry-root symlink named `pyrun` pointing to `research-log/scripts/pyrun`. Commands should then use short tokenized references:
+When an entry first uses Python commands with manifest-backed inputs, project-level scripts, modules, or other project code, add an entry-root symlink named `pyrun` pointing to `research-log/scripts/pyrun`. Commands should then use short tokenized references:
 
 ```bash
-./pyrun "<repo>/scripts/plot_build_memory_timeline.py" "<dynamic-build-log>"
+./pyrun "<project>/scripts/plot_build_memory_timeline.py" "<dynamic-build-log>"
 ```
 
-`pyrun` resolves `<repo>` to the repository root, `<repo>/...` to a path under the repository root, `<theme>` to the theme folder containing `index.md` and `entries/`, `<theme>/...` to a path under that theme folder, and `<Name>` to the matching `Location` in the nearest `data/manifest.md`. Tokens may appear as a whole argument or inside an argument, such as `static=<scheduler-series>/file.npz`. Quote arguments that contain angle tokens so the shell does not treat `<...>` as redirection. It searches `./manifest.md`, `./data/manifest.md`, then `../data/manifest.md`.
+`pyrun` resolves `<project>` to the project root, `<project>/...` to a path under the project root, `<theme>` to the theme folder containing `index.md` and `entries/`, `<theme>/...` to a path under that theme folder, and `<Name>` to the matching `Location` in the nearest `data/manifest.md`. Tokens may appear as a whole argument or inside an argument, such as `static=<scheduler-series>/file.npz`. Quote arguments that contain angle tokens so the shell does not treat `<...>` as redirection. It searches `./manifest.md`, `./data/manifest.md`, then `../data/manifest.md`.
 
 The manifest remains the source of truth for asset identity and location. The entry-root `pyrun` symlink is only a command convenience.
 

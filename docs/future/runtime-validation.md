@@ -41,8 +41,8 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Current Review-Surface Adequacy
 
-- for the current prompt-library repo, the shared review family is strong: narrow review prompts are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and repo-local consistency reviews catch drift in the root dispatcher and shared validation surface
-- this review surface is adequate for maintaining prompt-writing quality, route-structure discipline, documentation structure, and validation-contract consistency in the repo as it exists today
+- for the current prompt-library project, the shared review family is strong: narrow review prompts are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and project-local consistency reviews catch drift in the root dispatcher and shared validation surface
+- this review surface is adequate for maintaining prompt-writing quality, route-structure discipline, documentation structure, and validation-contract consistency in the project as it exists today
 - it is not adequate on its own for proving runtime behavior once the project starts making stronger claims about route contracts, route choice, carried-forward context, tool boundaries, or degraded execution paths
 
 #### Behavior-Facing Coverage
@@ -54,21 +54,21 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Scenario Representativeness
 
-- the repo has a maintained validation-path scenario baseline in `docs/testing.md` and `agents/validation/validation-path-scenarios.md`
-- that baseline covers public review entrypoint selection, documentation-profile resolution, internal review-step selection, repo-local review-file inclusion, and `Route Summary` expectations on the current validation surface
+- the project has a maintained validation-path scenario baseline in `docs/testing.md` and `agents/validation/validation-path-scenarios.md`
+- that baseline covers public review entrypoint selection, documentation-profile resolution, internal review-step selection, project-local review-file inclusion, and `Route Summary` expectations on the current validation surface
 - it is still intentionally narrower than a full runtime scenario set: broader degraded cases such as rediscovery failure, longer threads, compaction-sensitive routes, and wider ambiguity handling remain future validation work
 
 #### Evidence And Inspectability
 
 - current validation depends heavily on static inspection and reviewer reconstruction from prompt files, `AGENTS.md`, and source-of-truth docs
-- the review prompts do ask for dynamic file discovery within scope, which is better than hardcoded assumptions, but that is still runtime discovery of repo artifacts rather than observable evidence of instruction loading and applicability or route choice
+- the review prompts do ask for dynamic file discovery within scope, which is better than hardcoded assumptions, but that is still runtime discovery of project artifacts rather than observable evidence of instruction loading and applicability or route choice
 - `docs/future/runtime-observability-and-provenance.md` correctly identifies that route choice, state transitions, and carried-forward context are not yet inspectable enough for behavior-focused validation
 - until observable runtime evidence exists, validation of routing and carry-forward behavior will remain inference-heavy
 
 #### Metrics And Measurement
 
 - the project has almost no mature runtime metrics today
-- review prompts explicitly avoid deterministic pass/fail scoring, and the current repo-local validation model is built around findings rather than measurable behavior outputs
+- review prompts explicitly avoid deterministic pass/fail scoring, and the current project-local validation model is built around findings rather than measurable behavior outputs
 - runtime-context size, routing reliability, and runtime-cost concerns are recognized in `docs/future/runtime-design.md` and this workstream plan, but no standard measurement method exists yet
 - the current validation surface therefore produces findings and review judgments, not measurable runtime performance signals
 
@@ -80,7 +80,7 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Regression Discipline
 
-- the repo already has a useful regression structure for prompt-surface maintenance: required review categories are explicit, regression priorities are named, starter requests make the main reviews reusable, and repo-local consistency reviews add a small but meaningful stage of stable repeatability for the root dispatcher and current shared validation surface
+- the project already has a useful regression structure for prompt-surface maintenance: required review categories are explicit, regression priorities are named, starter requests make the main reviews reusable, and project-local consistency reviews add a small but meaningful stage of stable repeatability for the root dispatcher and current shared validation surface
 - public-profile branching and narrow-review independence also reduce accidental broadening, which helps preserve regression meaning inside the current review family
 - the validation-path scenario baseline adds a small maintained regression map for the current validation surface
 - regression discipline is still weak for broader runtime behavior because there is no dataset, harness, or behavior-facing evidence surface to rerun against longer-thread, instruction-applicability, or degraded-case questions
@@ -93,7 +93,7 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Method Proportionality
 
-- the current validation approach is well matched to the repo’s present maturity: shared review prompts plus a small number of repo-local checks are lightweight enough for ordinary prompt and doc work
+- the current validation approach is well matched to the project’s present maturity: shared review prompts plus a small number of project-local checks are lightweight enough for ordinary prompt and doc work
 - that proportionality is a real strength, especially for lower-budget runtime paths
 - it also means the current system is under-instrumented for behavior validation, so the next phase needs to add representative tests and measurements without losing the lightweight review workflow and narrow-review discipline that already work
 
@@ -114,7 +114,7 @@ This section describes the current runtime-validation state of `astro-agents`.
 - decide which validation questions can use deterministic checks, which require rubric-based grading, and which still need human review
 - define runtime acceptance criteria that go beyond unresolved review findings and state what counts as acceptable routing, tool-boundary, approval, and state-behavior correctness
 - build regression discipline around repeatable scenarios and evidence expectations rather than around one-off review prompts alone
-- keep the first behavior-facing validation stage lightweight enough for ordinary repo use and lower-budget runtime paths
+- keep the first behavior-facing validation stage lightweight enough for ordinary project use and lower-budget runtime paths
 - choose the first pilot area for validation using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a good routing pilot, but not automatically the best first pilot for tool permissions or side-effect controls
 
 ### Open Validation Questions
@@ -129,8 +129,8 @@ This section describes the current runtime-validation state of `astro-agents`.
 - how should runtime-context size and runtime-cost concerns affect validation thresholds and representative scenarios
 - how much longer-thread and compaction coverage is needed in the first validation stage before the observability workstream matures further
 - which current review prompts should remain purely qualitative and which should later feed into more structured evaluators or scoring
-- how should repo-local review files under `agents/validation/` participate in future behavior-facing validation beyond their current follow-on role without duplicating the shared methods
-- what minimum regression suite would materially improve confidence without making ordinary prompt-surface changes too expensive to validate
+- how should project-local review files under `agents/validation/` participate in future behavior-facing validation beyond their current follow-on role without duplicating the shared methods
+- what minimum regression suite would materially improve confidence without making ordinary context-engineering changes too expensive to validate
 - where should the line be drawn between validation work, observability requirements, and governance decisions when one is blocked on the others
 
 ## Maturation Path

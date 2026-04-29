@@ -2,7 +2,7 @@
 
 This folder contains shared guides for authoring source code.
 
-Use it to understand the code-authoring guides in this repo, what each one is for, and which guide to use next.
+Use it to understand the code-authoring guides in this project, what each one is for, and which guide to use next.
 
 ## Design Model
 

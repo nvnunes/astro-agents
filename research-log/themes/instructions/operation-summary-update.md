@@ -4,7 +4,7 @@ Use this file when updating `<theme>.md` from a specific entry, clearly identifi
 
 This operation keeps `<theme>.md` as a first-class living document.
 
-When editing summary prose, apply `research-log/themes/instructions/file-summary.md`, including its `authoring/writing/repo-docs.md` style boundary. Keep updates direct and compressed; do not expand `<theme>.md` to preserve every detail from the entry.
+When editing summary prose, apply `research-log/themes/instructions/file-summary.md`, including its `authoring/writing/project-docs.md` style boundary. Keep updates direct and compressed; do not expand `<theme>.md` to preserve every detail from the entry.
 
 Summary updates can move in two directions:
 

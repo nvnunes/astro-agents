@@ -6,7 +6,7 @@ This operation is report-first and does not edit files unless the user approves 
 
 Do not make automatic edits during `Check`. Formatting corrections, heading changes, link fixes, numbering/list changes, style cleanup, and summary prose improvements are still fixes. Report them first and ask before applying them.
 
-When evaluating or fixing summary prose, apply `research-log/themes/instructions/file-summary.md`, including its `authoring/writing/repo-docs.md` style boundary. Treat verbosity, convoluted writing, and entry-detail dumping as summary-quality issues when they reduce scanability.
+When evaluating or fixing summary prose, apply `research-log/themes/instructions/file-summary.md`, including its `authoring/writing/project-docs.md` style boundary. Treat verbosity, convoluted writing, and entry-detail dumping as summary-quality issues when they reduce scanability.
 
 ## Procedure
 

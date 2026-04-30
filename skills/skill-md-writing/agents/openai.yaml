@@ -1,0 +1,4 @@
+interface:
+  display_name: "SKILL.md Writing"
+  short_description: "Write and review Codex skill files"
+  default_prompt: "Use $skill-md-writing to improve this SKILL.md file."

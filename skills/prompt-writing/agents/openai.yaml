@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prompt Writing"
+  short_description: "Write and review reusable agent prompts"
+  default_prompt: "Use $prompt-writing to improve this reusable agent-facing prompt."

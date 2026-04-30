@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Docs Writing"
+  short_description: "Write and revise project documentation"
+  default_prompt: "Use $project-docs-writing to revise this project documentation."

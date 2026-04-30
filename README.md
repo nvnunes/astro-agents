@@ -1,18 +1,15 @@
 # astro-agents
 
-`astro-agents` is a shared prompt and documentation library for project-level agent guidance. It collects reusable authoring prompts, validation routes, research-log guidance, downstream guidance docs, and design references for people who want a more structured agent surface across projects.
+`astro-agents` is a shared library of reusable agent skills, examples, and review/planning workflows. It is for people who want a more structured agent surface across projects.
 
 > [!NOTE]
 > `astro-agents` is public and pre-1.0. The project is usable today, but its file-level contracts and structure may still change as the public surface settles.
 
 ## What It Is
 
-- shared authoring prompts and guides in `authoring/`
-- shared validation review entrypoints and workflows in `validation/`
-- reusable research-log guidance in `research-log/`
-- shared downstream recommendation docs in `guidance/`
+- user-facing reusable capabilities in `skills/`
+- downstream adoption examples in `examples/`
 - source-of-truth design docs for the library itself in `docs/`
-- project-local validation files for `astro-agents` itself in `agents/`
 
 ## Who It Is For
 
@@ -29,29 +26,25 @@
 
 ## Current Support
 
-The most complete documented path today is Codex plus `AGENTS.md`. The project also tracks broader agent-runtime vocabulary and design ideas so the library can stay portable, but those broader references do not currently imply equal adoption or validation support across runtimes.
+The most complete documented path today is Codex skill discovery plus minimal `AGENTS.md` bootstrap or project context. The project also tracks broader agent-runtime vocabulary and design ideas so the library can stay portable, but those broader references do not currently imply equal adoption or validation support across runtimes.
+
+The current library shape is skills-first. Runtime skill discovery activates skill packages, and skill packages use `references/` and `scripts/` for progressive disclosure. `AGENTS.md` supplies project-local working context for this repository.
 
 ## Quickstart
 
 1. Make a checkout of `astro-agents` available in the workspace where you want to use it.
 2. Use `docs/usage.md` to choose a bootstrap path and adopt the parts of `astro-agents` that fit your project.
 
-`docs/usage.md` owns the exact project-local and global bootstrap snippets, the minimal adoption path, and the optional shared-validation and shared-guidance layers.
+`docs/usage.md` owns the exact project-local and global bootstrap snippets, the recommended project surface, and the optional shared-validation path.
 
 ## Project Layout
 
-- `authoring/`
-  - shared authoring prompts and guides
-- `guidance/`
-  - shared recommendation docs for downstream projects
-- `validation/`
-  - shared validation review entrypoints, workflows, and upgrade assessment paths
-- `research-log/`
-  - reusable research-log and theme-document guidance
+- `skills/`
+  - user-facing reusable capabilities packaged as `SKILL.md` plus references and scripts
+- `examples/`
+  - example downstream project documents
 - `docs/`
-  - architecture, usage, testing, glossary, runtime, and upgrade-design docs
-- `agents/`
-  - project-local validation review files for `astro-agents`
+  - architecture, usage, testing, glossary, runtime, and future-design docs
 
 `docs/future/` holds roadmap and design material for later runtime work. Keep it out of the normal onboarding path unless you are working on that future design directly.
 
@@ -60,15 +53,11 @@ The most complete documented path today is Codex plus `AGENTS.md`. The project a
 - `docs/usage.md`
   - concrete adoption path for downstream projects and user-global bootstrap
 - `docs/architecture.md`
-  - route structure, scope ownership, validation model, and maintenance expectations for this project
-- `authoring/README.md`
-  - entrypoint for the shared authoring prompts and guides
-- `validation/README.md`
-  - shared validation library, review entrypoints, and upgrade path
-- `research-log/README.md`
-  - reusable research-log guidance and theme-document maintenance entrypoint
-- `guidance/README.md`
-  - entrypoint for the shared downstream recommendation docs
+  - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
+- `skills/`
+  - reusable skill packages such as `agent-surface-review`, `documentation-surface-review`, `code-quality-review`, `project-upgrade-planning`, `technical-writing`, narrower writing skills, Python code writing, and research logging
+- `examples/downstream-testing.md`
+  - example downstream `docs/testing.md`
 - `docs/runtime-model.md`
   - runtime vocabulary, current support boundary, and concrete Codex behavior
 - `docs/testing.md`

@@ -1,0 +1,4 @@
+interface:
+  display_name: "README Writing"
+  short_description: "Write and revise README files"
+  default_prompt: "Use $readme-writing to revise this README."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Documentation Surface Review"
+  short_description: "Review documentation surfaces and profiles"
+  default_prompt: "Use $documentation-surface-review to review this project's documentation surface."

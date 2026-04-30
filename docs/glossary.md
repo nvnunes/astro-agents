@@ -2,7 +2,7 @@
 
 This document is the human-facing source of truth for shared terminology in `astro-agents`.
 
-Use it when a design term, review term, or prompt-system term needs a stable meaning that both humans and agents can reuse consistently.
+Use it when a design term, review term, or context-engineering term needs a stable meaning that both humans and agents can reuse consistently.
 
 For runtime and control-flow terminology, use `docs/runtime-model.md`.
 
@@ -24,7 +24,7 @@ For runtime and control-flow terminology, use `docs/runtime-model.md`.
 
 #### Agent Surface
 
-The part of a project's surface that agents are expected to rely on directly when navigating, interpreting, and applying the project. In this project, the agent surface includes `AGENTS.md`, prompt files, and the relevant documentation and source-of-truth docs that agents are expected to use directly.
+The part of a project's surface that agents are expected to rely on directly when navigating, interpreting, and applying the project. In this project, the agent surface includes `AGENTS.md`, `SKILL.md` packages, skill references, prompt files when present, and the relevant documentation and source-of-truth docs that agents are expected to use directly.
 
 #### API
 
@@ -44,15 +44,19 @@ The part of a project's surface whose primary audience is human readers, typical
 
 #### Documentation Surface Profile
 
-A named documentation surface pattern that identifies the expected structure and emphasis of a project’s human-facing documentation. It can map to corresponding review workflows implemented either by the shared validation library or by higher-authority workspace- or project-local prompt files.
+A named documentation surface pattern that identifies the expected structure and emphasis of a project's human-facing documentation. It can map to corresponding review workflows implemented by shared review skills or by higher-authority workspace- or project-local prompt files.
 
 #### Prompt Family
 
-A logical collection of related prompt files, typically organized within a folder tree.
+A logical collection of related prompt files, typically organized within a folder tree. In current `astro-agents` architecture, user-facing reusable capabilities should normally be packaged as skills instead; use `prompt family` mainly when describing legacy structure, downstream prompt folders, or non-skill prompt collections.
 
 #### Review Criterion
 
 A named criterion or angle of evaluation used to structure a review. Use this term when a review explicitly organizes its judgments by stable criteria.
+
+#### Skill
+
+A reusable agent capability packaged in a folder with a `SKILL.md` file and optional `references/`, `scripts/`, or `assets/`. In `astro-agents`, skills are the user-facing runtime capability surface.
 
 #### Source Of Truth
 
@@ -65,7 +69,7 @@ The user's shared working environment across projects. In `astro-agents`, worksp
 ## Terms To Avoid
 
 - `activate`, `activation`, `shared activation`: Avoid these as catch-all runtime terms. Prefer `Route`, loading `Instructions`, applicability, selection, `Handoff`, or scope change, depending on the actual mechanism.
-- `bundle`, `component`, `composite`: Avoid these as formal prompt-system categories. Prefer grouped prompts, internal prompt, internal workflow step, coordinating `Prompt`, or synthesized output.
+- `bundle`, `component`, `composite`: Avoid these as formal context-engineering categories. Prefer grouped prompts, internal prompt, internal workflow step, coordinating `Prompt`, or synthesized output.
 - `composition`: Avoid this as a standalone runtime term. Prefer overlapping `Instructions`, simultaneous applicability, reusable prompt combination, or multi-step `Workflow`.
 - `control flow`: Avoid this as a broad project-runtime label when `Route`, `Workflow`, `Handoff`, or `Orchestration` would be more exact.
 - `govern`: Avoid this as a broad runtime verb. Prefer own the task, apply `Instructions`, determine the active `Instructions`, or `Orchestration`.

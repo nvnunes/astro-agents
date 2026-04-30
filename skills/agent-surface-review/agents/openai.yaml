@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Surface Review"
+  short_description: "Review project agent surfaces"
+  default_prompt: "Use $agent-surface-review to review this project's agent surface."

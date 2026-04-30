@@ -1,0 +1,4 @@
+interface:
+  display_name: "Concept Writing"
+  short_description: "Write and revise concept documents"
+  default_prompt: "Use $concept-writing to revise this concept document."

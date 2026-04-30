@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Quality Review"
+  short_description: "Review current-state source-code quality"
+  default_prompt: "Use $code-quality-review to review the current source-code quality."

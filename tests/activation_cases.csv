@@ -1,0 +1,48 @@
+id,expected_skill,should_trigger,kind,prompt,success_observable
+explicit-agent-surface,agent-surface-review,true,explicit,Use $agent-surface-review to review this project agent surface,uses agent-surface-review and reports material agent-surface sources
+explicit-agents-md,agents-md-writing,true,explicit,Use $agents-md-writing to revise this root AGENTS.md,uses agents-md-writing guidance for AGENTS.md scope and source-of-truth pointers
+explicit-code-quality,code-quality-review,true,explicit,Use $code-quality-review to review this Python module's source-code quality,uses code-quality-review for source-code quality findings
+explicit-concept,concept-writing,true,explicit,Use $concept-writing to draft a concept note for this design idea,uses concept-writing for early-stage idea framing
+explicit-documentation-surface,documentation-surface-review,true,explicit,Use $documentation-surface-review to review this project's documentation surface,uses documentation-surface-review for docs architecture and profile checks
+explicit-plan,plan-writing,true,explicit,Use $plan-writing to write an implementation plan for this migration,uses plan-writing for sequencing and future work organization
+explicit-project-docs,project-docs-writing,true,explicit,Use $project-docs-writing to revise docs/architecture.md,uses project-docs-writing for durable project documentation
+explicit-project-upgrade,project-upgrade-planning,true,explicit,Use $project-upgrade-planning to assess this project for upgrade readiness,uses project-upgrade-planning for upgrade grouping and sequencing
+explicit-prompt,prompt-writing,true,explicit,Use $prompt-writing to write a reusable review prompt,uses prompt-writing for reusable agent-facing prompt design
+explicit-python-code,python-code-writing,true,explicit,Use $python-code-writing to refactor this Python module,uses Python code-writing guidance for implementation work
+explicit-readme,readme-writing,true,explicit,Use $readme-writing to rewrite this README.md,uses readme-writing for README-specific structure and orientation
+explicit-research-logging,research-logging,true,explicit,Use $research-logging to capture this in the telemetry research log,uses research-logging operation selection for capture
+explicit-science,science-writing,true,explicit,Use $science-writing to revise this paper's methods section,uses science-writing for scientific claims and evidence framing
+explicit-skill-md,skill-md-writing,true,explicit,Use $skill-md-writing to review this SKILL.md,uses skill-md-writing guidance for SKILL.md frontmatter and package structure
+explicit-technical,technical-writing,true,explicit,Use $technical-writing to tighten this general technical explanation,uses technical-writing for general technical prose clarity
+implicit-agent-surface,agent-surface-review,true,implicit,Review the agent surface,uses agent-surface-review as the primary review skill
+implicit-agents-md,agents-md-writing,true,implicit,Revise this AGENTS.md so it has clear scope and source-of-truth pointers,uses agents-md-writing for AGENTS.md behavior and scope
+implicit-code-quality,code-quality-review,true,implicit,Review this source code for maintainability and API boundary issues,uses code-quality-review for source-code quality review
+implicit-concept,concept-writing,true,implicit,Write a short concept document that explains this design direction,uses concept-writing for concept framing rather than planning
+implicit-documentation-surface,documentation-surface-review,true,implicit,Review the documentation architecture and source-of-truth coverage,uses documentation-surface-review as the docs validation skill
+implicit-plan,plan-writing,true,implicit,Turn this migration idea into a sequenced implementation plan,uses plan-writing for execution sequencing
+implicit-project-docs,project-docs-writing,true,implicit,Update docs/testing.md to describe the current validation process,uses project-docs-writing for durable project docs
+implicit-project-upgrade,project-upgrade-planning,true,implicit,Assess this project for upgrade readiness and propose work groupings,uses project-upgrade-planning for upgrade assessment
+implicit-prompt,prompt-writing,true,implicit,Write a reusable prompt for reviewing documentation quality,uses prompt-writing for reusable prompt design
+implicit-python-code,python-code-writing,true,implicit,Refactor this Python code,uses python-code-writing as the primary implementation skill
+implicit-readme,readme-writing,true,implicit,Improve this README.md so new users know where to start,uses readme-writing as the README-specific skill
+implicit-skill-md,skill-md-writing,true,implicit,Write a SKILL.md for this workflow,uses skill-md-writing guidance for skill activation and progressive disclosure
+implicit-research-log,research-logging,true,implicit,Update the adaptive optics research log,uses research-logging operation selection for summary or capture work
+implicit-science,science-writing,true,implicit,Revise this scientific manuscript introduction for clearer claims,uses science-writing for scientific prose
+implicit-technical,technical-writing,true,implicit,Tighten this technical explanation without changing its meaning,uses technical-writing for general technical prose
+negative-agent-surface-vs-code-quality,agent-surface-review,false,negative,Review this Python module for source-code quality issues,uses code-quality-review rather than agent-surface-review
+negative-prompt-vs-agents,agents-md-writing,false,negative,Write a reusable prompt file for a review workflow,uses prompt-writing rather than agents-md-writing
+negative-code-quality-vs-docs,code-quality-review,false,negative,Review the documentation surface for this project,uses documentation-surface-review rather than code-quality-review
+negative-concept-vs-plan,concept-writing,false,negative,Write an implementation plan for this migration,uses plan-writing rather than concept-writing
+negative-documentation-surface-vs-project-docs,documentation-surface-review,false,negative,Revise docs/architecture.md for clarity and current terminology,uses project-docs-writing rather than documentation-surface-review
+negative-plan-vs-concept,plan-writing,false,negative,Write a concept note explaining the design rationale,uses concept-writing rather than plan-writing
+negative-project-docs-vs-readme,project-docs-writing,false,negative,Write a README.md for this project,uses readme-writing as primary rather than project-docs-writing
+negative-project-upgrade-vs-agent-surface,project-upgrade-planning,false,negative,Review this project's agent surface for prompt and skill issues,uses agent-surface-review rather than project-upgrade-planning
+negative-prompt-writing-vs-agents-md,prompt-writing,false,negative,Revise this AGENTS.md so it has clear scope and source-of-truth pointers,uses agents-md-writing rather than prompt-writing
+negative-prompt-vs-agents-md,agents-md-writing,false,negative,Write a reusable prompt file for a review workflow,uses prompt-writing rather than agents-md-writing
+negative-prompt-vs-skill-md,skill-md-writing,false,negative,Write a reusable prompt file for a review workflow,uses prompt-writing rather than skill-md-writing
+negative-python-code-vs-code-quality,python-code-writing,false,negative,Review this Python module for maintainability problems,uses code-quality-review rather than python-code-writing
+negative-readme-vs-project-docs,readme-writing,false,negative,Revise docs/usage.md to clarify adoption guidance,uses project-docs-writing rather than readme-writing
+negative-research-log-vs-science,research-logging,false,negative,Revise this scientific manuscript introduction for clearer claims,uses science-writing rather than research-logging
+negative-science-vs-research-log,science-writing,false,negative,Capture these experiment notes in the adaptive optics research log,uses research-logging rather than science-writing
+negative-docs-vs-code-review,code-quality-review,false,negative,Review the documentation surface for this project,uses documentation-surface-review rather than code-quality-review
+negative-technical-vs-readme,technical-writing,false,negative,Rewrite this README.md introduction for new users,uses readme-writing rather than technical-writing

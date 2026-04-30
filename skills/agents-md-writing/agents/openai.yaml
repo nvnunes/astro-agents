@@ -1,0 +1,4 @@
+interface:
+  display_name: "AGENTS.md Writing"
+  short_description: "Write and review AGENTS.md files"
+  default_prompt: "Use $agents-md-writing to revise this AGENTS.md file."

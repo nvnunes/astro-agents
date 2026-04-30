@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python Code Writing"
+  short_description: "Write and refactor Python code"
+  default_prompt: "Use $python-code-writing to implement this Python change."

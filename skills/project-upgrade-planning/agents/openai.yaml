@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Upgrade Planning"
+  short_description: "Plan upgrades to the shared astro-agents model"
+  default_prompt: "Use $project-upgrade-planning to assess this project and propose an upgrade plan."

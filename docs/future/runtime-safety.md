@@ -64,21 +64,21 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 #### Instruction And Trust Boundaries
 
-- the project does distinguish routing files from deeper source-of-truth docs, which is a useful first trust boundary because it reduces accidental reliance on one large undifferentiated prompt surface
+- the project does distinguish routing files from deeper source-of-truth docs, which is a useful first trust boundary because it reduces accidental reliance on one large undifferentiated instruction surface
 - the live surface keeps that boundary intentionally lightweight instead of defining a stronger local trust model, so it still does not specify how untrusted context, carried-forward context, or stale-state handling should work once multiple prompts and docs have been discovered
 - there is also no explicit rule for when carried-forward context should be downgraded to supporting `Context` or discarded after narrower guidance or newly loaded source-of-truth docs appear
 - current status: partly covered
 
 #### Routing And Instruction-Applicability Safety
 
-- direct routes in `authoring/` and source-of-truth-driven upgrade design work are relatively bounded and therefore lower-risk than the deeper multi-step workflow paths in `validation/`
+- direct routes in writing skills and skill-local upgrade model work are relatively bounded and therefore lower-risk than the deeper multi-step workflow paths in `agent-surface-review`
 - the live surface prefers explicit routing and explicit local follow-on paths over broad additive applicability claims, which reduces one source of ambiguity on the current review surface
 - some bounded review-surface defaults already exist, such as unsupported documentation profiles returning a finding and upgrade review defaulting to review-first handling when no profile is declared, but this is not yet a general safety discipline for routing or carry-forward state
 - current status: partly covered
 
 #### Untrusted Context And Injection Exposure
 
-- the current project is still mostly a prompt-library and documentation system, so it is less exposed to live adversarial input than a tool-using or web-connected runtime
+- the current project is still mostly a skills-first shared library and documentation system, so it is less exposed to live adversarial input than a tool-using or web-connected runtime
 - even so, the runtime model does not yet define how untrusted context should be isolated from active `Instructions`, whether retrieved or externally supplied content should be lower-trust by default, or how indirect prompt injection would be contained
 - this means the project is safer today mainly because its runtime is narrow, not because the trust model is already explicit
 - current status: weakly covered
@@ -93,13 +93,13 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Least Privilege And Permission Boundaries
 
 - the current runtime surface does not yet expose a real tool-permission model, identity model, or least-privilege contract
-- that is understandable because `astro-agents` is still primarily a prompt-system project, but the first integrated runtime design will need to say explicitly whether these boundaries are deferred or minimally defined now
+- that is understandable because `astro-agents` is still primarily a context-engineering project, but the first integrated runtime design will need to say explicitly whether these boundaries are deferred or minimally defined now
 - until then, least privilege is effectively absent rather than intentionally bounded
 - current status: not meaningfully covered
 
 #### Approval And Side-Effect Boundaries
 
-- the current project assumes a human-led workflow and uses review completion rules to keep prompt-surface work from being treated as done prematurely
+- the current project assumes a human-led workflow and uses review completion rules to keep agent-surface work from being treated as done prematurely
 - it does not define runtime approval checkpoints for consequential actions, because the current shared runtime model is not yet action-capable in that way
 - as a result, human oversight exists mainly by operating context rather than by an explicit approval design
 - current status: not meaningfully covered
@@ -114,15 +114,15 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Incident Visibility And Forensics
 
 - safety-relevant design issues are reasonably inspectable from the static project surface because routing, instruction authority, and source-of-truth structure are documented clearly
-- shared selector and combined-review outputs expose a short `Route Summary`, which modestly improves review-path visibility on the current validation surface
+- combined-review outputs expose a short `Review Path Summary`, which modestly improves review-path visibility on the current validation surface
 - runtime forensics are still much weaker: there is no evidence surface showing which `Instructions` were active, what context was carried forward, or when a risky transition occurred
 - this means investigation of safety incidents would still depend heavily on reconstruction after the fact
 - current status: weakly covered
 
 #### Safety Validation Support
 
-- the current validation library is good at reviewing route structure, prompt-writing quality, documentation structure, and some bounded design failures that matter to safety indirectly
-- the project also has a lightweight validation-path scenario baseline for the current shared review surface
+- the current review skill surface is good at reviewing route structure, prompt-writing quality, documentation structure, and some bounded design failures that matter to safety indirectly
+- the project also has lightweight static validation and activation eval fixtures for the current shared review surface
 - it still does not validate safety-relevant runtime behavior directly, such as wrong-route instruction applicability, stale carried-forward or active context, compaction-sensitive failures, or unsafe carry-forward
 - safety review therefore has a decent structural baseline but not yet a behavior-facing validation stage
 - current status: weakly covered
@@ -136,9 +136,9 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 
 #### Proportionality
 
-- the current safety posture is proportionate to the project as it exists today: lightweight docs, static review prompts, and limited runtime capability keep overhead low
+- the current safety posture is proportionate to the project as it exists today: lightweight docs, static review skills, and limited runtime capability keep overhead low
 - the tradeoff is that many safety surfaces are presently safe by absence of capability, not by explicit control design
-- that is acceptable for the current prompt-library phase, but it will not be enough once the integrated runtime design starts making stronger claims about routing, state, observability, and eventual tool use
+- that is acceptable for the current skills-first phase, but it will not be enough once the integrated runtime design starts making stronger claims about routing, state, observability, and eventual tool use
 - current status: partly covered
 
 ### Recommended Safety Actions
@@ -161,7 +161,7 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 - require validation coverage for the highest-risk runtime behaviors rather than relying only on structural review
 - define where human oversight remains intentionally mandatory because runtime controls are incomplete, expensive, or inappropriate to automate
 - preserve proportionality by keeping the first safety stage lightweight enough for ordinary project work while still making the main risks explicit
-- choose the first safety pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is a strong candidate for carry-forward and routing risk, but tool-using or approval-bearing paths may be better for least-privilege and side-effect controls
+- choose the first safety pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `agent-surface-review` is a strong candidate for carry-forward and routing risk, but tool-using or approval-bearing paths may be better for least-privilege and side-effect controls
 
 ### Open Safety Questions
 
@@ -220,5 +220,5 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 ## Assumptions And Deferred Decisions
 
 - This workstream starts lighter than Runtime Governance and Validation.
-- The current runtime model is mostly a prompt-system problem, but the plan should leave room for broader runtime safety concerns if the system grows more stateful or more tool-capable.
+- The current runtime model is mostly a context-engineering problem, but the plan should leave room for broader runtime safety concerns if the system grows more stateful or more tool-capable.
 - The exact approval, permission, or enforcement mechanisms are deferred until the integrated runtime design is more stable.

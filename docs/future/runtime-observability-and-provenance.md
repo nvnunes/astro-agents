@@ -33,10 +33,10 @@ This section describes the current runtime observability and provenance state of
 
 #### Traceability
 
-- the project is reasonably traceable at the static document level: `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and `validation/README.md` make the intended routing and review surface legible to a human reviewer
-- shared selector and combined-review outputs expose a short `Route Summary`, which makes the chosen validation path more legible than before
-- actual runtime traceability is still weak: the project has no trace, span, or run record showing which dispatchers, selectors, prompts, or source-of-truth docs were actually discovered, loaded, or superseded during a concrete task
-- this gap is most visible in `validation/`, where reviewers can see the declared review path but still cannot replay discovery or runtime instruction loading from evidence
+- the project is reasonably traceable at the static document level: `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and the relevant review/planning skills make the intended skill and review surface legible to a human reviewer
+- combined review outputs expose a short `Review Path Summary`, which makes the chosen validation path more legible than before
+- actual runtime traceability is still weak: the project has no trace, span, or run record showing which skills, instructions, prompts, or source-of-truth docs were actually discovered, loaded, or superseded during a concrete task
+- this gap is most visible in `agent-surface-review`, where reviewers can see the declared review path but still cannot replay discovery or runtime instruction loading from evidence
 - current status: partly covered
 
 #### Trust, Source, And Scope Visibility
@@ -48,9 +48,9 @@ This section describes the current runtime observability and provenance state of
 
 #### Route-Decision Visibility
 
-- root dispatchers and family selectors describe intended route-selection rules clearly, and selectors such as `validation/review/documentation-review.md` make some branch logic explicit
-- shared selector and combined-review outputs expose the active review path through a `Route Summary`, but they do not record why one route or selector branch won, what competing branches were considered, or whether a route narrowed, broadened, or delegated work internally
-- the generic routing wording recommended in `docs/usage.md` improves portability, but it also reduces visibility into the exact shared route a downstream project expects to choose
+- skill descriptions and skill references describe intended activation boundaries clearly, and `skills/documentation-surface-review/SKILL.md` makes documentation-profile selection explicit
+- combined-review outputs expose the active review path through a `Review Path Summary`, but they do not record why one skill or internal workflow branch was chosen, what competing branches were considered, or whether the workflow narrowed, broadened, or delegated work internally
+- the generic skill-invocation wording recommended in `docs/usage.md` improves portability, but it also reduces visibility into the exact shared workflow a downstream project expects to use
 - current status: partly covered
 
 #### Local Customization And Instruction Authority Visibility
@@ -62,21 +62,21 @@ This section describes the current runtime observability and provenance state of
 
 #### Context Provenance
 
-- provenance for static project guidance is relatively strong: dispatchers and selectors point to named source-of-truth docs, shared reviews name their internal reusable prompts, and documentation-profile resolution is explicit
+- provenance for static project guidance is relatively strong: skill packages and project docs point to named source-of-truth docs, shared reviews name their internal references, and documentation-profile resolution is explicit
 - provenance for runtime context is weak: the project does not define how carried-forward context, compaction summaries, rediscovered project facts, or future retrieved evidence should remain linked to their source
 - this means the project can explain where guidance lives, but not yet where active runtime context came from
 - current status: partly covered
 
 #### State Visibility
 
-- the current shared model has almost no explicit runtime state surface beyond review-path visibility and document-level routing
+- the current shared model has almost no explicit runtime state surface beyond review-path visibility and document-level instruction discovery
 - there is no inspectable notion of active route, active `Instructions`, supporting `Context`, carry-forward state class, or stale-state marker
 - the design docs name these needs, but the current project does not yet expose them
 - current status: not meaningfully covered
 
 #### Reconstructability
 
-- in a fresh audit, a reviewer can often reconstruct the intended route from the project structure, source-of-truth docs, validation selectors, and the `Route Summary` emitted by shared selector and combined-review outputs
+- in a fresh audit, a reviewer can often reconstruct the intended review path from the project structure, source-of-truth docs, skill references, and the `Review Path Summary` emitted by combined-review outputs
 - reconstructing which `Instructions` were active in a longer or compacted thread would still be inference-heavy because no runtime history preserves route choice, changes in instruction applicability, or state transitions
 - the current review-path visibility helps on ordinary validation runs, but longer or divergent threads still lack the runtime history needed for reliable reconstruction
 - current status: partly covered
@@ -90,14 +90,14 @@ This section describes the current runtime observability and provenance state of
 
 #### Failure Analysis Support
 
-- the shared review surface does produce structured findings for some bounded design failures, such as unsupported documentation profiles, undefined upgrade paths, and route-structure drift
+- the shared review surface does produce structured findings for some bounded design failures, such as unsupported documentation profiles, undefined upgrade paths, and agent-surface structure drift
 - broader runtime failures such as wrong-route instruction applicability, stale active or carried-forward context, lost authority after narrowing, or compaction-related drift do not leave enough direct evidence for reliable diagnosis
 - failure analysis is therefore stronger for document-design problems than for runtime-behavior problems
 - current status: partly covered
 
 #### Validation Support
 
-- the current docs and review prompts provide a strong static evidence base for design review, which is why the existing validation family works reasonably well for prompt-surface maintenance
+- the current docs and review skills provide a strong static evidence base for design review, which is why the existing review surface works reasonably well for agent-surface maintenance
 - they do not yet provide the runtime evidence surfaces that `docs/future/runtime-validation.md` needs for route checks, instruction-applicability checks, context-cost measurement, or longer-thread behavior validation
 - until observability improves, behavior-facing validation will remain review-heavy and reconstruction-heavy
 - current status: partly covered
@@ -111,7 +111,7 @@ This section describes the current runtime observability and provenance state of
 
 #### Proportionality And Privacy
 
-- the current project is lightweight by design: it imposes almost no tracing overhead, preserves little extra runtime data, and keeps the prompt-library maintenance path cheap
+- the current project is lightweight by design: it imposes almost no tracing overhead, preserves little extra runtime data, and keeps the skills-first maintenance path cheap
 - that proportionality is useful for ordinary project work and lower-budget runtime paths, but it also leaves the project under-instrumented for this runtime-design program
 - privacy and data-minimization tradeoffs are not yet explicitly designed; the current low-retention model is a consequence of missing observability surfaces rather than a stated policy
 - current status: partly covered
@@ -120,7 +120,7 @@ This section describes the current runtime observability and provenance state of
 
 **TO BE REVIEWED**
 
-- the current baseline is lightweight observability: static routing and source-of-truth visibility plus `Route Summary` on shared selector and combined-review outputs
+- the current baseline is lightweight observability: static skill/reference visibility plus `Review Path Summary` on combined-review outputs
 - preserve that lightweight baseline, but add explicit runtime evidence surfaces rather than relying on reconstruction from files alone
 - define a small runtime event model that makes route choice, handoffs, tool calls, guardrails, approval interruptions, source loading, state-class transitions, and route changes inspectable
 - define a shared runtime state taxonomy covering stable policy, task-local state, carried-forward thread state, compaction summaries, rediscovered project state, retrieved context, and any longer-lived memory
@@ -133,7 +133,7 @@ This section describes the current runtime observability and provenance state of
 - define explicit reconstructability requirements for longer-thread and compaction-sensitive paths
 - treat observability as a cross-workstream dependency: expose what validation needs to check, what safety needs to audit, and what governance decisions must be externally visible
 - make privacy and data-minimization tradeoffs explicit instead of letting low observability act as an accidental policy
-- choose the first observability pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `validation/` is strong for route visibility, but other tool-using or approval-bearing paths may be better for richer traces
+- choose the first observability pilot using the shared pilot-selection rubric in `docs/future/runtime-design.md`; `agent-surface-review` is strong for route visibility, but other tool-using or approval-bearing paths may be better for richer traces
 
 ### Open Observability Questions
 
@@ -154,14 +154,14 @@ This section describes the current runtime observability and provenance state of
 
 ### Observable Runtime Target Set And Event Inventory
 
-- use the current assessment in this document, the shared program frame in `docs/future/runtime-design.md`, and the current `Route Summary` surface as the basis for observability scope
+- use the current assessment in this document, the shared program frame in `docs/future/runtime-design.md`, and the current `Review Path Summary` surface as the basis for observability scope
 - define the first explicit target set for what runtime behavior must become externally visible
 - identify a first runtime event and state inventory for route choice, handoffs, tool calls, approvals, source loading, state transitions, and route transitions
 - separate common-path observability needs from longer-thread, compaction, and degraded-case needs so the first design stays proportional
 
 ### Evidence Surfaces
 
-- treat the current `Route Summary` surface as the starting point for lightweight observability rather than as the finished observability model
+- treat the current `Review Path Summary` surface as the starting point for lightweight observability rather than as the finished observability model
 - define what should be visible about route decisions, tool use, approvals, customization behavior, source-of-truth loading, and context additions
 - define what observable runtime state should exist for active route contract, state class, stale-state markers, and resumable interruptions or checkpoints
 - define what source linkage or provenance is needed for carried-forward, compacted, rediscovered, or later retrieved context

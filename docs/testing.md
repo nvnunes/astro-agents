@@ -2,62 +2,114 @@
 
 This document is the human-facing source of truth for validation requirements in `astro-agents`.
 
-This project is primarily a prompt and documentation system, so its main verification path is agent surface validation rather than application-code testing.
+This project is primarily a skills and documentation system, so validation combines automated agent-surface checks, Codex runtime discovery smoke tests, and review-driven checks rather than application-code tests.
 
-## Shared Base
+## Minimum Validation
 
-Use the shared base testing guidance in `validation/base-testing.md`.
+The example downstream testing document lives in `examples/downstream-testing.md`.
 
-Use `validation/README.md` for the human-facing shared review entrypoints and the upgrade-specific shared path.
+For this project, use the local validation rules in this document as the source of truth.
 
-Shared selector and combined-review outputs should include a short `Route Summary` showing the active review path.
+Use these user-facing review and planning skills for manual or review-driven validation:
 
-## Project-Local Validation
+- `$agent-surface-review`
+- `$documentation-surface-review`
+- `$code-quality-review`
+- `$project-upgrade-planning`
 
-For project-specific validation, use the shared checks as the baseline review sequence, then run project-local review files under `agents/validation/` as follow-on checks when the changed scope or active shared review path makes them relevant.
+Review outputs that combine multiple internal references should include a short `Review Path Summary` showing the active skill and material references used.
 
-- `agents/validation/root-agents-consistency-review.md`
-  - a project-local follow-on review file that checks whether the root `AGENTS.md` remains conceptually consistent with this project's current routing, source-of-truth, and validation model after the shared `AGENTS.md` review path is active
+## Automated Validation
+
+Run the deterministic repository-local harness before treating skill-surface changes as complete:
+
+```bash
+python3 scripts/validate_agent_surface.py
+```
+
+This checks:
+
+- `SKILL.md` frontmatter integrity, name and directory alignment, nonempty descriptions, and duplicate names
+- `agents/openai.yaml` presence and basic metadata alignment for each user-facing skill
+- package-internal skill references and direct sibling-skill references
+- activation eval fixture shape in `tests/activation_cases.csv`
+- retired prompt-family paths, deleted skill names, deleted shared-reference paths, and deleted source-of-truth document paths
+
+Also run:
+
+```bash
+git diff --check
+```
+
+## Codex Runtime Discovery
+
+Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:
+
+```bash
+python3 scripts/validate_agent_surface.py --codex-discovery
+```
+
+This expects the local user-level symlink:
+
+```text
+$HOME/.agents/skills/astro-agents -> <astro-agents-path>/skills
+```
+
+The discovery check runs `codex debug prompt-input` and asserts that every current `astro-agents` skill appears in the model-visible skill list with the expected name and file path. Treat this as a hard local Codex discovery smoke test, not as proof that implicit activation will always choose the intended skill.
+
+## Activation Eval Cases
+
+Use `tests/activation_cases.csv` as the maintained activation eval fixture.
+
+The fixture includes:
+
+- explicit `$skill-name` prompts
+- implicit natural-language prompts
+- negative near-miss prompts for neighboring skills
+
+Every user-facing skill should have at least one explicit positive case, one implicit positive case, and one negative exclusion case. The deterministic harness enforces that coverage shape.
+
+Implicit activation is model-mediated. The fixture gives stable prompts and success observables for repeated manual or scripted eval runs, but it is not a deterministic unit test of model choice.
+
+Run the optional activation eval runner only when activation behavior might change:
+
+```bash
+python3 scripts/validate_agent_surface.py --activation-eval
+```
+
+This runs each fixture row through `codex exec` in ephemeral read-only mode and asks Codex for a compact JSON activation decision. Because it starts a model turn per fixture row, the full activation eval is comparatively expensive and should not be part of routine validation.
+
+Run it for changes to:
+
+- `SKILL.md` names or descriptions
+- activation boundaries between neighboring skills
+- `tests/activation_cases.csv`
+- user-level skill layout or Codex discovery assumptions
+- major `AGENTS.md` or runtime-context changes that could affect skill selection
+
+Do not run the full activation eval for routine documentation edits, reference-file cleanup, or stale-path-only changes unless those edits affect activation behavior. Treat failures as activation-regression signals that need human review, not as proof that the skill can never work.
 
 ## Agent Surface Validation
 
 - Changes to `AGENTS.md` files:
-  - run the shared prompt-writing review
-  - run the shared routing-and-scope review
-  - when the root project `AGENTS.md` is changed, then run `agents/validation/root-agents-consistency-review.md`
+  - run `python3 scripts/validate_agent_surface.py`
+  - run `$agent-surface-review`
 
-## Validation-Path Scenario Baseline
+- Changes to `SKILL.md`, skill references, or skill scripts:
+  - run `python3 scripts/validate_agent_surface.py`
+  - run `python3 scripts/validate_agent_surface.py --codex-discovery` when names, descriptions, metadata, or discovery layout change
+  - run `python3 scripts/validate_agent_surface.py --activation-eval` only when activation descriptions, skill names, discovery assumptions, or neighboring skill boundaries change
+  - run `$agent-surface-review`
+  - include focused prompt-writing, scope, or activation-boundary checks when the changed skill affects those behaviors
 
-Use `agents/validation/validation-path-scenarios.md` as the maintained baseline for validation-path regressions in this project.
+- Changes to documentation-surface review behavior:
+  - run `python3 scripts/validate_agent_surface.py`
+  - run `$documentation-surface-review`
 
-Treat this baseline as a lightweight regression aid for the current validation surface.
+- Changes to code-quality review behavior:
+  - run `python3 scripts/validate_agent_surface.py`
+  - run `$code-quality-review`
 
-Covered behaviors:
-
-- public shared review entrypoint selection
-- documentation surface profile resolution when relevant
-- internal documentation or code-quality workflow selection when relevant
-- project-local review-file inclusion when relevant
-- high-level `Route Summary` expectations for shared selector and combined-review outputs
-
-Out of scope:
-
-- instruction applicability
-- task ownership
-- fail-safe runtime doctrine
-- longer-thread or compaction behavior
-- observability beyond the current `Route Summary`
-- eval harnesses, metrics, or grading
-
-### When To Recheck
-
-Recheck and update `agents/validation/validation-path-scenarios.md` when changes affect:
-
-- public review entrypoint selection
-- documentation surface profile selection or profile-specific workflow branching
-- internal review-step composition for shared selector or combined-review paths
-- project-local review-file inclusion rules
-- `Route Summary` requirements for shared selector or combined-review outputs
-- shared validation guidance in `validation/AGENTS.md`, `validation/README.md`, `docs/testing.md`, or the affected shared review files
-
-Treat this as a maintained manual baseline, not as a harness requirement.
+- Changes to upgrade planning behavior:
+  - run `python3 scripts/validate_agent_surface.py`
+  - run `$project-upgrade-planning`

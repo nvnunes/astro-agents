@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical Writing"
+  short_description: "Write and revise technical prose"
+  default_prompt: "Use $technical-writing to revise this technical prose."

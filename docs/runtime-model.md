@@ -4,6 +4,8 @@ This document is the source of truth for runtime-related terminology, current-su
 
 Use this document to understand the runtime mechanics current agent systems actually provide, the vocabulary `astro-agents` uses to describe them, and which parts of that model the project currently supports directly.
 
+For review-time checks of runtime, skill activation, instruction, context, routing, and control-flow terminology, keep `skills/documentation-surface-review/references/runtime-terminology-review.md` and `skills/agent-surface-review/references/runtime-terminology-guard.md` aligned with this document.
+
 ## Scope And Current Support
 
 This document uses OpenAI, Anthropic, and Google material to derive shared runtime vocabulary and compare common agent-system patterns.
@@ -12,7 +14,7 @@ Within `astro-agents`:
 
 - that broader comparison supports vocabulary, design work, and future planning
 - it does not mean `astro-agents` currently provides equally detailed operational guidance for every runtime discussed here
-- the concrete runtime path documented for direct use today is Codex with `AGENTS.md`
+- the concrete runtime path documented for direct use today is Codex skill discovery, explicit `$skill-name` invocation, and project-local `AGENTS.md` context
 - references to other runtimes in this document should be read as design input unless another `astro-agents` document says otherwise
 
 ## Common Agent Runtime Ontology
@@ -94,7 +96,7 @@ These concepts describe information that persists during or across execution. Go
 
 ## Other Common Terms
 
-The terms below are also common in agent and prompt-system discussions, but they are better treated as supporting terms, role labels, or plain-language descriptions rather than as top-level ontology buckets. This is also the pattern in the vendor docs: role labels and runtime mechanisms recur, but they are not always promoted to the same level as the shared ontology above. [\[4\]](#ref-4)[\[17\]](#ref-17)[\[19\]](#ref-19)
+The terms below are also common in agent and context-engineering discussions, but they are better treated as supporting terms, role labels, or plain-language descriptions rather than as top-level ontology buckets. This is also the pattern in the vendor docs: role labels and runtime mechanisms recur, but they are not always promoted to the same level as the shared ontology above. [\[4\]](#ref-4)[\[17\]](#ref-17)[\[19\]](#ref-19)
 
 - `guidance`
   - A plain-language umbrella term that may refer to `Instructions`, `Prompt`, or `Context`, depending on what is actually meant. [\[18\]](#ref-18)
@@ -115,7 +117,7 @@ Codex also injects each discovered instruction file near the top of the conversa
 
 For overall guidance, the standard Codex location is still Codex home, where Codex checks `AGENTS.override.md` before `AGENTS.md`. If you want that guidance to live somewhere else, the documented Codex mechanism is to set `CODEX_HOME` before launch so Codex uses a different home directory. [\[1\]](#ref-1)[\[2\]](#ref-2) If changing `CODEX_HOME` is inconvenient, a practical local workaround is to keep Codex on the default `~/.codex` path and symlink `~/.codex/AGENTS.md` to the real file you want to maintain elsewhere. That symlink approach is a filesystem convenience, not a Codex-specific feature.
 
-In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Project-specific adoption, or project-specific exceptions to a global default, belong in the project root `AGENTS.md`.
+In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Project-specific adoption, or project-specific exceptions to a global default, belong in the project root `AGENTS.md`. Runtime-discovered skills, not `AGENTS.md` routing tables, are the documented activation path for reusable `astro-agents` capabilities.
 
 Example hierarchy:
 
@@ -141,7 +143,7 @@ These behaviors are Codex features. They are not defined by `astro-agents`. [\[1
 
 ### Current Codex Runtime Mapping
 
-The external context engineering layers in `docs/future/agent-context-engineering-patterns.md` map onto the current Codex path through concrete prompt and runtime surfaces.
+The external context engineering layers in `docs/future/agent-context-engineering-patterns.md` map onto the current Codex path through concrete instruction, skill, and runtime surfaces.
 
 | Context engineering layer | Owner | Current operational surface |
 | --- | --- | --- |
@@ -149,7 +151,7 @@ The external context engineering layers in `docs/future/agent-context-engineerin
 | User And Team Defaults | User/team | `$CODEX_HOME/AGENTS.md`, commonly `~/.codex/AGENTS.md`, or other user-level guidance supplied before the project is loaded. |
 | Project Instructions | Project | The project root `AGENTS.md`. |
 | Scoped Instructions | Project | Subtree `AGENTS.md` or `AGENTS.override.md` files loaded by Codex according to the current working directory. |
-| Reusable Workflows | astro-agents | Explicit routes from project guidance into `astro-agents/...` prompt-library files. |
+| Reusable Workflows | astro-agents | Runtime-discovered `astro-agents` skills and their references. |
 | Runtime Controls | Runtime | Codex, the app, tool integrations, sandbox behavior, approvals, and available runtime evidence. |
 | Task Prompt And Session Context | Session | The active chat, loaded instruction messages, tool outputs, and any compaction or handoff summaries. User-facing guidance such as `docs/usage.md` helps users provide task prompts that activate the intended project instructions and reusable workflows. |
 
@@ -166,11 +168,11 @@ As a practical summary of the model behavior described in the sources below, mod
 5. Contradictions usually degrade performance instead of producing a clean winner. OpenAI's GPT-5 prompting guide explicitly says contradictory or vague prompts can hurt performance because the model may spend effort trying to reconcile them rather than simply picking one. [\[14\]](#ref-14)
 6. Other model vendors describe the same failure mode in prompt-design terms. Anthropic advises that if a prompt would confuse a minimally informed colleague, it will likely confuse the model, and Google's prompt-design guidance explicitly calls out conflicting instructions, conflicting examples, and conflicting internal references as prompt problems. [\[15\]](#ref-15)[\[16\]](#ref-16)
 
-The practical implication for this project is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while project-local precedence is mostly design intent unless the prompt surface makes the choice explicit through direct routing, explicit follow-up prompt references, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
+The practical implication for this project is an inference from those sources: Codex instruction discovery and merge behavior is a real runtime mechanism, while project-local precedence is mostly design intent unless the instruction surface makes the choice explicit through direct skill invocation, explicit follow-up skill or prompt references, explicit local customization boundaries, explicit conflict language, or clarifying-question behavior. [\[1\]](#ref-1)[\[13\]](#ref-13)[\[14\]](#ref-14)
 
 ## Project Control-Flow Example
 
-For a full review requested in a downstream project, the Codex part is only instruction discovery and merge behavior: Codex loads the applicable `AGENTS.md` files from the project root down to the current directory according to its normal search rules. If the downstream project's own `AGENTS.md` then points the agent to `astro-agents/AGENTS.md`, that cross-project step is no longer Codex discovery. It is a project-local `Route` into the shared prompt library. From there, the remaining behavior comes from how the downstream project and shared prompt files are written: they may route to a narrower review `Workflow`, identify any applicable documentation surface profile, and name any explicitly required local validation step. Those later steps are project conventions expressed through prompt files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+For a full review requested in a downstream project, the Codex part is instruction discovery, skill discovery, and merge behavior: Codex loads the applicable `AGENTS.md` files from the project root down to the current directory according to its normal search rules, and it exposes discovered skills for model-mediated activation. From there, the remaining behavior comes from how the downstream project and shared skills are written: the task prompt may activate `$agent-surface-review`, the project may declare a documentation surface profile, and local validation expectations may be named in `docs/testing.md`. Those later steps are project conventions expressed through skills and instruction files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
 ## References
 

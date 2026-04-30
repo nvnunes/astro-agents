@@ -1,0 +1,4 @@
+interface:
+  display_name: "Science Writing"
+  short_description: "Write and review scientific prose"
+  default_prompt: "Use $science-writing to revise this scientific prose."

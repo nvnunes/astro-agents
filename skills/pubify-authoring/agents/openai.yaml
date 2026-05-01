@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pubify Authoring"
+  short_description: "Work on pubify-pubs and pubify-ppt workflows"
+  default_prompt: "Use $pubify-authoring to work on this pubify-pubs or pubify-ppt workflow."

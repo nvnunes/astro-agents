@@ -48,6 +48,28 @@ The current library shape is skills-first. Runtime skill discovery activates ski
 
 `docs/future/` holds roadmap and design material for later runtime work. Keep it out of the normal onboarding path unless you are working on that future design directly.
 
+## Available Skills
+
+The current reusable skill packages are listed below. Each skill's `SKILL.md`
+frontmatter is the source of truth for exact activation wording.
+
+- `$agent-surface-review`: review agent surfaces, instruction scope, workflow behavior, documentation integration, and validation expectations.
+- `$agents-md-writing`: write, revise, or review `AGENTS.md` project and subtree instruction files.
+- `$code-quality-review`: review source-code quality, architecture, contracts, lifecycle clarity, tests, and maintainability.
+- `$concept-writing`: write, revise, or review concept documents, foundation notes, rationale docs, and early-stage explanatory docs.
+- `$documentation-surface-review`: review documentation surfaces, documentation profiles, source-of-truth docs, README scope, and documentation architecture.
+- `$plan-writing`: write, revise, or review plans, implementation plans, roadmaps, migration plans, and sequencing notes.
+- `$project-docs-writing`: write, revise, or review durable project documentation and source-of-truth docs.
+- `$project-upgrade-planning`: assess project upgrade readiness and plan upgrade grouping, sequencing, validation, and next steps.
+- `$prompt-writing`: write, revise, or review reusable agent-facing prompts and workflow instructions.
+- `$pubify-authoring`: work on `pubify-pubs` and `pubify-ppt` publication and presentation workflows.
+- `$python-code-writing`: write, edit, or refactor Python source code and related tests or package structure.
+- `$readme-writing`: write, revise, or review `README.md` and folder-level README files.
+- `$research-logging`: create, capture, update, check, or maintain project-native research logs.
+- `$science-writing`: write, revise, or review scientific prose, claims, evidence, methods, results, and interpretation.
+- `$skill-md-writing`: write, revise, or review `SKILL.md` files and skill packages.
+- `$technical-writing`: write, revise, or review general technical prose and shared writing discipline.
+
 ## Start Here
 
 - `docs/usage.md`
@@ -55,7 +77,7 @@ The current library shape is skills-first. Runtime skill discovery activates ski
 - `docs/architecture.md`
   - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
 - `skills/`
-  - reusable skill packages such as `agent-surface-review`, `documentation-surface-review`, `code-quality-review`, `project-upgrade-planning`, `technical-writing`, narrower writing skills, Python code writing, and research logging
+  - reusable skill packages listed above
 - `examples/downstream-testing.md`
   - example downstream `docs/testing.md`
 - `docs/runtime-model.md`

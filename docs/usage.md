@@ -82,7 +82,14 @@ project facts they cannot get from shared skills alone:
 Keep reusable behavior in `astro-agents` skills and project-specific facts in
 the downstream project's own docs, prompts, and `AGENTS.md` files.
 
-## Skill Requirements
+## Skill Binding
+
+Skill binding is how a downstream project connects local files, subtrees,
+aliases, and recurring work types to shared `astro-agents` skills. Use it when a
+project wants agents to recognize the right skill from local context rather
+than requiring every prompt to name the skill explicitly.
+
+### Writing And Coding
 
 If a downstream project wants to impose strong requirements on writing or coding style, add an explicit `## Skill Requirements` or `## Authoring Requirements` section to the root `AGENTS.md` and point directly to the shared skills it wants to require.
 
@@ -98,6 +105,49 @@ For example:
 - For `README.md`, use `$readme-writing`.
 - For plan documents or phased execution docs when they are created or revised, use `$plan-writing`.
 ```
+
+### Research Logs
+
+A downstream project may add a short `## Research Logs` section to root
+`AGENTS.md` so agents can recognize which local files are research logs.
+
+List each research log file, its companion folder, and any short name or alias
+users are likely to mention. This helps activate `$research-logging` when the
+user refers to the file or topic without saying `research log`.
+
+For example:
+
+```md
+## Research Logs
+- `docs/research/adaptive-optics.md` is the adaptive optics research log. Its companion folder is `docs/research/adaptive-optics/`. Common aliases: `adaptive optics`, `AO`, `adaptive-optics.md`.
+- `docs/research/telemetry.md` is the telemetry research log. Its companion folder is `docs/research/telemetry/`. Common aliases: `telemetry`, `telemetry.md`.
+```
+
+This supports prompts such as:
+
+- `Add an entry to adaptive-optics.md.`
+- `Capture this in telemetry.`
+
+### Pubify
+
+A downstream project that uses `pubify-pubs` or `pubify-ppt` may add a short
+`## Pubify Authoring` section to root `AGENTS.md` so agents can recognize
+publication and presentation subtrees without the user saying `pubify`.
+
+List the configured publications root and presentations root. Keep this as a
+minimal activation hint; the workflow details live in `$pubify-authoring` and the
+pubify package docs.
+
+For example:
+
+```md
+## Pubify Authoring
+- Anything under `papers/` is a `pubify-pubs` publication workflow. Use `$pubify-authoring`.
+- Anything under `slides/` is a `pubify-ppt` presentation workflow. Use `$pubify-authoring`.
+```
+
+Use the actual configured roots from `pubify.yaml` when they differ from
+`papers/` or `slides/`.
 
 ## Shared Validation
 
@@ -146,25 +196,3 @@ README scope, private/default docs, or public Python documentation.
 When a downstream project provides `docs/glossary.md`, `astro-agents` review skills may use it as part of the target project's own agent surface.
 
 Use a project glossary when recurring project terms need one stable meaning across local docs, prompts, skills, or validation rules. Keep the glossary project-local unless the terms are truly shared across projects.
-
-## Research Log Recognition
-
-A downstream project may add a short `## Research Logs` section to root
-`AGENTS.md` so agents can recognize which local files are research logs.
-
-List each research log file, its companion folder, and any short name or alias
-users are likely to mention. This helps activate `$research-logging` when the
-user refers to the file or topic without saying `research log`.
-
-For example:
-
-```md
-## Research Logs
-- `docs/research/adaptive-optics.md` is the adaptive optics research log. Its companion folder is `docs/research/adaptive-optics/`. Common aliases: `adaptive optics`, `AO`, `adaptive-optics.md`.
-- `docs/research/telemetry.md` is the telemetry research log. Its companion folder is `docs/research/telemetry/`. Common aliases: `telemetry`, `telemetry.md`.
-```
-
-This supports prompts such as:
-
-- `Add an entry to adaptive-optics.md.`
-- `Capture this in telemetry.`

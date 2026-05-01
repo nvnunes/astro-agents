@@ -9,6 +9,7 @@ explicit-project-docs,project-docs-writing,true,explicit,Use $project-docs-writi
 explicit-project-upgrade,project-upgrade-planning,true,explicit,Use $project-upgrade-planning to assess this project for upgrade readiness,uses project-upgrade-planning for upgrade grouping and sequencing
 explicit-prompt,prompt-writing,true,explicit,Use $prompt-writing to write a reusable review prompt,uses prompt-writing for reusable agent-facing prompt design
 explicit-python-code,python-code-writing,true,explicit,Use $python-code-writing to refactor this Python module,uses Python code-writing guidance for implementation work
+explicit-pubify-authoring,pubify-authoring,true,explicit,Use $pubify-authoring to update this pubify-ppt deck workflow,uses pubify-authoring to select the pubify-ppt workflow and anchor rules
 explicit-readme,readme-writing,true,explicit,Use $readme-writing to rewrite this README.md,uses readme-writing for README-specific structure and orientation
 explicit-research-logging,research-logging,true,explicit,Use $research-logging to capture this in the telemetry research log,uses research-logging operation selection for capture
 explicit-science,science-writing,true,explicit,Use $science-writing to revise this paper's methods section,uses science-writing for scientific claims and evidence framing
@@ -24,6 +25,8 @@ implicit-project-docs,project-docs-writing,true,implicit,Update docs/testing.md 
 implicit-project-upgrade,project-upgrade-planning,true,implicit,Assess this project for upgrade readiness and propose work groupings,uses project-upgrade-planning for upgrade assessment
 implicit-prompt,prompt-writing,true,implicit,Write a reusable prompt for reviewing documentation quality,uses prompt-writing for reusable prompt design
 implicit-python-code,python-code-writing,true,implicit,Refactor this Python code,uses python-code-writing as the primary implementation skill
+implicit-pubify-ppt,pubify-authoring,true,implicit,Update this ppt presentation so the slide figure anchor regenerates correctly,uses pubify-authoring for pubify-ppt anchors and generated figure artifacts
+implicit-pubify-pubs,pubify-authoring,true,implicit,Add a generated figure to this pubs publication using figures.py and pub.yaml,uses pubify-authoring for pubify-pubs publication workflow
 implicit-readme,readme-writing,true,implicit,Improve this README.md so new users know where to start,uses readme-writing as the README-specific skill
 implicit-skill-md,skill-md-writing,true,implicit,Write a SKILL.md for this workflow,uses skill-md-writing guidance for skill activation and progressive disclosure
 implicit-research-log,research-logging,true,implicit,Update the adaptive optics research log,uses research-logging operation selection for summary or capture work
@@ -41,6 +44,8 @@ negative-prompt-writing-vs-agents-md,prompt-writing,false,negative,Revise this A
 negative-prompt-vs-agents-md,agents-md-writing,false,negative,Write a reusable prompt file for a review workflow,uses prompt-writing rather than agents-md-writing
 negative-prompt-vs-skill-md,skill-md-writing,false,negative,Write a reusable prompt file for a review workflow,uses prompt-writing rather than skill-md-writing
 negative-python-code-vs-code-quality,python-code-writing,false,negative,Review this Python module for maintainability problems,uses code-quality-review rather than python-code-writing
+negative-pubify-vs-science,pubify-authoring,false,negative,Revise this scientific manuscript paragraph for clearer claims,uses science-writing rather than pubify-authoring
+negative-pubify-vs-generic-mpl,pubify-authoring,false,negative,Make this standalone Matplotlib plot use clearer colors,uses python-code-writing or technical judgment rather than pubify-authoring
 negative-readme-vs-project-docs,readme-writing,false,negative,Revise docs/usage.md to clarify adoption guidance,uses project-docs-writing rather than readme-writing
 negative-research-log-vs-science,research-logging,false,negative,Revise this scientific manuscript introduction for clearer claims,uses science-writing rather than research-logging
 negative-science-vs-research-log,science-writing,false,negative,Capture these experiment notes in the adaptive optics research log,uses research-logging rather than science-writing

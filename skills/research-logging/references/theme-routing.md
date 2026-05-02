@@ -1,4 +1,4 @@
-# AGENTS.md
+# Theme Routing
 
 Use this file first for routine maintenance of theme-document research-log hierarchies inside the shared research-log skill surface.
 

@@ -341,23 +341,11 @@ Dated/topic entries should preserve source evidence with enough detail for later
 
 Entry files are human-first, agent-second. They should not use labeled-line metadata as their standard structure.
 
-Use a minimal human-readable opening:
+For the canonical entry file shape, headings, subentry behavior, callouts, and command conventions, use `skills/research-logging/references/file-entry.md`.
 
-```md
-# <Topic>
+Let each entry follow the material. Use prose, tables, command snippets, plots, copied notes, dated sections, or other structures that fit the evidence.
 
-<Purpose text explaining what this entry records and why it exists.>
-
-## <Date>: <Work Description>
-
-<Free-form record of the work.>
-```
-
-After the opening, let the entry follow the material. Use prose, tables, command snippets, plots, copied notes, dated sections, or other structures that fit the evidence.
-
-Entries may contain multiple `##` sections. Sections are the normal way to organize internal entry content, and may represent steps, tasks, checks, subtopics, outputs, phases, or user-defined units. Preserve useful source headings during upgrades. Introduce lightweight sections when they improve navigation. Section headings should be descriptive enough to support scanning before the full entry is read.
-
-Prefer standard callout labels when they make key information easier to find. Treat these as suggestions, not required fields.
+Prefer standard callout labels when they make key information easier to find, but treat these as suggestions rather than required fields.
 
 A useful flow is:
 

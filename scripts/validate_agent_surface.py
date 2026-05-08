@@ -35,7 +35,6 @@ STALE_TERMS = {
     "research-log/": {"docs/skills-upgrade-plan.md"},
     "agents/validation": {"docs/skills-upgrade-plan.md"},
     "research-log-creation": set(),
-    "research-log-writing": set(),
     "skills/_shared": set(),
     "docs/upgrade-design.md": set(),
     "guidance/": set(),

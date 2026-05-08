@@ -1,33 +1,51 @@
 ---
 name: research-logging
-description: Create, convert, capture, update, check, or maintain research-log theme hierarchies, source-plus-summary logs, dated entries, living summaries, indexes, concepts, AI-use notes, data manifests, scripts, and artifacts. Use for research-log lifecycle work, not general project docs or scientific manuscript writing.
+description: Create, record, summarize, review, reference, or maintain research logs with log summaries, dated entries, evidence files, BibTeX references, data indexes, results, observations, validation, uncertainty, decisions, and AI Use notes. Use for research-log lifecycle work, not general project docs or scientific manuscript writing.
 ---
 
 # Research Logging
 
-Use this skill for the full lifecycle of project-native research logs: starting a theme, converting source documents, capturing new work, maintaining summaries, checking consistency, managing concepts, and preserving supporting artifacts.
+Use this skill for the full lifecycle of project-native research logs: recording entries and support material, managing references, updating summaries, reviewing consistency, and maintaining structure.
 
-Read `references/theme-routing.md` first for operation selection and shared safety rules. Infer the operation from ordinary user language rather than requiring the user to name it.
+Use only the task-specific instruction files needed for the current edit. If the requested change is ambiguous and a reasonable assumption would risk changing research meaning, ask before editing.
+
+Use this minimum core shape, where `<log>.md` is the log summary:
+
+```text
+<log>.md
+<log>/
+  entries/
+```
+
+When the log has entries, use:
+
+```text
+<log>/
+  entries/
+    <start-date>-<entry-id>-<descriptive-topic-slug>/
+      <entry-id>.md
+```
+
+Use `<log>/refs.bib`, `<log>/scripts/`, and entry-local `data/`, `images/`, or `scripts/` only when they are immediately needed.
+
+Use the log summary for current-state orientation and the `entries/` folder listing for chronological scanning. Open entry documents only when the summary, folder slug, search result, or user request indicates relevance.
 
 Choose the operation:
 
-- New empty theme or initial skeleton: read `references/operation-create-theme.md`.
-- Existing source document conversion: read `references/operation-upgrade-source-document.md`.
-- New evidence, work, artifacts, scripts, data, or decisions to preserve: read `references/operation-capture.md`.
-- Targeted living-summary update: read `references/operation-summary-update.md`.
-- Summary, links, concepts, index, or consistency audit: read `references/operation-summary-check.md`.
-- Concept creation, revision, reorganization, or association: read `references/operation-manage-concepts.md`.
+- New research log setup: read `references/operation-create.md`.
+- New or revised entry documents, support material, scripts, generated results, data organization, or command output: read `references/operation-record.md`.
+- Reference lookup, BibTeX management, or citation insertion: read `references/operation-reference.md`.
+- Log-summary updates: read `references/operation-summarize.md`.
+- Research-log structure review, internal consistency check, or summary-vs-entry check: read `references/operation-review.md`.
+- Structural changes such as entry renames, link rewrites, splits, merges, or path normalization: use `references/file-entry-naming.md` and `references/file-entry.md` as needed; ask before deleting research-log files.
 
-For source-document upgrades, do not create, edit, move, rename, or delete files until the human explicitly approves the proposed upgrade plan. Preserve source wording unless the human approves a specific transformation.
+If the user's wording is ambiguous between recording and summarizing, prefer recording unless the user clearly asks to change the summary. If it is ambiguous between review and editing, report findings first and ask before applying fixes unless the requested fix is explicit.
 
-Use detailed references only when needed:
+Safety rules:
 
-- Research-log hierarchy concept and full design: `references/theme-document-pattern.md`.
-- Summary file structure: `references/file-summary.md`.
-- Index and concept structure: `references/file-index.md`.
-- Dated entry structure: `references/file-entry.md`.
-- AI-use note wording: `references/file-entry-ai-use.md`.
-- Entry-local data manifest structure: `references/file-data-manifest.md`.
-- Entry prose style: `references/research-log-entry-writing.md`.
-
-Use `scripts/pyrun` for manifest-backed entry-local Python command examples when an entry depends on data tokens, theme-code tokens, or project-code tokens.
+- Do not decide what conclusion, interpretation, method choice, validation outcome, or next research direction the log should treat as accepted unless the user states that decision.
+- Preserve existing researcher wording when updating entries unless the user asks for rewriting.
+- Do not invent evidence, validation, references, results, uncertainty, decisions, or conclusions.
+- Do not use generative AI to create data, results, figures, or citations.
+- Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
+- Do not invent data unless the user specifically asks for synthetic or draft data.

@@ -1,59 +1,38 @@
 # Entry File Instructions
 
-Use this file when creating or revising `<theme>/entries/<start-date>-<concept-slug>-<entry-id>-<descriptive-topic-slug>/index.md` or subentry files such as `e002a.md` within an existing entry folder.
+Use this file when creating, splitting, or revising entry documents.
 
-Entry files are human-first, agent-second. They preserve source evidence with enough detail for later reconstruction.
+Entry documents are human-first, agent-second. They preserve the dated research record with enough context for later reconstruction.
 
-When writing or revising entry prose, apply `skills/research-logging/references/research-log-entry-writing.md`. Use this file for the entry's research-log structure, callouts, and retrieval conventions.
+Entry documents use paths such as:
 
-For ordinary entry files and subentry files that preserve evidence, start with `# <Start Date>: <Topic>` and organize the material directly under descriptive `##` headings. Add a short purpose paragraph when it helps orient the reader, but do not insert an extra dated `## <Date>: <Work Description>` wrapper beneath the title.
+```text
+<log>/entries/<start-date>-<entry-id>-<descriptive-topic-slug>/<entry-id>.md
+```
 
-Sections can represent steps, tasks, checks, subtopics, outputs, phases, or user-defined units. Preserve useful source headings during upgrades. Add lightweight sections when they improve navigation.
+Start entry documents with:
 
-If one `index.md` becomes too large for retrieval or maintenance, keep the parent entry folder and entry ID unchanged and split the detailed record into subentry files such as `e002a.md` and `e002b.md`.
+```md
+# <Start Date>: <Topic>
+```
 
-When an entry uses subentry files:
+Organize the material in sections under descriptive `##` headings. Add a short purpose or orientation paragraph only when it helps.
 
-- keep `index.md` as a minimal router for the entry
-- use only `# <Topic>`, an optional `Routing note:` line when redirection is needed, and `## Parts`
-- do not add purpose paragraphs, recap summaries, or historical framing to the parent `index.md` unless the user explicitly asks for them
-- give each part in `## Parts` a one-line description so the next agent can decide whether to open that subentry file
-- use part IDs such as `e002a` in the visible list rather than bare filenames such as `e002a.md`
-- treat subentry files as detailed evidence records within the same dated entry, not as separate timeline entries; they should use the same `# <Start Date>: <Topic>` plus direct `##` heading shape as ordinary entry files
-- keep shared `data/`, `scripts/`, `images/`, and `outputs/` folders at the parent entry level unless a stronger local need requires something narrower
-- let subentry files inherit the parent entry's date, concept slug, and folder context
+The researcher can keep all sections in one document or split them across multiple documents when that improves readability, retrieval, or maintenance. Supporting material should live in the entry folder unless it is reusable across entries or better kept as a stable external link.
 
-## Callouts
+When an entry is split across multiple documents:
 
-Prefer these callouts when they make important information easier to find. They are suggestions, not required fields.
+- keep the same entry folder and entry ID
+- let each document inherit the entry date and folder context
+- keep shared `data/`, `scripts/`, and `images/` folders at the parent entry level unless a narrower location is clearly better
+- use `skills/research-logging/references/file-entry-naming.md` for split document names
 
-- `Related:` entry IDs connected to the current note, using `theme-slug/entry-id` when the reference crosses themes.
-- `Input:` source artifacts, datasets, configs, sample files, map files, or build lineage.
-- `Config:` settings, parameters, run window, model assumptions, or comparison scenario.
-- `Code:` changed notebooks, scripts, code locations, or commits materially involved in the entry.
-- `Command:` commands to regenerate plots, run benchmarks, or reproduce processes.
-- `Output:` external generated files retained by the entry; omit when the output is inline.
-- `Observation:` key observations, measurements, comparisons, or outcomes derived from outputs.
-- `Limitation:` constraints, concerns, or reasons the result should not be overgeneralized.
-- `Question:` unresolved issues.
-- `Decision:` adopted, rejected, deferred, or operationalized choices.
-- `Follow-up:` local task-oriented work.
-- `AI Use:` AI assistance that materially affected what was retained, relied on, or decided.
+Load only the guidance needed for the current entry edit:
 
-Callouts are local to the section where they appear unless they clearly describe the whole entry.
-
-Do not use `AI Use:` for trivial interaction, formatting help, or discarded suggestions. If a discarded suggestion creates a surviving question or task, record that under `Question:` or `Follow-up:`.
-
-Prefer `AI Use:` as a one-line callout, with the label and text on the same line. Use a multi-line note only when the provenance is too complex to read clearly on one line.
-
-When adding, reviewing, or revising an `AI Use:` note, read `skills/research-logging/references/file-entry-ai-use.md` for wording rules and examples.
-
-## Commands
-
-Put executable commands in fenced code blocks near the output they generate.
-
-Write entry commands from the perspective of the entry root as the working directory. For Python commands, use `./pyrun` rather than a separate project-root setup step, environment activation step, raw external path, or hard-coded project path.
-
-Use `<Name>` for external data listed in `data/manifest.md`, `<theme>/...` for theme-shared scripts or code, and `<project>/...` for project-level scripts, modules, or other code. Quote arguments that contain angle tokens, including embedded forms such as `"static=<scheduler-series>/file.npz"`.
-
-Use `Code:` when code state or location matters. Use `Command:` when the executable invocation matters. Most entries need one or the other, not both.
+- Entry prose discipline: `skills/research-logging/references/research-log-writing.md`.
+- Entry folder, ID, slug, and split document naming: `skills/research-logging/references/file-entry-naming.md`.
+- Entry labels: `skills/research-logging/references/file-entry-labels.md`.
+- Executable command conventions: `skills/research-logging/references/file-entry-commands.md`.
+- Entry-local data index guidance: `skills/research-logging/references/file-data-index.md`.
+- Citation and `refs.bib` conventions: `skills/research-logging/references/file-references.md`.
+- `AI Use:` wording: `skills/research-logging/references/file-entry-ai-use.md`.

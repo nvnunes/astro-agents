@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Logging"
-  short_description: "Maintain source-plus-summary research logs"
+  short_description: "Maintain structured research logs"
   default_prompt: "Use $research-logging to update this research log."

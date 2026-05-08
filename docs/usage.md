@@ -62,7 +62,7 @@ Start with the skill name when you know the intended skill:
 - `$code-quality-review Review the current source-code quality.`
 - `$documentation-surface-review Review this project's documentation surface.`
 - `$project-upgrade-planning Plan this project's astro-agents upgrade.`
-- `$research-logging Add an entry to the telemetry research log.`
+- `$research-logging Record an entry in the telemetry research log.`
 - `$science-writing Revise manuscript.tex for scientific clarity and claim discipline.`
 
 Natural-language prompts can also activate skills, but explicit `$skill-name`

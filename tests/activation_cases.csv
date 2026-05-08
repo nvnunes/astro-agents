@@ -11,7 +11,7 @@ explicit-prompt,prompt-writing,true,explicit,Use $prompt-writing to write a reus
 explicit-python-code,python-code-writing,true,explicit,Use $python-code-writing to refactor this Python module,uses Python code-writing guidance for implementation work
 explicit-pubify-authoring,pubify-authoring,true,explicit,Use $pubify-authoring to update this pubify-ppt deck workflow,uses pubify-authoring to select the pubify-ppt workflow and anchor rules
 explicit-readme,readme-writing,true,explicit,Use $readme-writing to rewrite this README.md,uses readme-writing for README-specific structure and orientation
-explicit-research-logging,research-logging,true,explicit,Use $research-logging to capture this in the telemetry research log,uses research-logging operation selection for capture
+explicit-research-logging,research-logging,true,explicit,Use $research-logging to capture this in the telemetry research log,uses research-logging operation selection for Record
 explicit-science,science-writing,true,explicit,Use $science-writing to revise this paper's methods section,uses science-writing for scientific claims and evidence framing
 explicit-skill-md,skill-md-writing,true,explicit,Use $skill-md-writing to review this SKILL.md,uses skill-md-writing guidance for SKILL.md frontmatter and package structure
 explicit-technical,technical-writing,true,explicit,Use $technical-writing to tighten this general technical explanation,uses technical-writing for general technical prose clarity
@@ -29,7 +29,7 @@ implicit-pubify-ppt,pubify-authoring,true,implicit,Update this ppt presentation 
 implicit-pubify-pubs,pubify-authoring,true,implicit,Add a generated figure to this pubs publication using figures.py and pub.yaml,uses pubify-authoring for pubify-pubs publication workflow
 implicit-readme,readme-writing,true,implicit,Improve this README.md so new users know where to start,uses readme-writing as the README-specific skill
 implicit-skill-md,skill-md-writing,true,implicit,Write a SKILL.md for this workflow,uses skill-md-writing guidance for skill activation and progressive disclosure
-implicit-research-log,research-logging,true,implicit,Update the adaptive optics research log,uses research-logging operation selection for summary or capture work
+implicit-research-log,research-logging,true,implicit,Update the adaptive optics research log,uses research-logging operation selection for Summarize or Record
 implicit-science,science-writing,true,implicit,Revise this scientific manuscript introduction for clearer claims,uses science-writing for scientific prose
 implicit-technical,technical-writing,true,implicit,Tighten this technical explanation without changing its meaning,uses technical-writing for general technical prose
 negative-agent-surface-vs-code-quality,agent-surface-review,false,negative,Review this Python module for source-code quality issues,uses code-quality-review rather than agent-surface-review

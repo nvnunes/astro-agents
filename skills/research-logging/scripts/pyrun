@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import csv
+import re
 import subprocess
 import sys
-import re
 from pathlib import Path
 
 
@@ -15,13 +16,6 @@ TOKEN_RE = re.compile(r"<([^<>]+)>")
 def usage() -> int:
     print("usage: pyrun <script> [args...]", file=sys.stderr)
     return 2
-
-
-def clean_cell(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == "`" and value[-1] == "`":
-        return value[1:-1].strip()
-    return value
 
 
 def project_root(cwd: Path) -> Path:
@@ -44,85 +38,94 @@ def python_executable(root: Path) -> str:
     return sys.executable
 
 
-def theme_root(cwd: Path) -> Path:
+def is_log_root(candidate: Path) -> bool:
+    return (candidate / "entries").is_dir() and (candidate.parent / f"{candidate.name}.md").is_file()
+
+
+def log_root(cwd: Path) -> Path:
     for candidate in [cwd, *cwd.parents]:
-        if (candidate / "index.md").is_file() and (candidate / "entries").is_dir():
+        if is_log_root(candidate):
             return candidate
+
+    parts = cwd.parts
+    for index, part in enumerate(parts):
+        if part != "entries" or index == 0:
+            continue
+        candidate = Path(*parts[:index])
+        if is_log_root(candidate):
+            return candidate
+
     raise SystemExit(
-        "pyrun: could not resolve theme root; expected an ancestor with index.md and entries/"
+        "pyrun: could not resolve log root; expected a <log>.md sibling and <log>/entries/"
     )
 
 
-def manifest_candidates(cwd: Path) -> list[Path]:
+def data_index_candidates(cwd: Path) -> list[Path]:
     return [
-        cwd / "manifest.md",
-        cwd / "data" / "manifest.md",
-        cwd.parent / "data" / "manifest.md",
+        cwd / "data" / "index.csv",
+        cwd.parent / "data" / "index.csv",
     ]
 
 
-def find_manifest(cwd: Path) -> Path | None:
-    for candidate in manifest_candidates(cwd):
+def find_data_index(cwd: Path) -> Path | None:
+    for candidate in data_index_candidates(cwd):
         if candidate.is_file():
             return candidate
     return None
 
 
-def table_rows(manifest: Path) -> list[list[str]]:
-    rows: list[list[str]] = []
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line.startswith("|") or not line.endswith("|"):
-            continue
-        rows.append([clean_cell(cell) for cell in line.strip("|").split("|")])
-    return rows
-
-
-def is_separator(row: list[str]) -> bool:
-    return all(cell.replace("-", "").replace(":", "").strip() == "" for cell in row)
-
-
-def manifest_locations(manifest: Path | None) -> dict[str, str]:
-    if manifest is None:
+def data_locations(index: Path | None) -> dict[str, str]:
+    if index is None:
         return {}
 
-    rows = table_rows(manifest)
-    if len(rows) < 2:
-        raise SystemExit(f"pyrun: no manifest table found: {manifest}")
-
-    headers = [cell.strip().lower() for cell in rows[0]]
     try:
-        name_index = headers.index("name")
-        location_index = headers.index("location")
-    except ValueError as exc:
-        raise SystemExit(
-            f"pyrun: manifest table must include Name and Location columns: {manifest}"
-        ) from exc
+        with index.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                raise SystemExit(f"pyrun: empty data index: {index}")
 
-    locations: dict[str, str] = {}
-    for row in rows[1:]:
-        if is_separator(row) or len(row) <= max(name_index, location_index):
-            continue
-        name = row[name_index]
-        location = row[location_index]
-        if name:
-            locations[name] = location
+            fieldnames = {name.strip().lower(): name for name in reader.fieldnames if name}
+            missing = {"name", "type", "location"} - set(fieldnames)
+            if missing:
+                missing_text = ", ".join(sorted(missing))
+                raise SystemExit(f"pyrun: data index missing required column(s) {missing_text}: {index}")
+
+            locations: dict[str, str] = {}
+            for line_number, row in enumerate(reader, start=2):
+                name = (row.get(fieldnames["name"]) or "").strip()
+                location = (row.get(fieldnames["location"]) or "").strip()
+                if not name and not location:
+                    continue
+                if not name or not location:
+                    raise SystemExit(f"pyrun: malformed data index row {line_number}: {index}")
+                locations[name] = location
+    except csv.Error as exc:
+        raise SystemExit(f"pyrun: malformed CSV data index: {index}: {exc}") from exc
+
     return locations
 
 
-def resolve_arg(arg: str, root: Path, theme: Path, locations: dict[str, str]) -> str:
+def resolve_location(location: str, index: Path) -> str:
+    path = Path(location).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((index.parent / path).resolve())
+
+
+def resolve_arg(arg: str, root: Path, log: Path, locations: dict[str, str], index: Path | None) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         if name == "project":
             return str(root)
+        if name == "log":
+            return str(log)
         if name == "theme":
-            return str(theme)
+            raise SystemExit("pyrun: <theme> is no longer supported; use <log>")
         if name in locations:
-            location = locations[name]
-            if not location:
-                raise SystemExit(f"pyrun: empty location for manifest name: {name}")
-            return location
-        raise SystemExit(f"pyrun: unresolved token: <{name}> in argument: {arg}")
+            if index is None:
+                raise SystemExit(f"pyrun: internal error resolving data name without data index: {name}")
+            return resolve_location(locations[name], index)
+        raise SystemExit(f"pyrun: unresolved token <{name}> in argument: {arg}")
 
     return TOKEN_RE.sub(replace, arg)
 
@@ -133,9 +136,10 @@ def main(argv: list[str]) -> int:
 
     cwd = Path.cwd()
     root = project_root(cwd)
-    theme = theme_root(cwd)
-    locations = manifest_locations(find_manifest(cwd))
-    resolved = [resolve_arg(arg, root, theme, locations) for arg in argv[1:]]
+    log = log_root(cwd)
+    index = find_data_index(cwd)
+    locations = data_locations(index)
+    resolved = [resolve_arg(arg, root, log, locations, index) for arg in argv[1:]]
 
     return subprocess.run([python_executable(root), *resolved], cwd=cwd).returncode
 

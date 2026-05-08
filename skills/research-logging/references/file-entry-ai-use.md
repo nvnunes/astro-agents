@@ -2,24 +2,18 @@
 
 Use this file only when adding, reviewing, or revising `AI Use:` notes in research-log entries.
 
-`AI Use:` records AI assistance that materially affected what was retained, relied on, or decided.
-
-Prefer one-line callouts:
+These notes record agent assistance that affected evidence, results, validation, uncertainty, decisions, or later ownership and disclosure review. For example:
 
 ```md
-AI Use: <AI contribution>. The researcher <checked, directed, validated, or still needs to check> <retained output or decision>.
+AI Use:
+
+<Agent contribution>. The researcher <directed, checked, validated, or decided> <result, evidence use, validation, or decision context>.
 ```
 
-Do not use `AI Use:` for trivial formatting help, discarded suggestions, or routine chat that left no retained result. If a discarded suggestion creates a surviving issue, record it under `Question:` or `Follow-up:` instead.
+Do not use `AI Use:` for trivial formatting help, navigation, mechanical file maintenance, discarded suggestions, or routine interaction that left no surviving effect on the research record.
 
-Examples:
-
-```md
-AI Use: Agent wrote the extraction script for retained input artifacts and aggregation metadata. The researcher sanity-checked the script and output.
-
-AI Use: Agent wrote the plotting script. The researcher sanity-checked the script and checked the plot against expectations.
-
-AI Use: Agent compiled the run statistics and generated comparison plots without adding interpretation. The researcher validated this by inspecting the summary statistics and plotted trends for consistency.
-
-AI Use: Agent implemented the refactor under researcher direction. The researcher validated it by reviewing the changed code paths and confirming that the new structure preserved the intended behavior.
-```
+Examples note text:
+- Agent wrote the extraction script for retained input files and aggregation metadata. The researcher sanity-checked the script and output.
+- Agent wrote the plotting script. The researcher checked the plotted trends against expected behavior and reviewed the script inputs.
+- Agent compiled run statistics and generated comparison plots without adding interpretation. The researcher validated the statistics and decided which result to rely on.
+- Agent implemented the refactor under researcher direction. The researcher reviewed the changed code paths and confirmed that the new structure preserved intended behavior.

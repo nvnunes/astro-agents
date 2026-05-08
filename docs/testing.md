@@ -41,6 +41,12 @@ Also run:
 git diff --check
 ```
 
+When changing `skills/research-logging/scripts/pyrun` or research-log command/data-index guidance that affects `pyrun`, also run:
+
+```bash
+python3 skills/research-logging/tests/test_pyrun.py
+```
+
 ## Codex Runtime Discovery
 
 Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:

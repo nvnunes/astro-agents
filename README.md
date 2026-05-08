@@ -65,7 +65,7 @@ frontmatter is the source of truth for exact activation wording.
 - `$pubify-authoring`: work on `pubify-pubs` and `pubify-ppt` publication and presentation workflows.
 - `$python-code-writing`: write, edit, or refactor Python source code and related tests or package structure.
 - `$readme-writing`: write, revise, or review `README.md` and folder-level README files.
-- `$research-logging`: create, capture, update, check, or maintain project-native research logs.
+- `$research-logging`: create, gather, record, summarize, review, reference, or maintain project-native research logs.
 - `$science-writing`: write, revise, or review scientific prose, claims, evidence, methods, results, and interpretation.
 - `$skill-md-writing`: write, revise, or review `SKILL.md` files and skill packages.
 - `$technical-writing`: write, revise, or review general technical prose and shared writing discipline.

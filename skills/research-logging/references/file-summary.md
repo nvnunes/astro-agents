@@ -1,42 +1,43 @@
 # Summary File Instructions
 
-Use this file when creating or revising `<theme>.md`.
+Use this file when creating or revising `<log>.md`.
 
-`<theme>.md` is a first-class living document. It is human-first, agent-second, and should stay self-contained enough to explain the current state without loading all dated entries.
+`<log>.md` is the maintained summary. It should synthesize current understanding across entries and point back to supporting entries and evidence where useful. Its organization may use ordinary sections chosen by the researcher. It does not need to follow entry chronology.
 
-When writing or revising summary prose, apply `skills/project-docs-writing/references/project-docs.md`. Treat `<theme>.md` as project-facing documentation: direct, compressed, scannable, and explicit about current understanding.
+The maintained summary starts with `## Contents`, then `## Entries`, then `## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups` after `## Summary`.
 
-Do not make the summary carry every caveat, metric, historical step, or source detail from the entries. If a detail needs lengthy qualification, leave it in the entry and link to it.
+`Contents` links to the main sections. Include the `Follow-ups` link only when the section exists:
 
-Treat existing summary structure, ordering, prose, emphasis, and framing as intentional. Prefer targeted edits over broad rewriting unless the user asks for restructuring.
+```md
+- [Entries](#entries)
+- [Summary](#summary)
+- [Follow-ups](#follow-ups)
+```
 
-Recommended top-level structure:
+`Entries` lists every entry:
 
-- `Summary`: current understanding.
-- `Next Steps`: theme-level phases, priorities, or broader planned work.
+- For entries with one document, use one bullet with the backticked entry start date followed by a link to the entry document. Link text should match the entry document title without the date prefix.
+- For entries split across multiple documents, use one parent bullet with the backticked entry start date followed by unlinked text consistent with the entry folder slug, then add child bullets linking to each entry document. Child link text should match the entry document title without the date prefix.
 
-Organize `Summary` by concepts, not by dated entries. Concepts should usually follow the `## Concepts` list in `<theme>/index.md`.
+```md
+- `2026-04-01` [Storage, Cache and Format Baselines](benchmarking/entries/2026-04-01-e001-storage-cache-format-baselines/e001.md)
+- `2026-04-16` Traversal I/O Optimization and Compression:
+  - [Gaia Read-Path Optimization](benchmarking/entries/2026-04-16-e002-traversal-io-optimization-and-compression/e002a.md)
+  - [Artifact Compression and Write Path](benchmarking/entries/2026-04-16-e002-traversal-io-optimization-and-compression/e002b.md)
+```
 
-Use clickable entry-ID links for key claims that a reader may want to trace back to supporting evidence. Link retained conclusions, decisions, major caveats, current-versus-historical status markers, and follow-up items. Do not require every sentence or observation to carry a link.
+When writing or revising summary prose, apply `skills/research-logging/references/research-log-writing.md`.
 
-Resolve entry paths through `<theme>/index.md`. When `<theme>.md` sits next to `<theme>/`, link to `<theme>/<entry Path from index>index.md`. For example, if `Path:` is `entries/2026-04-21-runtime-e006-dynamic-scheduler-runtime-validation/`, link from `benchmarking.md` as `[e006](benchmarking/entries/2026-04-21-runtime-e006-dynamic-scheduler-runtime-validation/index.md)`.
+Use `## Summary` for current understanding, including observations, conclusions, decisions, and other synthesis organized by the researcher's topics.
 
-At leaf concept sections, use only the categories that carry useful current content. Do not create headings just to complete a pattern.
+Use `## Follow-ups` only for points recorded under `Follow-up:` labels in entries. Group follow-up items under topic headings when useful, and link each item back to the entry label that created it.
 
-Available leaf categories:
+## Summary Discipline
 
-- `Observations`: flexible format; use prose, bullets, tables, or subsections as needed.
-- `Conclusions`: unordered list.
-- `Questions`: unordered list.
-- `Decisions`: unordered list.
-- `Follow-Up`: numbered list.
-
-Omit `Questions`, `Decisions`, or `Follow-Up` when there is no substantive content for them. Do not manufacture placeholder questions, generic future-update instructions, or maintenance reminders.
-
-`Follow-Up` summarizes open task-oriented work for the leaf concept. Prefer deriving it from entry-level `Follow-up:` records and use clickable entry-ID links when provenance matters.
-
-If the user changes the section layout, preserve the distinctions between observations, conclusions, questions, decisions, and follow-up where practical.
-
-Use numbered lists for `Next Steps`, with nested unordered subpoints when needed.
-
-Do not use labeled-line metadata as the standard structure in human-first documents.
+- Do not make the summary carry entry-level reconstruction detail unless the user wants it there.
+- Keep `Entries` complete when entries are added, renamed, split, merged, or retitled.
+- Link summary claims back to supporting entries or evidence when that helps later review.
+- Prefer entry-ID link labels, such as `[e004](benchmarking/entries/.../e004.md)`, when the surrounding text gives enough context.
+- Preserve existing summary structure, ordering, prose, emphasis, and framing unless the user asks for restructuring.
+- If a requested summary change appears to disagree with supporting entries, check the relevant entries and report the inconsistency to the user before editing.
+- Do not infer follow-ups from prose that merely suggests more work. Include only entry `Follow-up:` label items unless the user explicitly asks to add a log-level follow-up.

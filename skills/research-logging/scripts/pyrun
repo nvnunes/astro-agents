@@ -62,8 +62,8 @@ def log_root(cwd: Path) -> Path:
 
 def data_index_candidates(cwd: Path) -> list[Path]:
     return [
-        cwd / "data" / "index.csv",
-        cwd.parent / "data" / "index.csv",
+        cwd / "data.csv",
+        cwd.parent / "data.csv",
     ]
 
 

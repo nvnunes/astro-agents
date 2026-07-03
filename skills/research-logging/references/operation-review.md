@@ -18,7 +18,7 @@ Depending on the requested review scope, look for:
 - inconsistent decision, validation, uncertainty, or evidence context across entries and summary
 - broken or stale links in the summary, entries, or between entries
 - citation keys that do not resolve to entries in `refs.bib` or citations that do not use the recommended bracketed inline-code key format (`skills/research-logging/references/file-references.md`)
-- entry `pyrun` symlinks that do not resolve, `<name>` tokens in `pyrun` commands that do not match entries in `data/index.csv`, or `data/index.csv` files with missing required columns, unclear names, or locations that do not resolve or are not durable (`skills/research-logging/references/file-entry-commands.md`, `skills/research-logging/references/file-data-index.md`)
+- entry `pyrun` symlinks that do not resolve, `<name>` tokens in `pyrun` commands that do not match entries in `data.csv`, or `data.csv` files with missing required columns, unclear names, or locations that do not resolve or are not durable (`skills/research-logging/references/file-entry-commands.md`, `skills/research-logging/references/file-data-index.md`)
 - retained script outputs that bypass `pyrun`, create unnecessary CSV files only to transfer table text into the entry, or link visual evidence that should be embedded inline (`skills/research-logging/references/file-entry-commands.md`)
 - possible missing `AI Use:` notes where the log itself indicates agent work affected retained evidence, results, validation, uncertainty, or decisions (`skills/research-logging/references/file-entry-ai-use.md`)
 

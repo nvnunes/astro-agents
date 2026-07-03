@@ -12,7 +12,7 @@ Use this file when the user asks to create, start, initialize, or set up a new r
 4. Check for conflicting existing files or folders before creating the log. Ask before merging with or overwriting existing material.
 5. Create the minimum log structure defined in `skills/research-logging/SKILL.md`.
 6. Write `<log>.md` as a minimal maintained summary using `skills/research-logging/references/file-summary.md`. Include only user-provided context and do not fabricate current understanding.
-7. Do not create `refs.bib`, `scripts/`, entry-local `data/`, `images/`, or other supporting files or folders unless they are immediately needed. Use `skills/research-logging/references/file-references.md` for `refs.bib`, `skills/research-logging/references/file-entry.md` for entry-local placement, `skills/research-logging/references/file-entry-commands.md` for commands, and `skills/research-logging/references/file-data-index.md` for `data/index.csv`.
+7. Do not create `refs.bib`, `scripts/`, entry-local `data/`, `images/`, or other supporting files or folders unless they are immediately needed. Use `skills/research-logging/references/file-references.md` for `refs.bib`, `skills/research-logging/references/file-entry.md` for entry-local placement, `skills/research-logging/references/file-entry-commands.md` for commands, and `skills/research-logging/references/file-data-index.md` for `data.csv`.
 
 ## Initial Entry
 

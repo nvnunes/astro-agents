@@ -28,8 +28,8 @@ def make_entry(root: Path) -> Path:
     (entry / "data").mkdir(parents=True)
     (entry / "scripts").mkdir()
     (entry / "data" / "input.csv").write_text("value\n1\n", encoding="utf-8")
-    (entry / "data" / "index.csv").write_text(
-        "name,type,location\ninput_csv,CSV,input.csv\n",
+    (entry / "data.csv").write_text(
+        "name,type,location\ninput_csv,CSV,data/input.csv\n",
         encoding="utf-8",
     )
     (entry / "scripts" / "print_args.py").write_text(

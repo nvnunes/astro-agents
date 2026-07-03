@@ -18,7 +18,7 @@ Start entry documents with:
 
 Organize the material in sections under descriptive `##` headings. Add a short purpose or orientation paragraph only when it helps.
 
-The researcher can keep all sections in one document or split them across multiple documents when that improves readability, retrieval, or maintenance. Supporting material should live in the entry folder unless it is reusable across entries or better kept as a stable external link.
+The researcher can keep all sections in one document or split them across multiple documents when that improves readability, retrieval, or maintenance. Supporting material should live in the entry folder unless it is reusable across entries or better kept as a stable external link. Entry-local `data/` and `images/` are independent artifact folders; either may be a normal directory, ignored directory, or symlink according to the project using the log.
 
 When an entry is split across multiple documents:
 

@@ -14,7 +14,7 @@ For Python commands, use `./pyrun` to simplify recorded syntax. `pyrun` replaces
 - `<project>/...` resolves to a path under the project root.
 - `<log>` resolves to the research-log folder.
 - `<log>/...` resolves to a path under the research-log folder.
-- `<name>` resolves to the matching `location` in the nearest entry-local `data/index.csv`.
+- `<name>` resolves to the matching `location` in the nearest entry-local `data.csv`.
 
 Tokens may appear as a whole argument or inside an argument, such as `static=<calibration_series>/file.npz`. Quote arguments that contain angle tokens.
 
@@ -24,7 +24,7 @@ Example:
 ./pyrun scripts/plot_residuals.py --input "<calibration_csv>" --out images/residuals.png
 ```
 
-When writing entry scripts, pass input and output paths as command-line arguments. Do not hard-code project, log, entry, data, image, or output paths in scripts. Do not make ordinary analysis scripts read `data/index.csv`; `pyrun` reads the index and passes resolved paths to the script.
+When writing entry scripts, pass input and output paths as command-line arguments. Do not hard-code project, log, entry, data, image, or output paths in scripts. Do not make ordinary analysis scripts read `data.csv`; `pyrun` reads the index and passes resolved paths to the script.
 
 In recorded commands, keep entry-local script and output paths relative to the entry root, such as `scripts/plot_residuals.py` and `images/residuals.png`. Use `<log>` only for true log-level shared resources, and use `<name>` tokens for indexed data inputs or durable external data locations.
 
@@ -32,15 +32,17 @@ For tables or values copied into an entry, prefer script stdout that prints the 
 
 For retained visual evidence, embed the image in the entry with Markdown image syntax, such as `![Comparison plot](images/comparison.png)`. Use a plain link only for nonvisual files, very large artifacts, or supplemental files that are not meant to be read inline.
 
-When a command uses a data file or directory that is not already in `data/index.csv`, ask whether the data should be copied into the entry or referenced externally. Then add a `data/index.csv` entry using `skills/research-logging/references/file-data-index.md` and record the command with the `<name>` token instead of the raw path.
+When a command uses a data file or directory that is not already in `data.csv`, ask whether the data should be copied into the entry or referenced externally. Then add a `data.csv` entry using `skills/research-logging/references/file-data-index.md` and record the command with the `<name>` token instead of the raw path.
+
+Images do not need `data.csv` rows merely because they are embedded in Markdown. Add image rows only when commands need tokenized access or explicit artifact inventory is useful.
 
 `pyrun` searches for an entry-local data index in this order:
 
-- `./data/index.csv`
-- `../data/index.csv`
+- `./data.csv`
+- `../data.csv`
 
 On first use in an entry, create an entry-root symlink named `pyrun` that points to the resolved `astro-agents` skill package path for `skills/research-logging/scripts/pyrun`, or call that script through its installed path. Prefer a relative symlink when practical.
 
-After creating or changing an entry Python script, `data/index.csv`, `pyrun` symlink, or recorded command, run the recorded command from the entry root before treating it as reproducible.
+After creating or changing an entry Python script, `data.csv`, `pyrun` symlink, or recorded command, run the recorded command from the entry root before treating it as reproducible.
 
 Put commands in fenced code blocks near the result, output, figure, table, or check they support. When entry labels are used, commands usually belong in `Steps:` blocks.

@@ -200,13 +200,14 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
 
     skills = {skill.name for skill in check_skill_frontmatter()}
     seen: set[str] = set()
+    seen_cases: set[tuple[str, bool, str, str]] = set()
     required = {
         "id",
         "expected_skill",
+        "expected_selected_skill",
         "should_trigger",
         "kind",
         "prompt",
-        "success_observable",
     }
 
     with path.open(newline="", encoding="utf-8") as handle:
@@ -227,10 +228,10 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
     for row in rows:
         case_id = row["id"].strip()
         expected_skill = row["expected_skill"].strip()
+        expected_selected_skill = row["expected_selected_skill"].strip()
         should_trigger = parse_bool(row["should_trigger"], path, case_id)
         kind = row["kind"].strip()
         prompt = row["prompt"].strip()
-        observable = row["success_observable"].strip()
 
         if not case_id:
             raise ValidationError(f"{relative(path)}: blank id")
@@ -240,16 +241,31 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
 
         if expected_skill not in skills:
             raise ValidationError(f"{case_id}: unknown expected_skill {expected_skill!r}")
+        if expected_selected_skill not in skills:
+            raise ValidationError(
+                f"{case_id}: unknown expected_selected_skill {expected_selected_skill!r}"
+            )
         if kind not in kinds:
             raise ValidationError(f"{case_id}: invalid kind {kind!r}")
         if kind == "explicit" and f"${expected_skill}" not in prompt:
             raise ValidationError(f"{case_id}: explicit prompt must mention ${expected_skill}")
         if kind == "negative" and should_trigger:
             raise ValidationError(f"{case_id}: negative cases must have should_trigger=false")
+        if should_trigger and expected_selected_skill != expected_skill:
+            raise ValidationError(
+                f"{case_id}: triggering case must select expected_skill {expected_skill!r}"
+            )
+        if not should_trigger and expected_selected_skill == expected_skill:
+            raise ValidationError(
+                f"{case_id}: negative case cannot select excluded skill {expected_skill!r}"
+            )
         if not prompt:
             raise ValidationError(f"{case_id}: blank prompt")
-        if not observable:
-            raise ValidationError(f"{case_id}: blank success_observable")
+
+        fingerprint = (expected_skill, should_trigger, kind, prompt)
+        if fingerprint in seen_cases:
+            raise ValidationError(f"{relative(path)}: duplicate semantic case {case_id!r}")
+        seen_cases.add(fingerprint)
 
         kinds[kind] += 1
 
@@ -369,7 +385,7 @@ def check_codex_discovery() -> None:
 def run_activation_case(case: dict[str, str]) -> dict[str, object]:
     case_id = case["id"].strip()
     expected_skill = case["expected_skill"].strip()
-    should_trigger = case["should_trigger"].strip().lower() == "true"
+    expected_selected_skill = case["expected_selected_skill"].strip()
     prompt = case["prompt"].strip()
 
     with tempfile.NamedTemporaryFile("w+", suffix=".json", encoding="utf-8") as output:
@@ -398,6 +414,7 @@ def run_activation_case(case: dict[str, str]) -> dict[str, object]:
         return {
             "id": case_id,
             "expected_skill": expected_skill,
+            "expected_selected_skill": expected_selected_skill,
             "passed": False,
             "reason": completed.stderr.strip() or "codex exec failed",
         }
@@ -408,32 +425,34 @@ def run_activation_case(case: dict[str, str]) -> dict[str, object]:
         return {
             "id": case_id,
             "expected_skill": expected_skill,
+            "expected_selected_skill": expected_selected_skill,
             "passed": False,
             "reason": str(exc),
             "raw_message": raw_message,
         }
 
     selected_skill = str(report.get("selected_skill", "")).strip()
-    activated = bool(report.get("activated", False))
+    activated = report.get("activated")
+    if not isinstance(activated, bool):
+        return {
+            "id": case_id,
+            "expected_skill": expected_skill,
+            "expected_selected_skill": expected_selected_skill,
+            "passed": False,
+            "reason": "activation eval response field 'activated' was not boolean",
+        }
 
-    if should_trigger:
-        passed = activated and selected_skill == expected_skill
-        reason = (
-            "ok"
-            if passed
-            else f"expected activation of {expected_skill!r}, got {selected_skill!r}"
-        )
-    else:
-        passed = selected_skill != expected_skill
-        reason = (
-            "ok"
-            if passed
-            else f"negative case selected excluded skill {expected_skill!r}"
-        )
+    passed = activated and selected_skill == expected_selected_skill
+    reason = (
+        "ok"
+        if passed
+        else f"expected selection of {expected_selected_skill!r}, got {selected_skill!r}"
+    )
 
     return {
         "id": case_id,
         "expected_skill": expected_skill,
+        "expected_selected_skill": expected_selected_skill,
         "selected_skill": selected_skill,
         "activated": activated,
         "passed": passed,
@@ -454,7 +473,6 @@ def build_activation_eval_prompt(case: dict[str, str]) -> str:
             f"Expected skill under test: {case['expected_skill'].strip()}",
             f"Case kind: {case['kind'].strip()}",
             f"Should trigger expected skill: {case['should_trigger'].strip()}",
-            f"Success observable: {case['success_observable'].strip()}",
             "",
             "User request:",
             case["prompt"].strip(),

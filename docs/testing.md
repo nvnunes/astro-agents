@@ -75,7 +75,7 @@ The fixture includes:
 
 Every user-facing skill should have at least one explicit positive case, one implicit positive case, and one negative exclusion case. The deterministic harness enforces that coverage shape.
 
-Implicit activation is model-mediated. The fixture gives stable prompts and success observables for repeated manual or scripted eval runs, but it is not a deterministic unit test of model choice.
+Implicit activation is model-mediated. The fixture gives stable prompts and exact expected selected skills for repeated manual or scripted eval runs, but it is not a deterministic unit test of model choice.
 
 Run the optional activation eval runner only when activation behavior might change:
 

@@ -32,14 +32,13 @@ When running this review:
 - use `skills/project-upgrade-planning/references/upgrade-model.md` as the source of truth for the upgrade model, work areas, change-scope language, and `public-python` recommendation rules
 - do not require a declared `Documentation surface profile` before reviewing; when none is declared, treat the current shared documentation review path as `private-default`
 
-## Internal Review Steps
+## Optional Combined Review
 
-Build one combined assessment from this shared review surface:
-
-- `skills/agent-surface-review/SKILL.md`
-  - pair with this skill as the baseline combined read on the project's current agent surface, including the applicable shared documentation path, documentation profile context, current-state coverage snapshot, and any applicable project-local review files
-
-Use that combined review as the evidence base for one upgrade assessment rather than returning separate review reports or rerunning its internal review steps independently.
+Pair with `skills/agent-surface-review/SKILL.md` only when current agent-surface
+state needs a combined review before upgrade planning. When used, treat that
+review as evidence for the upgrade assessment rather than returning a separate
+report or rerunning its internal steps. Do not make it a routine internal
+dependency of upgrade review.
 
 ## Upgrade Assessment
 

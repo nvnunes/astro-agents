@@ -26,10 +26,11 @@ For writing, check `skills/research-logging/references/research-log-writing.md`,
 evidence loss, status inflation, unsupported interpretation, stale synthesis,
 weak comparison structure, misplaced labels, invented validation, missing or
 empty summary-level AI use disclosures, disclosure wording changed without
-researcher direction, obsolete entry-level `AI Use:` labels, unnecessary
-artifact inventories, indirect or redundant evidence presentation,
-artifact-management narration, resolved TODOs, obsolete provisional markers,
-and non-retained material.
+researcher direction, obsolete entry-level `AI Use:` labels, paragraph-heavy
+summaries where bullets would be clearer, avoidable meta-introductions, bullets
+that combine separable claims, unnecessary artifact inventories, indirect or
+redundant evidence presentation, artifact-management narration, resolved TODOs,
+obsolete provisional markers, and non-retained material.
 
 For integrity, check the core shape in `skills/research-logging/SKILL.md` and
 the applicable `skills/research-logging/references/file-entry-naming.md`,

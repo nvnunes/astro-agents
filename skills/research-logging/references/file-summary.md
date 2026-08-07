@@ -43,6 +43,12 @@ wording unless the researcher asks to revise it.
 
 ## Summary Discipline
 
+- Use short, topic-grouped bullets by default. Use a paragraph only when bullets
+  would obscure a necessary relationship.
+- State one retained result, decision, validation boundary, limitation, or
+  unresolved point per bullet. Keep its qualifier and evidence link with it.
+- Start with the current state. Omit meta-introductions such as `This log
+  records...`, entry narration, and detail available through linked entries.
 - Lead with the retained model, contract, or current understanding. If none is
   retained, label the provisional or planned state explicitly.
 - Group evidence by stable scientific or operational subject rather than entry
@@ -60,6 +66,7 @@ wording unless the researcher asks to revise it.
 - Keep `Entries` complete when entries are added, renamed, split, merged, or retitled.
 - Link summary claims back to supporting entries or evidence when that helps later review.
 - Prefer entry-ID link labels, such as `[e004](benchmarking/entries/.../e004.md)`, when the surrounding text gives enough context.
-- Preserve existing summary structure, ordering, prose, emphasis, and framing unless the user asks for restructuring.
+- Preserve researcher-defined topic order, emphasis, and framing. Preserve
+  paragraph form only when explicitly requested or necessary for clarity.
 - If a requested summary change appears to disagree with supporting entries, check the relevant entries and report the inconsistency to the user before editing.
 - Do not infer follow-ups from prose that merely suggests more work. Include only entry `Follow-up:` label items unless the user explicitly asks to add a log-level follow-up.

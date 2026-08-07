@@ -9,7 +9,9 @@ Read `skills/research-logging/references/file-summary.md` for summary-writing gu
 ## Behavior
 
 - Read the relevant entry documents before changing summary claims.
-- Preserve the user's summary structure unless the user asks for restructuring.
+- Preserve researcher-defined topic organization and framing. Normalize
+  incidental prose to the summary format in `file-summary.md` when meaning is
+  unchanged.
 - Add or update links from summary claims to supporting entries or evidence where useful.
 - Carry forward current retained understanding, explicitly retained provisional
   or planned state, evidence needed to explain current conclusions, and active

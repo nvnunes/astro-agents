@@ -4,7 +4,10 @@ Use this file when creating or revising `<log>.md`.
 
 `<log>.md` is the maintained summary. It should synthesize current understanding across entries and point back to supporting entries and evidence where useful. Its organization may use ordinary sections chosen by the researcher. It does not need to follow entry chronology.
 
-The maintained summary starts with `## Contents`, then `## Entries`, then `## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups` after `## Summary`.
+The maintained summary starts with `## Contents`, then `## Entries`, then
+`## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups`
+after `## Summary`. Place `## AI Use` after `## Summary` and after any
+`## Follow-ups`.
 
 `Contents` links to the main sections. Include the `Follow-ups` link only when the section exists:
 
@@ -12,6 +15,7 @@ The maintained summary starts with `## Contents`, then `## Entries`, then `## Su
 - [Entries](#entries)
 - [Summary](#summary)
 - [Follow-ups](#follow-ups)
+- [AI Use](#ai-use)
 ```
 
 `Entries` lists every entry:
@@ -31,6 +35,11 @@ When writing or revising summary prose, apply `skills/research-logging/reference
 Use `## Summary` for current understanding, including observations, conclusions, decisions, and other synthesis organized by the researcher's topics.
 
 Use `## Follow-ups` only for points recorded under `Follow-up:` labels in entries. Group follow-up items under topic headings when useful, and link each item back to the entry label that created it.
+
+Use `## AI Use` for the log-level disclosure defined in
+`skills/research-logging/references/file-summary-ai-use.md`. Every maintained
+summary includes this final section. Preserve researcher-customized disclosure
+wording unless the researcher asks to revise it.
 
 ## Summary Discipline
 

@@ -59,4 +59,3 @@ Load only the guidance needed for the current entry edit:
 - Executable command conventions: `skills/research-logging/references/file-entry-commands.md`.
 - Entry-local data index guidance: `skills/research-logging/references/file-data-index.md`.
 - Citation and `refs.bib` conventions: `skills/research-logging/references/file-references.md`.
-- `AI Use:` wording: `skills/research-logging/references/file-entry-ai-use.md`.

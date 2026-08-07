@@ -15,5 +15,7 @@ Read `skills/research-logging/references/file-summary.md` for summary-writing gu
   or planned state, evidence needed to explain current conclusions, and active
   follow-ups. Do not preserve superseded material merely to narrate history.
 - Keep detailed evidence, long caveats, commands, and reconstruction details in entries.
+- Preserve the existing `## AI Use` disclosure exactly unless the researcher
+  asks to revise it. Do not reset customized wording to the creation default.
 - Do not add conclusions that are not supported by entries, references, or user-provided direction.
 - If summary text appears stale, unsupported, or inconsistent with entries, either fix it when the requested task clearly authorizes that change or report the issue and ask before editing.

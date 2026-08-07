@@ -8,7 +8,7 @@ Choose the local form from the section's role:
 - **Information:** Use concise ordinary prose, with descriptive headings only
   when helpful. Do not force information without its own evidence into labels.
 - **Performed experiment:** Use at minimum `Background:`, `Steps:`, `Results:`,
-  `Validation:`, `Observations:`, and `AI Use:`.
+  `Validation:`, and `Observations:`.
 - **Planned work in the current effort:** Use a concise stub with `Background:`
   and, when useful, anticipated `Steps:`. Keep future tense and omit empty
   result-oriented labels.
@@ -73,10 +73,3 @@ with the decision. Omit the label if no researcher decision exists.
 Reserve this label for deferred work outside the current research effort that
 the researcher intentionally wants carried into the log-level `## Follow-ups`.
 Do not use it for current planned work or speculative ideas.
-
-### `AI Use:`
-
-Use `skills/research-logging/references/file-entry-ai-use.md` for agent
-provenance. Write `None.` when no agent work had a surviving effect on the
-research record. If an older experiment lacks reconstructable provenance,
-report the omission rather than inventing a note or inserting a TODO.

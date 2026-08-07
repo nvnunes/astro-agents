@@ -1,6 +1,6 @@
 ---
 name: research-logging
-description: Create, record, summarize, review, reference, or maintain research logs with log summaries, dated entries, evidence files, BibTeX references, data indexes, results, observations, validation, uncertainty, decisions, and AI Use notes. Use for research-log lifecycle work, not general project docs or scientific manuscript writing.
+description: Create, record, summarize, review, reference, or maintain research logs with log summaries, dated entries, evidence files, BibTeX references, data indexes, results, observations, validation, uncertainty, decisions, and summary-level AI use disclosures. Use for research-log lifecycle work, not general project docs or scientific manuscript writing.
 ---
 
 # Research Logging

@@ -21,13 +21,15 @@ Load only the references needed for that focus.
 
 For writing, check `skills/research-logging/references/research-log-writing.md`,
 `skills/research-logging/references/file-entry-labels.md`,
-`skills/research-logging/references/file-entry-ai-use.md`, and
-`skills/research-logging/references/file-summary.md` as applicable. Look for
+`skills/research-logging/references/file-summary.md`, and
+`skills/research-logging/references/file-summary-ai-use.md` as applicable. Look for
 evidence loss, status inflation, unsupported interpretation, stale synthesis,
-weak comparison structure, misplaced labels, invented validation, unapproved
-AI Use wording, unnecessary artifact inventories, indirect or redundant
-evidence presentation, artifact-management narration, resolved TODOs, obsolete
-provisional markers, and non-retained material.
+weak comparison structure, misplaced labels, invented validation, missing or
+empty summary-level AI use disclosures, disclosure wording changed without
+researcher direction, obsolete entry-level `AI Use:` labels, unnecessary
+artifact inventories, indirect or redundant evidence presentation,
+artifact-management narration, resolved TODOs, obsolete provisional markers,
+and non-retained material.
 
 For integrity, check the core shape in `skills/research-logging/SKILL.md` and
 the applicable `skills/research-logging/references/file-entry-naming.md`,

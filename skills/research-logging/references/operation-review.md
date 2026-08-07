@@ -34,11 +34,26 @@ the applicable `skills/research-logging/references/file-entry-naming.md`,
 `skills/research-logging/references/file-entry.md`,
 `skills/research-logging/references/file-summary.md`,
 `skills/research-logging/references/file-references.md`,
+`skills/research-logging/references/file-script.md`,
 `skills/research-logging/references/file-entry-commands.md`, and
 `skills/research-logging/references/file-data-index.md` references. Look for
 broken or stale links, unresolved citation keys, invalid entry paths or IDs,
 summary-entry inconsistency, unresolved `pyrun` or `data.csv` references, and
-missing required provenance.
+missing required provenance. Also look for:
+
+- entry-only code at log or project scope, or multi-entry code copied into entries
+- recorded commands broken by changes to log-level or project-level shared code
+- recorded Python commands that do not invoke `./pyrun` without a recorded, researcher-approved symlink exception
+- missing or non-symlink entry-root `pyrun` for recorded Python commands without that exception
+- copied or vendored `pyrun` files
+- project API choices that affect what the evidence establishes but are not recorded
+- interpreter fallback used despite a declared project environment without researcher approval
+- duplicate `data.csv` names or rows unused by recorded `<name>` tokens
+- retained figures without a generating command in the document that presents them
+- plot scripts that accept missing cases, non-finite values, or incompatible units
+- retained figures without recorded visual inspection
+- serialized artifacts consumed later without reload validation
+- runtime caches not covered by project ignore rules, including `__pycache__/`, `.pytest_cache/`, and `.ruff_cache/`
 
 Treat direct existing decisions as researcher decisions unless explicitly
 marked proposed, provisional, or agent-generated. Pending validation alone does

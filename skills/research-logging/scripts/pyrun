@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run an entry-local Python command with research-log token resolution."""
+"""Run entry-local Python commands and add data-index rows."""
 
 from __future__ import annotations
 
@@ -11,10 +11,18 @@ from pathlib import Path
 
 
 TOKEN_RE = re.compile(r"<([^<>]+)>")
+URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+DATA_INDEX_FIELDS = ("name", "type", "location")
+RESERVED_DATA_NAMES = {"log", "project", "theme"}
 
 
 def usage() -> int:
-    print("usage: pyrun <script> [args...]", file=sys.stderr)
+    print(
+        "usage: pyrun <script> [args...]\n"
+        "       pyrun data add <name> <type> <location>",
+        file=sys.stderr,
+    )
     return 2
 
 
@@ -74,38 +82,96 @@ def find_data_index(cwd: Path) -> Path | None:
     return None
 
 
-def data_locations(index: Path | None) -> dict[str, str]:
-    if index is None:
-        return {}
+def validate_data_name(name: str, index: Path) -> None:
+    if name in RESERVED_DATA_NAMES:
+        raise SystemExit(f"pyrun: reserved data name {name!r}: {index}")
 
+
+def read_data_index(index: Path) -> tuple[list[str], dict[str, str], dict[str, str]]:
     try:
         with index.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             if reader.fieldnames is None:
                 raise SystemExit(f"pyrun: empty data index: {index}")
 
-            fieldnames = {name.strip().lower(): name for name in reader.fieldnames if name}
-            missing = {"name", "type", "location"} - set(fieldnames)
+            columns = list(reader.fieldnames)
+            fields_by_name = {name.strip().lower(): name for name in columns if name}
+            missing = set(DATA_INDEX_FIELDS) - set(fields_by_name)
             if missing:
                 missing_text = ", ".join(sorted(missing))
                 raise SystemExit(f"pyrun: data index missing required column(s) {missing_text}: {index}")
 
             locations: dict[str, str] = {}
             for line_number, row in enumerate(reader, start=2):
-                name = (row.get(fieldnames["name"]) or "").strip()
-                location = (row.get(fieldnames["location"]) or "").strip()
-                if not name and not location:
+                name = (row.get(fields_by_name["name"]) or "").strip()
+                data_type = (row.get(fields_by_name["type"]) or "").strip()
+                location = (row.get(fields_by_name["location"]) or "").strip()
+                if not name and not data_type and not location:
                     continue
-                if not name or not location:
+                if not name or not data_type or not location:
                     raise SystemExit(f"pyrun: malformed data index row {line_number}: {index}")
+                validate_data_name(name, index)
+                if name in locations:
+                    raise SystemExit(
+                        f"pyrun: duplicate data name {name!r} on line {line_number}: {index}"
+                    )
                 locations[name] = location
     except csv.Error as exc:
         raise SystemExit(f"pyrun: malformed CSV data index: {index}: {exc}") from exc
 
-    return locations
+    return columns, fields_by_name, locations
+
+
+def data_locations(index: Path | None) -> dict[str, str]:
+    if index is None:
+        return {}
+    return read_data_index(index)[2]
+
+
+def entry_root(cwd: Path, log: Path) -> Path:
+    if cwd.parent != log / "entries":
+        raise SystemExit("pyrun: data add must run from an entry root")
+    return cwd
+
+
+def add_data(index: Path, name: str, data_type: str, location: str) -> None:
+    values = [value.strip() for value in (name, data_type, location)]
+    if any(not value for value in values):
+        raise SystemExit("pyrun: data add requires nonempty name, type, and location")
+    name, data_type, location = values
+    validate_data_name(name, index)
+
+    if index.exists():
+        columns, fields_by_name, locations = read_data_index(index)
+        if name in locations:
+            raise SystemExit(f"pyrun: duplicate data name {name!r}: {index}")
+        needs_newline = not index.read_bytes().endswith((b"\n", b"\r"))
+        mode = "a"
+    else:
+        columns = list(DATA_INDEX_FIELDS)
+        fields_by_name = {field: field for field in DATA_INDEX_FIELDS}
+        needs_newline = False
+        mode = "w"
+
+    row = {field: "" for field in columns}
+    row[fields_by_name["name"]] = name
+    row[fields_by_name["type"]] = data_type
+    row[fields_by_name["location"]] = location
+
+    with index.open(mode, newline="", encoding="utf-8") as handle:
+        if needs_newline:
+            handle.write("\n")
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+        if mode == "w":
+            writer.writeheader()
+        writer.writerow(row)
+
+    print(f"pyrun: added {name!r} to {index}")
 
 
 def resolve_location(location: str, index: Path) -> str:
+    if URI_RE.match(location) and not WINDOWS_DRIVE_RE.match(location):
+        return location
     path = Path(location).expanduser()
     if path.is_absolute():
         return str(path)
@@ -137,6 +203,13 @@ def main(argv: list[str]) -> int:
     cwd = Path.cwd()
     root = project_root(cwd)
     log = log_root(cwd)
+
+    if argv[1] == "data":
+        if len(argv) != 6 or argv[2] != "add":
+            return usage()
+        add_data(entry_root(cwd, log) / "data.csv", *argv[3:])
+        return 0
+
     index = find_data_index(cwd)
     locations = data_locations(index)
     resolved = [resolve_arg(arg, root, log, locations, index) for arg in argv[1:]]

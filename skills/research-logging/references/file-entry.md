@@ -39,6 +39,10 @@ and `images/` are independent artifact folders; either may be a normal
 directory, ignored directory, or symlink according to the project using the
 log.
 
+The entry that creates an artifact owns it. Later entries should reference that
+artifact by path, or through a `<name>` token when a recorded command consumes
+it; store any transformed output in the later entry.
+
 After the researcher approves a split:
 
 - keep the same entry folder and entry ID
@@ -51,6 +55,7 @@ Load only the guidance needed for the current entry edit:
 - Entry prose discipline: `skills/research-logging/references/research-log-writing.md`.
 - Entry folder, ID, slug, and split document naming: `skills/research-logging/references/file-entry-naming.md`.
 - Entry labels: `skills/research-logging/references/file-entry-labels.md`.
+- Research script placement and behavior: `skills/research-logging/references/file-script.md`.
 - Executable command conventions: `skills/research-logging/references/file-entry-commands.md`.
 - Entry-local data index guidance: `skills/research-logging/references/file-data-index.md`.
 - Citation and `refs.bib` conventions: `skills/research-logging/references/file-references.md`.

@@ -1,32 +1,58 @@
 # Review Operation Instructions
 
-Use this file when the user asks to check whether a research log follows the recommended structure or is internally consistent.
+Use this file when the user asks to review a research log's structure,
+consistency, synthesis, or writing.
 
-`Review` is report-first. Do not edit files unless the user explicitly asks for fixes or the requested task clearly includes applying the fixes.
+`Review` is report-first. Do not edit the log or create a review entry unless
+the user explicitly asks for fixes or a persistent record.
 
-## Review Checklist
+## Scope
 
-Depending on the requested review scope, look for:
+Infer the focus from the request:
 
-- log-level structure that does not match the recommended summary-plus-entries shape (`skills/research-logging/SKILL.md`)
-- entry folder names, entry IDs, split documents, or descriptive slugs that do not follow the recommended conventions (`skills/research-logging/references/file-entry-naming.md`)
-- entry document shape or support-file placement that does not match entry guidance (`skills/research-logging/references/file-entry.md`)
-- labels outside the recommended entry label list, especially when they reflect
-  unclear vocabulary or make agent parsing less consistent (`skills/research-logging/references/file-entry-labels.md`)
-- prose that does not match the recommended research-log writing style (`skills/research-logging/references/research-log-writing.md`)
-- summary-vs-entry inconsistencies, including missing or stale `## Entries` links, stale or unsupported summary claims, entry content that changes current understanding but is not reflected in the summary, entry `Follow-up:` label items missing from `## Follow-ups`, stale follow-up items that remain in `## Follow-ups`, or summary claims that would benefit from supporting entry links (`skills/research-logging/references/file-summary.md`)
-- inconsistent decision, validation, uncertainty, or evidence context across entries and summary
-- broken or stale links in the summary, entries, or between entries
-- citation keys that do not resolve to entries in `refs.bib` or citations that do not use the recommended bracketed inline-code key format (`skills/research-logging/references/file-references.md`)
-- entry `pyrun` symlinks that do not resolve, `<name>` tokens in `pyrun` commands that do not match entries in `data.csv`, or `data.csv` files with missing required columns, unclear names, or locations that do not resolve or are not durable (`skills/research-logging/references/file-entry-commands.md`, `skills/research-logging/references/file-data-index.md`)
-- retained script outputs that bypass `pyrun`, create unnecessary CSV files only to transfer table text into the entry, or link visual evidence that should be embedded inline (`skills/research-logging/references/file-entry-commands.md`)
-- possible missing `AI Use:` notes where the log itself indicates agent work affected retained evidence, results, validation, uncertainty, or decisions (`skills/research-logging/references/file-entry-ai-use.md`)
+- named passages or entries: review only those targets
+- writing or style: review prose and information organization
+- structure or consistency: review integrity and lifecycle conventions
+- an unqualified log review: combine writing and integrity checks
+
+Load only the references needed for that focus.
+
+## Review Checks
+
+For writing, check `skills/research-logging/references/research-log-writing.md`,
+`skills/research-logging/references/file-entry-labels.md`,
+`skills/research-logging/references/file-entry-ai-use.md`, and
+`skills/research-logging/references/file-summary.md` as applicable. Look for
+evidence loss, status inflation, unsupported interpretation, stale synthesis,
+weak comparison structure, misplaced labels, invented validation, unapproved
+AI Use wording, unnecessary artifact inventories, indirect or redundant
+evidence presentation, artifact-management narration, resolved TODOs, obsolete
+provisional markers, and non-retained material.
+
+For integrity, check the core shape in `skills/research-logging/SKILL.md` and
+the applicable `skills/research-logging/references/file-entry-naming.md`,
+`skills/research-logging/references/file-entry.md`,
+`skills/research-logging/references/file-summary.md`,
+`skills/research-logging/references/file-references.md`,
+`skills/research-logging/references/file-entry-commands.md`, and
+`skills/research-logging/references/file-data-index.md` references. Look for
+broken or stale links, unresolved citation keys, invalid entry paths or IDs,
+summary-entry inconsistency, unresolved `pyrun` or `data.csv` references, and
+missing required provenance.
+
+Treat direct existing decisions as researcher decisions unless explicitly
+marked proposed, provisional, or agent-generated. Pending validation alone does
+not make a researcher decision provisional. Suggest splitting only when
+distinct topics impair retrieval or maintenance; length alone is not a reason.
 
 ## Output
 
-Lead with findings ordered by importance. Include file paths and line references when possible. If no issues are found, say that and name any residual risk or unverified area.
+Return numbered findings ordered by importance. Distinguish direct violations
+from optional improvements. For each finding, cite the affected location,
+explain the applicable rule and why it matters, and suggest a corrective
+direction. If no material findings exist, say so and name any residual risk or
+unverified area.
 
-If the user asks to apply fixes based on review findings, preserve source
-wording unless the requested fix requires a specific rewrite. Do not omit,
-condense, paraphrase, or materially rewrite source content without explicit
-user direction.
+If the user asks to apply fixes, preserve source wording unless the fix requires
+a specific rewrite. Do not omit, condense, paraphrase, or materially rewrite
+source content without explicit direction.

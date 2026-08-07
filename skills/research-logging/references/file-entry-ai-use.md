@@ -1,19 +1,40 @@
 # Entry AI Use Instructions
 
-Use this file only when adding, reviewing, or revising `AI Use:` notes in research-log entries.
+Use this file only when adding, reviewing, or revising `AI Use:` notes in
+research-log entries.
 
-These notes record agent assistance that affected evidence, results, validation, uncertainty, decisions, or later ownership and disclosure review. For example:
+Record concrete agent work that affected retained evidence, results, validation
+context, uncertainty, decisions, or later ownership review. Name the surviving
+contribution, such as writing a script, running a comparison, generating a
+retained figure, or summarizing measured evidence. State a researcher
+contribution separately only when it is explicitly known.
+
+Do not record trivial formatting, navigation, mechanical maintenance, discarded
+suggestions, or routine interaction with no surviving effect. Do not use vague
+boilerplate, TODOs, or statements about review, validation, observations, or
+decisions that have not happened.
+
+For a performed experiment with no agent contribution that had a surviving
+effect, write `None.`. Do not omit the required `AI Use:` label or invent work
+to fill it. The literal `None.` is final wording and does not take a
+`Provisional:` prefix.
+
+Prefix agent-drafted or agent-revised wording with `Provisional:`. Remove that
+flag only under researcher direction.
 
 ```md
 AI Use:
 
-<Agent contribution>. The researcher <directed, checked, validated, or decided> <result, evidence use, validation, or decision context>.
+Provisional: The agent wrote and ran the comparison script and generated the
+displayed figure.
 ```
 
-Do not use `AI Use:` for trivial formatting help, navigation, mechanical file maintenance, discarded suggestions, or routine interaction that left no surviving effect on the research record.
+After researcher approval, record only the contributions that occurred:
 
-Examples note text:
-- Agent wrote the extraction script for retained input files and aggregation metadata. The researcher sanity-checked the script and output.
-- Agent wrote the plotting script. The researcher checked the plotted trends against expected behavior and reviewed the script inputs.
-- Agent compiled run statistics and generated comparison plots without adding interpretation. The researcher validated the statistics and decided which result to rely on.
-- Agent implemented the refactor under researcher direction. The researcher reviewed the changed code paths and confirmed that the new structure preserved intended behavior.
+```md
+AI Use:
+
+The agent wrote and ran the comparison script and generated the displayed
+figure. The researcher checked the inputs, interpreted the comparison, and
+selected the retained setting.
+```

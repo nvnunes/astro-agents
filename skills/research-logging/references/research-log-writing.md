@@ -1,36 +1,59 @@
 # Research Log Writing
 
-Use this file when drafting or revising research-log prose in entries or summaries.
+Use this file when drafting or revising research-log prose in entries or
+summaries.
 
-Research logs are working records, not polished manuscript prose. They should make it possible to reconstruct what was done, what is currently understood, what was observed, what was validated, what uncertainty remained, and what decisions followed.
+Research logs are direct, technical working records rather than polished
+manuscript prose. Make retained understanding easy to find while preserving
+enough evidence and reasoning to reconstruct why it was retained.
 
-## Writing Discipline
+## Style
 
-- Preserve observation, inference, validation, uncertainty, and decision as distinct ideas.
-- Keep enough detail to support later reconstruction.
-- Use direct prose and concrete file, command, reference, and entry links.
-- Keep prose compressed, scannable, and explicit about what is current versus historical.
-- Do not silently strengthen claims beyond the evidence.
-- Do not turn provisional observations into conclusions.
-- Do not remove uncertainty just because validation was performed.
-- When recording a researcher decision, preserve the evidence, validation, uncertainty, or constraint the user gave as its context.
+- Lead each section with the question, comparison, or decision distinction that
+  makes it relevant. Prefer scientific and operational significance over run
+  chronology.
+- Organize repeated experiments around the question they answer. Keep the
+  baseline, candidate, measured benefit, relevant cost, and tested boundary
+  together; use tables or parallel bullets for shared comparison dimensions.
+- State supported results and researcher decisions plainly. Name the quantity,
+  baseline, and scope instead of relying on `better`, `faster`, `stable`,
+  `accurate`, or `did not work`.
+- Keep qualifiers beside the claims they limit. Distinguish intermediate-model
+  differences from downstream or science-visible effects, and state what a
+  threshold measures, why it matters, and what it does not establish.
+- Follow a comparison table with its interpretation and decision rather than
+  narrating every cell. Link reproduction detail that does not belong in the
+  current synthesis.
+- Present evidence directly. Avoid narration that merely says an artifact was
+  saved, a table records values, or the entry retains a result.
+- Place each figure beside the argument it supports. Prefer the most direct
+  evidence surface, and use a table only when it makes a structured comparison
+  clearer than prose or a plot.
+- Retain negative evidence only when it still explains a result, decision, or
+  useful lesson. State the discriminating result, rejection reason, and boundary
+  of what was ruled out.
+- Keep evidence, observation, inference, researcher validation, material
+  limitation, and decision distinct. Use `retained`, `accepted`, and `validated`
+  only when that status is established; otherwise use `proposed`,
+  `recommended`, `provisional`, `planned`, or `awaiting validation` as
+  appropriate.
+- Keep a researcher operational decision even when validation or scientific
+  uncertainty remains. State the limit separately without weakening the
+  decision, and do not create an `Uncertainty:` section unless the researcher
+  directs it.
+- Never convert an agent recommendation or explicitly provisional decision into
+  a researcher-accepted conclusion.
 
-## Retrospective Edits
+## Preservation
 
-When revising old entries, preserve the historical meaning. If newer work supersedes an old result, add a note or summary link rather than rewriting the old entry to sound current unless the user asks for that rewrite.
-
-When revising summaries, preserve the current meaning unless the user asks to change it. If the summary and entries disagree, surface the inconsistency before rewriting the summary as if the new version were already accepted.
-
-## Review Checks
-
-When reviewing research-log prose, look for:
-
-- evidence loss
-- unsupported interpretation
-- weak or missing validation
-- missing residual uncertainty
-- unclear decision context
-- unclear current-versus-historical framing
-- unclear AI involvement
-- poor scanability
-- broken links or command examples
+- Preserve the meaning of retained evidence, researcher validation and
+  decisions, and intentionally retained uncertainty. Do not make prose sound
+  more certain, complete, or researcher-endorsed merely to make it smoother.
+- Preserve exact numerical values, units, variable names, commands, paths,
+  citation keys, and stated uncertainty unless the source changes.
+- Do not rewrite dated evidence merely to agree with a later conclusion.
+- Do not rewrite an earlier account as though later evidence was already
+  available. Add later evidence at the point it enters the record, whether
+  continuing the same section or starting a new one.
+- Surface conflicting or stale current-state claims rather than silently
+  resolving them outside the active operation.

@@ -45,4 +45,7 @@ On first use in an entry, create an entry-root symlink named `pyrun` that points
 
 After creating or changing an entry Python script, `data.csv`, `pyrun` symlink, or recorded command, run the recorded command from the entry root before treating it as reproducible.
 
-Put commands in fenced code blocks near the result, output, figure, table, or check they support. When entry labels are used, commands usually belong in `Steps:` blocks.
+Put complete commands in fenced code blocks in the descriptive section that
+uses the result, output, figure, table, or check they support. Do not require a
+reader to follow a cross-reference merely to find the reproduction command.
+When entry labels are used, commands usually belong in `Steps:` blocks.

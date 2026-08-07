@@ -34,6 +34,19 @@ Use `## Follow-ups` only for points recorded under `Follow-up:` labels in entrie
 
 ## Summary Discipline
 
+- Lead with the retained model, contract, or current understanding. If none is
+  retained, label the provisional or planned state explicitly.
+- Group evidence by stable scientific or operational subject rather than entry
+  date. Link material claims to the entries that own the evidence.
+- Include only the strongest retained evidence, validation boundary,
+  consequential decisions, intentionally retained limitations, and unresolved
+  work needed to understand the current state. Keep future work separate.
+- Do not recap every entry section or mention earlier configurations merely to
+  narrate evolution. Include rejected evidence only when a retained conclusion
+  depends on why it was rejected.
+- Check whether later entries change, qualify, or supersede the summary. Do not
+  promote unsupported decision-shaped material merely because it appears in an
+  entry.
 - Do not make the summary carry entry-level reconstruction detail unless the user wants it there.
 - Keep `Entries` complete when entries are added, renamed, split, merged, or retitled.
 - Link summary claims back to supporting entries or evidence when that helps later review.

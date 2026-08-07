@@ -36,7 +36,7 @@ Choose the operation:
 - New or revised entry documents, support material, scripts, generated results, data organization, or command output: read `references/operation-record.md`.
 - Reference lookup, BibTeX management, or citation insertion: read `references/operation-reference.md`.
 - Log-summary updates: read `references/operation-summarize.md`.
-- Research-log structure review, internal consistency check, or summary-vs-entry check: read `references/operation-review.md`.
+- Research-log structure, consistency, synthesis, or writing review: read `references/operation-review.md`.
 - Structural changes such as entry renames, link rewrites, splits, merges, or path normalization: use `references/file-entry-naming.md` and `references/file-entry.md` as needed; ask before deleting research-log files.
 
 If the user's wording is ambiguous between recording and summarizing, prefer recording unless the user clearly asks to change the summary. If it is ambiguous between review and editing, report findings first and ask before applying fixes unless the requested fix is explicit.

@@ -16,11 +16,30 @@ Start entry documents with:
 # <Start Date>: <Topic>
 ```
 
-Organize the material in sections under descriptive `##` headings. Add a short purpose or orientation paragraph only when it helps.
+Organize the material in sections under descriptive `##` headings. Add a short
+purpose or orientation paragraph only when it helps. Let each section answer
+one research question or a tightly coupled set of questions sharing evidence
+and decision context.
 
-The researcher can keep all sections in one document or split them across multiple documents when that improves readability, retrieval, or maintenance. Supporting material should live in the entry folder unless it is reusable across entries or better kept as a stable external link. Entry-local `data/` and `images/` are independent artifact folders; either may be a normal directory, ignored directory, or symlink according to the project using the log.
+Continue a section when new work extends the same comparison. Start a new
+section when the question, comparison basis, or decision context changes but
+the work still belongs to the same entry.
 
-When an entry is split across multiple documents:
+Keep related experiments together when they contribute to the same research
+effort or conclusion. Suggest splitting only when distinct topics impair
+retrieval or maintenance; length alone is not a reason. State the proposed
+boundaries and wait for researcher approval before splitting.
+
+Suggest a new dated entry for a distinct topic or later investigation. Wait for
+researcher approval before creating that boundary when revising existing work.
+
+Supporting material should live in the entry folder unless it is reusable
+across entries or better kept as a stable external link. Entry-local `data/`
+and `images/` are independent artifact folders; either may be a normal
+directory, ignored directory, or symlink according to the project using the
+log.
+
+After the researcher approves a split:
 
 - keep the same entry folder and entry ID
 - let each document inherit the entry date and folder context

@@ -12,17 +12,17 @@ Initialize a new log with this exact disclosure:
 ```md
 ## AI Use
 
-The researcher has led and continuously reviewed the scientific work, directing
-methodology and iteration and owning the retained observations and decisions.
-Under that direction, agents have primarily assisted with implementation,
-execution, documentation, computational validation, and drafting observations
-for review, while also supporting literature synthesis, problem solving, and
-critical feedback. The researcher has evaluated all claims, explanations, and
-deductions against authoritative sources, simulations, or retained data.
-Generative AI has not been treated as scientific evidence: retained results
-have been produced by executable workflows using retained source data and
-documented parameters, with validation checks for execution, structural
-integrity, provenance, and reproducibility.
+The researcher has led and reviewed the scientific work throughout, chosen the
+methods and next steps, and made or approved the observations and decisions
+recorded in this log. Under the researcher's direction, agents have mainly
+helped implement and run code, document the work, check calculations and
+outputs, and draft observations for review. They have also helped find and
+summarize relevant research, explore solutions, and challenge the researcher's
+reasoning. The researcher has checked all claims and conclusions against
+original sources, simulations, or saved data. Generative AI has not been used as
+scientific evidence. Reported computational results have come from code run on
+saved source data with documented settings. The source data, settings, and
+outputs have been kept so the results can be checked and reproduced.
 ```
 
 The disclosure describes the normal researcher-led workflow for maintaining

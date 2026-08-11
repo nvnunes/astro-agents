@@ -55,6 +55,7 @@ Load only the guidance needed for the current entry edit:
 - Entry prose discipline: `skills/research-logging/references/research-log-writing.md`.
 - Entry folder, ID, slug, and split document naming: `skills/research-logging/references/file-entry-naming.md`.
 - Entry labels: `skills/research-logging/references/file-entry-labels.md`.
+- Presented computational evidence: `skills/research-logging/references/file-presented-evidence.md`.
 - Research script placement and behavior: `skills/research-logging/references/file-script.md`.
 - Executable command conventions: `skills/research-logging/references/file-entry-commands.md`.
 - Entry-local data index guidance: `skills/research-logging/references/file-data-index.md`.

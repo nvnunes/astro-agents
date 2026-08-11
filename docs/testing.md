@@ -47,6 +47,16 @@ When changing `skills/research-logging/scripts/pyrun` or research-log command/da
 python3 skills/research-logging/tests/test_pyrun.py
 ```
 
+When changing research-log section classification, evidence presentation,
+validation behavior, or `research_log_validation.py`, also run:
+
+```bash
+python3 -m unittest skills/research-logging/tests/test_research_log_validation.py
+```
+
+Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused
+manual behavior cases for record, summarize, review, and validation changes.
+
 ## Codex Runtime Discovery
 
 Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:

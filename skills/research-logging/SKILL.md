@@ -5,7 +5,7 @@ description: Create, record, summarize, review, reference, or maintain research 
 
 # Research Logging
 
-Use this skill for the full lifecycle of project-native research logs: recording entries and support material, managing references, updating summaries, reviewing consistency, and maintaining structure.
+Use this skill for the full lifecycle of project-native research logs: recording entries and support material, managing references, updating summaries, reviewing consistency, validating evidence and reproducibility, and maintaining structure.
 
 Use only the task-specific instruction files needed for the current edit. If the requested change is ambiguous and a reasonable assumption would risk changing research meaning, ask before editing.
 
@@ -37,6 +37,7 @@ Choose the operation:
 - Reference lookup, BibTeX management, or citation insertion: read `references/operation-reference.md`.
 - Log-summary updates: read `references/operation-summarize.md`.
 - Research-log structure, consistency, synthesis, or writing review: read `references/operation-review.md`.
+- Agent-led validation or reproduction checking: read `references/operation-validate.md`.
 - Structural changes such as entry renames, link rewrites, splits, merges, or path normalization: use `references/file-entry-naming.md` and `references/file-entry.md` as needed; ask before deleting research-log files.
 
 If the user's wording is ambiguous between recording and summarizing, prefer recording unless the user clearly asks to change the summary. If it is ambiguous between review and editing, report findings first and ask before applying fixes unless the requested fix is explicit.

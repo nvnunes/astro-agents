@@ -87,6 +87,8 @@ At the project root:
   - how to apply this library in other projects and workspaces
 - `docs/testing.md`
   - validation requirements for changes inside `astro-agents`
+- `docs/research-log-validation.md`
+  - human-facing source of truth for agent-led research-log validation
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`

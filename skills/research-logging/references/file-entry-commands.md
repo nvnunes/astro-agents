@@ -5,11 +5,16 @@ Use this file when an entry needs executable commands to reproduce, regenerate, 
 Use `skills/research-logging/references/file-script.md` for scripts invoked by
 recorded commands.
 
+Use `skills/research-logging/references/file-presented-evidence.md` for the
+reader-facing evidence produced from those commands.
+
 Include commands only when they help later reconstruction. Do not add command blocks for routine navigation, exploratory dead ends, or commands whose effects are not retained in the entry.
 
 Ad hoc exploratory plots or tables that are not recorded in an entry may be made directly. If a plot, table, figure, or derived result is saved into an entry or cited by an entry, prefer writing an entry script and recording the command that regenerates it unless the user explicitly asks for a one-off output.
 
-Write commands from the entry root as the working directory. Ordinary shell commands can be written directly.
+Write commands from the entry root as the working directory. Put every
+recorded executable command in a `bash` fence under the applicable `Steps:`
+label. Ordinary shell commands can be written directly inside that fence.
 
 For Python commands, use `./pyrun` to simplify recorded syntax. Verify any
 project-declared environment is available before running it. `pyrun` uses
@@ -33,6 +38,10 @@ physical, numerical, statistical, or performance controls. Do not leave these
 values only in script constants, implicit defaults, or prose. If explicit
 options would be unwieldy, retain a manifest of resolved settings and expose
 its path in the command.
+
+Expose every retained entry-local output through a stable relative path value
+in the command. A collection may use a directory or manifest path value. A
+retained command log may instead use an explicit shell capture target.
 
 Use prose for the question, rationale, controlled relationship, selection
 criteria, and interpretation. Do not repeat a visible CLI parameter inventory.
@@ -60,15 +69,22 @@ In recorded commands, keep entry-local script and output paths relative to the e
 For a split entry, record each invocation in the document that presents its
 outputs, even when the script lives in the parent entry's `scripts/`.
 
-For tables or values copied into an entry, prefer script stdout that prints the Markdown table or text to record. Do not create a CSV just to transfer generated text into the entry; create or keep CSV only when it is retained data, reused by commands, or requested by the user.
+When stdout or stderr supports presented evidence, save it during the recorded
+run through a program log option or a shell target such as `tee` or
+redirection. Never create the retained log later from output held only in agent
+context. Do not create a CSV merely to transfer formatted text into an entry;
+retain structured data when it supports analysis, reuse, or provenance.
 
-For retained visual evidence, embed the image in the entry with Markdown image syntax, such as `![Comparison plot](images/comparison.png)`. Use a plain link only for nonvisual files, very large artifacts, or supplemental files that are not meant to be read inline.
+When a command uses a non-image data input or durable external resource that is
+not already in `data.csv`, ask whether it should be copied into the entry or
+referenced externally. Then add it with
+`./pyrun data add <name> <type> <location>` using
+`skills/research-logging/references/file-data-index.md`, and record the command
+with the `<name>` token instead of the raw path. A generated data output enters
+`data.csv` only when a later recorded command consumes it as an input.
 
-When a command uses a data file or directory that is not already in `data.csv`, ask whether the data should be copied into the entry or referenced externally. Then add it with `./pyrun data add <name> <type> <location>` using `skills/research-logging/references/file-data-index.md`, and record the command with the `<name>` token instead of the raw path.
-
-Images do not need `data.csv` rows merely because they are embedded in Markdown.
-Add an image row only when a recorded command resolves it through a `<name>`
-token.
+Never add entry-local scripts or images to `data.csv`. Keep their relative
+paths directly in commands or Markdown.
 
 `pyrun` searches for an entry-local data index in this order:
 
@@ -86,7 +102,6 @@ do not copy `pyrun` as a fallback.
 
 After creating or changing an entry Python script, `data.csv`, `pyrun` symlink, or recorded command, run the recorded command from the entry root before treating it as reproducible.
 
-Put complete commands in fenced code blocks in the descriptive section that
-uses the result, output, figure, table, or check they support. Do not require a
-reader to follow a cross-reference merely to find the reproduction command.
-When entry labels are used, commands usually belong in `Steps:` blocks.
+Put complete commands under `Steps:` in the descriptive section that uses the
+result, output, figure, table, or check they support. Do not require a reader
+to follow a cross-reference merely to find the reproduction command.

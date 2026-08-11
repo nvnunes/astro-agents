@@ -2,7 +2,10 @@
 
 Use this file when creating or revising an entry-local `data.csv`.
 
-`data.csv` is optional. Use it when commands in an entry need short names for data files, image files, or directories. It maps those names to real paths so commands can stay readable. The entry documents should explain why the indexed artifact matters and how it was used.
+`data.csv` is optional. Use it to map command inputs or durable external
+resources to short names that recorded commands resolve through `<name>`
+tokens. It is a command-input index, not an artifact inventory or an act of
+evidence presentation.
 
 Keep `data.csv` at the entry root so it can be tracked separately from entry-local artifact folders such as `data/` and `images/`. Those folders may be normal directories, ignored directories, or symlinks according to the project using the log.
 
@@ -10,7 +13,7 @@ Use this minimal shape:
 
 ```csv
 name,type,location
-worker_summary_csv,CSV,data/summary.csv
+development_set,CSV,/data/project/development.csv
 ```
 
 Columns:
@@ -35,5 +38,16 @@ Keep `type` values plain, without Markdown. Add rows only for resources that a
 recorded command resolves through a `<name>` token; do not use `data.csv` as an
 artifact or script inventory.
 
-Do not index scripts or images embedded with Markdown. Index an image only when
-a recorded command resolves it through a `<name>` token.
+A generated data output may be indexed only when a later recorded command
+consumes it through its `<name>` token. The generating command still exposes
+the entry-local output through a relative path value. Do not index an output
+merely because it exists, is linked, or is presented.
+
+Never index entry-local scripts or images. Keep their paths relative in
+commands or Markdown. A durable external image used as command input may be
+indexed as an external resource.
+
+During research-log review, report duplicate names, unused rows, unresolved
+tokens, inappropriate script or image rows, and raw absolute or external input
+paths that should use `<name>`. A valid indexed resource used by an otherwise
+orphaned workflow is a validation concern, not an index-hygiene finding.

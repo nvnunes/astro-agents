@@ -42,6 +42,12 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
+Research logging has two parallel surfaces. `docs/research-logging.md` is the
+independently complete researcher-facing workflow and file-contract guide;
+`skills/research-logging/` is the independently complete agent implementation.
+Neither surface loads or delegates required behavior to the other. Reviews and
+focused tests maintain their alignment explicitly.
+
 ## AGENTS.md As Project Brief
 
 The root `AGENTS.md` is the operational working brief for this project. It provides project-local context, source-of-truth pointers, and validation expectations for work inside `astro-agents`.
@@ -87,8 +93,9 @@ At the project root:
   - how to apply this library in other projects and workspaces
 - `docs/testing.md`
   - validation requirements for changes inside `astro-agents`
-- `docs/research-log-validation.md`
-  - human-facing source of truth for agent-led research-log validation
+- `docs/research-logging.md`
+  - researcher-facing source of truth for the complete research-log workflow
+    and durable file contracts
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`

@@ -65,7 +65,9 @@ frontmatter is the source of truth for exact activation wording.
 - `$pubify-authoring`: work on `pubify-pubs` and `pubify-ppt` publication and presentation workflows.
 - `$python-code-writing`: write, edit, or refactor Python source code and related tests or package structure.
 - `$readme-writing`: write, revise, or review `README.md` and folder-level README files.
-- `$research-logging`: create, gather, record, summarize, review, reference, or maintain project-native research logs.
+- `$research-logging`: perform and record investigations, replace superseded
+  work, update summaries, review or validate logs, and manage supporting
+  evidence and references.
 - `$science-writing`: write, revise, or review scientific prose, claims, evidence, methods, results, and interpretation.
 - `$skill-md-writing`: write, revise, or review `SKILL.md` files and skill packages.
 - `$technical-writing`: write, revise, or review general technical prose and shared writing discipline.
@@ -74,6 +76,8 @@ frontmatter is the source of truth for exact activation wording.
 
 - `docs/usage.md`
   - concrete adoption path for downstream projects and user-global bootstrap
+- `docs/research-logging.md`
+  - complete researcher-facing workflow and durable file contracts for research logs
 - `docs/architecture.md`
   - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
 - `skills/`

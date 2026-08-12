@@ -9,7 +9,7 @@ evidence presentation.
 
 Keep `data.csv` at the entry root so it can be tracked separately from entry-local artifact folders such as `data/` and `images/`. Those folders may be normal directories, ignored directories, or symlinks according to the project using the log.
 
-Use this minimal shape:
+Use exactly these three lowercase columns in this order:
 
 ```csv
 name,type,location
@@ -18,7 +18,9 @@ development_set,CSV,/data/project/development.csv
 
 Columns:
 
-- `name`: short stable identifier used by entry commands; unique within the file and not `project`, `log`, or `theme`.
+- `name`: short stable identifier used by entry commands. Use only ASCII
+  letters, digits, `.`, `_`, and `-`; keep it unique within the file and do not
+  use `project`, `log`, or `theme`.
 - `type`: plain file or directory type, such as `CSV`, `NPZ`, `FITS`, `directory`, or `URL`.
 - `location`: path, URL, object-store URI, or other durable reference. Relative paths resolve from the directory containing `data.csv`, normally the entry root; URI schemes remain unchanged.
 

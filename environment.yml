@@ -1,0 +1,15 @@
+name: astro-agents
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - astropy=7.1.1
+  - h5py=3.14.0
+  - mypy=1.19.1
+  - numpy=2.2.6
+  - pillow=11.3.0
+  - pyarrow=25.0.0
+  - pypdf=6.15.0
+  - pyyaml=6.0.3
+  - ruff=0.16.1
+  - scipy=1.18.0

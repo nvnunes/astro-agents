@@ -1,11 +1,10 @@
 # Presented Evidence Instructions
 
-Use this file when recording, summarizing, or reviewing computational evidence
-in a research log. These rules make intended evidence mechanically
+Use this file when recording, updating a summary, or reviewing computational
+evidence in a research log. These rules make intended evidence mechanically
 discoverable. They do not assess scientific interpretation.
 
-Entry evidence exists only in experimental sections classified under
-`skills/research-logging/references/file-entry-labels.md`. Synthesis and prose
+Entry evidence exists only in experimental sections. Synthesis and prose
 sections are researcher-validated and contribute no validation targets or
 `evidence.csv` rows. Validation skips a structurally invalid section and
 reports the skip as a failure; review determines the corrective structure.
@@ -32,8 +31,6 @@ Use these forms:
   No `Source:` line is required.
 - A `text` fence under `Results:` is presented generated output. Copy the
   relevant excerpt from a retained log written by the recorded command itself.
-  Apply the retention requirements in
-  `skills/research-logging/references/file-entry-commands.md`.
 - An inline backticked numerical result expression is a presented statistic
   wherever it appears in an experimental section. Mark each independently
   supported value separately with its units, keeping names and connective
@@ -76,7 +73,9 @@ entry,section,kind,evidence,sources,transformation
   with ` :: `. Do not use raw absolute paths, URLs, or object-store URIs.
 - `transformation` is optional. Use it only for selection, ordering, table
   assembly, rounding, or equivalent formatting. Never use it for a new
-  calculation.
+  calculation. Name any formatting scale conversion explicitly, such as
+  converting a retained fraction to percent or expressing a count in thousands;
+  a `%` or `k` suffix does not by itself authorize that conversion.
 
 A statistic names exactly one retained artifact, an output block names exactly
 one retained command log, and a table names one or more retained artifacts.
@@ -161,16 +160,22 @@ statistic,entry,section,transformation
 preceding heading. Use `transformation` only for permitted rounding or
 reformatting between the entry and summary.
 
-## Record Maintenance
+## Evidence Record Maintenance
 
 Create, update, or remove evidence rows in the same operation as their
-presented items. Update a row when its selector, section, source, locator, or
-transformation changes. If presented evidence moves to another section,
-document, or entry, or its preceding heading is renamed, update the
-corresponding row in the same operation. A source-content change does not
-require a row edit when its identity and locator remain correct, but it makes
-prior validation stale. Delete a header-only `evidence.csv` after removing its
-last required row.
+presented items. Record and Replace own entry-level rows; Replace remains within
+its authorized scope. Update Summary owns log-level rows. Reorganize may update
+only the `entry` or `section` value in a log-level row when its approved move or
+heading change makes that identifier stale; it does not otherwise maintain
+summary evidence.
+
+Update a row when its selector, section, source, locator, or transformation
+changes. If entry evidence moves to another section, document, or entry, or its
+preceding heading is renamed, update the corresponding entry-level row in the
+same operation. A source-content change does not require a row edit when its
+identity and locator remain correct. The next Validate request detects the
+content change from saved fingerprints.
+Delete a header-only `evidence.csv` after removing its last required row.
 
 Record clear factual associations without separate approval. Report an
 association that cannot be established confidently rather than guessing. A
@@ -190,6 +195,8 @@ scientific method, interpretation, or conclusions during review.
 Also report evidence rows for synthesis or prose sections and any section that
 does not satisfy one of the three section forms. Review owns these structural
 findings even when validation also reports that it skipped an invalid section.
+When the researcher asks to fix a reported row, use Record or Replace for an
+entry-level row and Update Summary for a log-level row.
 
 ## Validation Boundary
 

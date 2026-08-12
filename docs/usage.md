@@ -46,7 +46,7 @@ Use absolute paths for `<astro-agents-path>` and `<project-path>`.
 From the `astro-agents` checkout, verify user-global discovery with:
 
 ```bash
-python3 scripts/validate_agent_surface.py --codex-discovery
+./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery
 ```
 
 This verifies that Codex includes the shared skills in the model-visible skill list. It does not prove that every natural-language prompt will activate the intended skill.

@@ -31,7 +31,7 @@ EXPECTED_OPENAI_KEYS = {
 
 STALE_TERMS = {
     "authoring/": {"docs/skills-upgrade-plan.md"},
-    "validation/": {"docs/skills-upgrade-plan.md"},
+    "skills/validation/": {"docs/skills-upgrade-plan.md"},
     "research-log/": {"docs/skills-upgrade-plan.md"},
     "agents/validation": {"docs/skills-upgrade-plan.md"},
     "research-log-creation": set(),

@@ -21,10 +21,18 @@ Review outputs that combine multiple internal references should include a short 
 
 ## Automated Validation
 
+Create the repository-local Conda environment once, and refresh it when
+`environment.yml` changes:
+
+```bash
+conda env create --prefix ./.conda --file environment.yml
+conda env update --prefix ./.conda --file environment.yml --prune
+```
+
 Run the deterministic repository-local harness before treating skill-surface changes as complete:
 
 ```bash
-python3 scripts/validate_agent_surface.py
+./.conda/bin/python scripts/validate_agent_surface.py
 ```
 
 This checks:
@@ -44,25 +52,52 @@ git diff --check
 When changing `skills/research-logging/scripts/pyrun` or research-log command/data-index guidance that affects `pyrun`, also run:
 
 ```bash
-python3 skills/research-logging/tests/test_pyrun.py
+./.conda/bin/python -m unittest skills/research-logging/tests/test_pyrun.py
 ```
 
-When changing research-log section classification, evidence presentation,
-validation behavior, or `research_log_validation.py`, also run:
+When changing research-log section classification, evidence presentation, or
+validation behavior, also run:
 
 ```bash
-python3 -m unittest skills/research-logging/tests/test_research_log_validation.py
+./.conda/bin/python -m unittest discover \
+  -s skills/research-logging/tests -p 'test_research_log_validation*.py'
 ```
 
+For any research-logging tool change, run the complete tool gate rather than
+linting only the main validator:
+
+```bash
+./.conda/bin/python -m py_compile skills/research-logging/scripts/pyrun \
+  skills/research-logging/scripts/research_log_data_index.py \
+  skills/research-logging/scripts/research_log_validation.py \
+  skills/research-logging/scripts/validation/*.py \
+  skills/research-logging/scripts/research_log_summary.py
+./.conda/bin/ruff check skills/research-logging/scripts \
+  skills/research-logging/tests
+./.conda/bin/mypy
+./.conda/bin/python scripts/check_research_logging_complexity.py
+./.conda/bin/python -m unittest discover \
+  -s skills/research-logging/tests -p 'test_*.py'
+```
+
+The pinned local Conda environment is the quality gate. Ambient Python, Ruff,
+or mypy installations may be used for diagnosis, but not as completion
+evidence for a research-logging tool change.
+
+The complexity check is a ratchet over explicitly recorded complexity debt. It
+allows refactoring to reduce findings, but rejects a new complex function, a
+higher complexity score, or growth in the total advisory finding count.
+
 Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused
-manual behavior cases for record, summarize, review, and validation changes.
+manual behavior cases for Record, Replace, Update Summary, Review, and Validate
+changes.
 
 ## Codex Runtime Discovery
 
 Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:
 
 ```bash
-python3 scripts/validate_agent_surface.py --codex-discovery
+./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery
 ```
 
 This expects the local user-level symlink:
@@ -90,7 +125,7 @@ Implicit activation is model-mediated. The fixture gives stable prompts and exac
 Run the optional activation eval runner only when activation behavior might change:
 
 ```bash
-python3 scripts/validate_agent_surface.py --activation-eval
+./.conda/bin/python scripts/validate_agent_surface.py --activation-eval
 ```
 
 This runs each fixture row through `codex exec` in ephemeral read-only mode and asks Codex for a compact JSON activation decision. Because it starts a model turn per fixture row, the full activation eval is comparatively expensive and should not be part of routine validation.
@@ -108,24 +143,24 @@ Do not run the full activation eval for routine documentation edits, reference-f
 ## Agent Surface Validation
 
 - Changes to `AGENTS.md` files:
-  - run `python3 scripts/validate_agent_surface.py`
+  - run `./.conda/bin/python scripts/validate_agent_surface.py`
   - run `$agent-surface-review`
 
 - Changes to `SKILL.md`, skill references, or skill scripts:
-  - run `python3 scripts/validate_agent_surface.py`
-  - run `python3 scripts/validate_agent_surface.py --codex-discovery` when names, descriptions, metadata, or discovery layout change
-  - run `python3 scripts/validate_agent_surface.py --activation-eval` only when activation descriptions, skill names, discovery assumptions, or neighboring skill boundaries change
+  - run `./.conda/bin/python scripts/validate_agent_surface.py`
+  - run `./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery` when names, descriptions, metadata, or discovery layout change
+  - run `./.conda/bin/python scripts/validate_agent_surface.py --activation-eval` only when activation descriptions, skill names, discovery assumptions, or neighboring skill boundaries change
   - run `$agent-surface-review`
   - include focused prompt-writing, scope, or activation-boundary checks when the changed skill affects those behaviors
 
 - Changes to documentation-surface review behavior:
-  - run `python3 scripts/validate_agent_surface.py`
+  - run `./.conda/bin/python scripts/validate_agent_surface.py`
   - run `$documentation-surface-review`
 
 - Changes to code-quality review behavior:
-  - run `python3 scripts/validate_agent_surface.py`
+  - run `./.conda/bin/python scripts/validate_agent_surface.py`
   - run `$code-quality-review`
 
 - Changes to upgrade planning behavior:
-  - run `python3 scripts/validate_agent_surface.py`
+  - run `./.conda/bin/python scripts/validate_agent_surface.py`
   - run `$project-upgrade-planning`

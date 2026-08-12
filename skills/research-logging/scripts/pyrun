@@ -4,17 +4,30 @@
 from __future__ import annotations
 
 import csv
+import fcntl
+import hashlib
+import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
+
+from research_log_data_index import (
+    DATA_INDEX_FIELDS,
+    TOKEN_RE,
+    DataIndex,
+    DataIndexError,
+    read_data_index as _read_data_index,
+    validate_data_name as _validate_data_name,
+)
 
 
-TOKEN_RE = re.compile(r"<([^<>]+)>")
 URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
-DATA_INDEX_FIELDS = ("name", "type", "location")
-RESERVED_DATA_NAMES = {"log", "project", "theme"}
 
 
 def usage() -> int:
@@ -47,7 +60,9 @@ def python_executable(root: Path) -> str:
 
 
 def is_log_root(candidate: Path) -> bool:
-    return (candidate / "entries").is_dir() and (candidate.parent / f"{candidate.name}.md").is_file()
+    return (candidate / "entries").is_dir() and (
+        candidate.parent / f"{candidate.name}.md"
+    ).is_file()
 
 
 def log_root(cwd: Path) -> Path:
@@ -83,55 +98,78 @@ def find_data_index(cwd: Path) -> Path | None:
 
 
 def validate_data_name(name: str, index: Path) -> None:
-    if name in RESERVED_DATA_NAMES:
-        raise SystemExit(f"pyrun: reserved data name {name!r}: {index}")
-
-
-def read_data_index(index: Path) -> tuple[list[str], dict[str, str], dict[str, str]]:
     try:
-        with index.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames is None:
-                raise SystemExit(f"pyrun: empty data index: {index}")
+        _validate_data_name(name)
+    except DataIndexError as exc:
+        raise SystemExit(f"pyrun: {exc}: {index}") from exc
 
-            columns = list(reader.fieldnames)
-            fields_by_name = {name.strip().lower(): name for name in columns if name}
-            missing = set(DATA_INDEX_FIELDS) - set(fields_by_name)
-            if missing:
-                missing_text = ", ".join(sorted(missing))
-                raise SystemExit(f"pyrun: data index missing required column(s) {missing_text}: {index}")
 
-            locations: dict[str, str] = {}
-            for line_number, row in enumerate(reader, start=2):
-                name = (row.get(fields_by_name["name"]) or "").strip()
-                data_type = (row.get(fields_by_name["type"]) or "").strip()
-                location = (row.get(fields_by_name["location"]) or "").strip()
-                if not name and not data_type and not location:
-                    continue
-                if not name or not data_type or not location:
-                    raise SystemExit(f"pyrun: malformed data index row {line_number}: {index}")
-                validate_data_name(name, index)
-                if name in locations:
-                    raise SystemExit(
-                        f"pyrun: duplicate data name {name!r} on line {line_number}: {index}"
-                    )
-                locations[name] = location
-    except csv.Error as exc:
-        raise SystemExit(f"pyrun: malformed CSV data index: {index}: {exc}") from exc
-
-    return columns, fields_by_name, locations
+def read_data_index(index: Path) -> DataIndex:
+    try:
+        return _read_data_index(index)
+    except DataIndexError as exc:
+        raise SystemExit(f"pyrun: {exc}: {index}") from exc
 
 
 def data_locations(index: Path | None) -> dict[str, str]:
     if index is None:
         return {}
-    return read_data_index(index)[2]
+    return read_data_index(index).locations
 
 
 def entry_root(cwd: Path, log: Path) -> Path:
     if cwd.parent != log / "entries":
         raise SystemExit("pyrun: data add must run from an entry root")
     return cwd
+
+
+def _data_index_lock_path(index: Path) -> Path:
+    identity = hashlib.sha256(str(index.resolve()).encode("utf-8")).hexdigest()
+    return Path(tempfile.gettempdir()) / f"pyrun-data-{identity}.lock"
+
+
+@contextmanager
+def data_index_lock(index: Path) -> Iterator[None]:
+    """Serialize updates to one data index without adding entry-local files."""
+
+    with _data_index_lock_path(index).open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_data_index(index: Path, data: DataIndex) -> None:
+    index.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(index.stat().st_mode) if index.exists() else 0o644
+    with tempfile.NamedTemporaryFile(
+        "w",
+        newline="",
+        encoding="utf-8",
+        dir=index.parent,
+        delete=False,
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=DATA_INDEX_FIELDS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(data.rows)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    try:
+        temporary.chmod(mode)
+        os.replace(temporary, index)
+        directory = os.open(index.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def add_data(index: Path, name: str, data_type: str, location: str) -> None:
@@ -141,30 +179,23 @@ def add_data(index: Path, name: str, data_type: str, location: str) -> None:
     name, data_type, location = values
     validate_data_name(name, index)
 
-    if index.exists():
-        columns, fields_by_name, locations = read_data_index(index)
-        if name in locations:
-            raise SystemExit(f"pyrun: duplicate data name {name!r}: {index}")
-        needs_newline = not index.read_bytes().endswith((b"\n", b"\r"))
-        mode = "a"
-    else:
-        columns = list(DATA_INDEX_FIELDS)
-        fields_by_name = {field: field for field in DATA_INDEX_FIELDS}
-        needs_newline = False
-        mode = "w"
+    try:
+        with data_index_lock(index):
+            if index.exists():
+                data = read_data_index(index)
+                if name in data.locations:
+                    raise SystemExit(f"pyrun: duplicate data name {name!r}: {index}")
+            else:
+                data = DataIndex(rows=[], locations={})
 
-    row = {field: "" for field in columns}
-    row[fields_by_name["name"]] = name
-    row[fields_by_name["type"]] = data_type
-    row[fields_by_name["location"]] = location
-
-    with index.open(mode, newline="", encoding="utf-8") as handle:
-        if needs_newline:
-            handle.write("\n")
-        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
-        if mode == "w":
-            writer.writeheader()
-        writer.writerow(row)
+            row = {"name": name, "type": data_type, "location": location}
+            updated = DataIndex(
+                rows=[*data.rows, row],
+                locations={**data.locations, name: location},
+            )
+            _write_data_index(index, updated)
+    except OSError as exc:
+        raise SystemExit(f"pyrun: could not update data index: {index}: {exc}") from exc
 
     print(f"pyrun: added {name!r} to {index}")
 
@@ -178,7 +209,13 @@ def resolve_location(location: str, index: Path) -> str:
     return str((index.parent / path).resolve())
 
 
-def resolve_arg(arg: str, root: Path, log: Path, locations: dict[str, str], index: Path | None) -> str:
+def resolve_arg(
+    arg: str,
+    root: Path,
+    log: Path,
+    locations: dict[str, str],
+    index: Path | None,
+) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         if name == "project":
@@ -189,7 +226,10 @@ def resolve_arg(arg: str, root: Path, log: Path, locations: dict[str, str], inde
             raise SystemExit("pyrun: <theme> is no longer supported; use <log>")
         if name in locations:
             if index is None:
-                raise SystemExit(f"pyrun: internal error resolving data name without data index: {name}")
+                raise SystemExit(
+                    "pyrun: internal error resolving data name without "
+                    f"data index: {name}"
+                )
             return resolve_location(locations[name], index)
         raise SystemExit(f"pyrun: unresolved token <{name}> in argument: {arg}")
 

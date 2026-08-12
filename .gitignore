@@ -4,5 +4,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.conda/
+.research-log-validation.lock
 site/
-
+tmp

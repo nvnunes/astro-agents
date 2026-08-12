@@ -13,6 +13,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 files = [
+  "scripts/agent_behavior_eval.py",
   "scripts/check_research_logging_complexity.py",
   "skills/research-logging/scripts/pyrun",
   "skills/research-logging/scripts/research_log_data_index.py",

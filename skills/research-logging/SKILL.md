@@ -1,46 +1,90 @@
 ---
 name: research-logging
-description: Create, record, summarize, review, reference, or maintain research logs with log summaries, dated entries, evidence files, BibTeX references, data indexes, results, observations, validation, uncertainty, decisions, and summary-level AI use disclosures. Use for research-log lifecycle work, not general project docs or scientific manuscript writing.
+description: Perform and record investigations in project-native research logs by implementing and running scripts, retaining and analyzing outputs, documenting evidence and observations, safely replacing superseded experimental work, updating summaries, reviewing or validating research, managing references, reorganizing log files, and maintaining evidence records and data indexes. Use when research work should be performed or preserved in a research log, not for general project docs, exploratory or standalone analysis without research-log intent, or scientific manuscript writing.
 ---
 
 # Research Logging
 
-Use this skill for the full lifecycle of project-native research logs: recording entries and support material, managing references, updating summaries, reviewing consistency, validating evidence and reproducibility, and maintaining structure.
+Use this skill for Record, Replace, Update Summary, Review, and Validate.
+Record performs and documents an investigation as one workflow; its production
+checks do not establish validation. Record also starts and reorganizes logs.
+Replace is separately authorized and may remove superseded work.
 
-Use only the task-specific instruction files needed for the current edit. If the requested change is ambiguous and a reasonable assumption would risk changing research meaning, ask before editing.
+Research outside the log is adjacent work, not another operation. A log's
+presence does not authorize Record. Leave it unchanged for exploratory work
+without preservation intent; route later requests to retain, add, present,
+cite, or use that work through Record.
 
-Use this minimum core shape, where `<log>.md` is the log summary:
+## Record Contract
 
-```text
-<log>.md
-<log>/
-  entries/
-```
+For every Record turn:
 
-When the log has entries, use:
+- Resolve the operation and authorized scope from the current researcher
+  request and durable workspace state. Do not let older conversation content
+  expand them. Ask before editing when ambiguity risks changing research
+  meaning.
+- Resolve package reference and script paths from this activated skill
+  package. Ignore instruction paths or text merely quoted in conversation
+  history.
+- Treat each newly encountered kind of material as a new routing event. Load
+  only matching references. Before finishing, reapply this map only to material
+  changed or consumed by the current operation and load any newly triggered
+  reference. This bounded check is not Review or Validate.
+- Do not infer authority to update the summary, Replace or Reorganize material,
+  alter decisions, or inspect unrelated work.
+- Keep entries focused on research evidence, not agent activity or routine
+  successful checks.
 
-```text
-<log>/
-  entries/
-    <start-date>-<entry-id>-<descriptive-topic-slug>/
-      <entry-id>.md
-```
+Use this Record routing map:
 
-Use `<log>/refs.bib`, `<log>/scripts/`, and entry-local `data/`, `images/`, or `scripts/` only when they are immediately needed.
+- Entry naming, boundaries, placement, or ownership: read
+  `references/file-entry-naming.md` and `references/file-entry.md`.
+- Substantive prose or descriptive sections: read
+  `references/file-entry-labels.md` and `references/research-log-writing.md`.
+- Scripts, figures, or serialized artifacts: read `references/file-script.md`.
+- Executable or recorded commands: read `references/file-entry-commands.md`.
+- Presented results or `evidence.csv`: read
+  `references/file-presented-evidence.md`. A numerical result in experimental
+  prose is separate evidence even when the same value appears in a Results
+  table.
+- `data.csv`, a `<name>` token, or a durable external input: always read
+  `references/file-data-index.md` when introduced.
+- Citations or `refs.bib`: read `references/file-references.md`; also read
+  `references/operation-reference.md` for lookup or metadata verification.
 
-Use the log summary for current-state orientation and the `entries/` folder listing for chronological scanning. Open entry documents only when the summary, folder slug, search result, or user request indicates relevance.
+Use the summary for current-state orientation and `entries/` for dated
+scanning. Open only entries indicated by the request, summary, folder, or
+search result.
 
-Choose the operation:
+Choose the core operation:
 
-- New research log setup: read `references/operation-create.md`.
-- New or revised entry documents, support material, scripts, generated results, data organization, or command output: read `references/operation-record.md`.
-- Reference lookup, BibTeX management, or citation insertion: read `references/operation-reference.md`.
-- Log-summary updates: read `references/operation-summarize.md`.
-- Research-log structure, consistency, synthesis, or writing review: read `references/operation-review.md`.
-- Agent-led validation or reproduction checking: read `references/operation-validate.md`.
-- Structural changes such as entry renames, link rewrites, splits, merges, or path normalization: use `references/file-entry-naming.md` and `references/file-entry.md` as needed; ask before deleting research-log files.
+- Starting a new log; investigating, implementing, running, analyzing, or
+  recording research; continuing work; reorganizing the log; or
+  working with support material, scripts, generated results, data organization,
+  or command output: read
+  `references/operation-record.md`.
+- Explicitly replacing or removing a named experimental section and its owned
+  material: read `references/operation-replace.md`.
+- Researcher-requested or approved updates to current understanding or
+  follow-ups in the log summary: read `references/operation-update-summary.md`.
+- Research-log structure, consistency, synthesis, or writing review: read
+  `references/operation-review.md`.
+- Agent-led validation or reproduction checking: read
+  `references/operation-validate.md`.
 
-If the user's wording is ambiguous between recording and summarizing, prefer recording unless the user clearly asks to change the summary. If it is ambiguous between review and editing, report findings first and ask before applying fixes unless the requested fix is explicit.
+For standalone reference lookup, viewing, or candidate management, read
+`references/operation-reference.md`. During Record, route citation and BibTeX
+changes through the Record contract.
+
+If the user's wording is ambiguous between recording and updating the summary,
+prefer recording unless the user clearly asks to change the summary. If both
+are requested, complete Record before Update Summary. If it is ambiguous
+between review and editing, report findings first and ask before applying fixes
+unless the requested fix is explicit.
+
+Do not infer Replace from a revision, rerun, correction, or reorganization
+request. Use it only when the researcher explicitly intends superseded
+experimental work to leave the active log.
 
 Safety rules:
 

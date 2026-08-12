@@ -26,12 +26,14 @@ section when the question, comparison basis, or decision context changes but
 the work still belongs to the same entry.
 
 Keep related experiments together when they contribute to the same research
-effort or conclusion. Suggest splitting only when distinct topics impair
-retrieval or maintenance; length alone is not a reason. State the proposed
-boundaries and wait for researcher approval before splitting.
+effort or conclusion. During an authorized Reorganize, split only when distinct
+topics impair retrieval or maintenance; length alone is not a reason. State the
+proposed boundaries and wait for researcher approval before splitting.
 
-Suggest a new dated entry for a distinct topic or later investigation. Wait for
-researcher approval before creating that boundary when revising existing work.
+Use a new dated entry for a distinct topic or later investigation. When the
+researcher has identified an existing target but the new work clearly does not
+belong there, wait for approval before creating the new boundary. Do not move
+earlier material as part of choosing the destination.
 
 Supporting material should live in the entry folder unless it is reusable
 across entries or better kept as a stable external link. Entry-local `data/`
@@ -48,15 +50,4 @@ After the researcher approves a split:
 - keep the same entry folder and entry ID
 - let each document inherit the entry date and folder context
 - keep shared `data/`, `scripts/`, and `images/` folders at the parent entry level unless a narrower location is clearly better
-- use `skills/research-logging/references/file-entry-naming.md` for split document names
-
-Load only the guidance needed for the current entry edit:
-
-- Entry prose discipline: `skills/research-logging/references/research-log-writing.md`.
-- Entry folder, ID, slug, and split document naming: `skills/research-logging/references/file-entry-naming.md`.
-- Entry labels: `skills/research-logging/references/file-entry-labels.md`.
-- Presented computational evidence: `skills/research-logging/references/file-presented-evidence.md`.
-- Research script placement and behavior: `skills/research-logging/references/file-script.md`.
-- Executable command conventions: `skills/research-logging/references/file-entry-commands.md`.
-- Entry-local data index guidance: `skills/research-logging/references/file-data-index.md`.
-- Citation and `refs.bib` conventions: `skills/research-logging/references/file-references.md`.
+- use the approved split document names

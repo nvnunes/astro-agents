@@ -1,6 +1,12 @@
 # Research Script Instructions
 
-Use this file when creating, revising, or placing entry- or log-level scripts.
+Use this file for scripts created, revised, or placed during active research,
+or for actual scripts preserved from completed work.
+
+For active work, apply these production checks only to material created,
+changed, or consumed by the investigation; they do not establish validation.
+For completed work, preserve actual material and relevant limits without
+rewriting or rerunning it for documentation.
 
 Prefer Python for new research scripts unless the researcher requests another
 language or the research toolchain requires another language.
@@ -42,14 +48,16 @@ setup command; otherwise report the blocked check and ask before installing it
 into the project-local environment. Do not install globally or silently
 substitute another check.
 
-Before writing a figure, fail on missing required columns or cases, non-finite
-values, or incompatible units. Inspect every retained figure for missing
-series, clipped or overlapping labels, unreadable legends, and incorrect units;
-record the inspection in the entry.
+Before writing a new or changed figure, fail on missing required columns or
+cases, non-finite values, or incompatible units. Inspect that figure for missing
+series, clipped or overlapping labels, unreadable legends, and incorrect units.
+Record defects, corrections, or limitations that affect the evidence; do not
+narrate a routine successful inspection.
 
-Reload and validate any serialized artifact consumed by a later command. Record
-its shape or row counts and schema version; also record a checksum when a binary
-or externally mutable artifact is the fixed basis of a retained result.
+Reload and check a serialized artifact only when the active workflow consumes
+it later. Record structural facts only when they help explain, reuse, or assess
+the evidence, and record a checksum when a binary or externally mutable
+artifact is the fixed basis of a retained result.
 
 Leave runtime caches such as `__pycache__/`, `.pytest_cache/`, and `.ruff_cache/`
 in place when project ignore rules cover them; remove only unignored caches from

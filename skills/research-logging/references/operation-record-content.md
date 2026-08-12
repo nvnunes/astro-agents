@@ -1,22 +1,33 @@
 # Record Content Instructions
 
-Use this file after choosing the new-entry or existing-entry record path.
+Use this file after choosing a new-entry, existing-entry, or replacement
+content path.
 
-`Record Content` applies shared behavior for preserving material inside an entry.
+`Record Content` applies shared behavior for performing and preserving research
+inside an entry.
 
 ## Behavior
 
-- Record the material the user asks to preserve. Organize it without deciding what belongs in the record or changing the user's research meaning.
-- Use `skills/research-logging/references/file-entry.md` for entry shape and routing to label, command, data-index, citation, and prose guidance.
-- In changed experimental content, mark intended numerical evidence wherever it
-  appears, not only under `Results:`, and update `evidence.csv` in the same
-  operation under `skills/research-logging/references/file-presented-evidence.md`.
-- For records involving support material, use the relevant narrow reference: `skills/research-logging/references/file-entry.md` for entry-local placement, `skills/research-logging/references/file-script.md` for scripts, `skills/research-logging/references/file-entry-commands.md` for commands, `skills/research-logging/references/file-data-index.md` for `data.csv`, or `skills/research-logging/references/file-references.md` for citations and `refs.bib`.
-- Choose the section form and apply the required or conditional labels in `skills/research-logging/references/file-entry-labels.md`.
-- After changing research content or support material, apply the affected-scope
-  staleness rules in
-  `skills/research-logging/references/file-summary-validation.md`. This
-  freshness update is required even when current scientific understanding did
-  not change.
-- Use the user's framing for the title, opening paragraph, and descriptive topic slug. Keep them concrete enough that a future agent can recognize the entry from the log summary, folder name, or search results.
-- If the entry or change clearly changes current understanding, suggest a summary update through `skills/research-logging/references/operation-summarize.md`.
+- During active work, implement or revise scripts, run the investigation, and
+  retain and analyze outputs. Check only material created, changed, or consumed
+  by that work; do not expand into a wider review or claim validation. Document
+  the research question, reproducible method, evidence, grounded observations,
+  and quality findings that affect the evidence.
+- Never turn an entry into an agent diary or work log. Omit agent workflow,
+  housekeeping, progress, and routine successful checks.
+- When a request moves earlier exploratory work into the log, Record begins at
+  that transition; it does not retroactively make the earlier work fully
+  reproducible. Preserve the actual scripts, commands, settings, artifacts, and
+  material quality findings that still exist. Do not invent, normalize, or
+  rerun them for documentation; record reconstruction limits, not a check
+  inventory.
+- Preserve any existing summary `## Validation` section byte-for-byte. Do not
+  open the summary or generated validation records solely to assess whether
+  validation remains current.
+- Keep new or revised `Follow-up:` items in the entry during Record. Do not add
+  or revise current understanding or the summary's `## Follow-ups`, assess
+  whether they need revision, or suggest Update Summary. If the request also
+  authorizes Update Summary, complete Record before starting that operation.
+- Use the user's framing for the title, opening paragraph, and descriptive
+  topic slug. Keep them concrete enough that a future agent can recognize the
+  entry from the log summary, folder name, or search results.

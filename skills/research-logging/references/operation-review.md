@@ -31,7 +31,7 @@ paragraph-heavy summaries where bullets would be clearer, avoidable
 meta-introductions, bullets that combine separable claims, unnecessary artifact
 inventories, indirect or redundant evidence presentation,
 artifact-management narration, resolved TODOs, obsolete provisional markers,
-and non-retained material.
+non-retained material, and work-log narration unrelated to research evidence.
 
 Classify every `##` entry section as experimental, synthesis, or prose under
 `file-entry-labels.md`. Report missing required labels, incompatible label
@@ -64,28 +64,38 @@ the applicable `skills/research-logging/references/file-entry-naming.md`,
 `skills/research-logging/references/file-data-index.md` references. Look for
 broken or stale links, unresolved citation keys, invalid entry paths or IDs,
 summary-entry inconsistency, unresolved `pyrun` or `data.csv` references, and
-missing required provenance declarations. Also look for:
+missing required provenance declarations.
+
+Do not require routine production checks to be narrated or run commands.
+Report only missing research-relevant methods, visible quality problems, and
+reconstruction limits supported by the record.
+
+Also look for:
 
 - entry-only code at log or project scope, or multi-entry code copied into entries
 - recorded commands broken by changes to log-level or project-level shared code
-- recorded Python commands that do not invoke `./pyrun` without a recorded, researcher-approved symlink exception
-- missing or non-symlink entry-root `pyrun` for recorded Python commands without that exception
+- active-work Python commands that do not invoke `./pyrun` without a recorded,
+  researcher-approved symlink exception
+- missing or non-symlink entry-root `pyrun` for active-work Python commands
+  without that exception
 - copied or vendored `pyrun` files
 - project API choices that affect what the evidence establishes but are not recorded
 - interpreter fallback used despite a declared project environment without researcher approval
 - duplicate `data.csv` names, rows unused by recorded `<name>` tokens,
   unresolved tokens, entry-local script or image rows, or raw absolute and
   external input paths that should use `<name>`
-- retained figures without a generating command in the document that presents them
-- plot scripts that accept missing cases, non-finite values, or incompatible units
-- retained figures without recorded visual inspection
-- serialized artifacts consumed later without reload validation
+- active-work figures without a generating command in the document that presents them
+- active-work plot scripts that accept missing cases, non-finite values, or incompatible units
+- saved figures with evidence-affecting defects
+- serialized-input code that does not check its expected structure
 - runtime caches not covered by project ignore rules, including `__pycache__/`, `.pytest_cache/`, and `.ruff_cache/`
 
 Treat direct existing decisions as researcher decisions unless explicitly
 marked proposed, provisional, or agent-generated. Pending validation alone does
-not make a researcher decision provisional. Suggest splitting only when
-distinct topics impair retrieval or maintenance; length alone is not a reason.
+not make a researcher decision provisional. A structural review may recommend
+splitting when distinct topics impair retrieval or maintenance; length alone is
+not a reason. Report the recommendation without reorganizing the log unless the
+researcher separately requests or approves the change.
 
 ## Output
 

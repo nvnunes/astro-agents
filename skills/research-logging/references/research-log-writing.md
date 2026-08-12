@@ -24,8 +24,9 @@ enough evidence and reasoning to reconstruct why it was retained.
 - Follow a comparison table with its interpretation and decision rather than
   narrating every cell. Link reproduction detail that does not belong in the
   current synthesis.
-- Present evidence directly. Avoid narration that merely says an artifact was
-  saved, a table records values, or the entry retains a result.
+- Present evidence directly. Never turn an entry into an agent diary or work
+  log. Omit agent workflow and routine successful checks unless they affect the
+  evidence.
 - Place each figure beside the argument it supports. Prefer the most direct
   evidence surface, and use a table only when it makes a structured comparison
   clearer than prose or a plot.

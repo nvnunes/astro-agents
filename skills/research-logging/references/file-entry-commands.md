@@ -1,16 +1,27 @@
 # Entry Command Instructions
 
-Use this file when an entry needs executable commands to reproduce, regenerate, or explain retained evidence, outputs, figures, tables, or checks.
-
-Use `skills/research-logging/references/file-script.md` for scripts invoked by
-recorded commands.
-
-Use `skills/research-logging/references/file-presented-evidence.md` for the
-reader-facing evidence produced from those commands.
+Use this file for active commands that produce or analyze retained results, or
+to preserve the actual command history of completed work.
 
 Include commands only when they help later reconstruction. Do not add command blocks for routine navigation, exploratory dead ends, or commands whose effects are not retained in the entry.
 
-Ad hoc exploratory plots or tables that are not recorded in an entry may be made directly. If a plot, table, figure, or derived result is saved into an entry or cited by an entry, prefer writing an entry script and recording the command that regenerates it unless the user explicitly asks for a one-off output.
+Exploratory plots, tables, or calculations outside the log may be made directly.
+Do not create entry scripts, commands, or evidence records merely because a log
+exists. If the researcher later asks to retain, add, cite, or present the work
+in an entry, preserve the actual generator and command when they exist. Do not
+invent or rerun a cleaner workflow for the transition. State missing material
+as a reconstruction limit, and do not present an unsupported numerical result
+as durable computational evidence.
+
+For active work, apply the remaining conventions only to commands and outputs
+created or changed by the current investigation and the inputs they consume.
+Run commands as needed to produce and finalize their saved outputs. Do not rerun
+an unchanged command solely to test reproducibility or provenance, expand into
+an entry-wide or log-wide audit, or treat successful execution as validation.
+
+For completed work, preserve the actual scripts, commands, environment,
+settings, artifacts, and checks. Do not invent a generator, normalize a command
+to `./pyrun`, or rerun it for documentation. State reconstruction limits.
 
 Write commands from the entry root as the working directory. Put every
 recorded executable command in a `bash` fence under the applicable `Steps:`
@@ -78,9 +89,8 @@ retain structured data when it supports analysis, reuse, or provenance.
 When a command uses a non-image data input or durable external resource that is
 not already in `data.csv`, ask whether it should be copied into the entry or
 referenced externally. Then add it with
-`./pyrun data add <name> <type> <location>` using
-`skills/research-logging/references/file-data-index.md`, and record the command
-with the `<name>` token instead of the raw path. A generated data output enters
+`./pyrun data add <name> <type> <location>`, and record the command with the
+`<name>` token instead of the raw path. A generated data output enters
 `data.csv` only when a later recorded command consumes it as an input.
 
 Never add entry-local scripts or images to `data.csv`. Keep their relative
@@ -91,16 +101,19 @@ paths directly in commands or Markdown.
 - `./data.csv`
 - `../data.csv`
 
-For every entry with a recorded Python command, create an entry-root `pyrun`
-symlink to the resolved `skills/research-logging/scripts/pyrun` before running or
-recording the command. Invoke Python commands through `./pyrun`; do not record
-direct `python` commands or invoke the installed script directly. Do not copy or
-vendor `pyrun`. Use a relative symlink when practical. If symlinks are
-unavailable, report that and get researcher approval before invoking the
-installed script directly. Record the approved exception beside the command;
-do not copy `pyrun` as a fallback.
+For every active investigation with a Python command created or revised during
+Record, create an entry-root `pyrun` symlink to the resolved
+`skills/research-logging/scripts/pyrun` before running or recording the command.
+Invoke those Python commands through `./pyrun`; do not record direct `python`
+commands or invoke the installed script directly. Do not copy or vendor
+`pyrun`. Use a relative symlink when practical. If symlinks are unavailable,
+report that and get researcher approval before invoking the installed script
+directly. Record the approved exception beside the command; do not copy
+`pyrun` as a fallback.
 
-After creating or changing an entry Python script, `data.csv`, `pyrun` symlink, or recorded command, run the recorded command from the entry root before treating it as reproducible.
+After creating or changing an entry Python script, `data.csv`, `pyrun` symlink,
+or recorded command, run the command from the entry root and confirm its saved
+outputs can be read before presenting them.
 
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader

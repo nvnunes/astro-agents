@@ -72,9 +72,6 @@ or direct source inspection. Do not inventory figures already displayed or
 files already named in commands; name a file separately only when the reader
 otherwise cannot locate a needed artifact.
 
-Apply the forms and placement rules in
-`skills/research-logging/references/file-presented-evidence.md`.
-
 ### `Findings:`
 
 Use only in synthesis sections. Record researcher-led understanding established

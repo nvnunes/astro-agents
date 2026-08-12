@@ -40,12 +40,15 @@ When writing or revising summary prose, apply
 
 Use `## Summary` for current understanding, including observations, conclusions, decisions, and other synthesis organized by the researcher's topics.
 
-Use `## Follow-ups` only for points recorded under `Follow-up:` labels in entries. Group follow-up items under topic headings when useful, and link each item back to the entry label that created it.
+Use `## Follow-ups` only for points recorded under `Follow-up:` labels in
+entries. Add, revise, or remove these summary items during Update Summary, not
+during Record. Group follow-up items under topic headings when useful, and link
+each item back to the entry label that created it.
 
-Use `## Validation` for the projection defined in
+Use `## Validation` for the snapshot defined in
 `skills/research-logging/references/file-summary-validation.md`. Every maintained
-summary includes this section. Preserve completed validation results and apply
-only the role-appropriate freshness changes defined there.
+summary includes this section. Initialize it only when starting the log. Every
+operation except Validate preserves it byte-for-byte.
 
 Use `## AI Use` for the log-level disclosure defined in
 `skills/research-logging/references/file-summary-ai-use.md`. Every maintained

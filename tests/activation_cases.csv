@@ -30,6 +30,12 @@ implicit-pubify-pubs,pubify-authoring,pubify-authoring,true,implicit,Add a gener
 implicit-readme,readme-writing,readme-writing,true,implicit,Improve this README.md so new users know where to start
 implicit-skill-md,skill-md-writing,skill-md-writing,true,implicit,Write a SKILL.md for this workflow
 implicit-research-log,research-logging,research-logging,true,implicit,Update the adaptive optics research log
+implicit-research-log-investigate,research-logging,research-logging,true,implicit,Investigate whether detector drift affects this calibration and record the work in the research log
+implicit-research-log-incorporate,research-logging,research-logging,true,implicit,Add the exploratory detector plot and its actual script and output to e004 as research-log evidence
+implicit-research-log-start,research-logging,research-logging,true,implicit,Start a research log for this calibration study
+implicit-research-log-reorganize,research-logging,research-logging,true,implicit,Reorganize these research log entries without changing their entry IDs
+implicit-research-log-replace,research-logging,research-logging,true,implicit,Replace the superseded calibration experiment in e003 and keep a durable backup of the old work
+implicit-research-log-update-summary,research-logging,research-logging,true,implicit,Update the current summary for this adaptive optics research log
 implicit-science,science-writing,science-writing,true,implicit,Revise this scientific manuscript introduction for clearer claims
 implicit-technical,technical-writing,technical-writing,true,implicit,Tighten this technical explanation without changing its meaning
 negative-agent-surface-vs-code-quality,agent-surface-review,code-quality-review,false,negative,Review this Python module for source-code quality issues
@@ -46,6 +52,8 @@ negative-python-code-vs-code-quality,python-code-writing,code-quality-review,fal
 negative-pubify-vs-science,pubify-authoring,science-writing,false,negative,Revise this scientific manuscript paragraph for clearer claims
 negative-pubify-vs-generic-mpl,pubify-authoring,python-code-writing,false,negative,Edit this standalone Matplotlib Python script to use clearer plot colors
 negative-readme-vs-project-docs,readme-writing,project-docs-writing,false,negative,Revise docs/usage.md to clarify adoption guidance
+negative-research-log-vs-python-analysis,research-logging,python-code-writing,false,negative,Write a Python script to analyze calibration.csv and save a plot; do not create or update a research log
+negative-research-log-existing-project-ad-hoc,research-logging,python-code-writing,false,negative,This project has a research log but for now write a Python script that makes an exploratory plot of calibration.csv for discussion only; do not record or update the log
 negative-research-log-vs-science,research-logging,science-writing,false,negative,Revise this scientific manuscript introduction for clearer claims
 negative-science-vs-research-log,science-writing,research-logging,false,negative,Capture these experiment notes in the adaptive optics research log
 negative-technical-vs-readme,technical-writing,readme-writing,false,negative,Rewrite this README.md introduction for new users

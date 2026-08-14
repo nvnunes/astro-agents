@@ -71,6 +71,24 @@ class MarkdownDiscoveryTests(unittest.TestCase):
                 ["0.2 [occurrence 1]", "0.2 [occurrence 2]"],
             )
 
+    def test_uuid_identifier_is_not_a_presented_statistic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "e001.md"
+            entry.write_text(
+                "# Fixture\n\n## Trial\n\n`Steps:`\n\n- Run.\n\n"
+                "`Results:`\n\n"
+                "Task `019ff397-d06e-7b92-a077-88a2414445d9` consumed "
+                "`2,878,914 reported input tokens`.\n",
+                encoding="utf-8",
+            )
+
+            parsed = DISCOVERY.parse_markdown(entry)
+
+            self.assertEqual(
+                [item["selector"] for item in parsed["presented_items"]],
+                ["2,878,914 reported input tokens"],
+            )
+
     def test_summary_statistics_are_limited_to_summary_section(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "log.md"

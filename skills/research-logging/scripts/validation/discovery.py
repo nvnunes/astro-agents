@@ -34,6 +34,10 @@ FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([^\s`]*)")
 ENTRY_ID_RE = re.compile(r"^e\d+[a-z]?$", re.IGNORECASE)
 CITATION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_:.+/-]+)")
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 PATH_SUFFIXES = {
     ".csv",
     ".ecsv",
@@ -295,6 +299,7 @@ def _presented_numeric_expression(value: str) -> bool:
         or re.match(r"^\d+\s*PH(?:\b|$)", value, re.IGNORECASE)
         or re.search(r"[A-Za-z_][A-Za-z0-9_.-]*\s*=", value)
         or re.fullmatch(r"[0-9a-fA-F]{12,}", value)
+        or UUID_RE.fullmatch(value)
     )
     if rejected:
         return False

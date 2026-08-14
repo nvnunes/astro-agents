@@ -1193,6 +1193,13 @@ def _add_reviewed_invocation_facts(
         invocation.namespace,
         reviewed.origin,
     )
+    state.builder.add_edge(
+        EdgeKind.SELECTED_PRODUCER,
+        reviewed.target,
+        invocation,
+        invocation.namespace,
+        reviewed.origin,
+    )
     for dependency in sorted(
         facts.paths.get(invocation, set()) - facts.connected.get(invocation, set())
     ):

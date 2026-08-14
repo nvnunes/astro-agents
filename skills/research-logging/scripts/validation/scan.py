@@ -44,12 +44,10 @@ from .discovery import (
 )
 from .graph import (
     DependencyGraph,
-    EdgeKind,
     GraphContractError,
-    NodeKind,
 )
 from .graph_adapter import build_dependency_graph
-from .graph_queries import orphan_nodes
+from .graph_queries import orphan_locations
 from .graph_store import (
     inbound_dependencies,
     validate_repository_view,
@@ -1119,43 +1117,18 @@ def orphan_scope_entries(inputs: OrphanScopeInput) -> list[Dict[str, Any]]:
     return extra_entries
 
 
-def _graph_orphan_locations(
-    graph: DependencyGraph, namespace: str
-) -> set[tuple[str, str]]:
-    """Return entry-scoped display identities for graph-unreachable inventory."""
-
-    result: set[tuple[str, str]] = set()
-    for key in orphan_nodes(graph, namespace):
-        node = graph.node(key)
-        entry_id = node.attribute("entry")
-        if not isinstance(entry_id, str):
-            owners = {
-                edge.target.identity
-                for edge in graph.outgoing(key, {EdgeKind.OWNED_BY})
-                if edge.target.kind is NodeKind.ENTRY
-            }
-            if len(owners) != 1:
-                raise GraphContractError(
-                    f"orphanable graph node must have one entry owner: {key.as_dict()}"
-                )
-            entry_id = next(iter(owners))
-        identity = str(node.attribute("display_identity", key.identity))
-        result.add((entry_id, identity))
-    return result
-
-
 def classify_graph_orphan_inventory(scan: Mapping[str, Any]) -> DependencyGraph:
     """Populate initial orphan candidates from the canonical dependency graph."""
 
     graph = build_dependency_graph(scan)
     namespace = Path(str(scan["summary"])).with_suffix("").as_posix()
-    orphan_locations = _graph_orphan_locations(graph, namespace)
+    locations = orphan_locations(graph, namespace)
     for entry in scan.get("entries", []):
         entry_id = entry["id"]
         entry["orphan_candidates"] = [
             candidate
             for candidate in entry.get("orphan_inventory", [])
-            if (entry_id, candidate["identity"]) in orphan_locations
+            if (entry_id, candidate["identity"]) in locations
         ]
     return graph
 

@@ -360,6 +360,34 @@ def orphan_nodes(
     return orphanable_nodes(graph, namespace) - _orphan_reachable_nodes(graph)
 
 
+def orphan_location(graph: DependencyGraph, key: NodeKey) -> Tuple[str, str]:
+    """Return the entry-scoped display identity for one orphanable node."""
+
+    node = graph.node(key)
+    entry_id = node.attribute("entry")
+    if not isinstance(entry_id, str):
+        owners = {
+            edge.target.identity
+            for edge in graph.outgoing(key, {EdgeKind.OWNED_BY})
+            if edge.target.kind is NodeKind.ENTRY
+        }
+        if len(owners) != 1:
+            raise GraphContractError(
+                f"orphanable graph node must have one entry owner: {key.as_dict()}"
+            )
+        entry_id = next(iter(owners))
+    identity = str(node.attribute("display_identity", key.identity))
+    return entry_id, identity
+
+
+def orphan_locations(
+    graph: DependencyGraph, namespace: str | None = None
+) -> Set[Tuple[str, str]]:
+    """Return entry-scoped identities for graph-unreachable inventory."""
+
+    return {orphan_location(graph, key) for key in orphan_nodes(graph, namespace)}
+
+
 def assert_unresolved_orphans_unreachable(
     graph: DependencyGraph, unresolved: Iterable[NodeKey]
 ) -> None:

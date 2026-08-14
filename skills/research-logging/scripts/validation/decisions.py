@@ -35,7 +35,8 @@ from .graph_queries import (
     ambiguous_producer_nodes,
     assert_unresolved_orphans_unreachable,
     display_identity,
-    orphan_nodes,
+    orphan_location,
+    orphan_locations,
     orphanable_nodes,
     provenance_nodes,
     target_provenance_seeds,
@@ -989,9 +990,7 @@ def reconcile_graph_orphans(
     if not scan.get("repository_scope", {}).get("cross_log_complete", True):
         return graph
     namespace = Path(scan["summary"]).with_suffix("").as_posix()
-    graph_orphans = {
-        display_identity(graph, key) for key in orphan_nodes(graph, namespace)
-    }
+    graph_orphans = orphan_locations(graph, namespace)
     queue = adjudication.get("review_queue", [])
     queue[:] = [item for item in queue if item.get("kind") != "orphan_candidates"]
     scan_entries = {
@@ -1009,7 +1008,7 @@ def reconcile_graph_orphans(
             if preserve_pending is not None and identity in preserve_pending:
                 item["decision"] = "pending"
                 item["basis"] = "-"
-            elif identity not in graph_orphans:
+            elif (entry["id"], identity) not in graph_orphans:
                 item["decision"] = "accepted"
                 if item.get("basis") not in {"semantic-connection"} and not item.get(
                     "basis", ""
@@ -1041,8 +1040,8 @@ def reconcile_graph_orphans(
         _ensure_orphan_row(entry)
         _sync_orphan_entry(adjudication, entry)
 
-    unresolved_identities = {
-        item["identity"]
+    unresolved_locations = {
+        (entry["id"], item["identity"])
         for entry in adjudication.get("entries", [])
         for item in entry.get("orphan_items", [])
         if item.get("decision") == "unresolved"
@@ -1050,7 +1049,7 @@ def reconcile_graph_orphans(
     unresolved_keys = {
         key
         for key in orphanable_nodes(graph, namespace)
-        if display_identity(graph, key) in unresolved_identities
+        if orphan_location(graph, key) in unresolved_locations
     }
     assert_unresolved_orphans_unreachable(graph, unresolved_keys)
     return graph

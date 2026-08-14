@@ -52,7 +52,7 @@ from .graph import (
 from .graph_adapter import build_dependency_graph
 from .graph_queries import (
     display_identity,
-    orphan_nodes,
+    orphan_locations,
     provenance_nodes,
     target_provenance_seeds,
 )
@@ -772,10 +772,16 @@ def failure_report(
 
 
 def validate_successful_orphan_separation(
-    completed_checks: Sequence[Mapping[str, Any]], adjudicated_orphans: set[str]
+    completed_checks: Sequence[Mapping[str, Any]],
+    adjudicated_orphans: set[tuple[str, str]],
 ) -> None:
     """Reject unresolved orphans that support successful checks."""
 
+    orphan_paths = {
+        identity
+        for _, identity in adjudicated_orphans
+        if not (identity.startswith("<") and identity.endswith(">"))
+    }
     successful_material: set[str] = set()
     for check in completed_checks:
         if not is_success_date(check["result"]):
@@ -787,7 +793,7 @@ def validate_successful_orphan_separation(
                 (Path(path) / member).as_posix()
                 for member in dependency.get("members", [])
             )
-    conflicts = sorted(successful_material & adjudicated_orphans)
+    conflicts = sorted(successful_material & orphan_paths)
     if conflicts:
         raise ValidationToolError(
             "unresolved orphan is a dependency of a successful check: "
@@ -857,7 +863,7 @@ def render_report(
     scan_entries: Mapping[str, Mapping[str, Any]],
     scan: ScanRecord,
     date: str,
-    adjudicated_orphans: set[str],
+    adjudicated_orphans: set[tuple[str, str]],
 ) -> RenderedReport:
     """Render the complete human-facing report and completed-check inventory."""
 
@@ -1183,27 +1189,25 @@ def _validate_render_graph(
     adjudication: AdjudicationRecord,
     scan: ScanRecord,
     policy: RenderLifecyclePolicy,
-) -> tuple[DependencyGraph, set[str]]:
+) -> tuple[DependencyGraph, set[tuple[str, str]]]:
     _reject_mechanical_success_overrides(adjudication, scan, policy)
     graph = build_dependency_graph(scan, adjudication)
     namespace = Path(scan["summary"]).with_suffix("").as_posix()
-    graph_orphans = {
-        display_identity(graph, key) for key in orphan_nodes(graph, namespace)
-    }
+    graph_orphans = orphan_locations(graph, namespace)
     unresolved = {
-        item["identity"]
+        (entry["id"], item["identity"])
         for entry in adjudication.get("entries", [])
         for item in entry.get("orphan_items", [])
         if item.get("decision") == "unresolved"
     }
     inventory = {
-        item["identity"]
+        (entry["id"], item["identity"])
         for entry in adjudication.get("entries", [])
         for item in entry.get("orphan_items", [])
     }
     if not scan["repository_scope"]["cross_log_complete"]:
         deferred = {
-            item["identity"]
+            (entry["id"], item["identity"])
             for entry in adjudication.get("entries", [])
             for item in entry.get("orphan_items", [])
             if item.get("decision") == "deferred"
@@ -1219,7 +1223,11 @@ def _validate_render_graph(
     if unresolved - expected:
         raise ValidationToolError(
             "unresolved orphan is a dependency of a successful check or other "
-            "applicable graph root: " + "; ".join(sorted(unresolved - expected))
+            "applicable graph root: "
+            + "; ".join(
+                f"{entry}: {identity}"
+                for entry, identity in sorted(unresolved - expected)
+            )
         )
     if unresolved != expected:
         raise ValidationToolError(

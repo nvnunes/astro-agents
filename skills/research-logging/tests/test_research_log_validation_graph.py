@@ -905,6 +905,14 @@ class GraphCoreTests(unittest.TestCase):
                 for edge in graph.edges
             )
         )
+        self.assertTrue(
+            any(
+                edge.kind is GRAPH.EdgeKind.SELECTED_PRODUCER
+                and edge.source == source
+                and edge.target == invocation
+                for edge in graph.edges
+            )
+        )
 
     def test_reviewed_collection_scope_controls_consumer_direction(self) -> None:
         collection = GRAPH.NodeKey(
@@ -1292,6 +1300,31 @@ class GraphCoreTests(unittest.TestCase):
             GRAPH.GraphContractError, "reachable from an applicable root"
         ):
             GRAPH_QUERIES.assert_unresolved_orphans_unreachable(builder.build(), [key])
+
+    def test_orphan_locations_distinguish_duplicate_display_identities(self) -> None:
+        first = GRAPH.NodeKey(
+            "docs/mini", GRAPH.NodeKind.INDEXED_INPUT, "e001:<shared>"
+        )
+        second = GRAPH.NodeKey(
+            "docs/mini", GRAPH.NodeKind.INDEXED_INPUT, "e002:<shared>"
+        )
+        builder = GRAPH.GraphBuilder("test-rules")
+        builder.add_node(
+            first,
+            self.origin(),
+            {"entry": "e001", "display_identity": "<shared>", "orphanable": True},
+        )
+        builder.add_node(
+            second,
+            self.origin(),
+            {"entry": "e002", "display_identity": "<shared>", "orphanable": True},
+        )
+        builder.add_root(first, GRAPH.RootPolicy.RECORDED_COMMAND, self.origin())
+
+        self.assertEqual(
+            GRAPH_QUERIES.orphan_locations(builder.build(), "docs/mini"),
+            {("e002", "<shared>")},
+        )
 
     def test_dependency_graph_round_trips_exactly(self) -> None:
         key = GRAPH.NodeKey("docs/mini", GRAPH.NodeKind.SCRIPT, "scripts/run.py")

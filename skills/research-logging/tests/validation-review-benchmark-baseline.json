@@ -1,0 +1,70 @@
+{
+  "recorded_date": "2026-08-14",
+  "generator_version": 2,
+  "generator_identity": "ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c",
+  "batch_size": 200,
+  "machine": {
+    "operating_system": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.13",
+    "cpu": "Apple M4 Max",
+    "hardware_model": "Mac16,5",
+    "logical_cpu_count": 14,
+    "memory_bytes": 38654705664
+  },
+  "legacy_12000": {
+    "warmups": 1,
+    "samples_seconds": [
+      7.14567487500608,
+      7.34649441705551,
+      7.292968042078428
+    ],
+    "available_memory_bytes": [15405039616, 15200387072, 15391604736],
+    "peak_memory_bytes": [39632896, 39763968, 39845888],
+    "median_seconds": 7.292968042078428,
+    "entry_scans": 12000,
+    "relationship_evaluations": 192000,
+    "producer_source_reads": 96000,
+    "packet_bytes": 61999
+  },
+  "indexed_12000": {
+    "warmups": 1,
+    "samples_seconds": [
+      1.3382005000021309,
+      1.3632260410813615,
+      1.3437827079324052
+    ],
+    "available_memory_bytes": [15210381312, 15066398720, 14818770944],
+    "peak_memory_bytes": [91652096, 92864512, 91357184],
+    "median_seconds": 1.3437827079324052,
+    "entry_scans": 1,
+    "static_invocation_preparations": 16,
+    "relationship_evaluations": 192000,
+    "producer_source_reads": 1,
+    "unique_scripts": 1,
+    "packet_bytes": 39267
+  },
+  "indexed_24000": {
+    "warmups": 1,
+    "samples_seconds": [
+      2.6699555829400197,
+      2.689945084042847,
+      2.703544499934651
+    ],
+    "available_memory_bytes": [15158018048, 15094661120, 14990950400],
+    "peak_memory_bytes": [162086912, 154517504, 160071680],
+    "median_seconds": 2.689945084042847,
+    "entry_scans": 1,
+    "static_invocation_preparations": 16,
+    "relationship_evaluations": 384000,
+    "producer_source_reads": 1,
+    "unique_scripts": 1,
+    "packet_bytes": 39269
+  },
+  "scaling_ratio_24000_over_12000": 2.0017708727489865,
+  "acceptance": {
+    "indexed_12000_under_60_seconds": true,
+    "scaling_ratio_at_most_2_5": true,
+    "one_source_read_per_unique_script": true,
+    "one_static_preparation_per_invocation": true
+  }
+}

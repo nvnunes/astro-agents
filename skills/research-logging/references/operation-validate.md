@@ -63,6 +63,14 @@ Keep scan, review, decisions, and adjudication files outside the research log.
   --output <work-dir>/review.md
 ```
 
+An orphan packet contains at most 200 candidate identities by default. Use
+`--batch-size <positive-count>` to choose another bound and
+`--batch-number <one-based-number>` to select a later deterministic batch.
+Use `--metrics <work-dir>/review-metrics.json` when diagnosing review-index or
+packet-scaling behavior. An oversized default packet is labeled
+`PARTIAL ORPHAN REVIEW` and reports its queue fingerprint, batch position,
+in-packet count, and remaining count.
+
 Omit `--state` when no prior state exists. Each canonical render writes the
 owning log's `validation-index.json`. Run the separate `index` step after
 refreshing one or more logs to rebuild the disposable repository aggregate in
@@ -213,7 +221,7 @@ one-off adjudication program or patch the full adjudication JSON.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "actions": [
     {
       "match": {
@@ -238,6 +246,9 @@ one-off adjudication program or patch the full adjudication JSON.
   ]
 }
 ```
+
+Decision schema 5 replaces schema 4. Schema 4 packets are rejected because
+they cannot bind an orphan decision to the exact pending-queue snapshot.
 
 Actions apply in order to unresolved items. Put exact exceptions before a
 reviewed category-wide action. Match by `kind`, `entry`, `identity`, their
@@ -275,6 +286,32 @@ and itemized findings from the unresolved list.
   ]
 }
 ```
+
+For a partial orphan packet, use `orphan-batch` instead. Copy the packet's
+queue fingerprint, batch size, and item-local batch number, then partition
+every candidate in that batch exactly once:
+
+```json
+{
+  "match": {
+    "kind": "orphan_candidates",
+    "entry": "e003"
+  },
+  "decision": "orphan-batch",
+  "queue_fingerprint": "0123456789abcdef...",
+  "batch_size": 200,
+  "batch_number": 1,
+  "unresolved": ["docs/example/scripts/unused.py"],
+  "connected": ["docs/example/data/reviewed-dynamic-output.csv"],
+  "retained": []
+}
+```
+
+Applying one batch is atomic. It persists only that batch's item-level
+dispositions and leaves every undisposed identity pending. The queue
+fingerprint then changes, so every other packet from the prior snapshot is
+stale. Generate the next packet from the updated adjudication; do not prepare
+several decisions from one queue snapshot.
 
 Use `support` with a one-based packet `candidate` for Summary support; `pass`
 or `fail` for checked entry targets; `scope` with a `members` mapping only when
@@ -403,6 +440,12 @@ Keep graph ownership explicit when adding validation mechanics:
   assemblies;
 - `validation/commands.py` owns recorded-command and local-script
   dependency discovery;
+- `validation/producer_bindings.py` owns current producer eligibility and
+  target-specific producer classification;
+- `validation/review_index.py` owns immutable scan-wide review indexes and
+  operation-scoped memoized candidate and source-context queries;
+- `validation/review_batches.py` owns deterministic orphan packet selection
+  and stale-packet identities;
 - `validation/evidence.py` owns bounded artifact inspection,
   locator extraction, and mechanical evidence equivalence;
 - `validation/identities.py` owns scope-aware summary, entry, and
@@ -414,6 +457,11 @@ inputs, then consume it through a graph query. Do not add a parallel closure
 or orphan rule to review, rendering, state reuse, or repository indexing.
 Add contract and end-to-end regression coverage for every new node, edge,
 root, or persistence rule.
+
+When changing candidate selection or producer-source context, update the
+shared producer classifier, the indexed/reference equivalence cases, the
+operation-count assertions, and the canonical review benchmark together. Do
+not add a second eligibility rule in packet rendering or decision application.
 
 Correct decisions and rerender; never hand-edit generated validation records.
 Update the maintained summary after a complete canonical render passes lint or

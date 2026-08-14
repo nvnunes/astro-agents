@@ -19,10 +19,6 @@ from typing import (
 
 from .adjudication import (
     ORPHAN_TARGET,
-    _resolved_identity_cache,
-    candidate_commands,
-    check_workflow_command,
-    identity_for_path,
     is_success_date,
 )
 from .contracts import (
@@ -44,8 +40,19 @@ from .graph_queries import (
     provenance_nodes,
     target_provenance_seeds,
 )
+from .producer_bindings import (
+    check_workflow_command,
+    identity_for_path,
+    resolved_identity_cache,
+)
+from .review_batches import (
+    OrphanBatchRequest,
+    orphan_queue_fingerprint,
+    select_orphan_batch,
+)
+from .review_index import ReviewContextIndex, ReviewQuerySession
 
-DECISION_SCHEMA_VERSION = 4
+DECISION_SCHEMA_VERSION = 5
 DECISION_DEPENDENCY_KEYS = {
     "members",
     "add_dependencies",
@@ -92,6 +99,16 @@ DECISION_FIELDS_BY_OUTCOME = {
         *DECISION_DEPENDENCY_KEYS,
     },
     "orphan": {"match", "decision", "unresolved", "connected", "retained"},
+    "orphan-batch": {
+        "match",
+        "decision",
+        "queue_fingerprint",
+        "batch_size",
+        "batch_number",
+        "unresolved",
+        "connected",
+        "retained",
+    },
     "reproduced": {
         "match",
         "decision",
@@ -247,9 +264,18 @@ def validate_queue_decision_kind(
             "reproduction queue items require a reproduction decision, "
             "and reproduction decisions apply only to those items"
         )
-    if item.get("kind") == "orphan_candidates" and decision != "orphan":
+    if item.get("kind") == "orphan_candidates" and decision not in {
+        "orphan",
+        "orphan-batch",
+    }:
         raise ValidationToolError(
             "orphan candidates require an item-level orphan decision"
+        )
+    if decision in {"orphan", "orphan-batch"} and item.get("kind") != (
+        "orphan_candidates"
+    ):
+        raise ValidationToolError(
+            "orphan decisions apply only to orphan-candidate rows"
         )
     if item.get("kind") == "upstream_producer" and decision != "bind":
         raise ValidationToolError(
@@ -532,30 +558,20 @@ def _select_decision_producer(
         return
     if not isinstance(selection, int) or isinstance(selection, bool) or selection < 1:
         raise ValidationToolError("producer must be a one-based candidate number")
-    commands = candidate_commands(
-        context.scan,
+    if context.review_session is None:
+        raise ValidationToolError("producer selection requires review index context")
+    invocations = context.review_session.candidate_invocations(
         context.entry_id,
         context.row.get("target", context.item.get("identity", "")),
         context.item.get("sections", []),
     )
-    if selection > len(commands):
+    if selection > len(invocations):
         raise ValidationToolError(
             f"producer candidate {selection} is unavailable for "
             f"{context.item.get('identity', '-')}"
         )
-    command = commands[selection - 1]
-    command_location = next(
-        (
-            (entry, index)
-            for entry in context.scan.get("entries", [])
-            for index, candidate in enumerate(entry.get("commands", []), 1)
-            if candidate is command
-        ),
-        None,
-    )
-    if command_location is None:
-        raise ValidationToolError("producer candidate is not a recorded command")
-    producer_entry, command_index = command_location
+    invocation = invocations[selection - 1]
+    command = invocation.command
     target_identity = context.row.get(
         "target", context.item.get("identity", "")
     )
@@ -579,7 +595,7 @@ def _select_decision_producer(
             + "; ".join(sorted(set(checked.failures)))
         )
     context.row["producer_invocation"] = recorded_invocation_identity(
-        producer_entry["id"], command_index, command
+        invocation.entry_id, invocation.command_position, command
     )
     existing = {
         (dependency.get("path"), dependency.get("role"))
@@ -603,6 +619,7 @@ class _ReviewDecisionContext(NamedTuple):
     kind: str
     row: Dict[str, Any]
     identity_cache: Mapping[str, str]
+    review_session: Optional[ReviewQuerySession] = None
 
 
 def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
@@ -962,7 +979,9 @@ def _ensure_orphan_row(entry: Dict[str, Any]) -> None:
 
 
 def reconcile_graph_orphans(
-    scan: ScanRecord, adjudication: Dict[str, Any]
+    scan: ScanRecord,
+    adjudication: Dict[str, Any],
+    preserve_pending: Optional[set[str]] = None,
 ) -> DependencyGraph:
     """Make graph reachability authoritative for orphan classification."""
 
@@ -987,7 +1006,10 @@ def reconcile_graph_orphans(
         items = entry.get("orphan_items", [])
         for item in items:
             identity = item["identity"]
-            if identity not in graph_orphans:
+            if preserve_pending is not None and identity in preserve_pending:
+                item["decision"] = "pending"
+                item["basis"] = "-"
+            elif identity not in graph_orphans:
                 item["decision"] = "accepted"
                 if item.get("basis") not in {"semantic-connection"} and not item.get(
                     "basis", ""
@@ -1090,6 +1112,44 @@ def _validated_orphan_partition(
     return set(unresolved), set(connected), retained_by_identity
 
 
+def _validated_orphan_batch_item(
+    scan: ScanRecord,
+    adjudication: Mapping[str, Any],
+    item: Mapping[str, Any],
+    action: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return the exact current batch after rejecting stale packet actions."""
+
+    fingerprint = action.get("queue_fingerprint")
+    expected = orphan_queue_fingerprint(
+        scan, adjudication, item, DECISION_SCHEMA_VERSION
+    )
+    if not isinstance(fingerprint, str) or fingerprint != expected:
+        raise ValidationToolError(
+            "orphan batch queue fingerprint is stale or invalid; generate a new packet"
+        )
+    batch_size = action.get("batch_size")
+    batch_number = action.get("batch_number")
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or not isinstance(batch_number, int)
+        or isinstance(batch_number, bool)
+    ):
+        raise ValidationToolError(
+            "orphan batch size and number must be positive integers"
+        )
+    batch = select_orphan_batch(
+        scan,
+        adjudication,
+        item,
+        OrphanBatchRequest(batch_size, batch_number, DECISION_SCHEMA_VERSION),
+    )
+    selected = dict(item)
+    selected["candidates"] = list(batch.candidates)
+    return selected
+
+
 def _apply_orphan_decision(
     adjudication: Dict[str, Any],
     entry_id: str,
@@ -1134,6 +1194,12 @@ def _apply_orphan_decision(
         for orphan_item in entry.get("orphan_items", [])
         if orphan_item.get("decision") == "unresolved"
     ]
+    pending_all = [
+        orphan_item["identity"]
+        for orphan_item in entry.get("orphan_items", [])
+        if orphan_item.get("decision") == "pending"
+    ]
+    reportable = [*unresolved_all, *pending_all]
     rows = [
         row for row in entry.get("targets", []) if row.get("target") == ORPHAN_TARGET
     ]
@@ -1141,18 +1207,18 @@ def _apply_orphan_decision(
         raise ValidationToolError(
             f"orphan review row is not unique: {entry_id}: {ORPHAN_TARGET}"
         )
-    if not unresolved_all:
+    if not reportable:
         _remove_decision_target(adjudication, entry_id, ORPHAN_TARGET)
         return
     row = rows[0]
-    count = len(unresolved_all)
+    count = len(reportable)
     row["notes"] = f"{count} unresolved {'item' if count == 1 else 'items'}"
     row["findings"] = [
         {
             "check": "Provenance",
             "finding": f"Unresolved orphan candidate: {identity}",
         }
-        for identity in unresolved_all
+        for identity in reportable
     ]
     row["orphan_items"] = entry["orphan_items"]
 
@@ -1299,19 +1365,45 @@ def _apply_review_item(context: _ReviewDecisionContext) -> None:
         context.row["producer_bindings"] = [
             existing[key] for key in sorted(existing)
         ]
-    elif context.decision == "orphan":
+    elif context.decision in {"orphan", "orphan-batch"}:
         if context.item.get("kind") != "orphan_candidates" or context.kind != "entry":
             raise ValidationToolError(
                 "orphan decisions apply only to orphan-candidate rows"
             )
+        item = context.item
+        if context.decision == "orphan-batch":
+            item = _validated_orphan_batch_item(
+                context.scan,
+                context.adjudication,
+                context.item,
+                context.action,
+            )
         _apply_orphan_decision(
             context.adjudication,
             context.entry_id,
-            context.item,
+            item,
             context.action,
         )
     else:
         _apply_row_decision(context)
+
+
+def _is_incremental_unresolved_orphan_batch(
+    actions: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return whether actions only finalize already-reconciled pending orphans.
+
+    Unresolved-only batches cannot add graph reachability. Their candidates came
+    from the current reconciled queue, so applying them only changes item-level
+    dispositions and the residual queue membership.
+    """
+
+    return bool(actions) and all(
+        action.get("decision") == "orphan-batch"
+        and action.get("connected") == []
+        and action.get("retained") == []
+        for action in actions
+    )
 
 
 def apply_review_decisions(
@@ -1332,7 +1424,31 @@ def apply_review_decisions(
         raise ValidationToolError("adjudication has an invalid validation date")
 
     counts: Dict[str, int] = {}
-    identity_cache = _resolved_identity_cache(scan)
+    review_session = (
+        ReviewQuerySession(ReviewContextIndex.build(scan))
+        if any(PRODUCER_SELECTION_KEY in action for action in actions)
+        else None
+    )
+    identity_cache = (
+        review_session.index.identities
+        if review_session is not None
+        else resolved_identity_cache(scan)
+    )
+    has_orphan_batch = any(
+        action.get("decision") == "orphan-batch" for action in actions
+    )
+    incremental_unresolved_batch = _is_incremental_unresolved_orphan_batch(actions)
+    reconcile_after_actions = not incremental_unresolved_batch
+    preserve_pending = (
+        {
+            candidate["identity"]
+            for item in queue
+            if item.get("kind") == "orphan_candidates"
+            for candidate in item.get("candidates", [])
+        }
+        if has_orphan_batch and not incremental_unresolved_batch
+        else None
+    )
     for action_number, action in enumerate(actions, 1):
         matches = decision_matches(queue, action, action_number, policy)
         decision = validated_decision_outcome(action, action_number, policy)
@@ -1356,11 +1472,40 @@ def apply_review_decisions(
                     kind=kind,
                     row=row,
                     identity_cache=identity_cache,
+                    review_session=review_session,
                 )
             )
-            queue.remove(item)
+            if preserve_pending is not None and decision in {
+                "orphan",
+                "orphan-batch",
+            }:
+                preserve_pending.difference_update(
+                    identity
+                    for field in ("unresolved", "connected")
+                    for identity in action.get(field, [])
+                )
+                preserve_pending.difference_update(
+                    retained.get("identity")
+                    for retained in action.get("retained", [])
+                    if isinstance(retained, dict)
+                )
+            if incremental_unresolved_batch and decision == "orphan-batch":
+                selected = set(action.get("unresolved", []))
+                remaining_candidates = [
+                    candidate
+                    for candidate in item.get("candidates", [])
+                    if candidate.get("identity") not in selected
+                ]
+                if remaining_candidates:
+                    item["candidates"] = remaining_candidates
+                else:
+                    queue.remove(item)
+                    reconcile_after_actions = True
+            else:
+                queue.remove(item)
             counts[decision] = counts.get(decision, 0) + 1
-    reconcile_semantic_dependencies(scan, result)
-    reconcile_graph_orphans(scan, result)
+    if reconcile_after_actions:
+        reconcile_semantic_dependencies(scan, result)
+        reconcile_graph_orphans(scan, result, preserve_pending)
     counts["remaining"] = len(queue)
     return result, counts

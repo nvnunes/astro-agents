@@ -6,6 +6,7 @@ import copy
 import datetime
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -26,7 +27,16 @@ from .contracts import (
     ValidationToolError,
 )
 from .evidence import NUMBER_RE, numeric_value_equivalent
-from .graph_adapter import recorded_invocation_identity
+from .producer_bindings import (
+    workflow_check,
+)
+from .review_batches import (
+    DEFAULT_ORPHAN_BATCH_SIZE,
+    OrphanBatch,
+    OrphanBatchRequest,
+    select_orphan_batch,
+)
+from .review_index import PreparedInvocation, ReviewContextIndex, ReviewQuerySession
 
 COMPLETE_SCOPE_DESCRIPTION = "complete standard scope"
 ORPHAN_TARGET = "Orphaned artifacts, scripts, and references"
@@ -82,6 +92,17 @@ class AdjudicationPreparationPolicy:
 
     schema_version: int
     mechanical_support: Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, str]]
+
+
+@dataclass(frozen=True)
+class ReviewPacketRequest:
+    """Filters and deterministic orphan-batch selection for one review packet."""
+
+    entry: Optional[str] = None
+    target: Optional[str] = None
+    kind: Optional[str] = None
+    batch_size: int = DEFAULT_ORPHAN_BATCH_SIZE
+    batch_number: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -1057,24 +1078,8 @@ class _ReviewCommandContext(NamedTuple):
     """Rendered context plus candidate commands and their target identities."""
 
     lines: list[str]
-    commands: list[dict[str, Any]]
-    command_identities: dict[tuple[Any, Any], list[str]]
-
-
-class _WorkflowMatch(NamedTuple):
-    """One recorded command whose exact path argument names a target."""
-
-    command: dict[str, Any]
-    argument: dict[str, Any]
-    command_index: int
-
-
-class WorkflowCommandCheck(NamedTuple):
-    """Dependency facts and check details from one recorded command."""
-
-    dependencies: list[dict[str, str]]
-    failures: list[str]
-    uncertainties: list[str]
+    commands: list[PreparedInvocation]
+    command_identities: dict[str, list[str]]
 
 
 def _packet_text(value: Any, limit: int = 420) -> str:
@@ -1084,320 +1089,6 @@ def _packet_text(value: Any, limit: int = 420) -> str:
     return text
 
 
-def _resolved_identity_cache(scan: ScanRecord) -> Dict[str, str]:
-    """Return one resolved-path lookup for a bounded validation operation."""
-
-    return {
-        Path(path).resolve().as_posix(): identity
-        for identity, path in scan["resolved_paths"].items()
-    }
-
-
-def identity_for_path(
-    scan: ScanRecord,
-    raw: str,
-    cache: Optional[Mapping[str, str]] = None,
-) -> str:
-    """Map one resolved path to its scan identity or stable display path."""
-
-    resolved = Path(raw).resolve().as_posix()
-    identities = cache if cache is not None else _resolved_identity_cache(scan)
-    if resolved in identities:
-        return identities[resolved]
-    path = Path(raw).resolve()
-    project_root = Path(scan["project_root"]).resolve()
-    try:
-        return path.relative_to(project_root).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def _matching_workflow_commands(
-    entry: Mapping[str, Any],
-    target: str,
-    scan: ScanRecord,
-    identity_cache: Mapping[str, str],
-) -> tuple[list[_WorkflowMatch], bool]:
-    """Return target-naming commands and whether output direction is explicit."""
-
-    matches = []
-    for index, command in enumerate(entry.get("commands", []), 1):
-        for argument in command.get("path_arguments", []):
-            if identity_for_path(scan, argument["path"], identity_cache) != target:
-                continue
-            matches.append(_WorkflowMatch(command, argument, index))
-            break
-    confirmed = [
-        match for match in matches if match.argument.get("role_hint") == "output"
-    ]
-    return confirmed or matches, bool(confirmed)
-
-
-def _producer_command_check(
-    command: Mapping[str, Any],
-    scan: ScanRecord,
-    identity_cache: Mapping[str, str],
-) -> WorkflowCommandCheck:
-    """Resolve and structurally check one recorded command entrypoint."""
-
-    script = command.get("script")
-    if not script or not Path(script).is_file():
-        return WorkflowCommandCheck([], [], ["producer script is unresolved"])
-    identity = identity_for_path(scan, script, identity_cache)
-    dependencies = [{"path": identity, "role": "producer"}]
-    structure = scan["mechanical_checks"].get(identity, {})
-    failures = (
-        [f"producer structure is {structure.get('status', 'unknown')}"]
-        if structure.get("status") != "ok"
-        else []
-    )
-    return WorkflowCommandCheck(dependencies, failures, [])
-
-
-def check_workflow_command(
-    command: Mapping[str, Any],
-    scan: ScanRecord,
-    identity_cache: Optional[Mapping[str, str]] = None,
-) -> WorkflowCommandCheck:
-    """Inspect one recorded producer command without inferring semantics."""
-
-    identities = (
-        identity_cache
-        if identity_cache is not None
-        else _resolved_identity_cache(scan)
-    )
-    producer = _producer_command_check(command, scan, identities)
-    dependencies = list(producer.dependencies)
-    failures = list(producer.failures)
-    uncertainties = list(producer.uncertainties)
-    if command.get("unknown_options"):
-        uncertainties.append(
-            "recorded command uses unknown options: "
-            + ", ".join(command["unknown_options"])
-        )
-    for token in command.get("data_tokens", []):
-        if token["name"] in {"project", "log"}:
-            continue
-        if token.get("status") != "resolved" or not token.get("path"):
-            failures.append(f"input token <{token['name']}> is {token['status']}")
-            continue
-        identity = identity_for_path(scan, token["path"], identities)
-        dependencies.append({"path": identity, "role": "input"})
-        if not Path(token["path"]).exists():
-            failures.append(f"input is missing: {identity}")
-    for argument in command.get("path_arguments", []):
-        if argument["role_hint"] != "input":
-            continue
-        identity = identity_for_path(scan, argument["path"], identities)
-        dependencies.append({"path": identity, "role": "input"})
-        if not Path(argument["path"]).exists():
-            failures.append(f"input is missing: {identity}")
-    return WorkflowCommandCheck(dependencies, failures, uncertainties)
-
-
-def workflow_check(
-    entry: dict[str, Any],
-    target: str,
-    scan: ScanRecord,
-    identity_cache: Optional[Mapping[str, str]] = None,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Check the recorded producer invocation that names one exact target."""
-
-    identities = (
-        identity_cache
-        if identity_cache is not None
-        else _resolved_identity_cache(scan)
-    )
-    selected, direction_confirmed = _matching_workflow_commands(
-        entry, target, scan, identities
-    )
-    if not selected:
-        return (
-            {
-                "status": "unresolved",
-                "detail": "no explicit producing command matched",
-                "matched_commands": 0,
-            },
-            [],
-        )
-
-    if Path(target).is_absolute() and all(
-        match.argument.get("role_hint") == "input" for match in selected
-    ):
-        return (
-            {
-                "status": "pass",
-                "detail": "recorded workflow consumes this retained external input",
-                "matched_commands": len(selected),
-            },
-            [],
-        )
-
-    checked_matches = [
-        (match, check_workflow_command(match.command, scan, identities))
-        for match in selected
-    ]
-    viable = [pair for pair in checked_matches if not pair[1].failures]
-    if not viable:
-        failures = [
-            failure
-            for _match, checked in checked_matches
-            for failure in checked.failures
-        ]
-        return {
-            "status": "fail",
-            "detail": "; ".join(sorted(set(failures))),
-            "matched_commands": len(selected),
-        }, []
-
-    if len(viable) > 1:
-        return (
-            {
-                "status": "unresolved",
-                "detail": "multiple producing commands require semantic selection",
-                "matched_commands": len(viable),
-            },
-            [],
-        )
-
-    match, checked = viable[0]
-    uncertainties = list(checked.uncertainties)
-    if not direction_confirmed:
-        uncertainties.append(
-            "command/path direction requires semantic producer confirmation"
-        )
-    unique_dependencies = [
-        dict(item)
-        for item in {
-            (dependency["path"], dependency["role"]): dependency
-            for dependency in checked.dependencies
-        }.values()
-    ]
-    if uncertainties:
-        return (
-            {
-                "status": "unresolved",
-                "detail": "; ".join(sorted(set(uncertainties))),
-                "matched_commands": 1,
-            },
-            unique_dependencies,
-        )
-    return {
-        "status": "pass",
-        "detail": "matched one recorded command",
-        "matched_commands": 1,
-        "producer_invocation": recorded_invocation_identity(
-            entry["id"], match.command_index, match.command
-        ),
-    }, unique_dependencies
-
-
-def _command_candidate_groups(
-    scan: ScanRecord,
-    command: Mapping[str, Any],
-    identity: str,
-    sections: Sequence[str],
-    identities: Mapping[str, str],
-) -> tuple[bool, bool, bool, bool]:
-    """Classify one recorded command against an evidence target."""
-
-    target_name = Path(identity).name
-    output_paths = [
-        argument.get("path", "")
-        for argument in command.get("path_arguments", [])
-        if argument.get("role_hint") == "output"
-    ]
-    output_identities = [
-        identity_for_path(scan, path, identities) for path in output_paths
-    ]
-    direct = identity in output_identities
-    container = any(
-        scan.get("mechanical_checks", {}).get(output_identity, {}).get("type")
-        == "directory"
-        and identity.startswith(output_identity.rstrip("/") + "/")
-        for output_identity in output_identities
-    )
-    if not container:
-        container = _unknown_container_may_produce_target(
-            scan, command, identity, identities
-        )
-    exact = target_name in command.get("command", "") or any(
-        Path(path).name == target_name for path in output_paths
-    )
-    return direct, container, exact, command.get("section") in sections
-
-
-def _unknown_container_may_produce_target(
-    scan: ScanRecord,
-    command: Mapping[str, Any],
-    identity: str,
-    identities: Mapping[str, str],
-) -> bool:
-    """Return whether source text supports an unknown output-container candidate."""
-
-    containers = [
-        identity_for_path(scan, argument.get("path", ""), identities)
-        for argument in command.get("path_arguments", [])
-        if argument.get("role_hint") == "unknown" and argument.get("path")
-    ]
-    if not any(
-        scan.get("mechanical_checks", {}).get(container, {}).get("type")
-        == "directory"
-        and identity.startswith(container.rstrip("/") + "/")
-        for container in containers
-    ):
-        return False
-    script = command.get("script")
-    if not isinstance(script, str) or not Path(script).is_file():
-        return False
-    try:
-        source = Path(script).read_text(encoding="utf-8").lower()
-    except (OSError, UnicodeError):
-        return False
-    tokens = {
-        token
-        for token in re.findall(r"[a-z0-9]+", Path(identity).stem.lower())
-        if len(token) > 1
-    }
-    searchable = source + "\n" + str(command.get("command", "")).lower()
-    return bool(tokens) and all(token in searchable for token in tokens)
-
-
-def _ordered_candidate_commands(
-    groups: Sequence[Sequence[dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    ordered = []
-    seen = set()
-    for command in (command for group in groups for command in group):
-        command_id = id(command)
-        if command_id in seen:
-            continue
-        seen.add(command_id)
-        ordered.append(command)
-    return ordered[:5]
-
-
-def _candidate_command_entries(
-    scan: ScanRecord, entry_id: str, identity: str
-) -> list[dict[str, Any]]:
-    """Return the presenting entry plus the physical owner of one target."""
-
-    entries = scan.get("entries", [])
-    presenting = next(
-        (item for item in entries if item.get("id") == entry_id), None
-    )
-    if presenting is None:
-        return []
-    owners = [
-        item
-        for item in entries
-        if item is not presenting
-        and isinstance(item.get("path"), str)
-        and identity.startswith(Path(item["path"]).parent.as_posix().rstrip("/") + "/")
-    ]
-    return [presenting, *owners]
-
-
 def candidate_commands(
     scan: ScanRecord,
     entry_id: str,
@@ -1405,100 +1096,12 @@ def candidate_commands(
     sections: Sequence[str],
     identity_cache: Optional[Mapping[str, str]] = None,
 ) -> list[dict[str, Any]]:
-    """Return a small candidate-command set without deciding producer meaning."""
+    """Return indexed candidates while preserving the legacy public helper."""
 
-    entries = _candidate_command_entries(scan, entry_id, identity)
-    if not entries:
-        return []
-    identities = (
-        identity_cache
-        if identity_cache is not None
-        else _resolved_identity_cache(scan)
+    del identity_cache
+    return ReviewQuerySession(ReviewContextIndex.build(scan)).candidate_commands(
+        entry_id, identity, sections
     )
-    direct_outputs = []
-    local_container_outputs: list[dict[str, Any]] = []
-    owner_container_outputs: list[dict[str, Any]] = []
-    other_container_outputs: list[dict[str, Any]] = []
-    exact = []
-    local = []
-    for entry_number, entry in enumerate(entries):
-        for command in entry.get("commands", []):
-            direct, container, exact_match, section_match = (
-                _command_candidate_groups(
-                    scan, command, identity, sections, identities
-                )
-            )
-            if direct:
-                direct_outputs.append(command)
-            if container:
-                if section_match:
-                    local_container_outputs.append(command)
-                elif entry_number:
-                    owner_container_outputs.append(command)
-                else:
-                    other_container_outputs.append(command)
-            if exact_match:
-                exact.append(command)
-            elif section_match:
-                local.append(command)
-    return _ordered_candidate_commands(
-        (
-            direct_outputs,
-            local_container_outputs,
-            owner_container_outputs,
-            exact,
-            local,
-            other_container_outputs,
-        )
-    )
-
-
-def _command_path_parameters(
-    scan: ScanRecord, command: Mapping[str, Any], identity: str
-) -> list[str]:
-    """Return normalized option names whose values identify one target."""
-
-    target_name = Path(identity).name
-    parameters = []
-    identity_cache = _resolved_identity_cache(scan)
-    for argument in command.get("path_arguments", []):
-        raw_path = argument.get("path")
-        if not raw_path:
-            continue
-        argument_identity = identity_for_path(scan, raw_path, identity_cache)
-        if argument_identity != identity and Path(raw_path).name != target_name:
-            continue
-        parameter = argument.get("option")
-        if parameter:
-            parameters.append(parameter.lstrip("-").replace("-", "_"))
-    return parameters
-
-
-def _command_source_context(
-    scan: ScanRecord, command: Mapping[str, Any], identity: str
-) -> list[str]:
-    """Return bounded source lines using the option that carries one path."""
-
-    raw_script = command.get("script")
-    if not raw_script or not Path(raw_script).is_file():
-        return []
-    parameters = _command_path_parameters(scan, command, identity)
-    if not parameters:
-        return []
-    try:
-        source_lines = Path(raw_script).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return []
-    matches = []
-    for number, line in enumerate(source_lines, 1):
-        if any(
-            re.search(rf"\b(?:args|parsed)\.{re.escape(parameter)}\b", line)
-            for parameter in parameters
-        ):
-            matches.append(f"{number}: {line.strip()}")
-        if len(matches) == 4:
-            break
-    return matches
 
 
 def _summary_review_lines(
@@ -1536,16 +1139,15 @@ def _summary_review_lines(
 
 
 def _orphan_review_context(
-    scan: ScanRecord,
     item: Mapping[str, Any],
     entry_id: str,
-    identity_cache: Mapping[str, str],
+    session: ReviewQuerySession,
 ) -> _ReviewCommandContext:
     """Render explicit notes and candidate identities for one orphan review."""
 
     lines = []
-    commands = []
-    command_identities: dict[tuple[Any, Any], list[str]] = {}
+    commands: list[PreparedInvocation] = []
+    command_identities: dict[str, list[str]] = {}
     for note in item.get("validation_notes", []):
         prefix = f"{note.get('entry')} / " if note.get("entry") else ""
         lines.append(
@@ -1559,28 +1161,21 @@ def _orphan_review_context(
         lines.append(
             f"- Candidate {candidate.get('kind', 'item')}: `{identity or '-'}`"
         )
-        candidates = candidate_commands(
-            scan, entry_id, identity, [], identity_cache
-        )
+        candidates = session.candidate_invocations(entry_id, identity, [])
         commands.extend(candidates)
-        for command in candidates:
-            key = (command.get("line"), command.get("command"))
-            command_identities.setdefault(key, []).append(identity)
-    commands = list(
-        {
-            (command.get("line"), command.get("command")): command
-            for command in commands
-        }.values()
-    )[:5]
+        for invocation in candidates:
+            identities = command_identities.setdefault(invocation.key, [])
+            if identity not in identities:
+                identities.append(identity)
+    commands = list({invocation.key: invocation for invocation in commands}.values())
     return _ReviewCommandContext(lines, commands, command_identities)
 
 
 def _target_review_context(
-    scan: ScanRecord,
     item: Mapping[str, Any],
     entry_id: str,
     identity: str,
-    identity_cache: Mapping[str, str],
+    session: ReviewQuerySession,
 ) -> _ReviewCommandContext:
     """Render mechanics and evidence details for one target review."""
 
@@ -1608,37 +1203,46 @@ def _target_review_context(
         )
     return _ReviewCommandContext(
         lines,
-        candidate_commands(
-            scan,
-            entry_id,
-            identity,
-            item.get("sections", []),
-            identity_cache,
+        session.candidate_invocations(
+            entry_id, identity, item.get("sections", [])
         ),
         {},
     )
 
 
 def _review_command_lines(
-    scan: ScanRecord,
-    commands: Sequence[Mapping[str, Any]],
+    session: ReviewQuerySession,
+    commands: Sequence[PreparedInvocation],
     identity: str,
-    orphan_identities: Mapping[tuple[Any, Any], Sequence[str]],
+    orphan_identities: Mapping[str, Sequence[str]],
 ) -> list[str]:
     """Render bounded candidate commands and matching producer-code snippets."""
 
     lines = []
-    for candidate_number, command in enumerate(commands, 1):
-        command_key = (command.get("line"), command.get("command"))
+    rendered_source: set[tuple[str, str]] = set()
+    for candidate_number, invocation in enumerate(commands, 1):
+        command = invocation.command
         lines.append(
             f"- Candidate command {candidate_number}, "
             f"`{command.get('section', '-')}` line "
             f"{command.get('line', '?')}: "
             f"`{_packet_text(command.get('command'), 520)}`"
         )
-        context_identities = orphan_identities.get(command_key, [identity])
+        context_identities = orphan_identities.get(invocation.key, [identity])
+        if invocation.key in orphan_identities:
+            lines.append(
+                "  - Applies to candidates: "
+                + _packet_text("; ".join(context_identities), 4000)
+            )
         for context_identity in context_identities:
-            for source_line in _command_source_context(scan, command, context_identity):
+            session.counters["rendered_candidate_relationships"] = (
+                session.counters.get("rendered_candidate_relationships", 0) + 1
+            )
+            for source_line in session.source_context(invocation, context_identity):
+                source_key = (invocation.key, source_line)
+                if source_key in rendered_source:
+                    continue
+                rendered_source.add(source_key)
                 lines.append(f"  - Producer code: `{_packet_text(source_line, 420)}`")
     return lines
 
@@ -1698,11 +1302,11 @@ def collection_packet_lines(scan: ScanRecord, identity: str) -> list[str]:
 
 
 def _review_item_lines(
-    scan: ScanRecord,
     adjudication: AdjudicationRecord,
     item: Mapping[str, Any],
     number: int,
-    identity_cache: Mapping[str, str],
+    session: ReviewQuerySession,
+    orphan_batch: OrphanBatch | None = None,
 ) -> list[str]:
     """Render one bounded semantic-review queue item."""
 
@@ -1727,8 +1331,19 @@ def _review_item_lines(
         lines.append(f"- Section: {_packet_text(item['section'])}")
     if item.get("sections"):
         lines.append(f"- Sections: {_packet_text('; '.join(item['sections']))}")
+    if orphan_batch is not None:
+        lines.extend(
+            [
+                f"- Queue fingerprint: `{orphan_batch.fingerprint}`",
+                f"- Orphan batch: {orphan_batch.number} of {orphan_batch.total}",
+                f"- Candidates in packet: {len(orphan_batch.candidates)}",
+                f"- Candidates remaining in snapshot: {orphan_batch.remaining}",
+                "- Batch decision: use `orphan-batch` with this fingerprint, "
+                "batch number, and batch size.",
+            ]
+        )
     for collection in item.get("collections", []):
-        lines.extend(collection_packet_lines(scan, collection))
+        lines.extend(collection_packet_lines(session.index.scan, collection))
     for candidate in item.get("producer_candidates", []):
         lines.append(
             "- Upstream candidate: "
@@ -1741,38 +1356,163 @@ def _review_item_lines(
         lines.extend(_summary_review_lines(adjudication, item))
         return lines
     context = (
-        _orphan_review_context(scan, item, entry_id, identity_cache)
+        _orphan_review_context(item, entry_id, session)
         if item_kind == "orphan_candidates"
-        else _target_review_context(
-            scan, item, entry_id, identity, identity_cache
-        )
+        else _target_review_context(item, entry_id, identity, session)
     )
     lines.extend(context.lines)
     lines.extend(
         _review_command_lines(
-            scan, context.commands, identity, context.command_identities
+            session, context.commands, identity, context.command_identities
         )
     )
     return lines
 
 
+def _orphan_batch_descriptors(
+    orphan_items: Sequence[dict[str, Any]], batch_size: int
+) -> list[tuple[dict[str, Any], int]]:
+    descriptors: list[tuple[dict[str, Any], int]] = []
+    for item in orphan_items:
+        candidate_count = len(item.get("candidates", []))
+        total = max(1, (candidate_count + batch_size - 1) // batch_size)
+        descriptors.extend((item, number) for number in range(1, total + 1))
+    return descriptors
+
+
+def _all_packet_batches(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue: Sequence[dict[str, Any]],
+    batch_size: int,
+    decision_schema_version: int,
+) -> tuple[list[dict[str, Any]], dict[int, OrphanBatch]]:
+    selected = list(queue)
+    batches = {
+        id(item): select_orphan_batch(
+            scan,
+            adjudication,
+            item,
+            OrphanBatchRequest(batch_size, 1, decision_schema_version),
+        )
+        for item in queue
+        if item.get("kind") == "orphan_candidates"
+    }
+    return selected, batches
+
+
+def _single_packet_batch(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue: Sequence[dict[str, Any]],
+    descriptor: tuple[dict[str, Any], int],
+    batch_size: int,
+) -> tuple[list[dict[str, Any]], dict[int, OrphanBatch]]:
+    from .decisions import DECISION_SCHEMA_VERSION
+
+    selected_item, local_number = descriptor
+    batch = select_orphan_batch(
+        scan,
+        adjudication,
+        selected_item,
+        OrphanBatchRequest(batch_size, local_number, DECISION_SCHEMA_VERSION),
+    )
+    selected_view = dict(selected_item)
+    selected_view["candidates"] = list(batch.candidates)
+    selected = [
+        selected_view
+        if item is selected_item
+        else item
+        for item in queue
+        if item is selected_item or item.get("kind") != "orphan_candidates"
+    ]
+    return selected, {id(selected_view): batch}
+
+
+def _packet_orphan_batches(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue: Sequence[dict[str, Any]],
+    batch_size: int,
+    batch_number: Optional[int],
+) -> tuple[list[dict[str, Any]], dict[int, OrphanBatch], dict[str, int]]:
+    """Select bounded orphan context while leaving the adjudication untouched."""
+
+    from .decisions import DECISION_SCHEMA_VERSION
+
+    orphan_items = [item for item in queue if item.get("kind") == "orphan_candidates"]
+    if not orphan_items:
+        if batch_number is not None:
+            raise ValidationToolError(
+                "an orphan review batch number requires an orphan-candidate queue"
+            )
+        return list(queue), {}, {
+            "orphan_candidates_total": 0,
+            "orphan_candidates_in_packet": 0,
+            "orphan_candidates_remaining": 0,
+            "orphan_batch_number": 0,
+            "orphan_batch_total": 0,
+        }
+
+    total_candidates = sum(len(item.get("candidates", [])) for item in orphan_items)
+    descriptors = _orphan_batch_descriptors(orphan_items, batch_size)
+    requested = batch_number or 1
+    if requested < 1 or requested > len(descriptors):
+        raise ValidationToolError(
+            f"orphan review batch {requested} is out of range; "
+            f"expected 1-{len(descriptors)}"
+        )
+
+    include_all = batch_number is None and total_candidates <= batch_size
+    if include_all:
+        selected, batches = _all_packet_batches(
+            scan, adjudication, queue, batch_size, DECISION_SCHEMA_VERSION
+        )
+    else:
+        selected, batches = _single_packet_batch(
+            scan, adjudication, queue, descriptors[requested - 1], batch_size
+        )
+    selected_count = sum(
+        len(item.get("candidates", []))
+        for item in selected
+        if item.get("kind") == "orphan_candidates"
+    )
+    return selected, batches, {
+        "orphan_candidates_total": total_candidates,
+        "orphan_candidates_in_packet": selected_count,
+        "orphan_candidates_remaining": total_candidates - selected_count,
+        "orphan_batch_number": requested if not include_all else 1,
+        "orphan_batch_total": len(descriptors),
+    }
+
+
 def make_review_packet(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
-    *,
-    entry: Optional[str] = None,
-    target: Optional[str] = None,
-    kind: Optional[str] = None,
+    request: ReviewPacketRequest = ReviewPacketRequest(),
+    metrics: Optional[Dict[str, Any]] = None,
+    query_session: Optional[ReviewQuerySession] = None,
 ) -> tuple[str, dict[str, int]]:
     """Render facts and candidates for bounded semantic decisions."""
 
     queue = list(adjudication["review_queue"])
-    if entry is not None:
-        queue = [item for item in queue if item.get("entry") == entry]
-    if target is not None:
-        queue = [item for item in queue if item.get("identity") == target]
-    if kind is not None:
-        queue = [item for item in queue if item.get("kind") == kind]
+    if request.entry is not None:
+        queue = [item for item in queue if item.get("entry") == request.entry]
+    if request.target is not None:
+        queue = [item for item in queue if item.get("identity") == request.target]
+    if request.kind is not None:
+        queue = [item for item in queue if item.get("kind") == request.kind]
+    if request.batch_size < 1:
+        raise ValidationToolError("orphan review batch size must be positive")
+    queue, orphan_batches, batch_metrics = _packet_orphan_batches(
+        scan,
+        adjudication,
+        queue,
+        request.batch_size,
+        request.batch_number,
+    )
+    session = query_session or ReviewQuerySession(ReviewContextIndex.build(scan))
+    render_started = time.monotonic()
     lines = [
         "# Validation Review Packet",
         "",
@@ -1783,14 +1523,42 @@ def make_review_packet(
         "- Directory dependencies: select the material relative members on "
         "the existing directory dependency from the bounded candidate inventory.",
     ]
+    if batch_metrics["orphan_candidates_remaining"]:
+        lines[1:1] = [
+            "",
+            "# PARTIAL ORPHAN REVIEW",
+            "",
+            "This packet contains one deterministic subset of the complete "
+            "orphan queue. Generate a new packet after applying this batch.",
+        ]
+    if batch_metrics["orphan_candidates_total"]:
+        lines.extend(
+            [
+                f"- Orphan packet batch: {batch_metrics['orphan_batch_number']} "
+                f"of {batch_metrics['orphan_batch_total']}",
+                "- Orphan candidates in packet: "
+                f"{batch_metrics['orphan_candidates_in_packet']}",
+                "- Orphan candidates remaining: "
+                f"{batch_metrics['orphan_candidates_remaining']}",
+            ]
+        )
     counts: dict[str, int] = {}
-    identity_cache = _resolved_identity_cache(scan)
     for number, item in enumerate(queue, 1):
         item_kind = item.get("kind", "unknown")
         counts[item_kind] = counts.get(item_kind, 0) + 1
         lines.extend(
             _review_item_lines(
-                scan, adjudication, item, number, identity_cache
+                adjudication,
+                item,
+                number,
+                session,
+                orphan_batches.get(id(item)),
             )
         )
-    return "\n".join(lines) + "\n", counts
+    packet = "\n".join(lines) + "\n"
+    if metrics is not None:
+        metrics.update(session.metrics())
+        metrics.update(batch_metrics)
+        metrics["render_seconds"] = round(time.monotonic() - render_started, 6)
+        metrics["packet_bytes"] = len(packet.encode("utf-8"))
+    return packet, counts

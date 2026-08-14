@@ -1041,6 +1041,13 @@ whole. The row uses `-` for Section, `N/A` for Integrity and Reproducibility,
 individual paths appear in `validation-failures.md`. A `Validation:` note you
 approve can explain why a named item is intentionally kept.
 
+When an unused-material queue is large, validation reviews it in stable
+batches of at most 200 candidates by default. Every candidate remains in the
+canonical pending inventory; batching limits only the material presented for
+one review decision. After each batch is applied, the validator regenerates
+the next packet from the updated queue so an older packet cannot overwrite a
+newer disposition.
+
 Bounded review may also establish that an apparently unused item participates
 in presented work through a relationship that paths and commands could not
 show mechanically. This is different from a retention exception: the former

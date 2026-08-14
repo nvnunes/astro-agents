@@ -88,6 +88,50 @@ The complexity check is a ratchet over explicitly recorded complexity debt. It
 allows refactoring to reduce findings, but rejects a new complex function, a
 higher complexity score, or growth in the total advisory finding count.
 
+### Validation Review Scaling Benchmark
+
+When changing research-log candidate selection, producer-source context,
+orphan review rendering, or compact orphan decisions, run the retained
+fresh-process benchmark:
+
+```bash
+./.conda/bin/python \
+  skills/research-logging/scripts/benchmark_validation_review.py \
+  --mode indexed \
+  --orphans 12000 \
+  --orphans 24000 \
+  --warmups 1 \
+  --runs 3 \
+  --output tmp/validation-review-benchmark.json
+```
+
+The canonical workload has generator identity
+`ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c`.
+It builds the complete review index, queries every orphan candidate, and
+renders exactly the first 200-candidate batch. Require the 12,000-orphan
+median to remain below 60 seconds and the 24,000-orphan median to remain no
+more than 2.5 times the 12,000-orphan median on the recorded machine.
+
+Also require one static preparation per invocation, no more than one source
+read per unique producer script, and no repeated evaluation of the same
+invocation-target-section relationship in one query session. Run the retained
+legacy baseline only when attributing a scaling change:
+
+```bash
+./.conda/bin/python \
+  skills/research-logging/scripts/benchmark_validation_review.py \
+  --mode legacy \
+  --orphans 12000 \
+  --warmups 1 \
+  --runs 3 \
+  --output tmp/validation-review-legacy-baseline.json
+```
+
+Treat wall time as a retained benchmark gate, not a timing-sensitive unit
+test. Keep the generator parameters and the three measured samples with any
+accepted baseline update. The current accepted result is recorded in
+`skills/research-logging/tests/validation-review-benchmark-baseline.json`.
+
 Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused
 manual behavior cases for Record, Replace, Update Summary, Review, and Validate
 changes.

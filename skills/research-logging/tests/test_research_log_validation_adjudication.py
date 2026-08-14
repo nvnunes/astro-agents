@@ -682,7 +682,7 @@ class ReviewPacketTests(unittest.TestCase):
         packet, counts = ADJUDICATION.make_review_packet(
             scan,
             adjudication,
-            entry="e001",
+            ADJUDICATION.ReviewPacketRequest(entry="e001"),
         )
 
         self.assertEqual(counts, {"semantic_fallback": 1})

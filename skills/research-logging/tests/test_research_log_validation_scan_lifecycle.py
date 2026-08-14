@@ -686,7 +686,9 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(arguments["second"]["role_hint"], "output")
             prepared = prepare_adjudication(scan, "2026-08-07", RUNTIME.RULES_VERSION)
             packet, _ = ADJUDICATION.make_review_packet(
-                scan, prepared, kind="orphan_candidates"
+                scan,
+                prepared,
+                ADJUDICATION.ReviewPacketRequest(kind="orphan_candidates"),
             )
             self.assertIn("Path(args.second).mkdir", packet)
 
@@ -2850,7 +2852,9 @@ class ScanTests(unittest.TestCase):
             self.assertTrue(prepared["review_queue"])
 
             summary_packet, summary_counts = ADJUDICATION.make_review_packet(
-                scan, prepared, entry="Summary"
+                scan,
+                prepared,
+                ADJUDICATION.ReviewPacketRequest(entry="Summary"),
             )
             self.assertEqual(summary_counts, {"semantic_provenance": 1})
             self.assertIn("Summary: 1.0", summary_packet)
@@ -2858,7 +2862,9 @@ class ScanTests(unittest.TestCase):
 
             target = prepared["review_queue"][0]["identity"]
             target_packet, target_counts = ADJUDICATION.make_review_packet(
-                scan, prepared, target=target
+                scan,
+                prepared,
+                ADJUDICATION.ReviewPacketRequest(target=target),
             )
             self.assertEqual(sum(target_counts.values()), 1)
             self.assertIn(target, target_packet)

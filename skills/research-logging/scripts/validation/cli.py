@@ -13,7 +13,7 @@ from typing import Any, Optional, Sequence, cast
 
 from research_log_summary import SummaryPublicationError
 
-from .adjudication import make_review_packet
+from .adjudication import ReviewPacketRequest, make_review_packet
 from .contracts import (
     AdjudicationRecord,
     CanonicalRepositoryView,
@@ -113,11 +113,23 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--scan", required=True, type=Path)
     review.add_argument("--adjudication", required=True, type=Path)
     review.add_argument("--output", required=True, type=Path)
+    review.add_argument("--metrics", type=Path)
     review.add_argument(
         "--entry", help="include one queue scope, such as e003 or Summary"
     )
     review.add_argument("--target", help="include one exact queued target identity")
     review.add_argument("--kind", help="include one review-queue kind")
+    review.add_argument(
+        "--batch-size",
+        type=int,
+        default=200,
+        help="maximum orphan candidates in one deterministic packet batch",
+    )
+    review.add_argument(
+        "--batch-number",
+        type=int,
+        help="one-based orphan packet batch across the filtered queue",
+    )
 
     decide = subparsers.add_parser(
         "decide", help="apply compact reviewed decisions to an adjudication"
@@ -342,24 +354,24 @@ def _run_prepare(args: argparse.Namespace) -> int:
 
 
 def _run_review(args: argparse.Namespace) -> int:
+    metrics: dict[str, Any] = {}
     packet, counts = make_review_packet(
         load_scan_record(args.scan),
         load_adjudication_record(args.adjudication),
-        entry=args.entry,
-        target=args.target,
-        kind=args.kind,
+        ReviewPacketRequest(
+            entry=args.entry,
+            target=args.target,
+            kind=args.kind,
+            batch_size=args.batch_size,
+            batch_number=args.batch_number,
+        ),
+        metrics=metrics,
     )
     _write_text(args.output, packet)
-    print(
-        json.dumps(
-            {
-                "review_queue": sum(counts.values()),
-                "kinds": counts,
-                "packet_bytes": len(packet.encode("utf-8")),
-            },
-            sort_keys=True,
-        )
-    )
+    metrics.update({"review_queue": sum(counts.values()), "kinds": counts})
+    if args.metrics:
+        write_json(args.metrics, metrics)
+    print(json.dumps(metrics, sort_keys=True))
     return 0
 
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 
-from .adjudication import ORPHAN_TARGET, workflow_check
+from .adjudication import ORPHAN_TARGET
 from .contracts import ScanRecord, ValidationToolError
 from .graph import DependencyGraph
 from .graph_adapter import build_dependency_graph
@@ -26,6 +26,7 @@ from .inventory import (
     directory_membership_identity,
     display_path,
 )
+from .producer_bindings import workflow_check
 from .state import (
     ValidationState,
     ValidationStateContractError,

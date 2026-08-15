@@ -15,7 +15,6 @@ from .adjudication import ReviewPacketRequest, make_review_packet
 from .contracts import (
     AdjudicationRecord,
     CanonicalRepositoryView,
-    FileChangedError,
     LifecycleRecordContractError,
     ScanRecord,
     ValidationMetrics,
@@ -23,13 +22,11 @@ from .contracts import (
     decode_adjudication_record,
     decode_scan_record,
 )
+from .decision_store import merge_native_orphan_batch_judgments
 from .decisions import apply_review_decisions
 from .discovery import MarkdownDiscoveryError
 from .graph import GraphContractError
 from .graph_store import (
-    AGGREGATE_DIRECTORY,
-    aggregate_files,
-    build_repository_aggregate,
     discover_repository_summaries,
     replacement_repository_view,
     repository_identity_path,
@@ -37,12 +34,7 @@ from .graph_store import (
     validate_repository_view,
 )
 from .inventory import find_project_root
-from .records import (
-    RecordPublicationError,
-    publish_record_bundle,
-    record_bundle_identity,
-    repository_lock,
-)
+from .records import RecordPublicationError, validation_lock
 from .runtime import (
     ADJUDICATION_SCHEMA_VERSION,
     MATERIAL_INVENTORY_POLICY,
@@ -53,17 +45,7 @@ from .runtime import (
     render_records,
     scan_log,
 )
-
-
-def _add_index_command(subparsers: argparse._SubParsersAction) -> None:
-    """Add the disposable repository-aggregate rebuild command."""
-
-    index = subparsers.add_parser(
-        "index", help="build or refresh the repository research-log dependency index"
-    )
-    index.add_argument("--project-root", required=True, type=Path)
-    index.add_argument("--output", type=Path)
-    index.add_argument("--metrics", type=Path)
+from .scan import local_snapshot_identity
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,8 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Mechanical-first support for agent-led research-log validation."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    _add_index_command(subparsers)
 
     scan = subparsers.add_parser(
         "scan", help="scan a research log without semantic adjudication"
@@ -135,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--adjudication", required=True, type=Path)
     decide.add_argument("--decisions", required=True, type=Path)
     decide.add_argument("--output", required=True, type=Path)
+    decide.add_argument(
+        "--decision-store",
+        type=Path,
+        help="merge candidate-scoped orphan judgments into the canonical store",
+    )
 
     render = subparsers.add_parser(
         "render", help="render validation records from adjudications"
@@ -206,43 +191,6 @@ def load_adjudication_record(path: Path) -> AdjudicationRecord:
         raise ValidationToolError(f"invalid adjudication record {path}: {exc}") from exc
 
 
-def run_index_command(args: argparse.Namespace) -> int:
-    """Publish a current aggregate built only from canonical per-log slices."""
-
-    project_root = args.project_root.resolve()
-    output = args.output or project_root / AGGREGATE_DIRECTORY
-    names = ("manifest.json", "incoming.json")
-    prior_identity = record_bundle_identity(output, names)
-    aggregate, metrics = build_repository_aggregate(project_root, RULES_VERSION)
-    manifest, incoming = aggregate_files(aggregate)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        dir=output.parent, prefix=f".{output.name}-staging-"
-    ) as directory:
-        staged = Path(directory)
-        write_json(staged / "manifest.json", manifest)
-        write_json(staged / "incoming.json", incoming)
-
-        def validate_slices() -> None:
-            current, _ = build_repository_aggregate(project_root, RULES_VERSION)
-            if current != aggregate:
-                raise FileChangedError(
-                    "validation index slices changed during aggregate build"
-                )
-
-        publish_record_bundle(
-            staged,
-            output,
-            names,
-            expected_identity=prior_identity,
-            validate_publication=validate_slices,
-        )
-    if args.metrics:
-        write_json(args.metrics, metrics)
-    print(json.dumps(metrics, sort_keys=True))
-    return 0
-
-
 def repository_view_for_scan(
     args: argparse.Namespace, project_root: Path
 ) -> tuple[CanonicalRepositoryView, ValidationMetrics]:
@@ -296,12 +244,12 @@ def _run_scan(args: argparse.Namespace) -> int:
     prior = _read_json(args.state) if args.state else None
     canonical_dir = args.summary.resolve().with_suffix("")
     canonical_state = canonical_dir / "validation-state.json"
-    if (
-        args.state
-        and args.state.resolve() == canonical_state
-        and not lint_records(canonical_dir)["ok"]
-    ):
-        prior = None
+    if args.state and args.state.resolve() == canonical_state:
+        canonical_lint = lint_records(canonical_dir)
+        if not canonical_lint["ok"] or not canonical_lint.get(
+            "cache_usable", False
+        ):
+            prior = None
     root = find_project_root(args.summary.resolve())
     repository, index_metrics = repository_view_for_scan(args, root)
     scan, metrics = scan_log(
@@ -366,12 +314,39 @@ def _run_review(args: argparse.Namespace) -> int:
 
 
 def _run_decide(args: argparse.Namespace) -> int:
+    scan = load_scan_record(args.scan)
+    adjudication = load_adjudication_record(args.adjudication)
+    decisions = _read_json(args.decisions)
     updated, counts = apply_review_decisions(
-        load_scan_record(args.scan),
-        load_adjudication_record(args.adjudication),
-        _read_json(args.decisions),
+        scan,
+        adjudication,
+        decisions,
     )
-    write_json(args.output, updated)
+    if args.decision_store is None:
+        write_json(args.output, updated)
+    else:
+        canonical_dir = repository_identity_path(
+            scan["log_root"], Path(scan["project_root"])
+        )
+        canonical_store = canonical_dir / "validation-decisions.json"
+        if args.decision_store.resolve() != canonical_store:
+            raise ValidationToolError(
+                "--decision-store must name the scanned log's canonical store"
+            )
+        with validation_lock(canonical_dir):
+            prior_store = (
+                _read_json(canonical_store) if canonical_store.is_file() else None
+            )
+            store, store_counts = merge_native_orphan_batch_judgments(
+                prior_store,
+                decisions.get("actions", []),
+                validation_rules_version=scan["validation_rules_version"],
+                local_snapshot_identity=local_snapshot_identity(scan),
+                decision_date=adjudication["date"],
+            )
+            write_json(canonical_store, store)
+            write_json(args.output, updated)
+        counts.update(store_counts)
     print(json.dumps(counts, sort_keys=True))
     return 0
 
@@ -398,13 +373,16 @@ def _run_render(args: argparse.Namespace) -> int:
 def _run_lint(args: argparse.Namespace) -> int:
     scan = load_scan_record(args.scan) if args.scan else None
     expected = scan["entry_order"] if scan else None
-    result = lint_records(args.output_dir, expected)
+    result = lint_records(
+        args.output_dir,
+        expected,
+        local_snapshot_identity(scan) if scan is not None else None,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 1
 
 
 COMMAND_HANDLERS = {
-    "index": run_index_command,
     "scan": _run_scan,
     "prepare": _run_prepare,
     "review": _run_review,
@@ -413,33 +391,11 @@ COMMAND_HANDLERS = {
     "lint": _run_lint,
 }
 
-LOCKED_COMMANDS = frozenset({"index", "scan", "render", "lint"})
-
-
-def _command_project_root(args: argparse.Namespace) -> Path:
-    """Return the repository owning one canonical command."""
-
-    if args.command == "index":
-        return args.project_root.resolve()
-    if args.command == "scan":
-        return find_project_root(args.summary.resolve())
-    if args.command == "render":
-        return Path(load_scan_record(args.scan)["project_root"])
-    if args.command == "lint" and args.scan:
-        return Path(load_scan_record(args.scan)["project_root"])
-    if args.command == "lint":
-        return find_project_root(args.output_dir.resolve())
-    raise ValidationToolError(f"command has no canonical repository: {args.command}")
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run validation command orchestration and return an exit status."""
 
     args = build_parser().parse_args(argv)
     try:
-        if args.command in LOCKED_COMMANDS:
-            with repository_lock(_command_project_root(args)):
-                return COMMAND_HANDLERS[args.command](args)
         return COMMAND_HANDLERS[args.command](args)
     except (
         OSError,

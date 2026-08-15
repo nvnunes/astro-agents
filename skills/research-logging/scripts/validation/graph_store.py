@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
@@ -44,8 +43,8 @@ from .inventory import (
     owned_inventory,
 )
 
-SLICE_SCHEMA_VERSION = 6
-AGGREGATE_SCHEMA_VERSION = 2
+SLICE_SCHEMA_VERSION = 7
+LEGACY_SLICE_SCHEMA_VERSION = 6
 SLICE_FILENAME = "validation-index.json"
 REPOSITORY_DISCOVERY_EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -68,8 +67,7 @@ REPOSITORY_DISCOVERY_EXCLUDED_PREFIXES = (
     ".validation-",
     ".research-log-validation",
 )
-AGGREGATE_DIRECTORY = ".research-log-validation-index"
-REPOSITORY_VIEW_SCHEMA = "canonical-graph-aggregate-v4"
+REPOSITORY_VIEW_SCHEMA = "canonical-graph-view-v5"
 REPOSITORY_VIEW_KINDS = frozenset(
     {
         "complete",
@@ -97,6 +95,7 @@ class RepositoryViewScope:
     expected_summaries: Sequence[str] = ()
     refresh_summary: str | None = None
     cross_log_complete: bool = True
+    excluded_slices: Mapping[str, str] = dataclass_field(default_factory=dict)
 
 
 def _json_identity(value: Any) -> str:
@@ -236,6 +235,7 @@ def empty_repository_view(rules_version: str) -> Dict[str, Any]:
             "expected_summaries": [],
             "refresh_summary": None,
             "cross_log_complete": True,
+            "excluded_slices": {},
         },
         "material_owners": {},
         "cross_log_sources": {},
@@ -269,6 +269,7 @@ def repository_view(
             "expected_summaries": expected,
             "refresh_summary": scope.refresh_summary,
             "cross_log_complete": scope.cross_log_complete,
+            "excluded_slices": dict(sorted(scope.excluded_slices.items())),
         },
         "material_owners": {
             path: dict(owner) for path, owner in sorted(material_owners.items())
@@ -282,6 +283,7 @@ def repository_view(
                 "path": snapshot["path"],
                 "graph_identity": snapshot["graph_identity"],
                 "source_identity": snapshot["source_identity"],
+                "local_snapshot_identity": snapshot["local_snapshot_identity"],
                 "content_identity": dict(snapshot["content_identity"]),
             }
             for summary, snapshot in sorted(normalized_slices.items())
@@ -346,6 +348,7 @@ def _validate_repository_scope(value: Any, slices: Any) -> None:
             "expected_summaries",
             "refresh_summary",
             "cross_log_complete",
+            "excluded_slices",
         }
         or value.get("kind") not in REPOSITORY_VIEW_KINDS
         or not isinstance(value.get("expected_summaries"), list)
@@ -356,6 +359,14 @@ def _validate_repository_scope(value: Any, slices: Any) -> None:
         )
         or not isinstance(slices, Mapping)
         or not isinstance(value.get("cross_log_complete"), bool)
+        or not isinstance(value.get("excluded_slices"), Mapping)
+        or any(
+            not isinstance(summary, str)
+            or not summary
+            or not isinstance(reason, str)
+            or not reason
+            for summary, reason in value["excluded_slices"].items()
+        )
     ):
         raise GraphContractError("canonical repository scope is invalid")
     kind = value["kind"]
@@ -368,20 +379,28 @@ def _validate_repository_scope(value: Any, slices: Any) -> None:
         raise GraphContractError("canonical repository refresh summary is invalid")
     expected = set(value["expected_summaries"])
     actual = set(slices)
+    excluded = set(value["excluded_slices"])
+    if actual & excluded or not excluded <= expected - actual:
+        raise GraphContractError("canonical repository excluded slices are invalid")
     if kind == "complete" and (
-        refresh_summary is not None or actual != expected or not cross_log_complete
+        refresh_summary is not None
+        or actual != expected
+        or excluded
+        or not cross_log_complete
     ):
         raise GraphContractError("complete repository scope lacks exact slices")
     if kind == "replacement" and (
         refresh_summary is None
         or not actual <= expected - {refresh_summary}
         or cross_log_complete != (actual == expected - {refresh_summary})
+        or excluded != expected - {refresh_summary} - actual
     ):
         raise GraphContractError("repository replacement view lacks exact other slices")
     if kind == "diagnostic" and (
         refresh_summary is not None
         or expected
         or actual
+        or excluded
         or not cross_log_complete
     ):
         raise GraphContractError("diagnostic repository view must be empty")
@@ -446,6 +465,7 @@ def _validate_repository_slices(value: Any) -> None:
                 "path",
                 "graph_identity",
                 "source_identity",
+                "local_snapshot_identity",
                 "content_identity",
             }
             or not isinstance(snapshot["path"], str)
@@ -453,6 +473,7 @@ def _validate_repository_slices(value: Any) -> None:
             or snapshot["path"] in paths
             or not _is_sha256(snapshot["graph_identity"])
             or not _is_sha256(snapshot["source_identity"])
+            or not _is_sha256(snapshot["local_snapshot_identity"])
         ):
             raise GraphContractError("canonical repository slice is invalid")
         paths.add(snapshot["path"])
@@ -530,6 +551,8 @@ def slice_record(
     summary: str,
     input_files: Mapping[str, Any],
     material_owners: Mapping[str, Mapping[str, str]] | None = None,
+    *,
+    local_snapshot_identity: str | None = None,
 ) -> Dict[str, Any]:
     """Return the exact independently stageable per-log record.
 
@@ -546,12 +569,16 @@ def slice_record(
         "source_inputs": source_inputs,
         "edge_sources": edge_sources,
     }
+    local_snapshot_identity = local_snapshot_identity or "0" * 64
+    if not _is_sha256(local_snapshot_identity):
+        raise GraphContractError("slice local snapshot identity is invalid")
     return {
         "schema_version": SLICE_SCHEMA_VERSION,
         "validation_rules_version": sliced.rules_version,
         "summary": summary,
         "namespace": namespace,
         "graph_identity": sliced.identity,
+        "local_snapshot_identity": local_snapshot_identity,
         "material_owners": {
             identity: dict(owner)
             for identity, owner in sorted(material_owners.items())
@@ -563,27 +590,43 @@ def slice_record(
     }
 
 
-def _slice_summary(value: Mapping[str, Any]) -> str:
+def _slice_summary(
+    value: Mapping[str, Any],
+    *,
+    schema_version: int = SLICE_SCHEMA_VERSION,
+    include_local_snapshot: bool = True,
+) -> str:
     if not isinstance(value, Mapping):
         raise GraphContractError("validation index slice must be an object")
-    if set(value) != {
+    expected_fields = {
         "schema_version",
         "validation_rules_version",
         "summary",
         "namespace",
         "graph_identity",
+        "local_snapshot_identity",
         "material_owners",
         "source_inputs",
         "edge_sources",
         "source_identity",
         "graph",
-    }:
+    }
+    if not include_local_snapshot:
+        expected_fields.remove("local_snapshot_identity")
+    if set(value) != expected_fields:
         raise GraphContractError("validation index slice has incorrect fields")
-    if value["schema_version"] != SLICE_SCHEMA_VERSION:
+    if value["schema_version"] != schema_version:
         raise GraphContractError("unsupported validation index slice schema")
     summary = value["summary"]
     if not isinstance(summary, str):
         raise GraphContractError("validation index summary must be a string")
+    _validate_slice_metadata(value, summary, include_local_snapshot)
+    return summary
+
+
+def _validate_slice_metadata(
+    value: Mapping[str, Any], summary: str, include_local_snapshot: bool
+) -> None:
     for field in (
         "validation_rules_version",
         "namespace",
@@ -594,6 +637,12 @@ def _slice_summary(value: Mapping[str, Any]) -> str:
             raise GraphContractError(
                 f"validation index {field.replace('_', ' ')} must be a string"
             )
+    if include_local_snapshot and not isinstance(
+        value["local_snapshot_identity"], str
+    ):
+        raise GraphContractError(
+            "validation index local snapshot identity must be a string"
+        )
     if value["namespace"] != _log_namespace(summary):
         raise GraphContractError("validation index namespace does not match summary")
     _validate_repository_owners(value["material_owners"])
@@ -602,7 +651,6 @@ def _slice_summary(value: Mapping[str, Any]) -> str:
         for owner in value["material_owners"].values()
     ):
         raise GraphContractError("validation index contains a foreign material owner")
-    return summary
 
 
 def _slice_graph(value: Mapping[str, Any]) -> DependencyGraph:
@@ -680,11 +728,26 @@ def load_slice(value: Mapping[str, Any]) -> Tuple[str, DependencyGraph]:
     return summary, graph
 
 
-def aggregate_records(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Build the small disposable aggregate from independent log slices."""
+def load_legacy_slice(value: Mapping[str, Any]) -> Tuple[str, DependencyGraph]:
+    """Load the exact schema-6 v43 slice retained for Phase 5 migration."""
+
+    summary = _slice_summary(
+        value,
+        schema_version=LEGACY_SLICE_SCHEMA_VERSION,
+        include_local_snapshot=False,
+    )
+    graph = _slice_graph(value)
+    _validate_slice_sources(value, graph)
+    return summary, graph
+
+
+def repository_slice_projection(
+    records: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build one ephemeral diagnostic projection from independent slices."""
 
     logs = []
-    incoming: Dict[str, list[Dict[str, Any]]] = {}
+    graph_edges: list[Dict[str, Any]] = []
     rules_versions = set()
     summaries: set[str] = set()
     namespaces: set[str] = set()
@@ -709,31 +772,22 @@ def aggregate_records(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         for edge in graph.edges:
             if edge.kind is not EdgeKind.CROSS_LOG_USE:
                 continue
-            owner_summary = f"{edge.target.namespace}.md"
-            incoming.setdefault(owner_summary, []).append(edge.as_dict())
+            graph_edges.append(edge.as_dict())
     if len(rules_versions) > 1:
-        raise GraphContractError("aggregate slices use different rules versions")
+        raise GraphContractError("repository slices use different rules versions")
     logs.sort(key=lambda item: item["summary"])
-    normalized_incoming = {
-        owner: sorted(edges, key=lambda edge: edge["identity"])
-        for owner, edges in sorted(incoming.items())
-    }
-    payload = {
-        "schema_version": AGGREGATE_SCHEMA_VERSION,
-        "validation_rules_version": next(iter(rules_versions), ""),
+    return {
         "logs": logs,
-        "incoming": normalized_incoming,
+        "graph_edges": sorted(graph_edges, key=lambda edge: edge["identity"]),
         "sources": {
             value["summary"]: value["source_inputs"]
             for value in sorted(records, key=lambda item: item["summary"])
             if value["source_inputs"]
         },
     }
-    payload["identity"] = _json_identity(payload)
-    return payload
 
 
-def aggregate_material_owners(
+def slice_material_owners(
     records: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Dict[str, str]]:
     """Join the independently owned material maps from canonical log slices."""
@@ -750,176 +804,6 @@ def aggregate_material_owners(
                 )
             owners[identity] = dict(owner)
     return dict(sorted(owners.items()))
-
-
-def aggregate_graph_edges(aggregate: Mapping[str, Any]) -> list[Dict[str, Any]]:
-    """Return canonical typed cross-log edges without a lossy projection."""
-
-    return sorted(
-        (edge for edges in aggregate.get("incoming", {}).values() for edge in edges),
-        key=lambda edge: edge["identity"],
-    )
-
-
-def aggregate_files(
-    aggregate: Mapping[str, Any],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Split one aggregate value into its small manifest and incoming map."""
-
-    incoming = {
-        "schema_version": AGGREGATE_SCHEMA_VERSION,
-        "validation_rules_version": aggregate["validation_rules_version"],
-        "incoming": aggregate["incoming"],
-        "sources": aggregate["sources"],
-    }
-    incoming["identity"] = _json_identity(incoming)
-    manifest = {
-        "schema_version": AGGREGATE_SCHEMA_VERSION,
-        "validation_rules_version": aggregate["validation_rules_version"],
-        "logs": aggregate["logs"],
-        "incoming_identity": incoming["identity"],
-    }
-    manifest["identity"] = _json_identity(manifest)
-    return manifest, incoming
-
-
-def _validate_aggregate_logs(value: Any) -> None:
-    if not isinstance(value, list):
-        raise GraphContractError("aggregate manifest logs must be a list")
-    summaries: set[str] = set()
-    namespaces: set[str] = set()
-    for index, item in enumerate(value):
-        if not isinstance(item, Mapping) or set(item) != {
-            "summary",
-            "namespace",
-            "graph_identity",
-            "source_identity",
-        }:
-            raise GraphContractError(f"aggregate log {index} has incorrect fields")
-        if not all(isinstance(item[field], str) for field in item):
-            raise GraphContractError(f"aggregate log {index} fields must be strings")
-        if item["namespace"] != _log_namespace(item["summary"]):
-            raise GraphContractError(f"aggregate log {index} namespace is invalid")
-        if not _is_sha256(item["graph_identity"]):
-            raise GraphContractError(f"aggregate log {index} identity is invalid")
-        if not _is_sha256(item["source_identity"]):
-            raise GraphContractError(
-                f"aggregate log {index} source identity is invalid"
-            )
-        if item["summary"] in summaries or item["namespace"] in namespaces:
-            raise GraphContractError("aggregate manifest contains duplicate logs")
-        summaries.add(item["summary"])
-        namespaces.add(item["namespace"])
-
-
-def _validate_aggregate_incoming(value: Any) -> None:
-    if not isinstance(value, Mapping):
-        raise GraphContractError("aggregate incoming map must be an object")
-    identities: set[str] = set()
-    for owner, raw_edges in value.items():
-        if not isinstance(owner, str) or not isinstance(raw_edges, list):
-            raise GraphContractError("aggregate incoming entries are invalid")
-        for raw_edge in raw_edges:
-            edge = GraphEdge.from_dict(raw_edge)
-            if edge.kind is not EdgeKind.CROSS_LOG_USE:
-                raise GraphContractError("aggregate contains a non-cross-log edge")
-            if owner != f"{edge.target.namespace}.md":
-                raise GraphContractError("aggregate incoming edge owner is invalid")
-            if edge.identity in identities:
-                raise GraphContractError("aggregate contains duplicate incoming edges")
-            identities.add(edge.identity)
-
-
-def _validate_aggregate_file_fields(
-    manifest: Mapping[str, Any], incoming: Mapping[str, Any]
-) -> None:
-    if set(manifest) != {
-        "schema_version",
-        "validation_rules_version",
-        "logs",
-        "incoming_identity",
-        "identity",
-    }:
-        raise GraphContractError("aggregate manifest has incorrect fields")
-    if set(incoming) != {
-        "schema_version",
-        "validation_rules_version",
-        "incoming",
-        "sources",
-        "identity",
-    }:
-        raise GraphContractError("aggregate incoming record has incorrect fields")
-    for record, description in ((manifest, "manifest"), (incoming, "incoming")):
-        if not isinstance(record["validation_rules_version"], str):
-            raise GraphContractError(
-                f"aggregate {description} rules version must be a string"
-            )
-        if not isinstance(record["identity"], str):
-            raise GraphContractError(
-                f"aggregate {description} identity must be a string"
-            )
-    if not isinstance(manifest["incoming_identity"], str):
-        raise GraphContractError("aggregate incoming identity must be a string")
-
-
-def _record_identity(value: Mapping[str, Any], description: str) -> str:
-    payload = dict(value)
-    identity = payload.pop("identity", None)
-    if identity != _json_identity(payload):
-        raise GraphContractError(f"aggregate {description} identity is invalid")
-    return identity
-
-
-def _validate_aggregate_pair(
-    manifest: Mapping[str, Any], incoming: Mapping[str, Any], incoming_identity: str
-) -> None:
-    if manifest.get("incoming_identity") != incoming_identity:
-        raise GraphContractError("aggregate files do not identify each other")
-    if any(
-        record.get("schema_version") != AGGREGATE_SCHEMA_VERSION
-        for record in (manifest, incoming)
-    ):
-        raise GraphContractError("unsupported aggregate schema")
-    if manifest.get("validation_rules_version") != incoming.get(
-        "validation_rules_version"
-    ):
-        raise GraphContractError("aggregate files use different rules versions")
-
-
-def _validate_aggregate_sources(value: Any) -> None:
-    if not isinstance(value, Mapping):
-        raise GraphContractError("aggregate sources must be an object")
-    for summary, inputs in value.items():
-        if not isinstance(summary, str) or not isinstance(inputs, Mapping):
-            raise GraphContractError("aggregate source entry is invalid")
-        for identity, snapshot in inputs.items():
-            if not isinstance(identity, str) or not identity:
-                raise GraphContractError("aggregate source path is invalid")
-            _source_snapshot(snapshot)
-
-
-def load_aggregate_files(
-    manifest: Mapping[str, Any], incoming: Mapping[str, Any]
-) -> Dict[str, Any]:
-    """Validate and join the disposable aggregate files."""
-
-    if not isinstance(manifest, Mapping) or not isinstance(incoming, Mapping):
-        raise GraphContractError("aggregate files must be objects")
-    _validate_aggregate_file_fields(manifest, incoming)
-    manifest_identity = _record_identity(manifest, "manifest")
-    incoming_identity = _record_identity(incoming, "incoming")
-    _validate_aggregate_pair(manifest, incoming, incoming_identity)
-    _validate_aggregate_logs(manifest["logs"])
-    _validate_aggregate_incoming(incoming["incoming"])
-    _validate_aggregate_sources(incoming["sources"])
-    return {
-        "schema_version": AGGREGATE_SCHEMA_VERSION,
-        "validation_rules_version": manifest["validation_rules_version"],
-        "logs": manifest["logs"],
-        "incoming": incoming["incoming"],
-        "sources": incoming["sources"],
-        "identity": manifest_identity,
-    }
 
 
 def slice_paths(
@@ -1124,6 +1008,7 @@ class RepositorySliceSet(NamedTuple):
 
     records: List[Dict[str, Any]]
     snapshots: Dict[str, Dict[str, Any]]
+    excluded: Dict[str, str]
 
 
 def _load_repository_slice(
@@ -1157,22 +1042,6 @@ def _load_repository_slice(
     return value, summary, graph
 
 
-def _usable_repository_slice(
-    path: Path,
-    project_root: Path,
-    rules_version: str,
-    summaries: Sequence[Path],
-    *,
-    allow_unusable: bool,
-) -> tuple[dict[str, Any], str, DependencyGraph] | None:
-    try:
-        return _load_repository_slice(path, project_root, rules_version, summaries)
-    except ValidationToolError:
-        if allow_unusable:
-            return None
-        raise
-
-
 def repository_slice_set(
     project_root: Path,
     rules_version: str,
@@ -1185,22 +1054,31 @@ def repository_slice_set(
 
     records: List[Dict[str, Any]] = []
     snapshots: Dict[str, Dict[str, Any]] = {}
+    excluded: Dict[str, str] = {}
     summaries = (
         list(summaries)
         if summaries is not None
         else discover_repository_summaries(project_root)
     )
-    for path in slice_paths(project_root, summaries):
-        path_summary = display_path(path.parent.with_suffix(".md"), project_root)
+    for summary_path in summaries:
+        path_summary = display_path(summary_path, project_root)
         if path_summary == replacing_summary:
             continue
-        loaded = _usable_repository_slice(
-            path,
-            project_root,
-            rules_version,
-            summaries,
-            allow_unusable=allow_unusable,
-        )
+        path = summary_path.with_suffix("") / SLICE_FILENAME
+        if not path.is_file():
+            if allow_unusable:
+                excluded[path_summary] = "missing"
+                continue
+            raise ValidationToolError(f"canonical graph slice is missing: {path}")
+        try:
+            loaded = _load_repository_slice(
+                path, project_root, rules_version, summaries
+            )
+        except ValidationToolError as exc:
+            if not allow_unusable:
+                raise
+            excluded[path_summary] = str(exc)
+            continue
         if loaded is None:
             continue
         value, summary, graph = loaded
@@ -1209,53 +1087,16 @@ def repository_slice_set(
             "path": display_path(path, project_root),
             "graph_identity": graph.identity,
             "source_identity": value["source_identity"],
+            "local_snapshot_identity": value["local_snapshot_identity"],
             "content_identity": _content_identity(path),
         }
     if len(snapshots) != len(records):
         raise ValidationToolError("canonical graph slices contain duplicate logs")
-    return RepositorySliceSet(records, dict(sorted(snapshots.items())))
-
-
-def build_repository_aggregate(
-    project_root: Path, rules_version: str
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Build the disposable repository view from independently owned slices."""
-
-    started = time.monotonic()
-    summaries = discover_repository_summaries(project_root)
-    paths = list(slice_paths(project_root, summaries))
-    records = repository_slice_set(
-        project_root, rules_version, summaries=summaries
-    ).records
-    aggregate = aggregate_records(records)
-    if not records:
-        aggregate["validation_rules_version"] = rules_version
-    expected_logs = {
-        display_path(summary, project_root)
-        for summary in summaries
-    }
-    actual_logs = {item["summary"] for item in aggregate["logs"]}
-    if actual_logs != expected_logs:
-        raise ValidationToolError(
-            "canonical graph aggregate requires one current slice per maintained log: "
-            f"missing={sorted(expected_logs - actual_logs)!r}; "
-            f"extra={sorted(actual_logs - expected_logs)!r}"
-        )
-    if aggregate["validation_rules_version"] != rules_version:
-        raise ValidationToolError(
-            "canonical graph slices do not use the requested validation rules"
-        )
-    return aggregate, {
-        "status": "rebuilt",
-        "logs": len(actual_logs),
-        "inputs": len(paths),
-        "edges": sum(len(value) for value in aggregate["incoming"].values()),
-        "scripts_parsed": 0,
-        "logs_rebuilt": len(actual_logs),
-        "files_hashed": len(paths),
-        "bytes_hashed": sum(path.stat().st_size for path in paths),
-        "elapsed_seconds": time.monotonic() - started,
-    }
+    return RepositorySliceSet(
+        records,
+        dict(sorted(snapshots.items())),
+        dict(sorted(excluded.items())),
+    )
 
 
 def replacement_repository_view(
@@ -1289,8 +1130,8 @@ def replacement_repository_view(
         summaries=summaries,
         allow_unusable=True,
     )
-    aggregate = aggregate_records(slices.records)
-    actual_logs = {item["summary"] for item in aggregate["logs"]}
+    projection = repository_slice_projection(slices.records)
+    actual_logs = {item["summary"] for item in projection["logs"]}
     required_others = expected_logs - {summary_identity}
     if not actual_logs <= required_others:
         raise ValidationToolError(
@@ -1299,7 +1140,7 @@ def replacement_repository_view(
         )
     complete = actual_logs == required_others
     material_owners = (
-        aggregate_material_owners(slices.records)
+        slice_material_owners(slices.records)
         if complete
         else _material_owners_for_records(
             project_root,
@@ -1325,9 +1166,9 @@ def replacement_repository_view(
         repository_view(
             rules_version,
             material_owners,
-            aggregate_graph_edges(aggregate),
+            projection["graph_edges"],
             contributions=RepositoryContributions(
-                cross_log_sources=aggregate["sources"],
+                cross_log_sources=projection["sources"],
                 slices=slices.snapshots,
             ),
             scope=RepositoryViewScope(
@@ -1335,6 +1176,7 @@ def replacement_repository_view(
                 expected_summaries=sorted(expected_logs),
                 refresh_summary=summary_identity,
                 cross_log_complete=complete,
+                excluded_slices=slices.excluded,
             ),
         ),
     )

@@ -63,7 +63,9 @@ A populated log may contain:
   scripts/
   evidence.csv
   validation.md
-  validation-failures.md
+  validation-decisions.json
+  validation-state.json
+  validation-index.json
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
@@ -1001,15 +1003,15 @@ another maintained research log is not considered unused.
 One catch-all row is used for each affected entry folder or for the log as a
 whole. The row uses `-` for Section, `N/A` for Integrity and Reproducibility,
 `FAIL` for Provenance, and gives the number of unresolved items in Notes. The
-individual paths appear in `validation-failures.md`. A `Validation:` note you
+individual paths appear in `validation.md` under `## Remediation`. A `Validation:` note you
 approve can explain why a named item is intentionally kept.
 
 When an unused-material queue is large, validation reviews it in stable
 batches of at most 200 candidates by default. Every candidate remains in the
 canonical pending inventory; batching limits only the material presented for
-one review decision. After each batch is applied, the validator regenerates
-the next packet from the updated queue so an older packet cannot overwrite a
-newer disposition.
+one review decision. Batches prepared from the same scan may be applied in any
+order. Candidate-scoped fingerprints reject only changed candidates; exact
+reapplication is a no-op and conflicting reapplication is rejected.
 
 Bounded review may also establish that an apparently unused item participates
 in presented work through a relationship that paths and commands could not
@@ -1063,40 +1065,39 @@ It records when validation ran, the complete canonical log scope, and whether
 the run was standard or reproduction validation. It does not reduce the log
 to one overall pass-or-fail result.
 
+Its local snapshot identity covers validation-relevant source content and
+directory membership while excluding generated records and other maintained
+logs. A later scan can therefore distinguish a current report from an intact
+historical report without requiring state, a graph slice, or a repository
+aggregate.
+
 Near the top, `## Status Summary` gives the report-update date, Summary status,
 and one compact row per included entry. Detailed sections cover marked Summary
 statistics and every checked entry target. Counts show how many rows were
 checked and how many failed. Short notes may identify the presented result,
 explain an approved comparison rule, or state a known inspection limitation.
-Detailed problems belong in `validation-failures.md`.
+Detailed problems belong under `## Remediation` in the same report.
 
 #### Details about problems
 
-`<log>/validation-failures.md` is the optional generated remediation queue; it
-is not itself a validation result. The validator creates or rebuilds it
-when failures exist and links it from `validation.md`. Its absence does not
-mean that validation passed.
-
-The file groups current problems by summary or entry and identifies which check
-failed, what was found, and any specific unresolved paths or `data.csv`
-references. It is a current work list, not a history: successful checks and
-full command logs do not belong there.
-
-A research agent does not edit this generated queue. It resolves or disputes a
-finding by changing research-owned evidence or instructions. The next completed
-validation alone rebuilds or removes the queue and republishes the report.
+The report's generated `## Remediation` section groups problems by summary or
+entry and identifies which check failed, what was found, and any specific
+unresolved paths or `data.csv` references. It is part of the durable completed
+record. A research agent resolves or disputes a finding by changing
+research-owned evidence or instructions; the next completed validation alone
+rebuilds the report. The former separate `validation-failures.md` file is
+obsolete.
 
 #### Other generated validation files
 
-Validation also maintains `validation-state.json`, `validation-index.json`, and
-the repository-level `.research-log-validation-index/`. These generated files
-help the validator recognize unchanged work and material shared between logs.
-Do not edit them. Missing or outdated generated state causes the relevant
-checks to run again; it does not make the research log fail. The per-log files
-form one generated bundle. If an interrupted run leaves that bundle incomplete
-or inconsistent, the next canonical validation rebuilds it rather than
-restoring an earlier generated version. The repository-level index is also
-rebuildable from current per-log records.
+Validation also maintains durable `validation-decisions.json` and disposable
+`validation-state.json` and `validation-index.json`. The decision store retains
+compatible semantic judgments with their exact fingerprints and available
+rationale. State and the graph slice accelerate unchanged work and cross-log
+coverage. Missing or outdated caches cause bounded recomputation or an explicit
+coverage limitation; they do not make the research log fail or invalidate a
+readable completed report. Repository views are assembled on demand from
+compatible per-log slices and are never stored as a shared aggregate.
 
 ## Roles and keeping validation current
 
@@ -1106,9 +1107,9 @@ is not a claim of organizational independence or independent scientific
 replication.
 
 Research changes and canonical validation are separate activities. Do not
-intentionally change research-log inputs while canonical validation is running.
-Only one canonical validation operation runs in a repository at a time; a
-second attempt stops rather than publishing competing records.
+intentionally change the log being published during its final currentness
+check. Canonical writers serialize per log, so different logs may validate and
+publish concurrently while two writers to the same log cannot compete.
 
 The validation agent may read maintained summaries, entries, scripts, saved
 evidence, `data.csv`, `evidence.csv`, and authored `Validation:` notes, but it
@@ -1124,7 +1125,8 @@ Research changes do not trigger validation, reproduction, broad checks, or a
 summary update. Perform only the production check needed to keep changed
 presentation consistent with its retained source. The next Validate request
 compares current inputs with saved fingerprints, reuses only unchanged
-outcomes, and regenerates the complete canonical validation bundle.
+outcomes, and republishes the durable report and decisions before repairing
+disposable caches.
 
 Files and owned-directory membership must remain unchanged while they are
 being checked. Validation confirms content and membership again before

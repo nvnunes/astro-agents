@@ -46,6 +46,7 @@ class ValidationState(TypedDict):
 
     schema_version: int
     validation_rules_version: str
+    local_snapshot_identity: str
     input_fingerprint: str
     input_files: dict[str, dict[str, Any]]
     mechanical_checks: dict[str, Any]
@@ -59,6 +60,8 @@ class ValidationState(TypedDict):
 
 
 VALIDATION_STATE_KEYS = frozenset(ValidationState.__required_keys__)
+LEGACY_VALIDATION_STATE_SCHEMA_VERSION = 9
+LEGACY_VALIDATION_STATE_KEYS = VALIDATION_STATE_KEYS - {"local_snapshot_identity"}
 _COMPLETED_CHECK_REQUIRED = {
     "entry",
     "target",
@@ -440,20 +443,16 @@ def _decode_report(value: Any) -> None:
     _require_sha256(report["sha256"], "validation state report sha256")
 
 
-def decode_validation_state(
+def _decode_validation_state(
     value: Any,
     *,
     schema_version: int,
-) -> ValidationState:
-    """Decode one exact validation-state record.
-
-    The decoder establishes the nested container, scalar, and identity syntax
-    required for safe incremental comparison. Cross-record relationships such
-    as report-count agreement remain the record linter's responsibility.
-    """
+    expected_keys: frozenset[str],
+) -> dict[str, Any]:
+    """Decode the fields shared by one exact native or v43 state record."""
 
     state = _require_mapping(value, "validation state")
-    if set(state) != VALIDATION_STATE_KEYS:
+    if set(state) != expected_keys:
         raise ValidationStateContractError(
             "validation state has incorrect top-level fields"
         )
@@ -464,6 +463,11 @@ def decode_validation_state(
     _require_string(state["validation_rules_version"], "validation state rules version")
     for field in ("input_fingerprint", "graph_identity"):
         _require_sha256(state[field], f"validation state {field}")
+    if "local_snapshot_identity" in state:
+        _require_sha256(
+            state["local_snapshot_identity"],
+            "validation state local_snapshot_identity",
+        )
     _decode_identity_map(
         state["input_files"],
         "validation state input_files",
@@ -499,4 +503,50 @@ def decode_validation_state(
     for index, check in enumerate(checks):
         _decode_completed_check(check, index)
     _decode_orphan_dispositions(state["orphan_dispositions"])
-    return cast(ValidationState, value)
+    return dict(value)
+
+
+def decode_validation_state(
+    value: Any,
+    *,
+    schema_version: int,
+) -> ValidationState:
+    """Decode one exact native validation-state record.
+
+    The decoder establishes the nested container, scalar, and identity syntax
+    required for safe incremental comparison. Cross-record relationships such
+    as report-count agreement remain the record linter's responsibility.
+    """
+
+    decoded = _decode_validation_state(
+        value,
+        schema_version=schema_version,
+        expected_keys=VALIDATION_STATE_KEYS,
+    )
+    return cast(ValidationState, decoded)
+
+
+def decode_legacy_validation_state(value: Any) -> dict[str, Any]:
+    """Decode the exact schema-9 v43 cache without accepting compatibility drift."""
+
+    return _decode_validation_state(
+        value,
+        schema_version=LEGACY_VALIDATION_STATE_SCHEMA_VERSION,
+        expected_keys=LEGACY_VALIDATION_STATE_KEYS,
+    )
+
+
+def decode_compatible_validation_state(
+    value: Any,
+    *,
+    schema_version: int,
+) -> dict[str, Any]:
+    """Decode native state or the one temporary v43 migration source."""
+
+    try:
+        return dict(decode_validation_state(value, schema_version=schema_version))
+    except ValidationStateContractError as native_error:
+        try:
+            return decode_legacy_validation_state(value)
+        except ValidationStateContractError:
+            raise native_error

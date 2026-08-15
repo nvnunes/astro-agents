@@ -36,6 +36,7 @@ from .contracts import (
     decode_adjudication_record,
     decode_scan_record,
 )
+from .decision_store import ValidationDecisionStore, build_decision_store
 from .decisions import semantic_failure_bases
 from .discovery import section_ranges
 from .evidence import (
@@ -45,7 +46,6 @@ from .evidence import (
 from .graph import (
     DependencyGraph,
     EdgeKind,
-    GraphContractError,
     NodeKind,
     RootPolicy,
 )
@@ -58,12 +58,10 @@ from .graph_queries import (
 )
 from .graph_store import (
     SLICE_FILENAME,
-    load_slice,
     repository_identity_path,
     slice_record,
 )
 from .identities import (
-    repository_validation_identity,
     text_content_identity,
     validation_file_identity,
 )
@@ -76,18 +74,15 @@ from .inventory import (
     MaterialInventoryPolicy,
     collection_identity,
     directory_membership_identity,
-    hash_file,
-)
-from .inventory import (
-    display_path as inventory_display_path,
 )
 from .lint import LintPolicy, lint_validation_records
 from .publication import (
     ValidationPublicationTarget,
     publish_validation_bundle,
 )
-from .records import record_bundle_identity
+from .records import LOCK_FILENAME, record_bundle_identity
 from .report import install_status_summary
+from .scan import local_snapshot_identity
 
 Failure = tuple[str, str, dict[str, Any]]
 RESULT_VALUES = {"FAIL", "-", "N/A"}
@@ -309,6 +304,7 @@ class GeneratedValidationBundle:
 
     report_text: str
     failure_text: Optional[str]
+    decisions: ValidationDecisionStore
     state: Mapping[str, Any]
     graph_record: Mapping[str, Any]
 
@@ -437,6 +433,7 @@ class RenderStateInputs:
 
     schema_version: int
     rules_version: str
+    local_snapshot_identity: str
     input_fingerprint: str
     input_files: Mapping[str, Any]
     mechanical_checks: Mapping[str, Any]
@@ -453,6 +450,7 @@ class RenderStateInputs:
         return {
             "schema_version": self.schema_version,
             "validation_rules_version": self.rules_version,
+            "local_snapshot_identity": self.local_snapshot_identity,
             "input_fingerprint": self.input_fingerprint,
             "input_files": dict(self.input_files),
             "mechanical_checks": dict(self.mechanical_checks),
@@ -480,6 +478,7 @@ class RenderAssembly:
     requested_scope: str
     scope: Mapping[str, Any]
     failures: Sequence[Mapping[str, Any]]
+    local_snapshot_identity: str
 
     def bundle(self) -> GeneratedValidationBundle:
         """Build deterministic content without performing publication I/O."""
@@ -494,6 +493,13 @@ class RenderAssembly:
         return GeneratedValidationBundle(
             self.report_text,
             self.failure_text,
+            build_decision_store(
+                self.state_inputs.completed_checks,
+                self.state_inputs.orphan_dispositions,
+                validation_rules_version=self.state_inputs.rules_version,
+                local_snapshot_identity=self.local_snapshot_identity,
+                report_date=self.date,
+            ),
             self.state_inputs.record(result),
             self.graph_record,
         )
@@ -517,11 +523,21 @@ def report_header(
         f"- Report-update date: `{date}`",
         f"- Validation mode: {adjudication['mode']}",
         f"- Validation-rules version: `{adjudication['validation_rules_version']}`",
+        f"- Local snapshot identity: `{local_snapshot_identity(scan)}`",
     ]
     if not scan["repository_scope"]["cross_log_complete"]:
         lines.append(
             "- Cross-log orphan review: DEFERRED pending complete current-rule slices"
         )
+    for summary, snapshot in sorted(scan["repository_slices"].items()):
+        lines.append(
+            "- Contributing cross-log slice: "
+            f"`{summary}` at `{snapshot['graph_identity']}`"
+        )
+    for summary, reason in sorted(
+        scan["repository_scope"].get("excluded_slices", {}).items()
+    ):
+        lines.append(f"- Excluded cross-log slice: `{summary}` — {reason}")
     return lines
 
 
@@ -773,6 +789,36 @@ def failure_report(
     return "\n".join(lines) + "\n"
 
 
+def remediation_section(
+    failures: Sequence[Failure], entry_order: Sequence[str]
+) -> list[str]:
+    """Render durable failure detail inside the canonical report."""
+
+    if not failures:
+        return []
+    lines = ["## Remediation"]
+    for scope_name in ("Summary", *entry_order):
+        scoped = [
+            (identity, row)
+            for item_scope, identity, row in failures
+            if item_scope == scope_name
+        ]
+        if not scoped:
+            continue
+        lines.extend(["", f"### {scope_name}"])
+        for identity, row in scoped:
+            lines.extend(["", f"#### {_cell(identity)}", ""])
+            findings = finding_map(row)
+            for check in ("Integrity", "Provenance", "Reproducibility"):
+                if row.get(check.lower()) != "FAIL":
+                    continue
+                for finding in findings.get(check, []):
+                    lines.extend([f"- Check: {check}", f"- Finding: {finding}", ""])
+        while lines and lines[-1] == "":
+            lines.pop()
+    return lines
+
+
 def validate_successful_orphan_separation(
     completed_checks: Sequence[Mapping[str, Any]],
     adjudicated_orphans: set[tuple[str, str]],
@@ -910,6 +956,8 @@ def render_report(
             "## Entries",
             *entries_rendered.lines,
             "",
+            *remediation_section(failures, [entry["id"] for entry in entry_rows]),
+            "",
         ]
     )
     validate_successful_orphan_separation(completed_checks, adjudicated_orphans)
@@ -946,11 +994,6 @@ def _validated_adjudication_record(
         )
     except LifecycleRecordContractError as exc:
         raise ValidationToolError(f"invalid adjudication record: {exc}") from exc
-
-
-def _content_identity(path: Path) -> dict[str, Any]:
-    digest, size = hash_file(path)
-    return {"size": size, "sha256": digest}
 
 
 def _materialize_identities(
@@ -1161,12 +1204,12 @@ def _validate_render_header(
         raise ValidationToolError(
             "canonical rendering requires the current validation-rules version"
         )
-    bundle_identity = scan.get("record_bundle_identity")
+    durable_identity = scan.get("durable_record_identity")
     if (
-        not isinstance(bundle_identity, str)
-        or re.fullmatch(r"[0-9a-f]{64}", bundle_identity) is None
+        not isinstance(durable_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", durable_identity) is None
     ):
-        raise ValidationToolError("scan lacks a valid record-bundle identity")
+        raise ValidationToolError("scan lacks a valid durable-record identity")
     scope = scan.get("repository_scope", {})
     if (
         scope.get("kind") != "replacement"
@@ -1343,7 +1386,10 @@ def _assert_scanned_directories_current(
 ) -> None:
     project_root = Path(scan["project_root"])
     log_root = repository_identity_path(scan["log_root"], project_root)
-    generated = {(log_root / name).resolve() for name in policy.record_filenames}
+    generated = {
+        (log_root / name).resolve()
+        for name in (*policy.record_filenames, LOCK_FILENAME)
+    }
     for identity, expected in scan.get("directory_memberships", {}).items():
         raw_path = scan.get("resolved_paths", {}).get(identity)
         if not isinstance(raw_path, str):
@@ -1360,127 +1406,28 @@ def _assert_scanned_directories_current(
             )
 
 
-def _assert_repository_sources_current(scan: ScanRecord) -> None:
-    project_root = Path(scan["project_root"])
-    summaries = [
-        repository_identity_path(identity, project_root)
-        for identity in scan["repository_scope"]["expected_summaries"]
-    ]
-    for inputs in scan["repository_cross_log_sources"].values():
-        for identity, expected in inputs.items():
-            path = repository_identity_path(identity, project_root)
-            if not path.is_file():
-                raise FileChangedError(
-                    "cross-log consuming source changed after scan: " + identity
-                )
-            current = repository_validation_identity(
-                project_root, identity, summaries
-            )
-            source_identity = {
-                "size": current["size"],
-                "sha256": current["sha256"],
-            }
-            if source_identity != expected:
-                raise FileChangedError(
-                    "cross-log consuming source changed after scan: " + identity
-                )
-
-
 def assert_scan_inputs_current(scan: ScanRecord, policy: RenderLifecyclePolicy) -> None:
-    """Require current files, directories, and cross-log source inputs."""
+    """Require current validation-relevant inputs owned by the scanned log."""
 
     _assert_scanned_files_current(scan)
     _assert_scanned_directories_current(scan, policy)
-    _assert_repository_sources_current(scan)
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValidationToolError(f"could not read JSON {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValidationToolError(f"expected JSON object: {path}")
-    return value
-
-
-def _current_repository_slices(
-    scan: ScanRecord,
-) -> tuple[dict[str, dict[str, Any]], set[str]]:
-    project_root = Path(scan["project_root"])
-    expected_others = set(scan["repository_slices"])
-    current: dict[str, dict[str, Any]] = {}
-    for owner, expected in scan["repository_slices"].items():
-        path = repository_identity_path(expected["path"], project_root)
-        if not path.is_file():
-            continue
-        value = _load_json(path)
-        try:
-            loaded_owner, graph = load_slice(value)
-        except GraphContractError:
-            continue
-        current[owner] = {
-            "path": expected["path"],
-            "graph_identity": graph.identity,
-            "source_identity": value["source_identity"],
-            "content_identity": _content_identity(path),
-        }
-        if loaded_owner != owner:
-            current[owner]["summary_mismatch"] = loaded_owner
-    return dict(sorted(current.items())), expected_others
-
-
-def _assert_repository_view_current(
-    scan: ScanRecord,
-    replacement_slice: Mapping[str, Any],
-    policy: RenderLifecyclePolicy,
-) -> None:
-    summary = scan["summary"]
-    if scan["repository_scope"].get("refresh_summary") != summary:
-        raise FileChangedError("scan is not bound to a repository replacement")
-    current_slices, expected_others = _current_repository_slices(scan)
-    if (
-        set(current_slices) != expected_others
-        or current_slices != scan["repository_slices"]
-    ):
-        raise FileChangedError("repository dependency view changed after scan")
-    if replacement_slice.get("summary") != summary:
-        raise FileChangedError("replacement slice does not belong to scanned log")
-
-
-def _generated_slice_snapshot(
-    graph_record: Mapping[str, Any], path: Path, project_root: Path
-) -> dict[str, Any]:
-    summary, graph = load_slice(graph_record)
-    payload = (
-        json.dumps(graph_record, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
-    )
-    return {
-        "summary": summary,
-        "path": inventory_display_path(path, project_root),
-        "graph_identity": graph.identity,
-        "source_identity": graph_record["source_identity"],
-        "content_identity": text_content_identity(payload),
-    }
 
 
 def _assert_scan_snapshot_current(
     scan: ScanRecord,
-    replacement_slice: Mapping[str, Any],
     policy: RenderLifecyclePolicy,
 ) -> None:
     _assert_scanned_files_current(scan)
     _assert_scanned_directories_current(scan, policy)
-    _assert_repository_sources_current(scan)
     if scan["repository_scope"]["kind"] != "replacement":
         raise FileChangedError("scan is not bound to a publishable repository view")
-    _assert_repository_view_current(scan, replacement_slice, policy)
 
 
 def lint_records(
     output_dir: Path,
     policy: RenderLifecyclePolicy,
     expected_entry_order: Optional[Sequence[str]] = None,
+    expected_local_snapshot_identity: Optional[str] = None,
 ) -> dict[str, Any]:
     """Lint one generated canonical record bundle."""
 
@@ -1493,6 +1440,7 @@ def lint_records(
             ORPHAN_TARGET,
             SLICE_FILENAME,
         ),
+        expected_local_snapshot_identity,
     )
 
 
@@ -1557,6 +1505,7 @@ def render_records(
         scan["summary"],
         scan["files"],
         scan["repository_material_owners"],
+        local_snapshot_identity=local_snapshot_identity(scan),
     )
     measurements = RenderMeasurements(
         summary_rows=rendered.summary_rows,
@@ -1579,6 +1528,7 @@ def render_records(
         state_inputs=RenderStateInputs(
             schema_version=policy.state_schema_version,
             rules_version=adjudication["validation_rules_version"],
+            local_snapshot_identity=local_snapshot_identity(scan),
             input_fingerprint=scan["input_fingerprint"],
             input_files=scan.get("files", {}),
             mechanical_checks=scan.get("mechanical_checks", {}),
@@ -1595,17 +1545,17 @@ def render_records(
         requested_scope=adjudication["requested_scope"],
         scope=scope,
         failures=compact_failures,
+        local_snapshot_identity=local_snapshot_identity(scan),
     )
 
     project_root = Path(scan["project_root"])
     canonical_output = repository_identity_path(scan["log_root"], project_root)
     expected_bundle_identity = (
-        scan["record_bundle_identity"]
+        scan["durable_record_identity"]
         if output_dir.resolve() == canonical_output
-        else record_bundle_identity(output_dir, policy.record_filenames)
-    )
-    replacement_slice = _generated_slice_snapshot(
-        graph_record, output_dir / SLICE_FILENAME, project_root
+        else record_bundle_identity(
+            output_dir, ("validation-decisions.json", "validation.md")
+        )
     )
     publish_validation_bundle(
         assembly.bundle(),
@@ -1616,7 +1566,7 @@ def render_records(
             scan.get("entry_order", []),
             SLICE_FILENAME,
         ),
-        lambda: _assert_scan_snapshot_current(scan, replacement_slice, policy),
+        lambda: _assert_scan_snapshot_current(scan, policy),
         lambda directory, expected: _publication_lint(directory, expected, policy),
     )
     return assembly.counts()

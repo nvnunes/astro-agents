@@ -1338,8 +1338,16 @@ def _review_item_lines(
                 f"- Orphan batch: {orphan_batch.number} of {orphan_batch.total}",
                 f"- Candidates in packet: {len(orphan_batch.candidates)}",
                 f"- Candidates remaining in snapshot: {orphan_batch.remaining}",
-                "- Batch decision: use `orphan-batch` with this fingerprint, "
-                "batch number, and batch size.",
+                "- Batch decision: use `orphan-batch` with the candidate "
+                "fingerprints below and a nonempty rationale for every candidate; "
+                "batch number and size are not semantic.",
+                *(
+                    "- Candidate fingerprint: "
+                    f"`{identity}` = `{fingerprint}`"
+                    for identity, fingerprint in sorted(
+                        orphan_batch.candidate_fingerprints.items()
+                    )
+                ),
             ]
         )
     for collection in item.get("collections", []):

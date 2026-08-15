@@ -68,26 +68,22 @@ An orphan packet contains at most 200 candidate identities by default. Use
 `--batch-number <one-based-number>` to select a later deterministic batch.
 Use `--metrics <work-dir>/review-metrics.json` when diagnosing review-index or
 packet-scaling behavior. An oversized default packet is labeled
-`PARTIAL ORPHAN REVIEW` and reports its queue fingerprint, batch position,
-in-packet count, and remaining count.
+`PARTIAL ORPHAN REVIEW` and reports its display-only batch identity, batch
+position, in-packet count, remaining count, and one compatibility fingerprint
+per candidate.
 
 Omit `--state` when no prior state exists. Each canonical render writes the
-owning log's `validation-index.json`. Run the separate `index` step after
-refreshing one or more logs to rebuild the disposable repository aggregate in
-`.research-log-validation-index/`. A scan builds its repository view directly
-from the current per-log slices; the aggregate is a disposable projection, not
-an input authority. It contains only active cross-log consumers and their
-dependency closure. An incoming use removes the owned path from orphan scope
-but does not establish evidence provenance in the consuming log.
+owning log's disposable `validation-index.json`. A scan builds an ephemeral
+repository view directly from compatible per-log slices. No stored repository
+aggregate or `index` step exists. An incoming use removes the owned path from
+orphan scope but does not establish evidence provenance in the consuming log.
 
 `scan` builds a replacement view from the per-log slices. It excludes the log
 being refreshed, whose prior slice may be missing, stale, malformed, or use old
 rules, and uses every current compatible slice from the other maintained logs.
-The disposable aggregate remains a mechanically rebuilt projection of the
-compatible canonical slice set. Missing, invalid, or incompatible other-log
-slices make cross-log orphan reconciliation incomplete, so the scan withholds
-orphan candidates until coverage is restored; they do not require an atomic
-all-log generation.
+Missing, invalid, stale, or incompatible other-log slices make cross-log orphan
+reconciliation incomplete. The scan names every exclusion and preserves exact
+local validation; it does not require an atomic all-log generation.
 Use `--repository-index` only when deliberately supplying an explicit
 canonical graph view for isolated testing.
 
@@ -98,9 +94,8 @@ maintained log sequentially without prior state. Temporary mixed rules versions
 are allowed. During that interval, scans rebuild per-log facts but withhold
 orphan conclusions because the cross-log slice set is incomplete.
 
-After every maintained log has a current compatible slice, rebuild the
-disposable aggregate with `index`. Then run one reconciliation pass over every
-log against the complete slice set and rebuild the aggregate once more.
+After every maintained log has a current compatible slice, run one
+reconciliation pass over every log against the complete slice set.
 Consumer-owned cross-log relationships do not require atomic repository
 publication, rollback, or fixed-point generation.
 
@@ -146,8 +141,8 @@ and its transitive code dependencies as used; this does not make its outputs
 evidence. Treat an unresolved dynamic relationship as a bounded semantic
 orphan decision.
 
-Use the canonical dependency graph when reconciling orphans. The repository
-aggregate projects consumer-owned cross-log edges from the per-log slices. Include
+Use the canonical dependency graph when reconciling orphans. The ephemeral
+repository view projects consumer-owned cross-log edges from per-log slices. Include
 recorded commands, presented-evidence associations, completed validation
 dependencies, and their mechanically resolved transitive scripts. Do not let
 a dormant script protect files in another log merely because it contains a
@@ -244,8 +239,9 @@ one-off adjudication program or patch the full adjudication JSON.
 }
 ```
 
-Decision schema 5 replaces schema 4. Schema 4 packets are rejected because
-they cannot bind an orphan decision to the exact pending-queue snapshot.
+Decision schema 6 uses candidate-scoped orphan fingerprints. Earlier packets
+are rejected because they cannot prove compatibility for each submitted
+candidate independently.
 
 Actions apply in order to unresolved items. Put exact exceptions before a
 reviewed category-wide action. Match by `kind`, `entry`, `identity`, their
@@ -284,9 +280,9 @@ and itemized findings from the unresolved list.
 }
 ```
 
-For a partial orphan packet, use `orphan-batch` instead. Copy the packet's
-queue fingerprint, batch size, and item-local batch number, then partition
-every candidate in that batch exactly once:
+For a partial orphan packet, use `orphan-batch` instead. Copy each candidate's
+fingerprint, record one nonempty rationale per candidate, and partition every
+candidate in that batch exactly once:
 
 ```json
 {
@@ -295,20 +291,23 @@ every candidate in that batch exactly once:
     "entry": "e003"
   },
   "decision": "orphan-batch",
-  "queue_fingerprint": "0123456789abcdef...",
-  "batch_size": 200,
-  "batch_number": 1,
+  "candidate_fingerprints": {
+    "docs/example/scripts/unused.py": "0123456789abcdef..."
+  },
+  "rationales": {
+    "docs/example/scripts/unused.py": "No presented use or producer was found."
+  },
   "unresolved": ["docs/example/scripts/unused.py"],
   "connected": ["docs/example/data/reviewed-dynamic-output.csv"],
   "retained": []
 }
 ```
 
-Applying one batch is atomic. It persists only that batch's item-level
-dispositions and leaves every undisposed identity pending. The queue
-fingerprint then changes, so every other packet from the prior snapshot is
-stale. Generate the next packet from the updated adjudication; do not prepare
-several decisions from one queue snapshot.
+Applying one batch is atomic and idempotent. It persists only that batch's
+item-level dispositions and leaves every undisposed identity pending. Batches
+prepared from the same scan may apply in any order; application rechecks only
+the submitted candidate fingerprints. A changed candidate is rejected without
+invalidating decisions for unchanged candidates.
 
 Use `support` with a one-based packet `candidate` for Summary support; `pass`
 or `fail` for checked entry targets; `scope` with a `members` mapping only when
@@ -332,13 +331,16 @@ not a valid producer.
   --scan <work-dir>/scan.json \
   --adjudication <work-dir>/adjudication.json \
   --decisions <work-dir>/decisions.json \
-  --output <work-dir>/decided.json
+  --output <work-dir>/decided.json \
+  --decision-store <log>/validation-decisions.json
 ```
 
 Use the reported remaining count to identify unhandled items. A later
 `decide` call may use the latest output as its adjudication input. Never
 calculate a missing derived result from other artifact values to make an
-association pass.
+association pass. `--decision-store` is needed for independently applied
+orphan batches: it takes the per-log publication lock and merge-writes reviewed
+candidate judgments without regenerating the remaining packets.
 
 ## Checks
 
@@ -388,22 +390,21 @@ temporary regenerated outputs after comparison.
   --scan <work-dir>/scan.json
 ```
 
-The render also writes `<log>/validation-index.json`. After all intended logs
-are rendered, rebuild the repository aggregate with `index`. The per-log slice
-is the independently stageable record; `manifest.json` and `incoming.json` are
-small disposable projections and may be rebuilt from the slices.
+The render also writes the disposable `<log>/validation-state.json` and
+`<log>/validation-index.json`. Repository views are assembled on demand from
+compatible slices and are never published.
 
-Rendering first builds and lints the complete generated record bundle in a
-temporary directory. One repository advisory lock serializes canonical
-validation operations. Under that lock, rendering verifies the complete
-scanned input snapshot and atomically replaces each report, state, graph slice,
-and optional failure file. The tool rejects noncurrent rules packets.
+Rendering first builds and lints the prospective records in a temporary
+directory. A stable per-log lock serializes writers only for that log. Under
+the lock, rendering verifies the complete local snapshot, publishes compatible
+durable decisions before the report, and then repairs disposable state and the
+graph slice. Different logs may publish concurrently. The tool rejects
+noncurrent rules packets.
 
-An interruption may leave a partial generated bundle. The next canonical
-operation treats that bundle as unusable, performs fresh validation, and
-rebuilds it. It does not roll back through a publication journal. The aggregate
-is likewise disposable and rebuilt whenever its files or contributing slices
-are inconsistent. Canonical validation never updates a maintained summary.
+An interruption may leave mixed-generation caches. Lock-free readers reject
+only the unusable cache and preserve the readable report and compatible
+judgments. There is no rollback journal, repository lock, or aggregate recovery
+path. Canonical validation never updates a maintained summary.
 
 ## Extending The Tool
 
@@ -414,10 +415,11 @@ Keep graph ownership explicit when adding validation mechanics:
   results into graph facts;
 - `validation/graph_queries.py` owns reachability, provenance,
   and orphan queries;
-- `validation/graph_store.py` owns per-log slices and the
-  repository aggregate;
-- `validation/records.py` owns the repository advisory lock,
-  record-bundle identities, and atomic generated-file replacement;
+- `validation/graph_store.py` owns per-log slices and ephemeral repository
+  views;
+- `validation/records.py` owns per-log publication locks, durable-record
+  identities, and atomic generated-file replacement;
+- `validation/decision_store.py` owns durable semantic judgments;
 - `validation/report.py` owns generated report parsing and the compact status
   summary;
 - `validation/state.py` owns the persisted validation-state

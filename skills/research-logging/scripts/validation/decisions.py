@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import (
     Any,
@@ -47,13 +48,11 @@ from .producer_bindings import (
     resolved_identity_cache,
 )
 from .review_batches import (
-    OrphanBatchRequest,
-    orphan_queue_fingerprint,
-    select_orphan_batch,
+    orphan_candidate_fingerprint,
 )
 from .review_index import ReviewContextIndex, ReviewQuerySession
 
-DECISION_SCHEMA_VERSION = 5
+DECISION_SCHEMA_VERSION = 6
 DECISION_DEPENDENCY_KEYS = {
     "members",
     "add_dependencies",
@@ -103,9 +102,8 @@ DECISION_FIELDS_BY_OUTCOME = {
     "orphan-batch": {
         "match",
         "decision",
-        "queue_fingerprint",
-        "batch_size",
-        "batch_number",
+        "candidate_fingerprints",
+        "rationales",
         "unresolved",
         "connected",
         "retained",
@@ -1117,35 +1115,61 @@ def _validated_orphan_batch_item(
     item: Mapping[str, Any],
     action: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Return the exact current batch after rejecting stale packet actions."""
+    """Return exact submitted candidates after candidate-scoped stale checks."""
 
-    fingerprint = action.get("queue_fingerprint")
-    expected = orphan_queue_fingerprint(
-        scan, adjudication, item, DECISION_SCHEMA_VERSION
-    )
-    if not isinstance(fingerprint, str) or fingerprint != expected:
-        raise ValidationToolError(
-            "orphan batch queue fingerprint is stale or invalid; generate a new packet"
-        )
-    batch_size = action.get("batch_size")
-    batch_number = action.get("batch_number")
+    fingerprints = action.get("candidate_fingerprints")
+    rationales = action.get("rationales")
     if (
-        not isinstance(batch_size, int)
-        or isinstance(batch_size, bool)
-        or not isinstance(batch_number, int)
-        or isinstance(batch_number, bool)
+        not isinstance(fingerprints, dict)
+        or not fingerprints
+        or not all(
+            isinstance(identity, str)
+            and identity
+            and isinstance(fingerprint, str)
+            and re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            for identity, fingerprint in fingerprints.items()
+        )
+    ):
+        raise ValidationToolError("orphan batch candidate fingerprints are invalid")
+    if rationales is not None and (
+        not isinstance(rationales, dict)
+        or set(rationales) != set(fingerprints)
+        or not all(
+            isinstance(identity, str)
+            and isinstance(rationale, str)
+            and rationale.strip()
+            for identity, rationale in rationales.items()
+        )
     ):
         raise ValidationToolError(
-            "orphan batch size and number must be positive integers"
+            "orphan batch rationales must cover every submitted candidate"
         )
-    batch = select_orphan_batch(
-        scan,
-        adjudication,
-        item,
-        OrphanBatchRequest(batch_size, batch_number, DECISION_SCHEMA_VERSION),
-    )
+    entry_id = item.get("entry")
+    if not isinstance(entry_id, str):
+        raise ValidationToolError("orphan batch lacks an entry identity")
+    current = {
+        candidate.get("identity"): candidate
+        for candidate in item.get("candidates", [])
+        if isinstance(candidate, dict) and isinstance(candidate.get("identity"), str)
+    }
+    if not set(fingerprints) <= set(current):
+        raise ValidationToolError(
+            "orphan batch contains candidates no longer pending in this adjudication"
+        )
+    for identity, fingerprint in fingerprints.items():
+        expected = orphan_candidate_fingerprint(
+            scan,
+            adjudication.get("schema_version"),
+            entry_id,
+            current[identity],
+            DECISION_SCHEMA_VERSION,
+        )
+        if fingerprint != expected:
+            raise ValidationToolError(
+                f"orphan candidate fingerprint is stale or invalid: {identity}"
+            )
     selected = dict(item)
-    selected["candidates"] = list(batch.candidates)
+    selected["candidates"] = [current[identity] for identity in sorted(fingerprints)]
     return selected
 
 
@@ -1405,6 +1429,158 @@ def _is_incremental_unresolved_orphan_batch(
     )
 
 
+def _orphan_batch_reapplication_status(
+    scan: ScanRecord,
+    adjudication: Mapping[str, Any],
+    action: Mapping[str, Any],
+) -> str:
+    """Return `pending` or `applied`, rejecting stale or conflicting repeats."""
+
+    matcher = action.get("match")
+    fingerprints = action.get("candidate_fingerprints")
+    if (
+        not isinstance(matcher, dict)
+        or not isinstance(matcher.get("entry"), str)
+        or not isinstance(fingerprints, dict)
+        or not fingerprints
+    ):
+        return "pending"
+    entry_id = matcher["entry"]
+    _validate_reapplied_fingerprints(
+        scan, adjudication, entry_id, fingerprints
+    )
+    desired = _desired_orphan_decisions(action)
+    if set(desired) != set(fingerprints):
+        return "pending"
+    return _orphan_reapplication_state(adjudication, entry_id, desired)
+
+
+def _validate_reapplied_fingerprints(
+    scan: ScanRecord,
+    adjudication: Mapping[str, Any],
+    entry_id: str,
+    fingerprints: Mapping[str, Any],
+) -> None:
+    scan_entry = next(
+        (
+            entry
+            for entry in scan.get("entries", [])
+            if entry.get("id") == entry_id and "error" not in entry
+        ),
+        None,
+    )
+    if scan_entry is None:
+        raise ValidationToolError(f"unknown orphan scope: {entry_id}")
+    candidates = {
+        candidate.get("identity"): candidate
+        for candidate in scan_entry.get("orphan_inventory", [])
+        if isinstance(candidate, dict) and isinstance(candidate.get("identity"), str)
+    }
+    for identity, fingerprint in fingerprints.items():
+        candidate = candidates.get(identity)
+        if candidate is None or fingerprint != orphan_candidate_fingerprint(
+            scan,
+            adjudication.get("schema_version"),
+            entry_id,
+            candidate,
+            DECISION_SCHEMA_VERSION,
+        ):
+            raise ValidationToolError(
+                f"orphan candidate fingerprint is stale or invalid: {identity}"
+            )
+
+
+def _desired_orphan_decisions(
+    action: Mapping[str, Any],
+) -> dict[Any, tuple[str, str]]:
+    unresolved = action.get("unresolved", [])
+    connected = action.get("connected", [])
+    retained = action.get("retained", [])
+    if not all(
+        isinstance(values, list) for values in (unresolved, connected, retained)
+    ):
+        return {}
+    desired = {identity: ("unresolved", "-") for identity in unresolved}
+    desired.update(
+        {identity: ("accepted", "semantic-connection") for identity in connected}
+    )
+    for value in retained:
+        if isinstance(value, dict):
+            desired[value.get("identity")] = (
+                "accepted",
+                f"validation-note:{value.get('validation_note')}",
+            )
+    return desired
+
+
+def _orphan_reapplication_state(
+    adjudication: Mapping[str, Any],
+    entry_id: str,
+    desired: Mapping[Any, tuple[str, str]],
+) -> str:
+    entry = next(
+        (
+            value
+            for value in adjudication.get("entries", [])
+            if value.get("id") == entry_id
+        ),
+        None,
+    )
+    if entry is None:
+        raise ValidationToolError(f"unknown orphan scope: {entry_id}")
+    current = {
+        item.get("identity"): (item.get("decision"), item.get("basis"))
+        for item in entry.get("orphan_items", [])
+    }
+    statuses = []
+    for identity, expected in desired.items():
+        actual = current.get(identity)
+        if actual == ("pending", "-"):
+            statuses.append("pending")
+        elif actual == expected:
+            statuses.append("applied")
+        else:
+            raise ValidationToolError(
+                f"orphan batch conflicts with an existing decision: {identity}"
+            )
+    if len(set(statuses)) > 1:
+        raise ValidationToolError("orphan batch is only partially applied")
+    return statuses[0]
+
+
+def _update_batch_queue_after_decision(
+    item: Dict[str, Any],
+    action: Mapping[str, Any],
+    incremental_unresolved_batch: bool,
+    queue: list[Dict[str, Any]],
+    preserve_pending: Optional[set[str]],
+) -> bool:
+    decision = action.get("decision")
+    if preserve_pending is not None and decision in {"orphan", "orphan-batch"}:
+        preserve_pending.difference_update(
+            identity
+            for field in ("unresolved", "connected")
+            for identity in action.get(field, [])
+        )
+        preserve_pending.difference_update(
+            retained.get("identity")
+            for retained in action.get("retained", [])
+            if isinstance(retained, dict)
+        )
+    if incremental_unresolved_batch and decision == "orphan-batch":
+        selected = set(action.get("unresolved", []))
+        remaining = [
+            candidate
+            for candidate in item.get("candidates", [])
+            if candidate.get("identity") not in selected
+        ]
+        if remaining:
+            item["candidates"] = remaining
+            return False
+    queue.remove(item)
+    return True
+
+
 def apply_review_decisions(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -1449,6 +1625,11 @@ def apply_review_decisions(
         else None
     )
     for action_number, action in enumerate(actions, 1):
+        if action.get("decision") == "orphan-batch" and (
+            _orphan_batch_reapplication_status(scan, result, action) == "applied"
+        ):
+            counts["orphan-batch-noop"] = counts.get("orphan-batch-noop", 0) + 1
+            continue
         matches = decision_matches(queue, action, action_number, policy)
         decision = validated_decision_outcome(action, action_number, policy)
         for item in matches:
@@ -1474,34 +1655,14 @@ def apply_review_decisions(
                     review_session=review_session,
                 )
             )
-            if preserve_pending is not None and decision in {
-                "orphan",
-                "orphan-batch",
-            }:
-                preserve_pending.difference_update(
-                    identity
-                    for field in ("unresolved", "connected")
-                    for identity in action.get(field, [])
-                )
-                preserve_pending.difference_update(
-                    retained.get("identity")
-                    for retained in action.get("retained", [])
-                    if isinstance(retained, dict)
-                )
-            if incremental_unresolved_batch and decision == "orphan-batch":
-                selected = set(action.get("unresolved", []))
-                remaining_candidates = [
-                    candidate
-                    for candidate in item.get("candidates", [])
-                    if candidate.get("identity") not in selected
-                ]
-                if remaining_candidates:
-                    item["candidates"] = remaining_candidates
-                else:
-                    queue.remove(item)
-                    reconcile_after_actions = True
-            else:
-                queue.remove(item)
+            removed = _update_batch_queue_after_decision(
+                item,
+                action,
+                incremental_unresolved_batch,
+                queue,
+                preserve_pending,
+            )
+            reconcile_after_actions = reconcile_after_actions or removed
             counts[decision] = counts.get(decision, 0) + 1
     if reconcile_after_actions:
         reconcile_semantic_dependencies(scan, result)

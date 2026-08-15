@@ -27,30 +27,46 @@ def ordered_orphan_candidates(
     )
 
 
-def orphan_queue_fingerprint(
+def orphan_candidate_fingerprint(
     scan: Mapping[str, Any],
-    adjudication: Mapping[str, Any],
-    item: Mapping[str, Any],
+    adjudication_schema_version: Any,
+    entry_id: str,
+    candidate: Mapping[str, Any],
     decision_schema_version: int,
 ) -> str:
-    """Return the complete stale-protection identity for one orphan queue item."""
+    """Return conservative stale protection for one orphan candidate."""
 
+    entry: Mapping[str, Any] = next(
+        (
+            value
+            for value in scan.get("entries", [])
+            if value.get("id") == entry_id and "error" not in value
+        ),
+        {},
+    )
     notes = sorted(
         str(note.get("sha256"))
-        for note in item.get("validation_notes", [])
+        for note in entry.get("validation_notes", [])
         if isinstance(note.get("sha256"), str)
     )
     payload = {
         "scan_input_fingerprint": scan.get("input_fingerprint", ""),
         "validation_rules_version": scan.get("validation_rules_version", ""),
         "scan_schema_version": scan.get("schema_version"),
-        "adjudication_schema_version": adjudication.get("schema_version"),
+        "adjudication_schema_version": adjudication_schema_version,
         "decision_schema_version": decision_schema_version,
-        "entry": item.get("entry"),
-        "queue_kind": item.get("kind"),
-        "queue_identity": item.get("identity"),
-        "candidates": ordered_orphan_candidates(item),
+        "entry": entry_id,
+        "candidate": dict(candidate),
+        "commands": entry.get("commands", []),
+        "data_index": entry.get("data_index", {}),
         "validation_notes": notes,
+        "frozen_slices": {
+            summary: {
+                "graph_identity": snapshot.get("graph_identity"),
+                "source_identity": snapshot.get("source_identity"),
+            }
+            for summary, snapshot in sorted(scan.get("repository_slices", {}).items())
+        },
     }
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -69,6 +85,7 @@ class OrphanBatch:
     size: int
     complete_count: int
     fingerprint: str
+    candidate_fingerprints: Mapping[str, str]
 
     @property
     def remaining(self) -> int:
@@ -114,6 +131,19 @@ def select_orphan_batch(
         )
     start = (request.number - 1) * request.size
     selected = candidates[start : start + request.size]
+    entry_id = item.get("entry")
+    if not isinstance(entry_id, str):
+        raise ValidationToolError("orphan review item lacks an entry identity")
+    candidate_fingerprints = {
+        candidate["identity"]: orphan_candidate_fingerprint(
+            scan,
+            adjudication.get("schema_version"),
+            entry_id,
+            candidate,
+            request.decision_schema_version,
+        )
+        for candidate in selected
+    }
     return OrphanBatch(
         item,
         selected,
@@ -121,7 +151,12 @@ def select_orphan_batch(
         total,
         request.size,
         len(candidates),
-        orphan_queue_fingerprint(
-            scan, adjudication, item, request.decision_schema_version
-        ),
+        hashlib.sha256(
+            json.dumps(
+                candidate_fingerprints,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        candidate_fingerprints,
     )

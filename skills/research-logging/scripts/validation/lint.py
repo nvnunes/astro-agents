@@ -18,6 +18,8 @@ from typing import (
     cast,
 )
 
+from .contracts import ValidationToolError
+from .decision_store import decode_decision_store
 from .graph import GraphContractError
 from .graph_store import load_slice
 from .report import (
@@ -53,6 +55,17 @@ class ReportLint(NamedTuple):
     entry_rows: list[list[str]]
     summary_failed: int
     entry_failed: int
+    local_snapshot_identity: str
+
+
+class _ReportRowsInput(NamedTuple):
+    text: str
+    summary_rows: list[list[str]]
+    entry_rows: list[list[str]]
+    entry_order: list[str]
+    expected_entry_order: Optional[Sequence[str]]
+    policy: LintPolicy
+    issues: List[str]
 
 
 class StateLint(NamedTuple):
@@ -153,6 +166,8 @@ def _lint_material(
         )
     if re.fullmatch(r"[0-9a-f]{64}", state["input_fingerprint"]) is None:
         issues.append("state contains an invalid input fingerprint")
+    if re.fullmatch(r"[0-9a-f]{64}", state["local_snapshot_identity"]) is None:
+        issues.append("state contains an invalid local snapshot identity")
     for dependency in list(successful_dependencies):
         membership = state["files"].get(dependency, {})
         successful_dependencies.update(
@@ -302,6 +317,11 @@ def _lint_report(
     issues: List[str],
 ) -> ReportLint:
     text = _read_utf8(report_path, "validation.md", issues)
+    snapshot = re.search(
+        r"^- Local snapshot identity: `([0-9a-f]{64})`$", text, re.MULTILINE
+    )
+    if snapshot is None:
+        issues.append("validation.md lacks a valid local snapshot identity")
     try:
         if install_status_summary(text) != text:
             issues.append("validation.md Status Summary is missing or inconsistent")
@@ -315,6 +335,31 @@ def _lint_report(
     summary_rows = parsed["summary"]
     entry_rows = parsed["entries"]
     entry_order = parsed["entry_order"]
+    summary_failed, entry_failed = _lint_report_rows(
+        _ReportRowsInput(
+            text,
+            summary_rows,
+            entry_rows,
+            entry_order,
+            expected_entry_order,
+            policy,
+            issues,
+        )
+    )
+    return ReportLint(
+        text,
+        entry_order,
+        summary_rows,
+        entry_rows,
+        summary_failed,
+        entry_failed,
+        snapshot.group(1) if snapshot is not None else "",
+    )
+
+
+def _lint_report_rows(inputs: _ReportRowsInput) -> tuple[int, int]:
+    text, summary_rows, entry_rows, entry_order = inputs[:4]
+    expected_entry_order, policy, issues = inputs[4:]
     summary_failed = sum(len(row) == 4 and row[3] == "`FAIL`" for row in summary_rows)
     entry_failed = sum(len(row) == 6 and "`FAIL`" in row[2:5] for row in entry_rows)
     bad_notes = sum(
@@ -341,14 +386,7 @@ def _lint_report(
         issues.append("reported Summary counts do not match table rows")
     if reported.get("Entry targets") != (len(entry_rows), entry_failed):
         issues.append("reported entry-target counts do not match table rows")
-    return ReportLint(
-        text,
-        entry_order,
-        summary_rows,
-        entry_rows,
-        summary_failed,
-        entry_failed,
-    )
+    return summary_failed, entry_failed
 
 
 def _decoded_state(
@@ -371,9 +409,16 @@ def _lint_index(
     issues: List[str],
 ) -> None:
     try:
-        summary, graph = load_slice(json.loads(index_path.read_text(encoding="utf-8")))
+        value = json.loads(index_path.read_text(encoding="utf-8"))
+        summary, graph = load_slice(value)
         if graph.identity != state.get("graph_identity"):
             issues.append("state graph identity differs from validation index")
+        if value["local_snapshot_identity"] != state.get(
+            "local_snapshot_identity"
+        ):
+            issues.append(
+                "state local snapshot identity differs from validation index"
+            )
         if not summary.endswith(".md"):
             issues.append("validation index summary is not a Markdown path")
     except (OSError, UnicodeError, json.JSONDecodeError, GraphContractError) as exc:
@@ -384,7 +429,6 @@ def _lint_state(
     context: _StateLintInput,
 ) -> StateLint:
     state = _decoded_state(context.state_path, context.policy, context.issues)
-    _lint_index(context.index_path, state, context.policy, context.issues)
     report_rules = re.search(
         r"^- Validation-rules version: `([^`]+)`$",
         context.report.text,
@@ -394,6 +438,10 @@ def _lint_state(
         "validation_rules_version"
     ):
         context.issues.append("report and state validation-rules versions differ")
+    if context.report.local_snapshot_identity != state.get(
+        "local_snapshot_identity"
+    ):
+        context.issues.append("report and state local snapshot identities differ")
     if not state:
         return StateLint(0, 0, set())
     successful, failed, dependencies, successful_dependencies = (
@@ -420,6 +468,14 @@ def _lint_state(
 
 class _StateLintInput(NamedTuple):
     state_path: Path
+    report_path: Path
+    report: ReportLint
+    policy: LintPolicy
+    issues: List[str]
+
+
+class _CacheLintInput(NamedTuple):
+    state_path: Path
     index_path: Path
     report_path: Path
     report: ReportLint
@@ -427,58 +483,166 @@ class _StateLintInput(NamedTuple):
     issues: List[str]
 
 
-def _failure_headings(path: Path, issues: List[str]) -> int:
-    if not path.exists():
-        return 0
-    text = _read_utf8(path, "validation-failures.md", issues)
-    return sum(1 for line in text.splitlines() if line.startswith("### "))
-
-
 def _lint_failures(
-    failure_path: Path, failed_rows: int, issues: List[str]
+    report_text: str,
+    failure_path: Path,
+    failed_rows: int,
+    durable_issues: List[str],
+    cache_issues: List[str],
 ) -> int:
-    headings = _failure_headings(failure_path, issues)
-    if failed_rows and not failure_path.exists():
-        issues.append("failed report rows lack validation-failures.md")
-    if not failed_rows and failure_path.exists():
-        issues.append("validation-failures.md exists without failed report rows")
+    headings = sum(
+        line.startswith("#### ") for line in report_text.splitlines()
+    )
+    if failed_rows and "## Remediation" not in report_text:
+        durable_issues.append(
+            "failed report rows lack an in-report Remediation section"
+        )
+    if not failed_rows and "## Remediation" in report_text:
+        durable_issues.append(
+            "validation.md has remediation detail without failed rows"
+        )
+    if failure_path.exists():
+        cache_issues.append("obsolete validation-failures.md is present")
     if headings != failed_rows:
-        issues.append(
+        durable_issues.append(
             f"failure heading count {headings} does not match failed rows {failed_rows}"
         )
     return headings
+
+
+def _lint_decisions(path: Path, report_text: str, issues: List[str]) -> None:
+    try:
+        store = decode_decision_store(
+            _read_json(path, "validation-decisions.json", issues)
+        )
+    except ValidationToolError as exc:
+        issues.append(f"validation-decisions.json violates its contract: {exc}")
+        return
+    report_rules = re.search(
+        r"^- Validation-rules version: `([^`]+)`$", report_text, re.MULTILINE
+    )
+    report_snapshot = re.search(
+        r"^- Local snapshot identity: `([0-9a-f]{64})`$",
+        report_text,
+        re.MULTILINE,
+    )
+    if (
+        report_rules is None
+        or store["validation_rules_version"] != report_rules.group(1)
+    ):
+        issues.append("report and decision-store validation-rules versions differ")
+    if (
+        report_snapshot is None
+        or store["local_snapshot_identity"] != report_snapshot.group(1)
+    ):
+        issues.append("report and decision-store local snapshot identities differ")
+
+
+def _lint_caches(inputs: _CacheLintInput) -> StateLint:
+    state = StateLint(0, 0, set())
+    decoded_state: ValidationState = cast(ValidationState, {})
+    if not inputs.state_path.is_file():
+        inputs.issues.append("missing validation-state.json")
+    else:
+        state = _lint_state(
+            _StateLintInput(
+                inputs.state_path,
+                inputs.report_path,
+                inputs.report,
+                inputs.policy,
+                inputs.issues,
+            )
+        )
+        decoded_state = _decoded_state(inputs.state_path, inputs.policy, [])
+    if not inputs.index_path.is_file():
+        inputs.issues.append(f"missing {inputs.policy.slice_filename}")
+    elif decoded_state:
+        _lint_index(
+            inputs.index_path, decoded_state, inputs.policy, inputs.issues
+        )
+    else:
+        try:
+            load_slice(json.loads(inputs.index_path.read_text(encoding="utf-8")))
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            GraphContractError,
+        ) as exc:
+            inputs.issues.append(
+                f"{inputs.policy.slice_filename} is invalid: {exc}"
+            )
+    return state
 
 
 def lint_validation_records(
     output_dir: Path,
     expected_entry_order: Optional[Sequence[str]],
     policy: LintPolicy,
+    expected_local_snapshot_identity: Optional[str] = None,
 ) -> dict[str, Any]:
     """Lint one generated canonical record bundle."""
 
-    issues: List[str] = []
+    report_issues: List[str] = []
+    decision_issues: List[str] = []
+    currentness_issues: List[str] = []
+    cache_issues: List[str] = []
     report_path = output_dir / "validation.md"
     state_path = output_dir / "validation-state.json"
+    decisions_path = output_dir / "validation-decisions.json"
     failure_path = output_dir / "validation-failures.md"
     index_path = output_dir / policy.slice_filename
-    for path, label in (
-        (report_path, "validation.md"),
-        (state_path, "validation-state.json"),
-        (index_path, policy.slice_filename),
-    ):
-        if not path.is_file():
-            issues.append(f"missing {label}")
-    if issues:
-        return {"ok": False, "issues": issues}
+    if not report_path.is_file():
+        report_issues.append("missing validation.md")
+    if not decisions_path.is_file():
+        decision_issues.append("missing validation-decisions.json")
+    if report_issues:
+        durable_issues = [*report_issues, *decision_issues]
+        return {
+            "ok": False,
+            "durable_ok": False,
+            "report_ok": False,
+            "report_current": False,
+            "decision_compatible": not decision_issues,
+            "cache_usable": False,
+            "issues": durable_issues,
+            "durable_issues": durable_issues,
+            "report_issues": report_issues,
+            "decision_issues": decision_issues,
+            "currentness_issues": currentness_issues,
+            "cache_issues": cache_issues,
+        }
 
-    report = _lint_report(report_path, expected_entry_order, policy, issues)
-    state = _lint_state(
-        _StateLintInput(
-            state_path, index_path, report_path, report, policy, issues
+    report = _lint_report(
+        report_path, expected_entry_order, policy, report_issues
+    )
+    if (
+        expected_local_snapshot_identity is not None
+        and report.local_snapshot_identity != expected_local_snapshot_identity
+    ):
+        currentness_issues.append(
+            "validation.md is historical for the current local research snapshot"
+        )
+    if decisions_path.is_file():
+        _lint_decisions(decisions_path, report.text, decision_issues)
+    state = _lint_caches(
+        _CacheLintInput(
+            state_path,
+            index_path,
+            report_path,
+            report,
+            policy,
+            cache_issues,
         )
     )
     failed_rows = report.summary_failed + report.entry_failed
-    headings = _lint_failures(failure_path, failed_rows, issues)
+    headings = _lint_failures(
+        report.text,
+        failure_path,
+        failed_rows,
+        report_issues,
+        cache_issues,
+    )
     dates = sum(
         _success_date(row[3]) for row in report.summary_rows if len(row) == 4
     ) + sum(
@@ -487,14 +651,25 @@ def lint_validation_records(
         if len(row) == 6
         for value in row[2:5]
     )
-    if dates != state.successful:
-        issues.append(
+    if state_path.is_file() and dates != state.successful:
+        cache_issues.append(
             f"successful report cells {dates} do not match state records "
             f"{state.successful}"
         )
+    durable_issues = [*report_issues, *decision_issues]
     return {
-        "ok": not issues,
-        "issues": issues,
+        "ok": not durable_issues and not currentness_issues,
+        "durable_ok": not durable_issues,
+        "report_ok": not report_issues,
+        "report_current": not currentness_issues,
+        "decision_compatible": not decision_issues,
+        "cache_usable": not cache_issues,
+        "issues": [*durable_issues, *currentness_issues, *cache_issues],
+        "durable_issues": durable_issues,
+        "report_issues": report_issues,
+        "decision_issues": decision_issues,
+        "currentness_issues": currentness_issues,
+        "cache_issues": cache_issues,
         "counts": {
             "summary_rows": len(report.summary_rows),
             "summary_failed": report.summary_failed,

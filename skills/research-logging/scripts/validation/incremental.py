@@ -28,9 +28,8 @@ from .inventory import (
 )
 from .producer_bindings import workflow_check
 from .state import (
-    ValidationState,
     ValidationStateContractError,
-    decode_validation_state,
+    decode_compatible_validation_state,
 )
 
 SUCCESS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -401,7 +400,7 @@ class _IncrementalCheckContext:
     def __init__(
         self,
         scan: Dict[str, Any],
-        prior_state: ValidationState,
+        prior_state: Mapping[str, Any],
         input_unchanged: bool,
         operations: IncrementalOperations,
     ) -> None:
@@ -625,7 +624,7 @@ def _compare_cached_directories(
 
 def _validation_report_unchanged(
     scan: Mapping[str, Any],
-    decoded: ValidationState,
+    decoded: Mapping[str, Any],
     operations: IncrementalOperations,
 ) -> bool:
     """Return whether the canonical human-readable report is unchanged."""
@@ -663,7 +662,7 @@ def _current_orphan_scopes(
 
 def _reusable_orphan_dispositions(
     scan: Mapping[str, Any],
-    decoded: ValidationState,
+    decoded: Mapping[str, Any],
     comparisons: Mapping[str, Mapping[str, Any]],
     policy: IncrementalPolicy,
     operations: IncrementalOperations,
@@ -743,7 +742,7 @@ def compare_prior_state(
             "rerun_checks": len(prior_checks),
         }
     try:
-        decoded = decode_validation_state(
+        decoded = decode_compatible_validation_state(
             prior_state,
             schema_version=policy.state_schema_version,
         )

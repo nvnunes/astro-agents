@@ -26,7 +26,7 @@ __all__ = [
     "GRAPH_STORE",
     "INVENTORY",
     "IDENTITIES",
-    "MIGRATION",
+    "LOCAL_MIGRATION",
     "PUBLICATION",
     "REPORT",
     "RECORDS",
@@ -67,7 +67,7 @@ DISCOVERY = importlib.import_module("validation.discovery")
 EVIDENCE = importlib.import_module("validation.evidence")
 INVENTORY = importlib.import_module("validation.inventory")
 IDENTITIES = importlib.import_module("validation.identities")
-MIGRATION = importlib.import_module("validation.migration")
+LOCAL_MIGRATION = importlib.import_module("validation.local_migration")
 PUBLICATION = importlib.import_module("validation.publication")
 REPORT = importlib.import_module("validation.report")
 RUNTIME = importlib.import_module("validation.runtime")

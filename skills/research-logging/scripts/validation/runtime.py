@@ -66,19 +66,26 @@ from .scan import (
     scan_log as run_scan,
 )
 
-SCAN_SCHEMA_VERSION = 16
+SCAN_SCHEMA_VERSION = 17
 ADJUDICATION_SCHEMA_VERSION = 7
-STATE_SCHEMA_VERSION = 9
+STATE_SCHEMA_VERSION = 10
 RULES_VERSION = "research-log-validation-v43"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
+    "validation-decisions.json",
     "validation.md",
     "validation-failures.md",
     "validation-state.json",
     SLICE_FILENAME,
 )
 OWNED_INVENTORY_EXCLUDED_NAMES = frozenset(
-    {"data.csv", "evidence.csv", "refs.bib", *VALIDATION_RECORD_FILENAMES}
+    {
+        "data.csv",
+        "evidence.csv",
+        "refs.bib",
+        ".research-log-validation.lock",
+        *VALIDATION_RECORD_FILENAMES,
+    }
 )
 MATERIAL_INVENTORY_POLICY = MaterialInventoryPolicy(
     frozenset(SCRIPT_SUFFIXES), OWNED_INVENTORY_EXCLUDED_NAMES
@@ -193,8 +200,15 @@ def render_records(
 
 
 def lint_records(
-    output_dir: Path, expected_entry_order: Optional[list[str]] = None
+    output_dir: Path,
+    expected_entry_order: Optional[list[str]] = None,
+    expected_local_snapshot_identity: Optional[str] = None,
 ) -> dict[str, Any]:
     """Lint through the current canonical policy."""
 
-    return render_lint_records(output_dir, render_policy(), expected_entry_order)
+    return render_lint_records(
+        output_dir,
+        render_policy(),
+        expected_entry_order,
+        expected_local_snapshot_identity,
+    )

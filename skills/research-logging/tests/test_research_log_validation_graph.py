@@ -7,12 +7,10 @@ from research_log_validation_test_support import (
     GRAPH_STORE,
     IDENTITIES,
     INVENTORY,
-    RECORDS,
     RENDER,
     RUNTIME,
     Path,
     adjudication_for,
-    hashlib,
     json,
     make_log,
     mock,
@@ -1406,7 +1404,7 @@ class GraphCoreTests(unittest.TestCase):
         )
         summary, loaded = GRAPH_STORE.load_slice(record)
 
-        self.assertEqual(record["schema_version"], 6)
+        self.assertEqual(record["schema_version"], GRAPH_STORE.SLICE_SCHEMA_VERSION)
         self.assertEqual(len(record["graph"]["origins"]), 2)
         self.assertEqual(summary, "docs/mini.md")
         self.assertEqual(loaded.as_dict(), graph.as_dict())
@@ -1608,6 +1606,11 @@ class GraphCoreTests(unittest.TestCase):
             view, metrics = CLI.repository_view_for_scan(args, root)
 
             self.assertFalse(view["scope"]["cross_log_complete"])
+            self.assertIn("docs/other.md", view["scope"]["excluded_slices"])
+            self.assertIn(
+                "invalid",
+                view["scope"]["excluded_slices"]["docs/other.md"],
+            )
             self.assertEqual(
                 metrics["status"], "replacement-cross-log-incomplete"
             )
@@ -1967,11 +1970,13 @@ class GraphCoreTests(unittest.TestCase):
             owner_builder.build(), "docs/owner.md", {}
         )
 
-        aggregate = GRAPH_STORE.aggregate_records([owner_record, consumer_record])
+        projection = GRAPH_STORE.repository_slice_projection(
+            [owner_record, consumer_record]
+        )
 
-        self.assertEqual(len(aggregate["incoming"]["docs/owner.md"]), 1)
+        self.assertEqual(len(projection["graph_edges"]), 1)
         self.assertEqual(
-            aggregate["incoming"]["docs/owner.md"][0]["owner_log"],
+            projection["graph_edges"][0]["owner_log"],
             "docs/consumer",
         )
         self.assertEqual(
@@ -1979,47 +1984,7 @@ class GraphCoreTests(unittest.TestCase):
             GRAPH_STORE.slice_record(owner_builder.build(), "docs/owner.md", {}),
         )
 
-        manifest, incoming = GRAPH_STORE.aggregate_files(aggregate)
-        wrong_owner = incoming["incoming"].pop("docs/owner.md")
-        incoming["incoming"]["docs/wrong.md"] = wrong_owner
-        incoming_payload = dict(incoming)
-        incoming_payload.pop("identity")
-        incoming["identity"] = hashlib.sha256(
-            json.dumps(incoming_payload, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        manifest["incoming_identity"] = incoming["identity"]
-        manifest_payload = dict(manifest)
-        manifest_payload.pop("identity")
-        manifest["identity"] = hashlib.sha256(
-            json.dumps(manifest_payload, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-
-        with self.assertRaisesRegex(
-            GRAPH.GraphContractError, "incoming edge owner is invalid"
-        ):
-            GRAPH_STORE.load_aggregate_files(manifest, incoming)
-
-    def test_aggregate_loader_rejects_rehashed_malformed_log_rows(self) -> None:
-        builder = GRAPH.GraphBuilder("test-rules")
-        record = GRAPH_STORE.slice_record(builder.build(), "docs/mini.md", {})
-        manifest, incoming = GRAPH_STORE.aggregate_files(
-            GRAPH_STORE.aggregate_records([record])
-        )
-        manifest["logs"][0]["summary"] = 7
-        payload = dict(manifest)
-        payload.pop("identity")
-        manifest["identity"] = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-
-        with self.assertRaisesRegex(GRAPH.GraphContractError, "fields must be strings"):
-            GRAPH_STORE.load_aggregate_files(manifest, incoming)
-
-    def test_graph_aggregate_rejects_duplicate_log_slices(self) -> None:
+    def test_repository_projection_rejects_duplicate_log_slices(self) -> None:
         key = GRAPH.NodeKey("docs/mini", GRAPH.NodeKind.SCRIPT, "scripts/run.py")
         builder = GRAPH.GraphBuilder("test-rules")
         builder.add_node(key, self.origin())
@@ -2028,7 +1993,7 @@ class GraphCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(
             GRAPH.GraphContractError, "duplicate validation index slice"
         ):
-            GRAPH_STORE.aggregate_records([record, record])
+            GRAPH_STORE.repository_slice_projection([record, record])
 
     def test_slice_discovery_requires_owning_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2109,36 +2074,6 @@ class GraphCoreTests(unittest.TestCase):
 
             self.assertEqual(calls, 1)
 
-    def test_aggregate_build_discovers_repository_once(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _entry = make_log(root)
-            graph = GRAPH.GraphBuilder(RUNTIME.RULES_VERSION).build()
-            record = GRAPH_STORE.slice_record(
-                graph, summary.relative_to(root).as_posix(), {}
-            )
-            write(
-                summary.with_suffix("") / GRAPH_STORE.SLICE_FILENAME,
-                json.dumps(record, indent=2) + "\n",
-            )
-            original_walk = GRAPH_STORE.os.walk
-            calls = 0
-
-            def counted_walk(*args, **kwargs):
-                nonlocal calls
-                if Path(args[0]).resolve() == root.resolve():
-                    calls += 1
-                return original_walk(*args, **kwargs)
-
-            with mock.patch.object(
-                GRAPH_STORE.os, "walk", side_effect=counted_walk
-            ):
-                GRAPH_STORE.build_repository_aggregate(
-                    root, RUNTIME.RULES_VERSION
-                )
-
-            self.assertEqual(calls, 1)
-
     def test_updating_consumer_slice_leaves_owner_slice_byte_stable(self) -> None:
         invocation = GRAPH.NodeKey(
             "docs/consumer", GRAPH.NodeKind.INVOCATION, "e001:command:1"
@@ -2168,50 +2103,12 @@ class GraphCoreTests(unittest.TestCase):
             "docs/consumer.md",
             {"fixture": {"size": 1, "sha256": "a" * 64}},
         )
-        aggregate = GRAPH_STORE.aggregate_records([owner_record, consumer_record])
+        projection = GRAPH_STORE.repository_slice_projection(
+            [owner_record, consumer_record]
+        )
 
         self.assertEqual(
             owner_bytes,
             json.dumps(owner_record, sort_keys=True, separators=(",", ":")),
         )
-        self.assertEqual(len(aggregate["incoming"]["docs/owner.md"]), 1)
-
-    def test_aggregate_publisher_rejects_changed_canonical_bundle(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _entry = make_log(root)
-            graph = GRAPH.GraphBuilder(RUNTIME.RULES_VERSION).build()
-            record = GRAPH_STORE.slice_record(
-                graph, summary.relative_to(root).as_posix(), {}
-            )
-            write(
-                summary.with_suffix("") / GRAPH_STORE.SLICE_FILENAME,
-                json.dumps(record, indent=2) + "\n",
-            )
-            output = root / GRAPH_STORE.AGGREGATE_DIRECTORY
-            args = mock.Mock(project_root=root, output=output, metrics=None)
-            CLI.run_index_command(args)
-            marker = b'{"concurrent": true}\n'
-            original = CLI.build_repository_aggregate
-            calls = 0
-
-            def change_after_build(*args: object, **kwargs: object) -> object:
-                nonlocal calls
-                result = original(*args, **kwargs)
-                calls += 1
-                if calls == 1:
-                    (output / "manifest.json").write_bytes(marker)
-                return result
-
-            with mock.patch.object(
-                CLI,
-                "build_repository_aggregate",
-                side_effect=change_after_build,
-            ):
-                with self.assertRaisesRegex(
-                    RECORDS.RecordPublicationError,
-                    "canonical validation bundle changed after scan",
-                ):
-                    CLI.run_index_command(args)
-
-            self.assertEqual((output / "manifest.json").read_bytes(), marker)
+        self.assertEqual(len(projection["graph_edges"]), 1)

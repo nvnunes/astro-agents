@@ -32,6 +32,7 @@ class RenderAssemblyTests(unittest.TestCase):
             state_inputs=RENDER.RenderStateInputs(
                 schema_version=4,
                 rules_version="test-rules",
+                local_snapshot_identity="a" * 64,
                 input_fingerprint="input",
                 input_files={"entry.md": {"sha256": "source"}},
                 mechanical_checks={"target": {"integrity": "PASS"}},
@@ -54,6 +55,7 @@ class RenderAssemblyTests(unittest.TestCase):
                     "checks": ["Provenance"],
                 }
             ],
+            local_snapshot_identity="a" * 64,
         )
 
         bundle = assembly.bundle()

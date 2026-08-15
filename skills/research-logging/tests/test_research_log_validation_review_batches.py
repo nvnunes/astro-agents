@@ -105,9 +105,7 @@ class OrphanBatchTests(unittest.TestCase):
                     "entry": orphan["entry"],
                 },
                 "decision": "orphan-batch",
-                "queue_fingerprint": first.fingerprint,
-                "batch_size": 50,
-                "batch_number": 1,
+                "candidate_fingerprints": dict(first.candidate_fingerprints),
                 "unresolved": [],
                 "connected": identities,
                 "retained": [],
@@ -171,17 +169,83 @@ class OrphanBatchTests(unittest.TestCase):
             }
             self.assertTrue(set(identities).isdisjoint(remaining_identities))
             self.assertLess(len(remaining_identities), candidate_count)
+            repeated, repeated_counts = DECISIONS.apply_review_decisions(
+                scan,
+                decided,
+                {
+                    "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
+                    "actions": [unresolved_action],
+                },
+            )
+            self.assertEqual(repeated, decided)
+            self.assertEqual(repeated_counts["orphan-batch-noop"], 1)
+            conflicting = copy.deepcopy(unresolved_action)
+            conflicting["connected"] = conflicting.pop("unresolved")
+            conflicting["unresolved"] = []
             with self.assertRaisesRegex(
-                CONTRACTS.ValidationToolError, "fingerprint is stale"
+                CONTRACTS.ValidationToolError, "conflicts with an existing decision"
             ):
                 DECISIONS.apply_review_decisions(
                     scan,
                     decided,
                     {
                         "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
-                        "actions": [unresolved_action],
+                        "actions": [conflicting],
                     },
                 )
+
+            second = REVIEW_BATCHES.select_orphan_batch(
+                scan,
+                prepared,
+                orphan,
+                REVIEW_BATCHES.OrphanBatchRequest(
+                    50, 2, DECISIONS.DECISION_SCHEMA_VERSION
+                ),
+            )
+            second_identities = [
+                candidate["identity"] for candidate in second.candidates
+            ]
+            second_action = {
+                "match": {
+                    "kind": "orphan_candidates",
+                    "entry": orphan["entry"],
+                },
+                "decision": "orphan-batch",
+                "candidate_fingerprints": dict(second.candidate_fingerprints),
+                "unresolved": second_identities,
+                "connected": [],
+                "retained": [],
+            }
+            reverse, _ = DECISIONS.apply_review_decisions(
+                scan,
+                prepared,
+                {
+                    "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
+                    "actions": [second_action],
+                },
+            )
+            reverse, _ = DECISIONS.apply_review_decisions(
+                scan,
+                reverse,
+                {
+                    "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
+                    "actions": [unresolved_action],
+                },
+            )
+            reverse_remaining = next(
+                item
+                for item in reverse["review_queue"]
+                if item["kind"] == "orphan_candidates"
+                and item["entry"] == orphan["entry"]
+            )
+            self.assertTrue(
+                (set(identities) | set(second_identities)).isdisjoint(
+                    {
+                        candidate["identity"]
+                        for candidate in reverse_remaining["candidates"]
+                    }
+                )
+            )
 
             complete_action = {
                 "match": {
@@ -230,9 +294,9 @@ class OrphanBatchTests(unittest.TestCase):
                         "entry": orphan["entry"],
                     },
                     "decision": "orphan-batch",
-                    "queue_fingerprint": batch.fingerprint,
-                    "batch_size": 50,
-                    "batch_number": 1,
+                    "candidate_fingerprints": dict(
+                        batch.candidate_fingerprints
+                    ),
                     "unresolved": [],
                     "connected": [
                         candidate["identity"] for candidate in batch.candidates
@@ -304,9 +368,7 @@ class OrphanBatchTests(unittest.TestCase):
                     "entry": orphan["entry"],
                 },
                 "decision": "orphan-batch",
-                "queue_fingerprint": batch.fingerprint,
-                "batch_size": 200,
-                "batch_number": 1,
+                "candidate_fingerprints": dict(batch.candidate_fingerprints),
                 "unresolved": [
                     candidate["identity"] for candidate in batch.candidates
                 ],

@@ -70,7 +70,7 @@ linting only the main validator:
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/pyrun \
   skills/research-logging/scripts/research_log_data_index.py \
   skills/research-logging/scripts/research_log_validation.py \
-  skills/research-logging/scripts/migrate_research_log_validation_publication.py \
+  skills/research-logging/scripts/migrate_research_log_validation_local_publication.py \
   skills/research-logging/scripts/validation/*.py
 ./.conda/bin/ruff check skills/research-logging/scripts \
   skills/research-logging/tests
@@ -93,9 +93,9 @@ higher complexity score, or growth in the total advisory finding count.
 Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
 retained evidence, scientific artifacts, and authored `Validation:` notes as
 research-owned. Canonical validation may write only `validation.md`,
-`validation-state.json`, `validation-index.json`, the optional
-`validation-failures.md`, and the two repository aggregate files. Research
-operations must leave every existing generated validation file byte-identical.
+`validation-decisions.json`, `validation-state.json`, and
+`validation-index.json`. Research operations must leave every existing
+generated validation file byte-identical.
 
 The research-log test gate must verify:
 
@@ -103,8 +103,9 @@ The research-log test gate must verify:
   its detailed completed rows;
 - every maintained summary uses the exact stable report link directly below
   its H1 and contains no generated `## Validation` section or Contents item;
-- the one-time migration requires an exact, duplicate-free maintained-summary
-  manifest, preserves scoped summary identity, and is idempotent;
+- the local-publication migration strictly decodes v43 state and slices,
+  preserves them byte-identically for Phase 5, performs no semantic review or
+  unchanged-artifact rehashing, and accounts for every write and deletion;
 - canonical publication rejects traversal, symlink, unexpected-filename, and
   output-directory alias attempts;
 - persisted graph slices use `summary_validation_identity` for maintained
@@ -114,11 +115,12 @@ The research-log test gate must verify:
   Replace, Update Summary, Reorganize, and initialization leave generated
   validation bytes unchanged.
 
-For a repository-content migration, stage and lint every prospective generated
-bundle and summary patch before publishing any file. Publish generated bundles
-first in deterministic path order, then apply the exact summary manifest. After
-publication, require every link to resolve and every canonical slice to pass
-scope-aware source-currentness verification.
+For a validation-publication migration, dry-run and verify one log at a time.
+Under its per-log lock, recheck the local snapshot, publish durable decisions
+before the report, verify in-report remediation equivalence, then remove the
+obsolete failure file. A schema-9 state and schema-6 slice remain exact Phase 5
+migration sources and are expected to be cache misses under native Phase 4
+lint.
 
 ### Validation Review Scaling Benchmark
 

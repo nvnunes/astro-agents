@@ -1404,7 +1404,7 @@ class ScanTests(unittest.TestCase):
                 "docs/consumer",
                 origin,
             )
-            aggregate = GRAPH_STORE.aggregate_records(
+            projection = GRAPH_STORE.repository_slice_projection(
                 [
                     GRAPH_STORE.slice_record(
                         builder.build(),
@@ -1421,7 +1421,7 @@ class ScanTests(unittest.TestCase):
                         "kind": "script",
                     }
                 },
-                GRAPH_STORE.aggregate_graph_edges(aggregate),
+                projection["graph_edges"],
             )
 
             scan, _ = RUNTIME.scan_log(
@@ -1867,28 +1867,9 @@ class ScanTests(unittest.TestCase):
                 json.loads(output.read_text(encoding="utf-8"))["entry_order"],
                 ["e001", "Log level"],
             )
-            self.assertFalse((root / GRAPH_STORE.AGGREGATE_DIRECTORY).exists())
+            self.assertFalse((root / ".research-log-validation-index").exists())
             metrics = json.loads(result.stdout)
             self.assertEqual(metrics["repository_index_status"], "replacement")
-
-            index_result = subprocess.run(
-                [
-                    sys.executable,
-                    "-B",
-                    str(SCRIPT),
-                    "index",
-                    "--project-root",
-                    str(root),
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(index_result.returncode, 2)
-            self.assertIn(
-                "requires one current slice per maintained log",
-                index_result.stderr,
-            )
 
     def test_cli_scan_rejects_invalid_explicit_repository_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

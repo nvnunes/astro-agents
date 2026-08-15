@@ -1,4 +1,4 @@
-"""Exclusive, fail-closed publication of generated validation records."""
+"""Atomic publication primitives for generated validation records."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 LOCK_FILENAME = ".research-log-validation.lock"
@@ -18,22 +19,32 @@ class RecordPublicationError(RuntimeError):
     """Raised when exclusive validation publication cannot complete safely."""
 
 
+@dataclass(frozen=True)
+class PublicationGuard:
+    """Staleness identity and optional currentness hook for one publication."""
+
+    expected_identity: str
+    identity_filenames: Iterable[str] | None = None
+    validate_publication: Callable[[], None] | None = None
+
+
 @contextmanager
-def repository_lock(project_root: Path) -> Iterator[None]:
-    """Hold the repository's nonblocking canonical-validation lock.
+def validation_lock(output_dir: Path) -> Iterator[None]:
+    """Hold one log's nonblocking canonical-publication lock.
 
     The lock file is stable and ignored by source control. The operating system
     releases the advisory lock automatically when the process exits.
     """
 
-    project_root = project_root.resolve()
-    lock_path = project_root / LOCK_FILENAME
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir / LOCK_FILENAME
     with lock_path.open("a+b") as handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RecordPublicationError(
-                f"another canonical validation operation owns {lock_path}"
+                f"another validation writer owns {lock_path}"
             ) from exc
         try:
             yield
@@ -125,29 +136,28 @@ def publish_record_bundle(
     staged_dir: Path,
     output_dir: Path,
     filenames: Iterable[str],
-    *,
-    expected_identity: str,
-    validate_publication: Callable[[], None] | None = None,
+    guard: PublicationGuard,
 ) -> None:
     """Publish a staged bundle with atomic files and fail-closed interruption.
 
-    The caller owns the repository lock. ``expected_identity`` rejects a stale
+    The caller owns the per-log publication lock. ``expected_identity`` rejects a stale
     render packet. There is deliberately no rollback: a later canonical scan
     rejects an incomplete bundle and rebuilds it from research inputs.
     """
 
     names = _validated_names(filenames)
     _validate_publication_paths(staged_dir, output_dir, names)
-    if record_bundle_identity(output_dir, names) != expected_identity:
+    identity_names = _validated_names(guard.identity_filenames or names)
+    if record_bundle_identity(output_dir, identity_names) != guard.expected_identity:
         raise RecordPublicationError("canonical validation bundle changed after scan")
-    if validate_publication is not None:
-        validate_publication()
+    if guard.validate_publication is not None:
+        guard.validate_publication()
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         for name in names:
             _publish_one(staged_dir / name, output_dir / name)
-        if validate_publication is not None:
-            validate_publication()
+        if guard.validate_publication is not None:
+            guard.validate_publication()
     except BaseException as exc:
         if isinstance(exc, Exception):
             raise RecordPublicationError(

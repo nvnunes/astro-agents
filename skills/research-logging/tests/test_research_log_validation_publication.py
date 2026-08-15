@@ -25,8 +25,8 @@ import os
 import sys
 sys.path.insert(0, {str(SCRIPT.parent)!r})
 from pathlib import Path
-from validation.records import repository_lock
-with repository_lock(Path({str(root)!r})):
+from validation.records import validation_lock
+with validation_lock(Path({str(root)!r})):
     os._exit({exit_code})
 """
         return subprocess.run(
@@ -36,28 +36,36 @@ with repository_lock(Path({str(root)!r})):
             check=False,
         )
 
-    def test_repository_lock_rejects_a_second_validator(self) -> None:
+    def test_per_log_lock_rejects_a_second_writer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with RECORDS.repository_lock(root):
+            with RECORDS.validation_lock(root):
                 completed = self._lock_probe(root, 0)
 
             self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("another canonical validation operation", completed.stderr)
+            self.assertIn("another validation writer", completed.stderr)
 
-    def test_repository_lock_is_released_when_process_exits(self) -> None:
+    def test_per_log_lock_is_released_when_process_exits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             completed = self._lock_probe(root, 23)
 
             self.assertEqual(completed.returncode, 23)
-            with RECORDS.repository_lock(root):
+            with RECORDS.validation_lock(root):
+                pass
+
+    def test_different_logs_have_independent_publication_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            with RECORDS.validation_lock(first), RECORDS.validation_lock(second):
                 pass
 
     def test_interrupted_bundle_is_rejected_and_rebuilt_without_rollback(
         self,
     ) -> None:
-        for interrupt_after in (1, 2):
+        for interrupt_after in range(1, 7):
             with self.subTest(interrupt_after=interrupt_after):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
@@ -96,7 +104,14 @@ with repository_lock(Path({str(root)!r})):
                                 changed_adjudication, changed_scan, output
                             )
 
-                    self.assertFalse(RUNTIME.lint_records(output)["ok"])
+                    interrupted_lint = RUNTIME.lint_records(output)
+                    self.assertTrue(interrupted_lint["report_ok"])
+                    self.assertEqual(
+                        interrupted_lint["ok"], interrupt_after in {1, 3, 4, 5, 6}
+                    )
+                    self.assertEqual(
+                        interrupted_lint["cache_usable"], interrupt_after in {1, 6}
+                    )
                     fresh_scan_path = root / "fresh-scan.json"
                     result = CLI.main(
                         [
@@ -113,72 +128,18 @@ with repository_lock(Path({str(root)!r})):
                     fresh_scan = json.loads(
                         fresh_scan_path.read_text(encoding="utf-8")
                     )
-                    self.assertNotIn("incremental", fresh_scan)
+                    if interrupt_after in {1, 6}:
+                        self.assertIn("incremental", fresh_scan)
+                    else:
+                        self.assertNotIn("incremental", fresh_scan)
 
-                    RUNTIME.render_records(
-                        adjudication_for(fresh_scan, entry), fresh_scan, output
-                    )
+                    if fresh_scan.get("incremental", {}).get("status") != "unchanged":
+                        RUNTIME.render_records(
+                            adjudication_for(fresh_scan, entry), fresh_scan, output
+                        )
                     self.assertTrue(RUNTIME.lint_records(output)["ok"])
 
-    def test_index_rebuilds_malformed_disposable_aggregate(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = make_log(root)
-            scan, _ = RUNTIME.scan_log(summary, jobs=1)
-            RUNTIME.render_records(
-                adjudication_for(scan, entry), scan, summary.with_suffix("")
-            )
-            aggregate = root / ".research-log-validation-index"
-            aggregate.mkdir()
-            write(aggregate / "manifest.json", "not JSON\n")
-            write(aggregate / "incoming.json", "{}\n")
-
-            result = CLI.main(["index", "--project-root", str(root)])
-
-            self.assertEqual(result, 0)
-            manifest = json.loads(
-                (aggregate / "manifest.json").read_text(encoding="utf-8")
-            )
-            incoming = json.loads(
-                (aggregate / "incoming.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(
-                manifest["validation_rules_version"], RUNTIME.RULES_VERSION
-            )
-            self.assertEqual(incoming["incoming"], {})
-
-    def test_index_rebuilds_after_interrupted_pair_publication(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = make_log(root)
-            scan, _ = RUNTIME.scan_log(summary, jobs=1)
-            RUNTIME.render_records(
-                adjudication_for(scan, entry), scan, summary.with_suffix("")
-            )
-            aggregate = root / ".research-log-validation-index"
-            aggregate.mkdir()
-            write(aggregate / "manifest.json", "not JSON\n")
-            write(aggregate / "incoming.json", "not JSON\n")
-            original_publish = RECORDS._publish_one
-            calls = 0
-
-            def interrupt(source: Path, destination: Path) -> None:
-                nonlocal calls
-                calls += 1
-                original_publish(source, destination)
-                if calls == 1:
-                    raise RuntimeError("between aggregate files")
-
-            with mock.patch.object(RECORDS, "_publish_one", side_effect=interrupt):
-                self.assertEqual(
-                    CLI.main(["index", "--project-root", str(root)]), 2
-                )
-
-            self.assertEqual(CLI.main(["index", "--project-root", str(root)]), 0)
-            json.loads((aggregate / "manifest.json").read_text(encoding="utf-8"))
-            json.loads((aggregate / "incoming.json").read_text(encoding="utf-8"))
-
-    def test_interruption_before_graph_slice_exposes_mixed_bundle(self) -> None:
+    def test_interruption_after_durable_files_leaves_only_cache_misses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
@@ -281,8 +242,8 @@ with repository_lock(Path({str(root)!r})):
                     nonlocal calls
                     calls += 1
                     original_publish(source, destination)
-                    if calls == 3:
-                        raise RuntimeError("before graph slice")
+                    if calls == 2:
+                        raise RuntimeError("after durable files")
 
                 with mock.patch.object(
                     RECORDS, "_publish_one", side_effect=interrupt
@@ -292,25 +253,19 @@ with repository_lock(Path({str(root)!r})):
                             staged,
                             output,
                             names,
-                            expected_identity=expected,
+                            RECORDS.PublicationGuard(expected),
                         )
 
-            mixed_state = json.loads(
-                (output / "validation-state.json").read_text(encoding="utf-8")
-            )
-            mixed_slice = json.loads(
-                (output / GRAPH_STORE.SLICE_FILENAME).read_text(encoding="utf-8")
-            )
-            self.assertNotEqual(
-                mixed_state["graph_identity"], mixed_slice["graph_identity"]
-            )
-            self.assertFalse(RUNTIME.lint_records(output)["ok"])
+            lint = RUNTIME.lint_records(output)
+            self.assertTrue(lint["ok"], lint["durable_issues"])
+            self.assertFalse(lint["cache_usable"])
+            self.assertIn("state report identity", "; ".join(lint["cache_issues"]))
 
     def test_lock_file_is_ignored_by_owned_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _entry = make_log(root)
-            write(root / RECORDS.LOCK_FILENAME, "")
+            write(summary.with_suffix("") / RECORDS.LOCK_FILENAME, "")
 
             scan, _ = RUNTIME.scan_log(summary, jobs=1)
 

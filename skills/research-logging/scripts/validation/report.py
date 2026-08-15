@@ -22,40 +22,46 @@ def _table_cells(line: str) -> list[str]:
 def parse_markdown_rows(text: str) -> dict[str, Any]:
     """Parse detailed Summary and Entries tables from a generated report."""
 
-    mode: Optional[str] = None
-    current_entry: Optional[str] = None
-    summary_rows: list[list[str]] = []
-    entry_rows: list[list[str]] = []
-    entry_order: list[str] = []
-    entry_groups: dict[str, list[list[str]]] = {}
-    for line in text.splitlines():
-        if line == "## Summary":
-            mode = "summary"
-            continue
-        if line == "## Entries":
-            mode = "entry"
-            continue
-        if mode == "entry" and line.startswith("### "):
-            current_entry = line[4:].split(":", 1)[0]
-            entry_order.append(current_entry)
-            entry_groups[current_entry] = []
-        if not line.startswith("|") or line.startswith("| ---"):
-            continue
-        if line.startswith(("| Statistic", "| Target", "| Scope")):
-            continue
-        cells = _table_cells(line)
-        if mode == "summary":
-            summary_rows.append(cells)
-        elif mode == "entry":
-            entry_rows.append(cells)
-            if current_entry is not None:
-                entry_groups[current_entry].append(cells)
-    return {
-        "summary": summary_rows,
-        "entries": entry_rows,
-        "entry_order": entry_order,
-        "entry_groups": entry_groups,
+    state: dict[str, Any] = {
+        "mode": None,
+        "current_entry": None,
+        "summary": [],
+        "entries": [],
+        "entry_order": [],
+        "entry_groups": {},
     }
+    for line in text.splitlines():
+        _parse_report_line(line, state)
+    state.pop("mode")
+    state.pop("current_entry")
+    return state
+
+
+def _parse_report_line(line: str, state: dict[str, Any]) -> None:
+    if line.startswith("## ") and line not in {"## Summary", "## Entries"}:
+        state.update({"mode": None, "current_entry": None})
+    if line == "## Summary":
+        state["mode"] = "summary"
+        return
+    if line == "## Entries":
+        state["mode"] = "entry"
+        return
+    if state["mode"] == "entry" and line.startswith("### "):
+        entry = line[4:].split(":", 1)[0]
+        state["current_entry"] = entry
+        state["entry_order"].append(entry)
+        state["entry_groups"][entry] = []
+    if not line.startswith("|") or line.startswith("| ---"):
+        return
+    if line.startswith(("| Statistic", "| Target", "| Scope")):
+        return
+    cells = _table_cells(line)
+    if state["mode"] == "summary":
+        state["summary"].append(cells)
+    elif state["mode"] == "entry":
+        state["entries"].append(cells)
+        if state["current_entry"] is not None:
+            state["entry_groups"][state["current_entry"]].append(cells)
 
 
 def is_validation_date(value: str) -> bool:
@@ -140,9 +146,7 @@ def status_summary(report_text: str) -> str:
         for row in [*parsed["summary"], *parsed["entries"]]
     )
     if failed:
-        lines.append(
-            "- Remediation queue: [validation-failures.md](validation-failures.md)"
-        )
+        lines.append("- Remediation queue: [Remediation](#remediation)")
     if parsed["entry_order"]:
         lines.extend(
             [

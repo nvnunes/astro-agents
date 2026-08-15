@@ -66,7 +66,7 @@ class _ScanRecordRequired(TypedDict):
     repository_scope: dict[str, Any]
     repository_view_identity: str
     repository_graph_edges: list[dict[str, Any]]
-    record_bundle_identity: str
+    durable_record_identity: str
     input_fingerprint: str
 
 
@@ -552,11 +552,14 @@ def _validate_repository_slice_snapshots(value: Any) -> None:
                 "path",
                 "graph_identity",
                 "source_identity",
+                "local_snapshot_identity",
                 "content_identity",
             }
             or not isinstance(snapshot["path"], str)
             or _HEX_IDENTITY.fullmatch(snapshot["graph_identity"]) is None
             or _HEX_IDENTITY.fullmatch(snapshot["source_identity"]) is None
+            or _HEX_IDENTITY.fullmatch(snapshot["local_snapshot_identity"])
+            is None
         ):
             raise LifecycleRecordContractError("scan repository_slices is invalid")
         identity = _mapping(
@@ -581,7 +584,7 @@ def _validate_scan_scalars(record: Mapping[str, Any]) -> None:
         "summary",
         "log_root",
         "project_root",
-        "record_bundle_identity",
+        "durable_record_identity",
         "input_fingerprint",
         "repository_view_identity",
     ):
@@ -590,7 +593,7 @@ def _validate_scan_scalars(record: Mapping[str, Any]) -> None:
                 f"scan record field {field!r} must be a string"
             )
     for field in (
-        "record_bundle_identity",
+        "durable_record_identity",
         "input_fingerprint",
         "repository_view_identity",
     ):
@@ -677,6 +680,7 @@ def _validate_scan_collections(record: Mapping[str, Any]) -> None:
             "expected_summaries",
             "refresh_summary",
             "cross_log_complete",
+            "excluded_slices",
         }
         or scope.get("kind")
         not in {
@@ -691,6 +695,14 @@ def _validate_scan_collections(record: Mapping[str, Any]) -> None:
         or scope.get("refresh_summary") is not None
         and not isinstance(scope["refresh_summary"], str)
         or not isinstance(scope.get("cross_log_complete"), bool)
+        or not isinstance(scope.get("excluded_slices"), Mapping)
+        or any(
+            not isinstance(summary, str)
+            or not summary
+            or not isinstance(reason, str)
+            or not reason
+            for summary, reason in scope["excluded_slices"].items()
+        )
     ):
         raise LifecycleRecordContractError("scan repository_scope is invalid")
     _string_list(record["script_inventory"], "scan script_inventory")

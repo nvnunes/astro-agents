@@ -73,11 +73,10 @@ from .inventory import (
     owned_entry_folders,
     owned_inventory,
 )
-from .records import record_bundle_identity
+from .records import LOCK_FILENAME, record_bundle_identity
 from .state import (
-    ValidationState,
     ValidationStateContractError,
-    decode_validation_state,
+    decode_compatible_validation_state,
 )
 
 
@@ -102,7 +101,7 @@ def decoded_prior_state(
     prior_state: Optional[Dict[str, Any]],
     rules_version: str,
     state_schema_version: int,
-) -> Optional[ValidationState]:
+) -> Optional[Dict[str, Any]]:
     """Return structurally safe cache state for same-rules scan shortcuts."""
 
     if (
@@ -111,7 +110,7 @@ def decoded_prior_state(
     ):
         return None
     try:
-        return decode_validation_state(
+        return decode_compatible_validation_state(
             prior_state,
             schema_version=state_schema_version,
         )
@@ -1186,73 +1185,80 @@ def _applicable_repository_fingerprint(scan: Mapping[str, Any]) -> Dict[str, Any
     }
 
 
-def input_fingerprint(scan: Mapping[str, Any]) -> str:
-    """Fingerprint the complete validation-relevant scan surface."""
+def _owned_snapshot_payload(
+    summary: str,
+    files: Mapping[str, Any],
+    directory_memberships: Mapping[str, Any],
+    maintained_summaries: Sequence[str],
+) -> Dict[str, Any]:
+    """Return complete local source identities without foreign-log inputs."""
 
-    entries = []
-    for entry in scan.get("entries", []):
-        if "error" in entry:
-            entries.append({"id": entry.get("id"), "error": entry["error"]})
-            continue
-        entries.append(
-            {
-                "id": entry["id"],
-                "path": entry["path"],
-                "section_errors": entry.get("section_errors", []),
-                "presented_items": [
-                    {
-                        "kind": item["kind"],
-                        "section": item["section"],
-                        "selector": item["selector"],
-                    }
-                    for item in entry.get("presented_items", [])
-                ],
-                "candidate_targets": [
-                    {
-                        "identity": item["identity"],
-                        "presented": item.get("presented", False),
-                        "sections": item.get("sections", []),
-                        "role_hints": item.get("role_hints", []),
-                        "status": item.get("mechanical", {}).get("status"),
-                    }
-                    for item in entry.get("candidate_targets", [])
-                ],
-                "orphan_inventory": entry.get("orphan_inventory", []),
-                "scope_kind": entry.get("scope_kind", "entry"),
-                "validation_notes": entry.get("validation_notes", []),
-                "evidence_errors": entry.get("evidence_record", {}).get("errors", []),
-            }
-        )
-    payload = {
-        "summary": scan["summary"],
-        "entry_order": scan["entry_order"],
-        "reconciliation": scan["reconciliation"],
-        "summary_items": [
-            {"selector": item["selector"], "section": item["section"]}
-            for item in scan.get("summary_items", [])
-        ],
-        "entries": entries,
-        "evidence_record_errors": {
-            "summary": scan.get("evidence_records", {})
-            .get("summary", {})
-            .get("errors", []),
-            "entries": [
-                {
-                    "identity": item.get("identity") or item.get("expected_path"),
-                    "errors": item.get("errors", []),
-                }
-                for item in scan.get("evidence_records", {}).get("entry_folders", [])
-            ],
-        },
+    local_root = Path(summary).with_suffix("").as_posix()
+    foreign_roots = tuple(
+        f"{Path(candidate).with_suffix('').as_posix()}/"
+        for candidate in maintained_summaries
+        if Path(candidate).with_suffix("").as_posix() != local_root
+    )
+
+    def local(identity: str) -> bool:
+        return not identity.startswith(foreign_roots)
+
+    return {
+        "schema": "local-research-snapshot-v1",
+        "summary": summary,
         "files": {
             identity: content_identity(value)
-            for identity, value in scan.get("files", {}).items()
+            for identity, value in sorted(files.items())
+            if local(identity)
         },
-        "directory_memberships": scan.get("directory_memberships", {}),
-        "script_inventory": scan.get("script_inventory", []),
-        "script_dependency_graph": scan.get("script_dependency_graph", {}),
-        "repository": _applicable_repository_fingerprint(scan),
+        "directory_memberships": {
+            identity: value
+            for identity, value in sorted(directory_memberships.items())
+            if local(identity)
+        },
     }
+
+
+def _local_snapshot_payload(scan: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return source identities sufficient to reproduce every local projection."""
+
+    maintained = scan.get("repository_scope", {}).get("expected_summaries", [])
+    return _owned_snapshot_payload(
+        scan["summary"],
+        scan.get("files", {}),
+        scan.get("directory_memberships", {}),
+        maintained,
+    )
+
+
+def local_snapshot_identity(scan: Mapping[str, Any]) -> str:
+    """Identify local research inputs without generated or foreign state."""
+
+    return _json_fingerprint(_local_snapshot_payload(scan))
+
+
+def legacy_local_snapshot_identity(
+    summary: str,
+    state: Mapping[str, Any],
+    maintained_summaries: Sequence[str],
+) -> str:
+    """Identify a v43 report snapshot from its retained local source cache."""
+
+    return _json_fingerprint(
+        _owned_snapshot_payload(
+            summary,
+            state.get("input_files", {}),
+            state.get("directory_memberships", {}),
+            maintained_summaries,
+        )
+    )
+
+
+def input_fingerprint(scan: Mapping[str, Any]) -> str:
+    """Fingerprint the complete local and applicable cross-log scan surface."""
+
+    payload = _local_snapshot_payload(scan)
+    payload["repository"] = _applicable_repository_fingerprint(scan)
     return _json_fingerprint(payload)
 
 
@@ -1303,7 +1309,7 @@ class ScanAssembly:
     documents: ScanDocumentFacts
     materials: ScanMaterialFacts
     repository: ScanRepositoryFacts
-    record_bundle_identity: str
+    durable_record_identity: str
 
     def record(self) -> ScanRecord:
         """Serialize the typed assembly into the persisted scan contract."""
@@ -1352,7 +1358,7 @@ class ScanAssembly:
                 "repository_scope": dict(repository.view["scope"]),
                 "repository_view_identity": repository.view["identity"],
                 "repository_graph_edges": list(repository.view["graph_edges"]),
-                "record_bundle_identity": self.record_bundle_identity,
+                "durable_record_identity": self.durable_record_identity,
                 "input_fingerprint": "",
             },
         )
@@ -1494,7 +1500,7 @@ def _finalize_scan_facts(
         material_input.resolved_paths,
         material_input.log_root,
         project_root,
-        finalization.policy.validation_record_names,
+        (*finalization.policy.validation_record_names, LOCK_FILENAME),
     )
     for path, captured in material_input.owned_directory_memberships.items():
         identity = logical_display_path(path, project_root)
@@ -1599,7 +1605,9 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     if not summary_path.is_file():
         raise ValidationToolError(f"summary does not exist: {summary_path}")
     log_root = summary_path.with_suffix("")
-    prior_bundle = record_bundle_identity(log_root, policy.validation_record_names)
+    prior_durable = record_bundle_identity(
+        log_root, ("validation-decisions.json", "validation.md")
+    )
     project_root = find_project_root(summary_path)
     repository_metrics = validated_repository_view(
         request.repository_index, request.rules_version
@@ -1649,7 +1657,8 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         project_root,
         policy.material_inventory,
         membership_ignored_paths=(
-            log_root / name for name in policy.validation_record_names
+            log_root / name
+            for name in (*policy.validation_record_names, LOCK_FILENAME)
         ),
     )
 
@@ -1746,7 +1755,7 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         repository=ScanRepositoryFacts(
             repository_dependencies, request.repository_index
         ),
-        record_bundle_identity=prior_bundle,
+        durable_record_identity=prior_durable,
     ).record()
     _classify_orphans_with_complete_cross_log_view(raw_scan)
     raw_scan["input_fingerprint"] = input_fingerprint(raw_scan)

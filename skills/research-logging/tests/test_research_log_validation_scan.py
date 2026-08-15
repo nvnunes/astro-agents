@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import sys
 import unittest
@@ -15,6 +16,39 @@ SCAN = importlib.import_module("validation.scan")
 
 
 class ScanAssemblyTests(unittest.TestCase):
+    def test_local_snapshot_identity_excludes_repository_facts(self) -> None:
+        record = {
+            "summary": "docs/example.md",
+            "entry_order": [],
+            "reconciliation": {},
+            "summary_items": [],
+            "entries": [],
+            "evidence_records": {"summary": {"errors": []}, "entry_folders": []},
+            "files": {},
+            "directory_memberships": {},
+            "script_inventory": [],
+            "script_dependency_graph": {},
+            "repository_dependencies": [],
+            "resolved_paths": {},
+            "repository_material_owners": {},
+            "repository_cross_log_sources": {},
+            "repository_slices": {},
+            "repository_scope": {
+                "refresh_summary": "docs/example.md",
+                "cross_log_complete": True,
+            },
+        }
+        changed = copy.deepcopy(record)
+        changed["repository_scope"]["cross_log_complete"] = False
+
+        self.assertEqual(
+            SCAN.local_snapshot_identity(record),
+            SCAN.local_snapshot_identity(changed),
+        )
+        self.assertNotEqual(
+            SCAN.input_fingerprint(record), SCAN.input_fingerprint(changed)
+        )
+
     def test_scan_owner_rejects_an_invalid_mode_at_its_public_boundary(self) -> None:
         request = SCAN.ScanRequest(
             Path("missing.md"),
@@ -75,7 +109,7 @@ class ScanAssemblyTests(unittest.TestCase):
             documents=documents,
             materials=materials,
             repository=SCAN.ScanRepositoryFacts([], repository),
-            record_bundle_identity="b" * 64,
+            durable_record_identity="b" * 64,
         ).record()
         record["input_fingerprint"] = "a" * 64
 
@@ -83,7 +117,7 @@ class ScanAssemblyTests(unittest.TestCase):
 
         self.assertEqual(decoded["entry_order"], [])
         self.assertEqual(decoded["repository_view_identity"], repository["identity"])
-        self.assertEqual(decoded["record_bundle_identity"], "b" * 64)
+        self.assertEqual(decoded["durable_record_identity"], "b" * 64)
 
 
 if __name__ == "__main__":

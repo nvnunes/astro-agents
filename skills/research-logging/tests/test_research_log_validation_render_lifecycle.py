@@ -17,6 +17,7 @@ from research_log_validation_test_support import (
     RENDER,
     REPORT,
     RUNTIME,
+    SCAN,
     STATE,
     Path,
     adjudication_for,
@@ -87,7 +88,7 @@ class RenderTests(unittest.TestCase):
                         staged,
                         output,
                         filenames,
-                        expected_identity="unused",
+                        RECORDS.PublicationGuard("unused"),
                     )
             linked = root / "linked-output"
             linked.symlink_to(output, target_is_directory=True)
@@ -98,7 +99,7 @@ class RenderTests(unittest.TestCase):
                     staged,
                     linked,
                     ("validation.md",),
-                    expected_identity="unused",
+                    RECORDS.PublicationGuard("unused"),
                 )
 
     def test_validation_publication_requires_exact_generated_allowlist(self) -> None:
@@ -344,9 +345,7 @@ class RenderTests(unittest.TestCase):
             self.assertIn("- Summary statistics: 2026-08-07 — 1 checked", report)
             self.assertIn("`FAIL` - 1 of 3 targets failed", report)
             self.assertIn("| e001 | 2026-08-07 |", report)
-            self.assertIn(
-                "[validation-failures.md](validation-failures.md)", report
-            )
+            self.assertIn("[Remediation](#remediation)", report)
 
     def test_render_leaves_complete_research_owned_tree_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -396,45 +395,6 @@ class RenderTests(unittest.TestCase):
                 + "\n\n## AI Use\n\nResearcher-led fixture.\n",
             )
             self.assertEqual(IDENTITIES.summary_validation_identity(summary), before)
-
-    def test_render_guard_uses_scope_aware_cross_log_source_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = make_log(root)
-            identity = entry.relative_to(root).as_posix()
-            scan = {
-                "project_root": root.as_posix(),
-                "repository_scope": {
-                    "expected_summaries": [
-                        summary.relative_to(root).as_posix()
-                    ]
-                },
-                "repository_cross_log_sources": {
-                    "other.md": {
-                        identity: {
-                            key: value
-                            for key, value in IDENTITIES.entry_validation_identity(
-                                entry
-                            ).items()
-                            if key in {"size", "sha256"}
-                        }
-                    }
-                },
-            }
-            write(
-                entry,
-                entry.read_text(encoding="utf-8")
-                + "\n## Historical context\n\nProjection-only note.\n",
-            )
-            RENDER._assert_repository_sources_current(scan)
-            write(
-                entry,
-                entry.read_text(encoding="utf-8").replace(
-                    "The retained value is `1.0`", "The retained value is `2.0`"
-                ),
-            )
-            with self.assertRaises(CONTRACTS.FileChangedError):
-                RENDER._assert_repository_sources_current(scan)
 
     def test_synthesis_only_entry_change_does_not_invalidate_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -778,9 +738,11 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(counts["failure_rows"], 1)
             self.assertEqual(counts["successful_checks"], 5)
             self.assertEqual(counts["completed_checks"], 7)
-            failures = (output / "validation-failures.md").read_text(encoding="utf-8")
-            self.assertEqual(failures.count("### "), 1)
-            self.assertEqual(failures.count("- Check:"), 2)
+            report = (output / "validation.md").read_text(encoding="utf-8")
+            self.assertEqual(report.count("#### "), 1)
+            self.assertEqual(report.count("- Check:"), 2)
+            self.assertFalse((output / "validation-failures.md").exists())
+            self.assertTrue((output / "validation-decisions.json").is_file())
 
             state = json.loads(
                 (output / "validation-state.json").read_text(encoding="utf-8")
@@ -2015,6 +1977,7 @@ class RenderTests(unittest.TestCase):
                 output, expected_entry_order=scan["entry_order"]
             )
             self.assertFalse(lint["ok"])
+            self.assertFalse(lint["cache_usable"])
             self.assertIn(
                 "validation.md contains a plain hyphen table cell", lint["issues"]
             )
@@ -2038,7 +2001,8 @@ class RenderTests(unittest.TestCase):
 
             lint = RUNTIME.lint_records(output)
 
-            self.assertFalse(lint["ok"])
+            self.assertTrue(lint["ok"])
+            self.assertFalse(lint["cache_usable"])
             self.assertTrue(
                 any("completed check 0" in issue for issue in lint["issues"])
             )
@@ -2062,7 +2026,8 @@ class RenderTests(unittest.TestCase):
 
             lint = RUNTIME.lint_records(output)
 
-            self.assertFalse(lint["ok"])
+            self.assertTrue(lint["ok"])
+            self.assertFalse(lint["cache_usable"])
             self.assertIn(
                 "successful state result has an unavailable dependency",
                 lint["issues"],
@@ -2082,6 +2047,38 @@ class RenderTests(unittest.TestCase):
             self.assertFalse(lint["ok"])
             self.assertTrue(
                 any("not readable UTF-8" in issue for issue in lint["issues"])
+            )
+
+    def test_linter_distinguishes_a_historical_local_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            (output / "validation-state.json").unlink()
+            (output / "validation-index.json").unlink()
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The retained value is `1.0`", "The retained value is `2.0`"
+                ),
+            )
+            changed, _ = RUNTIME.scan_log(summary, jobs=1)
+
+            historical = RUNTIME.lint_records(
+                output,
+                expected_entry_order=changed["entry_order"],
+                expected_local_snapshot_identity=SCAN.local_snapshot_identity(
+                    changed
+                ),
+            )
+
+            self.assertFalse(historical["ok"])
+            self.assertFalse(historical["cache_usable"])
+            self.assertIn(
+                "validation.md is historical for the current local research snapshot",
+                historical["currentness_issues"],
             )
 
     def test_render_rejects_invalid_bundle_before_publication(self) -> None:
@@ -2123,7 +2120,7 @@ class RenderTests(unittest.TestCase):
 
             self.assertEqual((output / "validation-state.json").read_bytes(), before)
 
-    def test_renderer_rejects_other_log_slice_published_after_scan(self) -> None:
+    def test_renderer_allows_other_log_slice_published_after_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
@@ -2209,15 +2206,12 @@ class RenderTests(unittest.TestCase):
                 ),
             )
 
-            with self.assertRaisesRegex(
-                CONTRACTS.FileChangedError,
-                "repository dependency view changed after scan",
-            ):
-                RUNTIME.render_records(
-                    adjudication_for(scan, entry),
-                    scan,
-                    summary.with_suffix(""),
-                )
+            RUNTIME.render_records(
+                adjudication_for(scan, entry),
+                scan,
+                summary.with_suffix(""),
+            )
+            self.assertTrue(RUNTIME.lint_records(summary.with_suffix(""))["ok"])
 
     def test_render_rejects_new_inventory_member_after_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

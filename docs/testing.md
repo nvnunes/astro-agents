@@ -70,7 +70,6 @@ linting only the main validator:
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/pyrun \
   skills/research-logging/scripts/research_log_data_index.py \
   skills/research-logging/scripts/research_log_validation.py \
-  skills/research-logging/scripts/migrate_research_log_validation_local_publication.py \
   skills/research-logging/scripts/validation/*.py
 ./.conda/bin/ruff check skills/research-logging/scripts \
   skills/research-logging/tests
@@ -103,9 +102,12 @@ The research-log test gate must verify:
   its detailed completed rows;
 - every maintained summary uses the exact stable report link directly below
   its H1 and contains no generated `## Validation` section or Contents item;
-- the local-publication migration strictly decodes v43 state and slices,
-  preserves them byte-identically for Phase 5, performs no semantic review or
-  unchanged-artifact rehashing, and accounts for every write and deletion;
+- current state, decision, and graph-slice schemas reject retired formats with
+  an actionable unsupported-schema diagnostic;
+- component and input-projection changes reopen only outcomes that declare the
+  changed dependency, while compatible outcomes retain their original dates;
+- unchanged artifacts reuse their recorded hashes and inspections without
+  opening artifact content;
 - canonical publication rejects traversal, symlink, unexpected-filename, and
   output-directory alias attempts;
 - persisted graph slices use `summary_validation_identity` for maintained
@@ -115,12 +117,21 @@ The research-log test gate must verify:
   Replace, Update Summary, Reorganize, and initialization leave generated
   validation bytes unchanged.
 
-For a validation-publication migration, dry-run and verify one log at a time.
-Under its per-log lock, recheck the local snapshot, publish durable decisions
-before the report, verify in-report remediation equivalence, then remove the
-obsolete failure file. A schema-9 state and schema-6 slice remain exact Phase 5
-migration sources and are expected to be cache misses under native Phase 4
-lint.
+For a validation-contract upgrade, follow the rolling procedure in
+`skills/research-logging/references/operation-validate.md`. Dry-run and verify
+one log at a time, preserve compatible durable judgments and original result
+dates, and treat unexplained reruns, artifact rehashes, or semantic-review
+requests as blockers for that log. After every maintained log is native, run
+the complete cross-log reconciliation and state-backed hot-cache audit, then
+remove the temporary adapter and migration-only tests and scripts. The final
+suite must prove that the retired schemas are rejected.
+
+When validation performance or compatibility behavior changes, require the
+state-backed hot-cache audit across all maintained Girmos research logs to
+finish within 15 minutes of wall time. Every log must report
+`incremental_status: unchanged`, zero rerun checks, a cached result, and no
+semantic review. A slower result blocks completion and requires further
+profiling or optimization.
 
 ### Validation Review Scaling Benchmark
 

@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence
 
+from .compatibility import invocation_identities
 from .contracts import ScanRecord
-from .graph_adapter import recorded_invocation_identity
 
 
 class WorkflowCommandCheck(NamedTuple):
@@ -37,7 +37,7 @@ class ProducerCandidateFacts(NamedTuple):
 
 
 class ProducerCandidateClass(NamedTuple):
-    """Current v43 relationship between one invocation and one target."""
+    """Current relationship between one invocation and one target."""
 
     direct: bool
     container: bool
@@ -327,7 +327,7 @@ def workflow_check(
         "status": "pass",
         "detail": "matched one recorded command",
         "matched_commands": 1,
-        "producer_invocation": recorded_invocation_identity(
-            entry["id"], match.command_index, match.command
-        ),
+        "producer_invocation": invocation_identities(
+            entry["id"], entry.get("commands", [])
+        )[match.command_index - 1],
     }, unique_dependencies

@@ -12,6 +12,58 @@ RENDER = importlib.import_module("validation.render")
 
 
 class RenderAssemblyTests(unittest.TestCase):
+    def test_incomplete_rollout_preserves_already_decided_orphan_metadata(
+        self,
+    ) -> None:
+        dispositions = RENDER.render_orphan_dispositions(
+            ["e001"],
+            {
+                "e001": {
+                    "id": "e001",
+                    "path": "docs/example/e001.md",
+                    "commands": [],
+                    "data_index": {"rows": []},
+                    "orphan_inventory": [
+                        {"identity": "docs/example/orphan.csv", "kind": "artifact"}
+                    ],
+                    "validation_notes": [],
+                }
+            },
+            [
+                {
+                    "id": "e001",
+                    "path": "docs/example/e001.md",
+                    "scope_paths": ["docs/example/e001.md"],
+                    "targets": [],
+                    "orphan_items": [
+                        {
+                            "identity": "docs/example/orphan.csv",
+                            "decision": "accepted",
+                            "basis": "semantic-connection",
+                        }
+                    ],
+                }
+            ],
+            {
+                "project_root": "/project",
+                "repository_scope": {"cross_log_complete": False},
+                "repository_dependencies": [],
+                "resolved_paths": {},
+                "files": {},
+                "directory_memberships": {},
+                "mechanical_checks": {},
+            },
+            RENDER.OrphanDispositionPolicy(
+                7,
+                lambda *_args: {"docs/example/orphan.csv": "f" * 64},
+            ),
+        )
+
+        self.assertEqual(len(dispositions), 1)
+        self.assertEqual(
+            dispositions[0]["items"][0]["decision"], "accepted"
+        )
+
     def test_assembly_uses_one_measurement_set_for_state_and_counts(self) -> None:
         measurements = RENDER.RenderMeasurements(
             summary_rows=1,
@@ -32,6 +84,9 @@ class RenderAssemblyTests(unittest.TestCase):
             state_inputs=RENDER.RenderStateInputs(
                 schema_version=4,
                 rules_version="test-rules",
+                component_versions={"material_identity": 1},
+                input_projection_versions={"entry": 1},
+                graph_contract_version=1,
                 local_snapshot_identity="a" * 64,
                 input_fingerprint="input",
                 input_files={"entry.md": {"sha256": "source"}},

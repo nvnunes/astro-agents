@@ -22,6 +22,7 @@ from typing import (
     cast,
 )
 
+from .compatibility import components_compatible
 from .contracts import (
     CanonicalRepositoryView,
     FileChangedError,
@@ -59,6 +60,7 @@ from .identities import (
 from .incremental import (
     IncrementalOperations,
     IncrementalPolicy,
+    apply_decision_store_reuse,
     compare_prior_state,
 )
 from .inventory import (
@@ -76,7 +78,7 @@ from .inventory import (
 from .records import LOCK_FILENAME, record_bundle_identity
 from .state import (
     ValidationStateContractError,
-    decode_compatible_validation_state,
+    decode_validation_state,
 )
 
 
@@ -102,20 +104,25 @@ def decoded_prior_state(
     rules_version: str,
     state_schema_version: int,
 ) -> Optional[Dict[str, Any]]:
-    """Return structurally safe cache state for same-rules scan shortcuts."""
+    """Return structurally safe cache state for compatible scan shortcuts."""
 
-    if (
-        not isinstance(prior_state, dict)
-        or prior_state.get("validation_rules_version") != rules_version
-    ):
+    if not isinstance(prior_state, dict):
         return None
     try:
-        return decode_compatible_validation_state(
+        decoded = decode_validation_state(
             prior_state,
             schema_version=state_schema_version,
         )
     except ValidationStateContractError:
         return None
+    versions = decoded["component_versions"]
+    compatible, _ = components_compatible(
+        {
+            name: versions.get(name)
+            for name in ("material_identity", "mechanical_inspection")
+        }
+    )
+    return dict(decoded) if compatible else None
 
 
 def validated_jobs(jobs: object) -> int:
@@ -493,6 +500,8 @@ class IdentityInspectionResult(NamedTuple):
     mechanics: Dict[str, Dict[str, Any]]
     files_hashed: int
     bytes_hashed: int
+    files_reused: int
+    inspections_reused: int
 
 
 def _inspect_identity(
@@ -560,6 +569,8 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
     mechanics: Dict[str, Dict[str, Any]] = {}
     files_hashed = 0
     bytes_hashed = 0
+    files_reused = 0
+    inspections_reused = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=inputs.jobs) as executor:
         futures = {
             executor.submit(_inspect_identity, path, inputs): path
@@ -580,7 +591,17 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
             if path.is_file() and hashed is not None:
                 bytes_hashed += hashed
                 files_hashed += 1
-    return IdentityInspectionResult(files, mechanics, files_hashed, bytes_hashed)
+            elif path.is_file():
+                files_reused += 1
+                inspections_reused += 1
+    return IdentityInspectionResult(
+        files,
+        mechanics,
+        files_hashed,
+        bytes_hashed,
+        files_reused,
+        inspections_reused,
+    )
 
 
 @dataclass(frozen=True)
@@ -1237,23 +1258,6 @@ def local_snapshot_identity(scan: Mapping[str, Any]) -> str:
     return _json_fingerprint(_local_snapshot_payload(scan))
 
 
-def legacy_local_snapshot_identity(
-    summary: str,
-    state: Mapping[str, Any],
-    maintained_summaries: Sequence[str],
-) -> str:
-    """Identify a v43 report snapshot from its retained local source cache."""
-
-    return _json_fingerprint(
-        _owned_snapshot_payload(
-            summary,
-            state.get("input_files", {}),
-            state.get("directory_memberships", {}),
-            maintained_summaries,
-        )
-    )
-
-
 def input_fingerprint(scan: Mapping[str, Any]) -> str:
     """Fingerprint the complete local and applicable cross-log scan surface."""
 
@@ -1310,6 +1314,9 @@ class ScanAssembly:
     materials: ScanMaterialFacts
     repository: ScanRepositoryFacts
     durable_record_identity: str
+    component_versions: Mapping[str, int]
+    input_projection_versions: Mapping[str, int]
+    graph_contract_version: int
 
     def record(self) -> ScanRecord:
         """Serialize the typed assembly into the persisted scan contract."""
@@ -1322,6 +1329,9 @@ class ScanAssembly:
             {
                 "schema_version": self.schema_version,
                 "validation_rules_version": self.rules_version,
+                "component_versions": dict(self.component_versions),
+                "input_projection_versions": dict(self.input_projection_versions),
+                "graph_contract_version": self.graph_contract_version,
                 "requested_mode": self.mode,
                 "summary": self.summary,
                 "log_root": self.log_root,
@@ -1380,6 +1390,9 @@ class ScanLifecyclePolicy:
     identity_inspection: IdentityInspectionPolicy
     script_dependency_graph: ScriptDependencyGraph
     incremental_operations: IncrementalOperations
+    component_versions: Mapping[str, int]
+    input_projection_versions: Mapping[str, int]
+    graph_contract_version: int
 
 
 class ScanRequest(NamedTuple):
@@ -1392,6 +1405,7 @@ class ScanRequest(NamedTuple):
     rules_version: str
     mode: str
     policy: ScanLifecyclePolicy
+    prior_decisions: Optional[Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -1441,6 +1455,8 @@ class _FinalizedScanFacts(NamedTuple):
     orphan_scope_count: int
     files_hashed: int
     bytes_hashed: int
+    files_reused: int
+    inspections_reused: int
 
 
 def _finalize_scan_facts(
@@ -1563,6 +1579,8 @@ def _finalize_scan_facts(
         len(orphan_entries),
         inspected.files_hashed,
         inspected.bytes_hashed,
+        inspected.files_reused,
+        inspected.inspections_reused,
     )
 
 
@@ -1591,6 +1609,33 @@ def _scan_discovered_entries(
         entry_sections[listed["id"]] = scanned.sections
         entry_section_types[listed["id"]] = scanned.section_types
     return entries, entry_sections, entry_section_types
+
+
+def _apply_scan_reuse(
+    raw_scan: ScanRecord,
+    request: ScanRequest,
+    policy: ScanLifecyclePolicy,
+) -> None:
+    if request.prior_state is not None:
+        raw_scan["incremental"] = compare_prior_state(
+            cast(Dict[str, Any], raw_scan),
+            request.prior_state,
+            IncrementalPolicy(
+                policy.state_schema_version, policy.orphan_inventory_version
+            ),
+            policy.incremental_operations,
+        )
+        raw_scan["resolved_paths"] = dict(
+            sorted(raw_scan["resolved_paths"].items())
+        )
+    decision_reuse = apply_decision_store_reuse(
+        cast(Dict[str, Any], raw_scan),
+        raw_scan.get("incremental"),
+        request.prior_decisions,
+        policy.incremental_operations,
+    )
+    if decision_reuse is not None:
+        raw_scan["incremental"] = decision_reuse
 
 
 def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
@@ -1756,19 +1801,13 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
             repository_dependencies, request.repository_index
         ),
         durable_record_identity=prior_durable,
+        component_versions=policy.component_versions,
+        input_projection_versions=policy.input_projection_versions,
+        graph_contract_version=policy.graph_contract_version,
     ).record()
     _classify_orphans_with_complete_cross_log_view(raw_scan)
     raw_scan["input_fingerprint"] = input_fingerprint(raw_scan)
-    if request.prior_state is not None:
-        raw_scan["incremental"] = compare_prior_state(
-            cast(Dict[str, Any], raw_scan),
-            request.prior_state,
-            IncrementalPolicy(
-                policy.state_schema_version, policy.orphan_inventory_version
-            ),
-            policy.incremental_operations,
-        )
-        raw_scan["resolved_paths"] = dict(sorted(raw_scan["resolved_paths"].items()))
+    _apply_scan_reuse(raw_scan, request, policy)
     metrics = scan_metrics(
         ScanMetricsInput(
             started,
@@ -1777,10 +1816,12 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
             finalized.orphan_scope_count,
             finalized.files_hashed,
             finalized.bytes_hashed,
+            finalized.files_reused,
+            finalized.inspections_reused,
             repository_metrics,
         )
     )
-    if request.prior_state is not None:
+    if "incremental" in raw_scan:
         add_incremental_metrics(metrics, raw_scan)
     return _decode_scan(raw_scan, policy.scan_schema_version), metrics
 
@@ -1794,6 +1835,8 @@ class ScanMetricsInput(NamedTuple):
     orphan_scope_count: int
     files_hashed: int
     bytes_hashed: int
+    files_reused: int
+    inspections_reused: int
     repository_metrics: Mapping[str, Any]
 
 
@@ -1842,6 +1885,8 @@ def scan_metrics(inputs: ScanMetricsInput) -> ValidationMetrics:
             "files_identified": len(scan["files"]),
             "files_hashed": inputs.files_hashed,
             "bytes_hashed": inputs.bytes_hashed,
+            "files_reused": inputs.files_reused,
+            "inspections_reused": inputs.inspections_reused,
             "repository_index_status": inputs.repository_metrics["status"],
             "repository_index_edges": inputs.repository_metrics["edges"],
             "repository_dependencies": len(scan["repository_dependencies"]),
@@ -1858,6 +1903,9 @@ def add_incremental_metrics(metrics: ValidationMetrics, scan: ScanRecord) -> Non
     metrics["incremental_status"] = cast(str, incremental.get("status"))
     metrics["semantic_review_required"] = incremental.get(
         "semantic_review_required", True
+    )
+    metrics["semantic_judgments_reused"] = incremental.get(
+        "decision_judgments_reused", 0
     )
     if incremental.get("status") == "unchanged":
         metrics["cached_result"] = cast(

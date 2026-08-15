@@ -280,6 +280,23 @@ def section_definitions(
             if position + 1 < len(definitions)
             else len(lines)
         )
+    duplicate_counts: Dict[str, int] = {}
+    for definition in definitions:
+        normalized = " ".join(definition["section"].split()).casefold()
+        duplicate_counts[normalized] = duplicate_counts.get(normalized, 0) + 1
+        semantic_payload = (
+            f"{normalized}\0{duplicate_counts[normalized]}".encode("utf-8")
+        )
+        start = definition["line"] - 1
+        end = definition["end_line"]
+        content_lines = list(lines[start:end])
+        while content_lines and not content_lines[-1].strip():
+            content_lines.pop()
+        content = "\n".join(content_lines).encode("utf-8")
+        definition["semantic_identity"] = hashlib.sha256(
+            semantic_payload
+        ).hexdigest()
+        definition["content_identity"] = hashlib.sha256(content).hexdigest()
     return definitions
 
 

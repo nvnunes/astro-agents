@@ -28,10 +28,7 @@ from .contracts import (
     ValidationToolError,
 )
 from .graph import DependencyGraph, RootPolicy
-from .graph_adapter import (
-    build_dependency_graph,
-    recorded_invocation_identity,
-)
+from .graph_adapter import build_dependency_graph
 from .graph_queries import (
     ambiguous_producer_nodes,
     assert_unresolved_orphans_unreachable,
@@ -593,9 +590,7 @@ def _select_decision_producer(
             "selected producer has deterministic failures: "
             + "; ".join(sorted(set(checked.failures)))
         )
-    context.row["producer_invocation"] = recorded_invocation_identity(
-        invocation.entry_id, invocation.command_position, command
-    )
+    context.row["producer_invocation"] = invocation.key
     existing = {
         (dependency.get("path"), dependency.get("role"))
         for dependency in context.row.setdefault("dependencies", [])

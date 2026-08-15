@@ -14,6 +14,11 @@ from .commands import (
     commands,
     complete_script_dependency_graph,
 )
+from .compatibility import (
+    COMPONENT_VERSIONS,
+    GRAPH_CONTRACT_VERSION,
+    INPUT_PROJECTION_VERSIONS,
+)
 from .contracts import (
     AdjudicationRecord,
     CanonicalRepositoryView,
@@ -66,10 +71,10 @@ from .scan import (
     scan_log as run_scan,
 )
 
-SCAN_SCHEMA_VERSION = 17
-ADJUDICATION_SCHEMA_VERSION = 7
-STATE_SCHEMA_VERSION = 10
-RULES_VERSION = "research-log-validation-v43"
+SCAN_SCHEMA_VERSION = 18
+ADJUDICATION_SCHEMA_VERSION = 8
+STATE_SCHEMA_VERSION = 11
+RULES_VERSION = "research-log-validation-v44"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
     "validation-decisions.json",
@@ -130,6 +135,9 @@ def scan_policy() -> ScanLifecyclePolicy:
         ),
         complete_script_dependency_graph,
         incremental_operations(),
+        COMPONENT_VERSIONS,
+        INPUT_PROJECTION_VERSIONS,
+        GRAPH_CONTRACT_VERSION,
     )
 
 
@@ -138,8 +146,8 @@ def scan_log(
     jobs: int = 8,
     prior_state: Optional[dict[str, Any]] = None,
     repository_index: Optional[CanonicalRepositoryView] = None,
-    rules_version: str = RULES_VERSION,
     mode: str = "standard",
+    prior_decisions: Optional[dict[str, Any]] = None,
 ) -> tuple[ScanRecord, ValidationMetrics]:
     """Run one scan through the current versioned policy."""
 
@@ -149,9 +157,10 @@ def scan_log(
             jobs,
             prior_state,
             repository_index,
-            rules_version,
+            RULES_VERSION,
             mode,
             scan_policy(),
+            prior_decisions,
         )
     )
 
@@ -186,6 +195,9 @@ def render_policy() -> RenderLifecyclePolicy:
         ORPHAN_INVENTORY_VERSION,
         VALIDATION_RECORD_FILENAMES,
         MATERIAL_INVENTORY_POLICY,
+        COMPONENT_VERSIONS,
+        INPUT_PROJECTION_VERSIONS,
+        GRAPH_CONTRACT_VERSION,
     )
 
 

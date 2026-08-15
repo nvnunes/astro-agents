@@ -43,6 +43,9 @@ class CanonicalRepositoryView(TypedDict):
 class _ScanRecordRequired(TypedDict):
     schema_version: int
     validation_rules_version: str
+    component_versions: dict[str, int]
+    input_projection_versions: dict[str, int]
+    graph_contract_version: int
     requested_mode: str
     summary: str
     log_root: str
@@ -105,6 +108,8 @@ class ValidationMetrics(TypedDict, total=False):
     logs_rebuilt: int
     files_hashed: int
     bytes_hashed: int
+    files_reused: int
+    inspections_reused: int
     orphan_scopes: int
     summary_items: int
     candidate_targets: int
@@ -126,6 +131,7 @@ class ValidationMetrics(TypedDict, total=False):
     rerun_checks: int
     incremental_status: str
     semantic_review_required: bool
+    semantic_judgments_reused: int
     cached_result: dict[str, Any]
 
 
@@ -200,7 +206,18 @@ _SCAN_ENTRY_OPTIONAL_KEYS = frozenset(
     {"scope_kind", "scope_paths", "unresolved_citations"}
 )
 _HEADING_KEYS = frozenset({"level", "line", "text"})
-_SECTION_KEYS = frozenset({"end_line", "errors", "index", "line", "section", "type"})
+_SECTION_KEYS = frozenset(
+    {
+        "content_identity",
+        "end_line",
+        "errors",
+        "index",
+        "line",
+        "section",
+        "semantic_identity",
+        "type",
+    }
+)
 _LINK_REQUIRED_KEYS = frozenset(
     {
         "block_label",
@@ -601,6 +618,47 @@ def _validate_scan_scalars(record: Mapping[str, Any]) -> None:
             raise LifecycleRecordContractError(
                 f"scan record field {field!r} must be a SHA-256 identity"
             )
+    if (
+        not isinstance(record["graph_contract_version"], int)
+        or isinstance(record["graph_contract_version"], bool)
+        or record["graph_contract_version"] < 1
+    ):
+        raise LifecycleRecordContractError(
+            "scan graph_contract_version must be a positive integer"
+        )
+
+
+def _validate_version_map(value: Any, description: str) -> None:
+    versions = _mapping(value, description)
+    if not versions or any(
+        not isinstance(name, str)
+        or not name
+        or not isinstance(version, int)
+        or isinstance(version, bool)
+        or version < 1
+        for name, version in versions.items()
+    ):
+        raise LifecycleRecordContractError(
+            f"{description} must map names to positive integers"
+        )
+
+
+def _validate_scan_repository_owners(value: Any) -> None:
+    owners = _mapping(value, "scan repository_material_owners")
+    valid = all(
+        isinstance(path, str)
+        and path
+        and isinstance(owner, Mapping)
+        and set(owner) == {"namespace", "kind"}
+        and isinstance(owner["namespace"], str)
+        and owner["namespace"]
+        and owner["kind"] in {"artifact", "collection", "script"}
+        for path, owner in owners.items()
+    )
+    if not valid:
+        raise LifecycleRecordContractError(
+            "scan repository_material_owners must map paths to owner records"
+        )
 
 
 def _validate_scan_collections(record: Mapping[str, Any]) -> None:
@@ -615,6 +673,8 @@ def _validate_scan_collections(record: Mapping[str, Any]) -> None:
     ):
         _mapping_list(record[field], f"scan field {field!r}")
     for field in (
+        "component_versions",
+        "input_projection_versions",
         "reconciliation",
         "evidence_records",
         "bibtex",
@@ -629,22 +689,9 @@ def _validate_scan_collections(record: Mapping[str, Any]) -> None:
         "repository_scope",
     ):
         _mapping(record[field], f"scan field {field!r}")
-    owners = _mapping(
-        record["repository_material_owners"], "scan repository_material_owners"
-    )
-    if not all(
-        isinstance(path, str)
-        and path
-        and isinstance(owner, Mapping)
-        and set(owner) == {"namespace", "kind"}
-        and isinstance(owner["namespace"], str)
-        and owner["namespace"]
-        and owner["kind"] in {"artifact", "collection", "script"}
-        for path, owner in owners.items()
-    ):
-        raise LifecycleRecordContractError(
-            "scan repository_material_owners must map paths to owner records"
-        )
+    for field in ("component_versions", "input_projection_versions"):
+        _validate_version_map(record[field], f"scan field {field!r}")
+    _validate_scan_repository_owners(record["repository_material_owners"])
     sources = _mapping(
         record["repository_cross_log_sources"],
         "scan repository_cross_log_sources",
@@ -746,7 +793,16 @@ def _validate_section_rows(value: Any, description: str) -> None:
         _exact_fields(row, row_description, _SECTION_KEYS)
         for field in ("index", "line", "end_line"):
             _validate_integer(row[field], f"{row_description} {field}")
-        _validate_string_fields(row, row_description, ("section", "type"))
+        _validate_string_fields(
+            row,
+            row_description,
+            ("content_identity", "section", "semantic_identity", "type"),
+        )
+        for field in ("content_identity", "semantic_identity"):
+            if _HEX_IDENTITY.fullmatch(row[field]) is None:
+                raise LifecycleRecordContractError(
+                    f"{row_description} {field} must be a SHA-256 identity"
+                )
         _string_list(row["errors"], f"{row_description} errors")
 
 

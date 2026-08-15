@@ -35,6 +35,24 @@ from research_log_validation_test_support import (
 
 
 class RenderTests(unittest.TestCase):
+    def test_state_contract_rejects_retired_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            state = json.loads((output / "validation-state.json").read_text())
+            state["schema_version"] = 9
+
+            with self.assertRaisesRegex(
+                STATE.ValidationStateContractError,
+                "unsupported schema version",
+            ):
+                STATE.decode_validation_state(
+                    state, schema_version=RUNTIME.STATE_SCHEMA_VERSION
+                )
+
     def test_state_contract_accepts_unscoped_directory_dependency_identity(
         self,
     ) -> None:
@@ -265,9 +283,7 @@ class RenderTests(unittest.TestCase):
                 item["commands"] for item in scan["entries"] if item["id"] == "e001"
             )
             successful["producer_invocation"] = (
-                GRAPH_ADAPTER.recorded_invocation_identity(
-                    "e001", 2, recorded_commands[1]
-                )
+                GRAPH_ADAPTER.invocation_identities("e001", recorded_commands)[1]
             )
             successful["dependencies"].append(
                 {"path": orphan_item["identity"], "role": "producer"}
@@ -753,7 +769,7 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(len(state["files"]), 4)
             self.assertTrue(
                 all(
-                    re.fullmatch(r"[0-9a-f]{64}", check["dependency_signature"])
+                    re.fullmatch(r"[0-9a-f]{64}", check["compatibility_identity"])
                     for check in state["completed_checks"]
                 )
             )
@@ -822,6 +838,154 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(
                 changed_scan["incremental"]["files"][changed]["status"], "changed"
             )
+
+    def test_cache_loss_reuses_native_durable_semantic_judgments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            decisions = json.loads(
+                (output / "validation-decisions.json").read_text(encoding="utf-8")
+            )
+
+            rebuilt, metrics = RUNTIME.scan_log(
+                summary, jobs=1, prior_decisions=decisions
+            )
+
+            expected_checks = sum(
+                judgment["kind"] == "completed-check"
+                for judgment in decisions["judgments"]
+            )
+            self.assertEqual(metrics["reusable_checks"], expected_checks)
+            self.assertEqual(
+                metrics["semantic_judgments_reused"],
+                len(decisions["judgments"]),
+            )
+            self.assertFalse(metrics["semantic_review_required"])
+            self.assertTrue(
+                all(
+                    not disposition["pending_candidates"]
+                    for disposition in rebuilt["incremental"][
+                        "orphan_dispositions"
+                    ]
+                )
+            )
+
+    def test_unchanged_artifacts_reuse_hashes_and_inspections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            state = json.loads(
+                (output / "validation-state.json").read_text(encoding="utf-8")
+            )
+
+            with mock.patch.object(
+                RUNTIME,
+                "file_identity",
+                side_effect=AssertionError("unchanged artifact was opened for hashing"),
+            ):
+                _, metrics = RUNTIME.scan_log(
+                    summary, jobs=1, prior_state=state
+                )
+
+            self.assertGreater(metrics["files_reused"], 0)
+            self.assertEqual(
+                metrics["inspections_reused"], metrics["files_reused"]
+            )
+
+    def test_line_only_movement_preserves_all_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            state = json.loads(
+                (output / "validation-state.json").read_text(encoding="utf-8")
+            )
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "## Results", "\n\n## Results", 1
+                ),
+            )
+
+            _, metrics = RUNTIME.scan_log(summary, jobs=1, prior_state=state)
+
+            self.assertEqual(metrics["reusable_checks"], 7)
+            self.assertEqual(metrics["rerun_checks"], 0)
+
+    def test_unknown_projection_version_reopens_only_dependent_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            state = json.loads(
+                (output / "validation-state.json").read_text(encoding="utf-8")
+            )
+            summary_check = next(
+                check
+                for check in state["completed_checks"]
+                if check["entry"] == "Summary"
+            )
+            summary_check["input_dependencies"][0]["projection_version"] = 999
+
+            changed, metrics = RUNTIME.scan_log(
+                summary, jobs=1, prior_state=state
+            )
+
+            rerun = [
+                check
+                for check in changed["incremental"]["checks"]
+                if check["status"] == "rerun"
+            ]
+            self.assertEqual(
+                [(check["entry"], check["target"], check["check"]) for check in rerun],
+                [("Summary", "1.0", "Provenance")],
+            )
+            self.assertEqual(metrics["rerun_checks"], 1)
+
+    def test_component_change_reopens_only_declared_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            output = summary.with_suffix("")
+            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            state = json.loads(
+                (output / "validation-state.json").read_text(encoding="utf-8")
+            )
+            summary_check = next(
+                check
+                for check in state["completed_checks"]
+                if check["entry"] == "Summary"
+            )
+            summary_check["rule_dependencies"]["summary_provenance"] = 999
+
+            changed, metrics = RUNTIME.scan_log(
+                summary, jobs=1, prior_state=state
+            )
+
+            rerun = [
+                check
+                for check in changed["incremental"]["checks"]
+                if check["status"] == "rerun"
+            ]
+            self.assertEqual(
+                [(check["entry"], check["target"], check["check"]) for check in rerun],
+                [("Summary", "1.0", "Provenance")],
+            )
+            self.assertEqual(
+                rerun[0]["changed_dependencies"], ["rule:summary_provenance"]
+            )
+            self.assertEqual(metrics["rerun_checks"], 1)
 
     def test_upstream_producer_binding_round_trips_and_reuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1089,7 +1253,7 @@ class RenderTests(unittest.TestCase):
                 unchanged_scan["incremental"]["files"][identity]["status"],
                 "unchanged",
             )
-            self.assertEqual(metrics["incremental_status"], "unchanged")
+            self.assertEqual(metrics["incremental_status"], "loaded")
             self.assertEqual(metrics["rerun_checks"], 0)
             self.assertEqual(metrics["reusable_checks"], 7)
 
@@ -1324,7 +1488,12 @@ class RenderTests(unittest.TestCase):
             )
 
             self.assertEqual(provenance["status"], "rerun")
-            self.assertIn(entry_identity, provenance["changed_dependencies"])
+            self.assertTrue(
+                any(
+                    reason.startswith("scope:presented-item:")
+                    for reason in provenance["changed_dependencies"]
+                )
+            )
             self.assertGreater(metrics["rerun_checks"], 0)
 
     def test_changed_evidence_association_uses_per_outcome_snapshot(self) -> None:
@@ -1365,7 +1534,12 @@ class RenderTests(unittest.TestCase):
 
             self.assertEqual(checks["Integrity"]["status"], "reusable")
             self.assertEqual(checks["Provenance"]["status"], "rerun")
-            self.assertIn(association, checks["Provenance"]["changed_dependencies"])
+            self.assertTrue(
+                any(
+                    reason.startswith("scope:evidence-association:")
+                    for reason in checks["Provenance"]["changed_dependencies"]
+                )
+            )
 
     def test_new_producer_command_changes_cached_dependency_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1411,7 +1585,12 @@ class RenderTests(unittest.TestCase):
             )
 
             self.assertEqual(provenance["status"], "rerun")
-            self.assertIn("dependency-contract", provenance["changed_dependencies"])
+            self.assertTrue(
+                any(
+                    reason.startswith("scope:") or reason == "graph-slice"
+                    for reason in provenance["changed_dependencies"]
+                )
+            )
 
     def test_orphan_inventory_addition_is_reviewed_and_removal_restores_reuse(
         self,
@@ -1624,7 +1803,7 @@ class RenderTests(unittest.TestCase):
                 "new member\n",
             )
             _, added_metrics = RUNTIME.scan_log(summary, jobs=1, prior_state=state)
-            self.assertGreater(added_metrics["rerun_checks"], 0)
+            self.assertEqual(added_metrics["rerun_checks"], 0)
             (entry.parent / "data" / "collection" / "new.txt").unlink()
 
             write(
@@ -1663,7 +1842,7 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(metrics["reusable_checks"], 6)
             self.assertEqual(metrics["rerun_checks"], 1)
 
-    def test_prior_state_is_not_reused_across_rule_versions(self) -> None:
+    def test_prior_state_is_reused_across_compatible_rule_versions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
@@ -1675,12 +1854,17 @@ class RenderTests(unittest.TestCase):
             )
 
             changed_scan, metrics = RUNTIME.scan_log(
-                summary, jobs=1, prior_state=state, rules_version="new-rules"
+                summary,
+                jobs=1,
+                prior_state={
+                    **state,
+                    "validation_rules_version": "older-display-rules",
+                },
             )
 
-            self.assertEqual(changed_scan["incremental"]["status"], "rules-changed")
-            self.assertEqual(metrics["reusable_checks"], 0)
-            self.assertEqual(metrics["rerun_checks"], 7)
+            self.assertEqual(changed_scan["incremental"]["status"], "loaded")
+            self.assertEqual(metrics["reusable_checks"], 7)
+            self.assertEqual(metrics["rerun_checks"], 0)
 
     def test_malformed_completed_check_invalidates_incremental_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

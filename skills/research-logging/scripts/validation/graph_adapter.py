@@ -25,6 +25,7 @@ from typing import (
     Tuple,
 )
 
+from .compatibility import invocation_identities
 from .graph import (
     DependencyGraph,
     EdgeKind,
@@ -387,17 +388,6 @@ class _InvocationFacts:
         self.connected[invocation] = set()
 
 
-def recorded_invocation_identity(
-    entry_id: str, index: int, command: Mapping[str, Any]
-) -> str:
-    """Return the stable graph identity for one recorded command."""
-
-    return (
-        f"{entry_id}:L{command.get('line', 0)}:{index}:"
-        f"{_fingerprint(command.get('command', ''))[:16]}"
-    )
-
-
 def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
     namespace = _log_namespace(scan["summary"])
     builder = GraphBuilder(scan["validation_rules_version"])
@@ -663,8 +653,9 @@ def _add_command_facts(state: _GraphBuildState) -> _InvocationFacts:
     for entry in state.scan.get("entries", []):
         entry_id = entry["id"]
         entry_key = state.entries[entry_id]
-        for index, command in enumerate(entry.get("commands", []), 1):
-            identity = recorded_invocation_identity(entry_id, index, command)
+        commands = entry.get("commands", [])
+        identities = invocation_identities(entry_id, commands)
+        for identity, command in zip(identities, commands):
             invocation = NodeKey(state.namespace, NodeKind.INVOCATION, identity)
             origin = _origin(
                 state.scan,

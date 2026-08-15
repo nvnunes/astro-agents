@@ -10,6 +10,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 STORE = importlib.import_module("validation.decision_store")
+COMPATIBILITY = importlib.import_module("validation.compatibility")
 
 
 class DecisionStoreTests(unittest.TestCase):
@@ -21,7 +22,11 @@ class DecisionStoreTests(unittest.TestCase):
                     "target": "artifact.csv",
                     "check": "Provenance",
                     "result": "FAIL",
-                    "dependency_signature": "b" * 64,
+                    "compatibility_identity": "b" * 64,
+                    "rule_dependencies": COMPATIBILITY.rule_dependencies_for_check(
+                        {"entry": "e001", "check": "Provenance"}
+                    ),
+                    "input_dependencies": [],
                     "findings": ["Producer command was not recorded."],
                 },
                 {
@@ -29,7 +34,11 @@ class DecisionStoreTests(unittest.TestCase):
                     "target": "artifact.csv",
                     "check": "Integrity",
                     "result": "2026-08-01",
-                    "dependency_signature": "a" * 64,
+                    "compatibility_identity": "a" * 64,
+                    "rule_dependencies": COMPATIBILITY.rule_dependencies_for_check(
+                        {"entry": "e001", "check": "Integrity"}
+                    ),
+                    "input_dependencies": [],
                 },
             ],
             [
@@ -43,9 +52,11 @@ class DecisionStoreTests(unittest.TestCase):
                             "fingerprint": "c" * 64,
                         }
                     ],
+                    "rule_dependencies": COMPATIBILITY.orphan_rule_dependencies(),
+                    "input_dependencies": [],
                 }
             ],
-            validation_rules_version="research-log-validation-v43",
+            validation_rules_version="research-log-validation-v44",
             local_snapshot_identity="d" * 64,
             report_date="2026-08-02",
         )
@@ -84,6 +95,31 @@ class DecisionStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(STORE.ValidationToolError, "identity is invalid"):
             STORE.decode_decision_store(changed)
 
+    def test_rejects_retired_decision_store_schema(self) -> None:
+        retired = self._store()
+        retired["schema_version"] = 1
+
+        with self.assertRaisesRegex(
+            STORE.ValidationToolError,
+            "unsupported validation decision store schema",
+        ):
+            STORE.decode_decision_store(retired)
+
+    def test_rejects_retired_producer_binding_placeholder(self) -> None:
+        binding = {
+            "kind": "legacy-unverified",
+            "invocation_identity": "e001:producer",
+            "producer_basis": "reviewed",
+            "coverage_identity": "data/output.csv",
+            "direction_evidence": "reviewed-selection",
+        }
+
+        with self.assertRaisesRegex(
+            STORE.ValidationToolError,
+            "kind is invalid",
+        ):
+            COMPATIBILITY.decode_producer_binding(binding, "producer binding")
+
     def test_store_is_deterministic(self) -> None:
         self.assertEqual(self._store(), self._store())
 
@@ -104,7 +140,7 @@ class DecisionStoreTests(unittest.TestCase):
         store, counts = STORE.merge_native_orphan_batch_judgments(
             None,
             [action],
-            validation_rules_version="research-log-validation-v43",
+            validation_rules_version="research-log-validation-v44",
             local_snapshot_identity="f" * 64,
             decision_date="2026-08-14",
         )
@@ -113,7 +149,7 @@ class DecisionStoreTests(unittest.TestCase):
         repeated, counts = STORE.merge_native_orphan_batch_judgments(
             store,
             [action],
-            validation_rules_version="research-log-validation-v43",
+            validation_rules_version="research-log-validation-v44",
             local_snapshot_identity="f" * 64,
             decision_date="2026-08-14",
         )
@@ -129,7 +165,7 @@ class DecisionStoreTests(unittest.TestCase):
             STORE.merge_native_orphan_batch_judgments(
                 store,
                 [conflicting],
-                validation_rules_version="research-log-validation-v43",
+                validation_rules_version="research-log-validation-v44",
                 local_snapshot_identity="f" * 64,
                 decision_date="2026-08-14",
             )

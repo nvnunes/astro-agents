@@ -128,10 +128,7 @@ with validation_lock(Path({str(root)!r})):
                     fresh_scan = json.loads(
                         fresh_scan_path.read_text(encoding="utf-8")
                     )
-                    if interrupt_after in {1, 6}:
-                        self.assertIn("incremental", fresh_scan)
-                    else:
-                        self.assertNotIn("incremental", fresh_scan)
+                    self.assertIn("incremental", fresh_scan)
 
                     if fresh_scan.get("incremental", {}).get("status") != "unchanged":
                         RUNTIME.render_records(

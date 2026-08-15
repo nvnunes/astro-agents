@@ -110,7 +110,7 @@ def publish_validation_bundle(
             dir=target.output_dir.parent,
             prefix=f".{target.output_dir.name}-decision-merge-",
         ) as merge_directory:
-            merged = dict(bundle.decisions)
+            merged: dict[str, Any] = dict(bundle.decisions)
             prior_path = target.output_dir / "validation-decisions.json"
             if prior_path.is_file():
                 try:

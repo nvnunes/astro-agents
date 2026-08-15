@@ -87,21 +87,48 @@ local validation; it does not require an atomic all-log generation.
 Use `--repository-index` only when deliberately supplying an explicit
 canonical graph view for isolated testing.
 
-### Initialize Or Upgrade All Logs
+### Initialize All Logs
 
-For first-time initialization or a validation-rules upgrade, validate every
-maintained log sequentially without prior state. Temporary mixed rules versions
-are allowed. During that interval, scans rebuild per-log facts but withhold
-orphan conclusions because the cross-log slice set is incomplete.
+For first-time initialization, validate each maintained log without prior
+state. Temporary incomplete cross-log coverage is allowed. After every log has
+a current compatible slice, run one reconciliation pass over every log against
+the complete slice set.
 
-After every maintained log has a current compatible slice, run one
-reconciliation pass over every log against the complete slice set.
-Consumer-owned cross-log relationships do not require atomic repository
-publication, rollback, or fixed-point generation.
+### Upgrade Validation Contracts
 
-When the complete rollout finishes, run an immediate state-backed `scan` for
-every log. Each unchanged scan must reuse all completed checks, require no
-semantic review, and write nothing.
+Treat a validation upgrade as a rolling compatibility change, not a fresh
+validation:
+
+1. Bump the validation-rules version when observable validation behavior or
+   result semantics change. Bump only the rule components consumed by affected
+   outcomes.
+2. Bump an input-projection version when that scope's semantic projection
+   changes. Bump the graph contract for graph meaning or resolver changes, a
+   per-log schema for structural record changes, and the decision-store schema
+   only when the durable judgment shape changes.
+3. Add a temporary exact adapter only for the immediately preceding canonical
+   format that must be migrated. Do not add an open-ended legacy decoder.
+4. Dry-run one log with its prior state and decision store. Review the reported
+   reusable and reopened outcomes, hashes, inspections, semantic judgments,
+   excluded foreign slices, and exact writes. An unexplained rerun, artifact
+   rehash, or semantic-review request blocks that log.
+5. Publish each compatible log under its own lock. Preserve the original date
+   on reused results and judgments. Mixed contract versions are allowed while
+   incompatible foreign slices are excluded and reported as incomplete
+   cross-log coverage.
+6. After all maintained logs use the new native formats, reconcile every log
+   once against the complete slice set. Then run an immediate state-backed
+   `scan` for every log; each must return a cached result, report
+   `incremental_status: unchanged`, reuse all completed checks, require no
+   semantic review, and write nothing.
+7. Remove the adapter and every migration-only branch, script, placeholder,
+   and test fixture. Keep tests proving that retired schemas receive an
+   actionable unsupported-schema diagnostic.
+
+Initialization alone omits prior state. An upgrade must use the compatible
+state and durable decisions so unrelated work is not repeated. Consumer-owned
+cross-log relationships do not require atomic repository publication,
+rollback, or fixed-point generation.
 
 `scan` discovers approved presented evidence, resolves retained sources and
 recorded workflow paths, checks known
@@ -112,10 +139,10 @@ Inspect the scan metrics before preparing adjudication. When a standard scan
 reports `incremental_status: unchanged`, return the cached date, scope, counts,
 and failures immediately. Do not run `prepare`, create a review packet, perform
 semantic review, render records, or edit the maintained summary.
-A reproduction request never takes this fast return. A missing or incompatible state, or
-`incremental_status: rules-changed`, requires complete non-incremental
-validation. Otherwise continue with only the checks and dispositions the scan
-did not reuse.
+A reproduction request never takes this fast return. Missing or incompatible
+state causes bounded reconstruction from the durable report and compatible
+decision store where possible. Otherwise continue with only the checks and
+dispositions the scan did not reuse.
 
 `prepare` fills reliable results and queues only ambiguous or failed checks.
 `review` extracts bounded entry context, locator-selected source context,

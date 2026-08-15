@@ -18,6 +18,5 @@ files = [
   "skills/research-logging/scripts/pyrun",
   "skills/research-logging/scripts/research_log_data_index.py",
   "skills/research-logging/scripts/research_log_validation.py",
-  "skills/research-logging/scripts/migrate_research_log_validation_local_publication.py",
   "skills/research-logging/scripts/validation",
 ]

@@ -871,9 +871,9 @@ class GraphCoreTests(unittest.TestCase):
         self.assertNotIn(script, provenance)
 
         adjudication["entries"][0]["targets"][0]["producer_invocation"] = (
-            GRAPH_ADAPTER.recorded_invocation_identity(
-                "e001", 1, scan["entries"][0]["commands"][0]
-            )
+            GRAPH_ADAPTER.invocation_identities(
+                "e001", scan["entries"][0]["commands"]
+            )[0]
         )
         with self.assertRaisesRegex(
             GRAPH.GraphContractError,
@@ -1000,9 +1000,9 @@ class GraphCoreTests(unittest.TestCase):
                             "target": target_path,
                             "provenance": "2026-08-12",
                             "producer_invocation": (
-                                GRAPH_ADAPTER.recorded_invocation_identity(
-                                    "e001", 1, command
-                                )
+                                GRAPH_ADAPTER.invocation_identities(
+                                    "e001", [command]
+                                )[0]
                             ),
                             "dependencies": [
                                 {"path": script_path, "role": "producer"},
@@ -1357,6 +1357,18 @@ class GraphCoreTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             GRAPH.GraphContractError, "summary must be a string"
+        ):
+            GRAPH_STORE.load_slice(record)
+
+    def test_slice_record_rejects_retired_schema(self) -> None:
+        record = GRAPH_STORE.slice_record(
+            GRAPH.GraphBuilder("test-rules").build(), "docs/mini.md", {}
+        )
+        record["schema_version"] = 6
+
+        with self.assertRaisesRegex(
+            GRAPH.GraphContractError,
+            "unsupported validation index slice schema",
         ):
             GRAPH_STORE.load_slice(record)
 

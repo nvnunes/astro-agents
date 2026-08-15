@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
-import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence, cast
 
+from .compatibility import normalized_command, recorded_invocation_identity
 from .contracts import ScanRecord
 from .producer_bindings import (
     ProducerCandidateClass,
@@ -35,13 +34,6 @@ def _command_fragments(value: str, size: int | None = None) -> frozenset[str]:
     )
 
 
-def _normalized_command(value: str) -> str:
-    try:
-        return " ".join(shlex.split(value))
-    except ValueError:
-        return " ".join(value.split())
-
-
 def review_invocation_key(
     entry_id: str,
     section: str,
@@ -50,14 +42,8 @@ def review_invocation_key(
 ) -> str:
     """Return the stable ephemeral identity for one recorded invocation."""
 
-    normalized_section = " ".join(section.split()).casefold()
-    section_identity = hashlib.sha256(normalized_section.encode("utf-8")).hexdigest()
-    command_identity = hashlib.sha256(
-        _normalized_command(command).encode("utf-8")
-    ).hexdigest()
-    return (
-        f"{entry_id}:{section_identity[:16]}:{command_identity[:16]}:"
-        f"{duplicate_ordinal}"
+    return recorded_invocation_identity(
+        entry_id, section, command, duplicate_ordinal
     )
 
 
@@ -188,9 +174,7 @@ class _ReviewIndexBuilder:
     def _invocation_key(
         self, entry_id: str, section: str, command_text: str
     ) -> str:
-        fingerprint = hashlib.sha256(
-            _normalized_command(command_text).encode("utf-8")
-        ).hexdigest()
+        fingerprint = normalized_command(command_text)
         normalized_section = " ".join(section.split()).casefold()
         group = (entry_id, normalized_section, fingerprint)
         self.duplicate_counts[group] = self.duplicate_counts.get(group, 0) + 1

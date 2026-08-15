@@ -16,7 +16,20 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 
 from .adjudication import ORPHAN_TARGET
+from .compatibility import (
+    COMPONENT_VERSIONS,
+    changed_components,
+    components_compatible,
+    input_dependencies_for_check,
+    orphan_input_dependencies,
+    orphan_rule_dependencies,
+    outcome_compatibility_identity,
+    producer_bindings_for_check,
+    rule_dependencies_for_check,
+    semantic_projection,
+)
 from .contracts import ScanRecord, ValidationToolError
+from .decision_store import decode_decision_store
 from .graph import DependencyGraph
 from .graph_adapter import build_dependency_graph
 from .identities import validation_file_identity
@@ -29,7 +42,7 @@ from .inventory import (
 from .producer_bindings import workflow_check
 from .state import (
     ValidationStateContractError,
-    decode_compatible_validation_state,
+    decode_validation_state,
 )
 
 SUCCESS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -412,6 +425,7 @@ class _IncrementalCheckContext:
         self.snapshot_cache: Dict[Tuple[str, Tuple[str, ...]], Dict[str, Any]] = {}
         self.identity_cache = _resolved_identity_cache(scan)
         self.current_graph: Optional[DependencyGraph] = None
+        self.current_components = scan.get("component_versions", COMPONENT_VERSIONS)
 
     def graph(self) -> DependencyGraph:
         """Build the reusable-outcome graph only when one check needs it."""
@@ -483,14 +497,63 @@ def _stored_dependency(
     return stored
 
 
+def _compare_native_inputs(
+    check: Mapping[str, Any],
+    native_inputs: list[Any],
+    current_dependencies: list[dict[str, Any]],
+    current_graph_slice: Mapping[str, Any] | None,
+    context: _IncrementalCheckContext,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    current_check = {
+        **check,
+        "dependencies": current_dependencies,
+        **(
+            {"graph_slice": current_graph_slice}
+            if current_graph_slice is not None
+            else {}
+        ),
+    }
+    current_inputs = input_dependencies_for_check(context.scan, current_check)
+    previous_by_scope = {
+        (
+            item.get("kind"),
+            item.get("semantic_identity"),
+            item.get("projection_version"),
+            item.get("relationship"),
+        ): item
+        for item in native_inputs
+        if isinstance(item, Mapping)
+    }
+    current_by_scope = {
+        (
+            item.get("kind"),
+            item.get("semantic_identity"),
+            item.get("projection_version"),
+            item.get("relationship"),
+        ): item
+        for item in current_inputs
+    }
+    blockers = [
+        f"scope:{key[1]}"
+        for key in sorted(set(previous_by_scope) | set(current_by_scope), key=str)
+        if previous_by_scope.get(key) is None
+        or current_by_scope.get(key) is None
+        or previous_by_scope[key].get("content_identity")
+        != current_by_scope[key].get("content_identity")
+    ]
+    return current_inputs, blockers
+
+
 def _compare_completed_check(
     check: Mapping[str, Any], context: _IncrementalCheckContext
 ) -> Dict[str, Any]:
     """Classify one cached outcome from exact dependency and graph identities."""
 
     dependencies = check["dependencies"]
-    blockers = []
-    stored_dependencies = []
+    blockers: list[str] = []
+    stored_dependencies: list[dict[str, Any]] = []
+    current_dependencies: list[dict[str, Any]] = []
+    native_inputs = check.get("input_dependencies")
     for dependency in dependencies:
         if not isinstance(dependency, dict) or not {
             "path",
@@ -501,17 +564,23 @@ def _compare_completed_check(
             continue
         previous_identity = dependency["identity"]
         current_identity = context.dependency_snapshot(dependency)
-        if current_identity is None or content_identity(
-            current_identity
-        ) != content_identity(previous_identity):
-            blockers.append(dependency["path"])
         stored_dependencies.append(_stored_dependency(dependency, previous_identity))
-    current_contract = context.operations.dependency_contract(
-        context.scan, check, context.identity_cache
+        current_dependencies.append(
+            {
+                "path": dependency["path"],
+                "role": dependency["role"],
+                "identity": current_identity or {"missing": True},
+            }
+        )
+    rule_dependencies = check.get("rule_dependencies")
+    if not isinstance(rule_dependencies, Mapping):
+        rule_dependencies = rule_dependencies_for_check(check)
+    _, component_blockers = components_compatible(
+        rule_dependencies, context.current_components
     )
-    if check["dependency_signature"] != current_contract:
-        blockers.append("dependency-contract")
+    blockers.extend(f"rule:{name}" for name in component_blockers)
     prior_graph_slice = check.get("graph_slice")
+    current_graph_slice = None
     if (
         not blockers
         and not context.input_unchanged
@@ -526,12 +595,24 @@ def _compare_completed_check(
             )
             if current_graph_slice["identity"] != prior_graph_slice.get("identity"):
                 blockers.append("graph-slice")
+    current_inputs: list[dict[str, Any]] = []
+    if isinstance(native_inputs, list):
+        current_inputs, input_blockers = _compare_native_inputs(
+            check,
+            native_inputs,
+            current_dependencies,
+            current_graph_slice,
+            context,
+        )
+        blockers.extend(input_blockers)
     blockers = list(dict.fromkeys(blockers))
     status = (
         "reusable"
-        if not blockers and (dependencies or context.input_unchanged)
+        if not blockers
+        and (dependencies or context.input_unchanged or isinstance(native_inputs, list))
         else "rerun"
     )
+    bindings = check.get("producer_bindings", [])
     return {
         "entry": check.get("entry"),
         "target": check.get("target"),
@@ -539,10 +620,22 @@ def _compare_completed_check(
         "result": check.get("result"),
         "status": status,
         "changed_dependencies": blockers,
-        "dependency_signature": current_contract,
+        "rule_dependencies": dict(rule_dependencies),
+        "input_dependencies": current_inputs,
+        "compatibility_identity": outcome_compatibility_identity(
+            rule_dependencies,
+            current_inputs if isinstance(native_inputs, list) else [],
+            bindings if isinstance(bindings, list) else [],
+        ),
+        "invalidation_reasons": blockers,
         "resolution": check.get("resolution"),
         "findings": check.get("findings", []),
         "dependencies": stored_dependencies,
+        **(
+            {"producer_bindings": list(bindings)}
+            if isinstance(bindings, list) and bindings
+            else {}
+        ),
     }
 
 
@@ -649,7 +742,7 @@ def _current_orphan_scopes(
     return {
         entry["id"]: {
             "identities": sorted(
-                item["identity"] for item in entry.get("orphan_inventory", [])
+                item["identity"] for item in entry.get("orphan_candidates", [])
             ),
             "fingerprints": operations.orphan_fingerprints(
                 entry, scan, identity_cache
@@ -685,11 +778,71 @@ def _reusable_orphan_dispositions(
         dependency_paths = [
             item.get("path") for item in disposition.get("dependencies", [])
         ]
-        blockers = [
-            path
-            for path in dependency_paths
-            if path not in comparisons or comparisons[path]["status"] != "unchanged"
-        ]
+        stored_inputs = disposition.get("input_dependencies")
+        if isinstance(stored_inputs, list):
+            current_entry = next(
+                (
+                    entry
+                    for entry in scan.get("entries", [])
+                    if entry.get("id") == entry_id
+                ),
+                None,
+            )
+            current_inputs = (
+                orphan_input_dependencies(
+                    scan,
+                    current_entry,
+                    [
+                        {"identity": identity}
+                        for identity in sorted(current_identities)
+                    ],
+                )
+                if current_entry is not None
+                else []
+            )
+            previous_by_scope = {
+                (
+                    item.get("kind"),
+                    item.get("semantic_identity"),
+                    item.get("projection_version"),
+                    item.get("relationship"),
+                ): item.get("content_identity")
+                for item in stored_inputs
+                if isinstance(item, Mapping)
+                and item.get("kind") not in {"graph-resolver", "orphan-candidate"}
+            }
+            current_by_scope = {
+                (
+                    item.get("kind"),
+                    item.get("semantic_identity"),
+                    item.get("projection_version"),
+                    item.get("relationship"),
+                ): item.get("content_identity")
+                for item in current_inputs
+                if item.get("kind") not in {"graph-resolver", "orphan-candidate"}
+            }
+            blockers = [
+                f"scope:{key[1]}"
+                for key in sorted(
+                    set(previous_by_scope) | set(current_by_scope), key=str
+                )
+                if previous_by_scope.get(key) != current_by_scope.get(key)
+            ]
+        else:
+            blockers = [
+                path
+                for path in dependency_paths
+                if path not in comparisons
+                or comparisons[path]["status"] != "unchanged"
+            ]
+        rule_dependencies = disposition.get("rule_dependencies")
+        if not isinstance(rule_dependencies, Mapping):
+            rule_dependencies = orphan_rule_dependencies()
+        _, component_blockers = components_compatible(
+            rule_dependencies,
+            scan.get("component_versions", COMPONENT_VERSIONS),
+        )
+        blockers.extend(f"rule:{name}" for name in component_blockers)
         reusable_items = [
             {
                 "identity": item["identity"],
@@ -730,28 +883,22 @@ def compare_prior_state(
 ) -> Dict[str, Any]:
     """Compare a completed validation state with the current scan."""
 
-    if prior_state.get("validation_rules_version") != scan["validation_rules_version"]:
-        prior_checks = prior_state.get("completed_checks")
-        if not isinstance(prior_checks, list):
-            prior_checks = prior_state.get("successful_checks", [])
-        if not isinstance(prior_checks, list):
-            prior_checks = []
-        return {
-            "status": "rules-changed",
-            "reusable_checks": 0,
-            "rerun_checks": len(prior_checks),
-        }
     try:
-        decoded = decode_compatible_validation_state(
+        decoded = decode_validation_state(
             prior_state,
             schema_version=policy.state_schema_version,
         )
     except ValidationStateContractError as exc:
         return {"status": "invalid", "detail": str(exc)}
     prior_files = decoded["files"]
-    prior_checks = decoded["completed_checks"]
+    prior_checks = list(decoded["completed_checks"])
     prior_directories = decoded["directory_memberships"]
     prior_result = decoded["result"]
+    stored_components = decoded["component_versions"]
+    changed, unknown = changed_components(
+        stored_components,
+        scan.get("component_versions", COMPONENT_VERSIONS),
+    )
 
     comparisons = _compare_cached_file_identities(scan, prior_files, operations)
     current_directories = scan.get("directory_memberships", {})
@@ -774,15 +921,19 @@ def compare_prior_state(
         scan.get("requested_mode") == "standard"
         and prior_result.get("mode") == "standard"
     )
-    outcomes_unchanged = (
-        input_unchanged
-        and mode_compatible
-        and reusable == len(prior_checks)
-        and all(
-            item["status"] == "unchanged" for item in directory_comparisons.values()
-        )
+    outcomes_reusable = mode_compatible and reusable == len(prior_checks)
+    outcomes_unchanged = input_unchanged and outcomes_reusable
+    cache_metadata_unchanged = all(
+        comparison.get("current_identity") == prior_files.get(identity)
+        for identity, comparison in comparisons.items()
+        if comparison.get("status") == "unchanged"
     )
-    complete_unchanged = outcomes_unchanged and report_unchanged
+    complete_unchanged = (
+        outcomes_unchanged
+        and report_unchanged
+        and cache_metadata_unchanged
+        and decoded["validation_rules_version"] == scan["validation_rules_version"]
+    )
     orphan_dispositions = _reusable_orphan_dispositions(
         scan,
         decoded,
@@ -799,7 +950,342 @@ def compare_prior_state(
         "rerun_checks": len(checks) - reusable,
         "input_unchanged": input_unchanged,
         "report_unchanged": report_unchanged,
-        "semantic_review_required": not outcomes_unchanged,
+        "cache_metadata_unchanged": cache_metadata_unchanged,
+        "semantic_review_required": not outcomes_reusable,
         "cached_result": prior_result if complete_unchanged else None,
         "orphan_dispositions": orphan_dispositions,
+        "prior_rules_version": decoded["validation_rules_version"],
+        "current_rules_version": scan["validation_rules_version"],
+        "changed_components": changed,
+        "unknown_components": unknown,
     }
+
+
+def _decision_subject_dependencies(
+    scan: Mapping[str, Any], subject: Mapping[str, Any]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return the summary, entry, and target dependencies for one subject."""
+
+    dependencies: dict[tuple[str, str], dict[str, Any]] = {}
+    entry_id = subject.get("entry")
+    if entry_id == "Summary":
+        summary = scan.get("summary")
+        if isinstance(summary, str):
+            dependencies[(summary, "summary")] = {
+                "path": summary,
+                "role": "summary",
+            }
+    elif isinstance(entry_id, str):
+        entry = next(
+            (
+                item
+                for item in scan.get("entries", [])
+                if item.get("id") == entry_id and "error" not in item
+            ),
+            None,
+        )
+        entry_path = entry.get("path") if entry is not None else None
+        if isinstance(entry_path, str):
+            dependencies[(entry_path, "entry")] = {
+                "path": entry_path,
+                "role": "entry",
+            }
+    target = subject.get("target")
+    if isinstance(target, str) and target in scan.get("resolved_paths", {}):
+        dependencies[(target, "target")] = {"path": target, "role": "target"}
+    return dependencies
+
+
+def _decision_producer_members(
+    judgment: Mapping[str, Any], path: str
+) -> list[str] | None:
+    """Return reviewed collection membership associated with one path."""
+
+    members = next(
+        (
+            binding.get("members")
+            for binding in judgment.get("producer_bindings", [])
+            if binding.get("coverage_identity") == path
+        ),
+        None,
+    )
+    return list(members) if isinstance(members, list) and members else None
+
+
+def _decision_dependencies(
+    scan: Mapping[str, Any], judgment: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Rebuild the material dependency paths named by a durable judgment."""
+
+    dependencies = _decision_subject_dependencies(scan, judgment["subject"])
+    collection_members: dict[tuple[str, str], set[str]] = {}
+    for item in judgment.get("input_dependencies", []):
+        if item.get("kind") in {"graph-edge", "graph-node", "graph-root"}:
+            continue
+        locator = item.get("source_locator")
+        path = locator.get("path") if isinstance(locator, Mapping) else None
+        if not isinstance(path, str) or not path:
+            continue
+        relationship = str(item.get("relationship", "decision-input"))
+        role = {
+            "outcome-subject": "summary",
+            "owning-section": "entry",
+            "presented-evidence": "entry",
+            "summary-support": "supporting-entry",
+        }.get(relationship, relationship)
+        key = (path, role)
+        dependency: dict[str, Any] = {"path": path, "role": role}
+        members = _decision_producer_members(judgment, path)
+        if members is not None:
+            dependency["members"] = members
+        member = locator.get("member")
+        if item.get("kind") == "collection-member" and isinstance(member, str):
+            collection_members.setdefault(key, set()).add(member)
+        dependencies[key] = dependency
+    for key, member_set in collection_members.items():
+        dependencies[key]["members"] = sorted(member_set)
+    return [dependencies[key] for key in sorted(dependencies)]
+
+
+def _decision_check(
+    scan: Mapping[str, Any], judgment: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Project one durable completed-check judgment into current check shape."""
+
+    resolution = dict(judgment.get("basis", {}))
+    target = judgment["subject"].get("target")
+    stored_bindings = [
+        binding
+        for binding in judgment.get("producer_bindings", [])
+        if binding.get("coverage_identity") != target
+    ]
+    if stored_bindings:
+        resolution["producer_bindings"] = [
+            {
+                "material": binding["coverage_identity"],
+                "invocation": binding["invocation_identity"],
+            }
+            for binding in stored_bindings
+        ]
+    return {
+        **judgment["subject"],
+        "result": judgment["result"],
+        "dependencies": _decision_dependencies(scan, judgment),
+        "resolution": resolution,
+        "findings": judgment.get("rationale", []),
+    }
+
+
+def _scope_content_map(
+    items: list[dict[str, Any]], *, graph: bool
+) -> dict[tuple[Any, Any, Any, Any], Any]:
+    """Index graph or non-graph input scopes by their semantic contract."""
+
+    graph_kinds = {"graph-edge", "graph-node", "graph-root"}
+    return {
+        (
+            item["kind"],
+            item["semantic_identity"],
+            item["projection_version"],
+            item["relationship"],
+        ): item["content_identity"]
+        for item in items
+        if (item["kind"] in graph_kinds) is graph
+    }
+
+
+def _native_judgment_compatible(
+    scan: Mapping[str, Any],
+    judgment: Mapping[str, Any],
+) -> bool:
+    """Compare non-graph inputs, rules, and producer bindings."""
+
+    compatible, _ = components_compatible(
+        judgment["rule_dependencies"],
+        scan.get("component_versions", COMPONENT_VERSIONS),
+    )
+    if not compatible:
+        return False
+    subject = judgment["subject"]
+    if judgment["kind"] == "orphan-disposition":
+        entry = next(
+            (
+                item
+                for item in scan.get("entries", [])
+                if item.get("id") == subject.get("entry")
+            ),
+            None,
+        )
+        current = (
+            orphan_input_dependencies(
+                scan,
+                entry,
+                [{"identity": subject.get("identity")}],
+            )
+            if entry is not None
+            else []
+        )
+    else:
+        check = _decision_check(scan, judgment)
+        current = input_dependencies_for_check(
+            scan,
+            check,
+        )
+        stored_bindings = judgment.get("producer_bindings", [])
+        current_bindings = producer_bindings_for_check(scan, check)
+        if semantic_projection(stored_bindings) != semantic_projection(
+            current_bindings
+        ):
+            return False
+    stored_inputs = [
+        item
+        for item in judgment["input_dependencies"]
+        if item.get("kind") != "graph-resolver"
+    ]
+    current_inputs = [
+        item for item in current if item.get("kind") != "graph-resolver"
+    ]
+    return _scope_content_map(stored_inputs, graph=False) == _scope_content_map(
+        current_inputs, graph=False
+    )
+
+
+def _native_graph_judgment_compatible(
+    scan: Mapping[str, Any],
+    judgment: Mapping[str, Any],
+    graph: DependencyGraph,
+    operations: IncrementalOperations,
+) -> bool:
+    """Compare the exact graph scopes of one otherwise compatible judgment."""
+
+    if judgment["kind"] != "completed-check":
+        return True
+    stored_inputs = list(judgment["input_dependencies"])
+    if not any(item["kind"].startswith("graph-") for item in stored_inputs):
+        return True
+    check = _decision_check(scan, judgment)
+    current_slice = operations.graph_slice(graph, check)
+    current_inputs = input_dependencies_for_check(
+        scan, {**check, "graph_slice": current_slice}
+    )
+    return _scope_content_map(stored_inputs, graph=True) == _scope_content_map(
+        current_inputs, graph=True
+    )
+
+
+def apply_decision_store_reuse(
+    scan: Dict[str, Any],
+    incremental: Mapping[str, Any] | None,
+    decision_store: Mapping[str, Any] | None,
+    operations: IncrementalOperations,
+) -> Dict[str, Any] | None:
+    """Merge compatible durable judgments into disposable scan reuse state."""
+
+    if decision_store is None:
+        return dict(incremental) if incremental is not None else None
+    try:
+        store = decode_decision_store(decision_store)
+    except ValidationToolError:
+        return dict(incremental) if incremental is not None else None
+    result = dict(incremental or {"status": "loaded"})
+    identity_cache = _resolved_identity_cache(scan)
+    checks = list(result.get("checks", []))
+    check_keys = {
+        (check.get("entry"), check.get("target"), check.get("check"))
+        for check in checks
+        if check.get("status") == "reusable"
+    }
+    orphan_items: dict[str, dict[str, dict[str, Any]]] = {}
+    for disposition in result.get("orphan_dispositions", []):
+        entry = str(disposition.get("entry", ""))
+        orphan_items[entry] = {
+            item["identity"]: dict(item)
+            for item in disposition.get("items", [])
+            if isinstance(item, Mapping)
+        }
+    compatible_judgments = [
+        judgment
+        for judgment in store["judgments"]
+        if _native_judgment_compatible(scan, judgment)
+    ]
+    graph_scan = copy.deepcopy(scan)
+    graph_scan["incremental"] = {
+        "checks": [
+            {**_decision_check(scan, judgment), "status": "reusable"}
+            for judgment in compatible_judgments
+            if judgment["kind"] == "completed-check"
+        ],
+        "orphan_dispositions": result.get("orphan_dispositions", []),
+    }
+    decision_graph = build_dependency_graph(graph_scan)
+    compatible_judgments = [
+        judgment
+        for judgment in compatible_judgments
+        if _native_graph_judgment_compatible(
+            scan, judgment, decision_graph, operations
+        )
+    ]
+    reused_decisions = 0
+    for judgment in compatible_judgments:
+        subject = judgment["subject"]
+        if judgment["kind"] == "completed-check":
+            key = (subject.get("entry"), subject.get("target"), subject.get("check"))
+            if key in check_keys:
+                continue
+            checks.append(
+                {
+                    **subject,
+                    "result": judgment["result"],
+                    "status": "reusable",
+                    "changed_dependencies": [],
+                    "dependencies": _decision_dependencies(scan, judgment),
+                    "resolution": judgment.get("basis"),
+                    "findings": judgment.get("rationale", []),
+                    "decision_identity": judgment["identity"],
+                }
+            )
+            check_keys.add(key)
+        else:
+            entry = str(subject.get("entry", ""))
+            identity = str(subject.get("identity", ""))
+            orphan_items.setdefault(entry, {})[identity] = {
+                "identity": identity,
+                "decision": judgment["result"],
+                "basis": judgment.get("basis", "-"),
+            }
+        reused_decisions += 1
+    result["checks"] = checks
+    current_orphans = _current_orphan_scopes(
+        scan, operations, identity_cache
+    )
+    result["orphan_dispositions"] = [
+        {
+            "entry": entry,
+            "inventory_version": 7,
+            "items": sorted(items.values(), key=lambda item: item["identity"]),
+            "pending_candidates": sorted(
+                set(current_orphans.get(entry, {}).get("identities", [])) - set(items)
+            ),
+            "status": (
+                "reusable"
+                if set(current_orphans.get(entry, {}).get("identities", []))
+                == set(items)
+                else "partial"
+            ),
+            "changed_dependencies": [],
+        }
+        for entry, items in sorted(orphan_items.items())
+    ]
+    result["decision_judgments_reused"] = reused_decisions
+    result["reusable_checks"] = sum(
+        check.get("status") == "reusable" for check in checks
+    )
+    result["rerun_checks"] = sum(check.get("status") == "rerun" for check in checks)
+    result["semantic_review_required"] = bool(
+        result["rerun_checks"]
+        or any(
+            disposition["pending_candidates"]
+            for disposition in result["orphan_dispositions"]
+        )
+    )
+    return result

@@ -92,8 +92,8 @@ def _content_identity(path: Path) -> dict[str, Any]:
 
 
 def _lint_outcome(check: Mapping[str, Any], issues: List[str]) -> bool:
-    if re.fullmatch(r"[0-9a-f]{64}", check["dependency_signature"]) is None:
-        issues.append("state completed check lacks a dependency signature")
+    if re.fullmatch(r"[0-9a-f]{64}", check["compatibility_identity"]) is None:
+        issues.append("state completed check lacks a compatibility identity")
     result = check["result"]
     if check["check"] not in {
         "Integrity",

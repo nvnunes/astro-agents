@@ -26,6 +26,14 @@ from .adjudication import (
     is_success_date,
     prepare_adjudication,
 )
+from .compatibility import (
+    input_dependencies_for_check,
+    orphan_input_dependencies,
+    orphan_rule_dependencies,
+    outcome_compatibility_identity,
+    producer_bindings_for_check,
+    rule_dependencies_for_check,
+)
 from .contracts import (
     AdjudicationRecord,
     FileChangedError,
@@ -66,7 +74,6 @@ from .identities import (
     validation_file_identity,
 )
 from .incremental import (
-    current_check_dependency_contract,
     dependency_identity_snapshot,
     orphan_item_fingerprints,
 )
@@ -99,6 +106,9 @@ class RenderLifecyclePolicy:
     orphan_inventory_version: int
     record_filenames: tuple[str, ...]
     material_inventory_policy: MaterialInventoryPolicy
+    component_versions: Mapping[str, int]
+    input_projection_versions: Mapping[str, int]
+    graph_contract_version: int
 
 
 def _json_fingerprint(value: Any) -> str:
@@ -154,9 +164,22 @@ def check_graph_slice(
     )
     roots = tuple(root for root in graph.roots if root.node in selected)
     payload = {
-        "nodes": [graph.node(key).as_dict() for key in sorted(selected)],
-        "edges": [edge.as_dict() for edge in edges],
-        "roots": [root.as_dict() for root in roots],
+        "nodes": [
+            {
+                "key": key.as_dict(),
+                "attributes": {
+                    name: value
+                    for name, value in graph.node(key).as_dict()["attributes"].items()
+                    if name != "line"
+                },
+            }
+            for key in sorted(selected)
+        ],
+        "edges": [edge.identity for edge in edges],
+        "roots": [
+            {"node": root.node.as_dict(), "policy": root.policy.value}
+            for root in roots
+        ],
     }
     return {
         "identity": _json_fingerprint(payload),
@@ -433,6 +456,9 @@ class RenderStateInputs:
 
     schema_version: int
     rules_version: str
+    component_versions: Mapping[str, int]
+    input_projection_versions: Mapping[str, int]
+    graph_contract_version: int
     local_snapshot_identity: str
     input_fingerprint: str
     input_files: Mapping[str, Any]
@@ -450,6 +476,9 @@ class RenderStateInputs:
         return {
             "schema_version": self.schema_version,
             "validation_rules_version": self.rules_version,
+            "component_versions": dict(self.component_versions),
+            "input_projection_versions": dict(self.input_projection_versions),
+            "graph_contract_version": self.graph_contract_version,
             "local_snapshot_identity": self.local_snapshot_identity,
             "input_fingerprint": self.input_fingerprint,
             "input_files": dict(self.input_files),
@@ -858,8 +887,7 @@ def render_orphan_dispositions(
 ) -> List[Dict[str, Any]]:
     """Serialize complete item-level orphan outcomes for incremental reuse."""
 
-    if not scan["repository_scope"]["cross_log_complete"]:
-        return []
+    cross_log_complete = scan["repository_scope"]["cross_log_complete"]
     dispositions = []
     adjudicated = {entry["id"]: entry for entry in entry_rows}
     for entry_id in scoped_entries:
@@ -869,6 +897,11 @@ def render_orphan_dispositions(
             continue
         entry = adjudicated[entry_id]
         items = entry.get("orphan_items", [])
+        if not cross_log_complete and any(
+            item.get("decision") not in {"accepted", "unresolved"}
+            for item in items
+        ):
+            continue
         if {item["identity"] for item in items} != candidates or any(
             item["decision"] == "pending" for item in items
         ):
@@ -901,6 +934,10 @@ def render_orphan_dispositions(
                     {"path": path, "role": "entry"}
                     for path in entry.get("scope_paths", [entry["path"]])
                 ],
+                "rule_dependencies": orphan_rule_dependencies(),
+                "input_dependencies": orphan_input_dependencies(
+                    scan, scanned, items
+                ),
             }
         )
     return dispositions
@@ -1087,11 +1124,21 @@ def _stored_checks(
                     "identity": snapshot,
                 }
             )
+        rules = rule_dependencies_for_check(check)
+        inputs = input_dependencies_for_check(
+            scan, {**check, "dependencies": stored_dependencies}
+        )
+        bindings = producer_bindings_for_check(scan, check)
         stored_checks.append(
             {
                 **check,
                 "dependencies": stored_dependencies,
-                "dependency_signature": current_check_dependency_contract(scan, check),
+                "rule_dependencies": rules,
+                "input_dependencies": inputs,
+                "compatibility_identity": outcome_compatibility_identity(
+                    rules, inputs, bindings
+                ),
+                **({"producer_bindings": bindings} if bindings else {}),
             }
         )
     return stored_checks
@@ -1479,6 +1526,12 @@ def render_records(
     )
     for completed, stored in zip(rendered.completed_checks, stored_checks):
         stored["graph_slice"] = check_graph_slice(graph, completed)
+        stored["input_dependencies"] = input_dependencies_for_check(scan, stored)
+        stored["compatibility_identity"] = outcome_compatibility_identity(
+            stored["rule_dependencies"],
+            stored["input_dependencies"],
+            stored.get("producer_bindings", []),
+        )
     orphan_dispositions = render_orphan_dispositions(
         scoped_entries,
         scan_entries,
@@ -1528,6 +1581,9 @@ def render_records(
         state_inputs=RenderStateInputs(
             schema_version=policy.state_schema_version,
             rules_version=adjudication["validation_rules_version"],
+            component_versions=policy.component_versions,
+            input_projection_versions=policy.input_projection_versions,
+            graph_contract_version=policy.graph_contract_version,
             local_snapshot_identity=local_snapshot_identity(scan),
             input_fingerprint=scan["input_fingerprint"],
             input_files=scan.get("files", {}),

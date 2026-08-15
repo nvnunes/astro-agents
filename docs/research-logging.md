@@ -1099,6 +1099,12 @@ coverage limitation; they do not make the research log fail or invalidate a
 readable completed report. Repository views are assembled on demand from
 compatible per-log slices and are never stored as a shared aggregate.
 
+Compatible reused outcomes keep their original result dates, so a current
+report can legitimately contain dates older than its report-update date. During
+a rolling validation upgrade, the report may temporarily identify incomplete
+cross-log coverage while incompatible foreign slices are replaced; exact local
+results remain valid.
+
 ## Roles and keeping validation current
 
 Validation is performed in a fresh agent task that did not produce the work

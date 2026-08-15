@@ -243,6 +243,8 @@ def repository_view_for_scan(
 def _run_scan(args: argparse.Namespace) -> int:
     prior = _read_json(args.state) if args.state else None
     canonical_dir = args.summary.resolve().with_suffix("")
+    decision_path = canonical_dir / "validation-decisions.json"
+    prior_decisions = _read_json(decision_path) if decision_path.is_file() else None
     canonical_state = canonical_dir / "validation-state.json"
     if args.state and args.state.resolve() == canonical_state:
         canonical_lint = lint_records(canonical_dir)
@@ -258,6 +260,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         prior_state=prior,
         repository_index=repository,
         mode=args.mode,
+        prior_decisions=prior_decisions,
     )
     metrics["repository_index_status"] = index_metrics["status"]
     metrics["repository_index_elapsed_seconds"] = round(

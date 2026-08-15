@@ -58,6 +58,7 @@ class ScanAssemblyTests(unittest.TestCase):
             "test-rules",
             "invalid",
             mock.Mock(),
+            None,
         )
 
         with self.assertRaisesRegex(CONTRACTS.ValidationToolError, "validation mode"):
@@ -110,6 +111,9 @@ class ScanAssemblyTests(unittest.TestCase):
             materials=materials,
             repository=SCAN.ScanRepositoryFacts([], repository),
             durable_record_identity="b" * 64,
+            component_versions={"material_identity": 1},
+            input_projection_versions={"entry": 1},
+            graph_contract_version=1,
         ).record()
         record["input_fingerprint"] = "a" * 64
 

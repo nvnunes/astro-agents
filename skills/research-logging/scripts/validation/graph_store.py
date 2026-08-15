@@ -22,6 +22,7 @@ from typing import (
 )
 
 from .commands import log_owned_roots, script_inventory
+from .compatibility import GRAPH_CONTRACT_VERSION, graph_contract_identity
 from .contracts import (
     CanonicalRepositoryView,
     ValidationToolError,
@@ -43,8 +44,7 @@ from .inventory import (
     owned_inventory,
 )
 
-SLICE_SCHEMA_VERSION = 7
-LEGACY_SLICE_SCHEMA_VERSION = 6
+SLICE_SCHEMA_VERSION = 8
 SLICE_FILENAME = "validation-index.json"
 REPOSITORY_DISCOVERY_EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -569,12 +569,20 @@ def slice_record(
         "source_inputs": source_inputs,
         "edge_sources": edge_sources,
     }
+    reviewed_scope = sorted(
+        {
+            str(origin.get("reviewed_scope", ""))
+            for origin in graph_value["origins"].values()
+            if origin.get("reviewed_scope")
+        }
+    )
     local_snapshot_identity = local_snapshot_identity or "0" * 64
     if not _is_sha256(local_snapshot_identity):
         raise GraphContractError("slice local snapshot identity is invalid")
     return {
         "schema_version": SLICE_SCHEMA_VERSION,
         "validation_rules_version": sliced.rules_version,
+        "graph_contract_version": GRAPH_CONTRACT_VERSION,
         "summary": summary,
         "namespace": namespace,
         "graph_identity": sliced.identity,
@@ -586,21 +594,22 @@ def slice_record(
         },
         **source_contract,
         "source_identity": _json_identity(source_contract),
+        "graph_contract_identity": graph_contract_identity(
+            sliced.identity,
+            _json_identity(source_contract),
+            reviewed_scope=reviewed_scope,
+        ),
         "graph": graph_value,
     }
 
 
-def _slice_summary(
-    value: Mapping[str, Any],
-    *,
-    schema_version: int = SLICE_SCHEMA_VERSION,
-    include_local_snapshot: bool = True,
-) -> str:
+def _slice_summary(value: Mapping[str, Any]) -> str:
     if not isinstance(value, Mapping):
         raise GraphContractError("validation index slice must be an object")
     expected_fields = {
         "schema_version",
         "validation_rules_version",
+        "graph_contract_version",
         "summary",
         "namespace",
         "graph_identity",
@@ -609,24 +618,21 @@ def _slice_summary(
         "source_inputs",
         "edge_sources",
         "source_identity",
+        "graph_contract_identity",
         "graph",
     }
-    if not include_local_snapshot:
-        expected_fields.remove("local_snapshot_identity")
     if set(value) != expected_fields:
         raise GraphContractError("validation index slice has incorrect fields")
-    if value["schema_version"] != schema_version:
+    if value["schema_version"] != SLICE_SCHEMA_VERSION:
         raise GraphContractError("unsupported validation index slice schema")
     summary = value["summary"]
     if not isinstance(summary, str):
         raise GraphContractError("validation index summary must be a string")
-    _validate_slice_metadata(value, summary, include_local_snapshot)
+    _validate_slice_metadata(value, summary)
     return summary
 
 
-def _validate_slice_metadata(
-    value: Mapping[str, Any], summary: str, include_local_snapshot: bool
-) -> None:
+def _validate_slice_metadata(value: Mapping[str, Any], summary: str) -> None:
     for field in (
         "validation_rules_version",
         "namespace",
@@ -637,12 +643,12 @@ def _validate_slice_metadata(
             raise GraphContractError(
                 f"validation index {field.replace('_', ' ')} must be a string"
             )
-    if include_local_snapshot and not isinstance(
-        value["local_snapshot_identity"], str
-    ):
+    if not isinstance(value["local_snapshot_identity"], str):
         raise GraphContractError(
             "validation index local snapshot identity must be a string"
         )
+    if value["graph_contract_version"] != GRAPH_CONTRACT_VERSION:
+        raise GraphContractError("validation index graph contract is unsupported")
     if value["namespace"] != _log_namespace(summary):
         raise GraphContractError("validation index namespace does not match summary")
     _validate_repository_owners(value["material_owners"])
@@ -725,19 +731,20 @@ def load_slice(value: Mapping[str, Any]) -> Tuple[str, DependencyGraph]:
     summary = _slice_summary(value)
     graph = _slice_graph(value)
     _validate_slice_sources(value, graph)
-    return summary, graph
-
-
-def load_legacy_slice(value: Mapping[str, Any]) -> Tuple[str, DependencyGraph]:
-    """Load the exact schema-6 v43 slice retained for Phase 5 migration."""
-
-    summary = _slice_summary(
-        value,
-        schema_version=LEGACY_SLICE_SCHEMA_VERSION,
-        include_local_snapshot=False,
+    reviewed_scope = sorted(
+        {
+            str(origin.get("reviewed_scope", ""))
+            for origin in value["graph"]["origins"].values()
+            if origin.get("reviewed_scope")
+        }
     )
-    graph = _slice_graph(value)
-    _validate_slice_sources(value, graph)
+    expected_contract = graph_contract_identity(
+        value["graph_identity"],
+        value["source_identity"],
+        reviewed_scope=reviewed_scope,
+    )
+    if value["graph_contract_identity"] != expected_contract:
+        raise GraphContractError("slice graph contract identity is invalid")
     return summary, graph
 
 

@@ -1,5 +1,12 @@
 # Research-Log Validation v43 Disposition
 
+Status: **Completed historical migration record.** All maintained logs now use
+the native v44 formats, and the v43 adapters and migration scripts have been
+removed. Keep this document only as the audit trail for the completed field
+disposition. Do not reintroduce its retired schemas as current compatibility
+inputs; follow the rolling upgrade procedure in
+`skills/research-logging/references/operation-validate.md` for future changes.
+
 This document is the source of truth for migrating generated v43 validation
 records to the local-publication model. The migration must account for every
 listed file and field before it writes or removes a canonical record. Unknown

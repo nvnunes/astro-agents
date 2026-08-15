@@ -11,6 +11,13 @@ import re
 from collections.abc import Callable
 from typing import Any, Mapping, TypedDict, cast
 
+from .compatibility import (
+    decode_component_versions,
+    decode_input_dependencies,
+    decode_producer_binding,
+)
+from .contracts import ValidationToolError
+
 
 class ValidationStateContractError(ValueError):
     """Raised when persisted validation state violates its structural contract."""
@@ -30,8 +37,10 @@ class _CompletedCheckRequired(TypedDict):
     check: str
     result: str
     dependencies: list[CompletedDependency]
-    dependency_signature: str
+    compatibility_identity: str
     graph_slice: dict[str, Any]
+    rule_dependencies: dict[str, int]
+    input_dependencies: list[dict[str, Any]]
 
 
 class CompletedCheck(_CompletedCheckRequired, total=False):
@@ -39,6 +48,7 @@ class CompletedCheck(_CompletedCheckRequired, total=False):
 
     resolution: dict[str, Any]
     findings: list[str]
+    producer_bindings: list[dict[str, Any]]
 
 
 class ValidationState(TypedDict):
@@ -46,6 +56,9 @@ class ValidationState(TypedDict):
 
     schema_version: int
     validation_rules_version: str
+    component_versions: dict[str, int]
+    input_projection_versions: dict[str, int]
+    graph_contract_version: int
     local_snapshot_identity: str
     input_fingerprint: str
     input_files: dict[str, dict[str, Any]]
@@ -60,18 +73,22 @@ class ValidationState(TypedDict):
 
 
 VALIDATION_STATE_KEYS = frozenset(ValidationState.__required_keys__)
-LEGACY_VALIDATION_STATE_SCHEMA_VERSION = 9
-LEGACY_VALIDATION_STATE_KEYS = VALIDATION_STATE_KEYS - {"local_snapshot_identity"}
 _COMPLETED_CHECK_REQUIRED = {
     "entry",
     "target",
     "check",
     "result",
     "dependencies",
-    "dependency_signature",
+    "compatibility_identity",
     "graph_slice",
+    "rule_dependencies",
+    "input_dependencies",
 }
-_COMPLETED_CHECK_ALLOWED = _COMPLETED_CHECK_REQUIRED | {"resolution", "findings"}
+_COMPLETED_CHECK_ALLOWED = _COMPLETED_CHECK_REQUIRED | {
+    "resolution",
+    "findings",
+    "producer_bindings",
+}
 _DEPENDENCY_KEYS = {"path", "role", "identity"}
 _HEX_IDENTITY = re.compile(r"[0-9a-f]{64}")
 _FILE_IDENTITY_REQUIRED = {"size", "mtime_ns", "ctime_ns", "sha256"}
@@ -283,6 +300,35 @@ def _decode_dependency(value: Any, check_index: int, index: int) -> None:
     )
 
 
+def _decode_native_completed_check(
+    check: Mapping[str, Any], index: int
+) -> None:
+    try:
+        decode_component_versions(
+            check["rule_dependencies"],
+            f"completed check {index} rule_dependencies",
+        )
+        decode_input_dependencies(
+            check["input_dependencies"],
+            f"completed check {index} input_dependencies",
+            require_supported=False,
+        )
+        _require_sha256(
+            check["compatibility_identity"],
+            f"completed check {index} compatibility_identity",
+        )
+        bindings = check.get("producer_bindings", [])
+        if not isinstance(bindings, list):
+            raise ValidationToolError("producer_bindings must be a list")
+        for binding_index, binding in enumerate(bindings):
+            decode_producer_binding(
+                binding,
+                f"completed check {index} producer binding {binding_index}",
+            )
+    except ValidationToolError as exc:
+        raise ValidationStateContractError(str(exc)) from exc
+
+
 def _decode_completed_check(value: Any, index: int) -> None:
     check = _require_mapping(value, f"completed check {index}")
     if not _COMPLETED_CHECK_REQUIRED <= set(check) <= _COMPLETED_CHECK_ALLOWED:
@@ -294,7 +340,7 @@ def _decode_completed_check(value: Any, index: int) -> None:
         "target",
         "check",
         "result",
-        "dependency_signature",
+        "compatibility_identity",
     ):
         if not isinstance(check[field], str):
             raise ValidationStateContractError(
@@ -310,6 +356,7 @@ def _decode_completed_check(value: Any, index: int) -> None:
     _decode_graph_slice(check["graph_slice"], f"completed check {index} graph slice")
     if "resolution" in check:
         _decode_resolution(check["resolution"], f"completed check {index} resolution")
+    _decode_native_completed_check(check, index)
     findings = check.get("findings")
     if findings is not None and (
         not isinstance(findings, list)
@@ -351,7 +398,15 @@ def _decode_orphan_dependency(value: Any, description: str) -> None:
 
 def _decode_orphan_disposition(value: Any, description: str) -> None:
     disposition = _require_mapping(value, description)
-    if set(disposition) != {"inventory_version", "entry", "items", "dependencies"}:
+    expected = {
+        "inventory_version",
+        "entry",
+        "items",
+        "dependencies",
+        "rule_dependencies",
+        "input_dependencies",
+    }
+    if set(disposition) != expected:
         raise ValidationStateContractError(f"{description} has incorrect fields")
     version = disposition["inventory_version"]
     if not isinstance(version, int) or isinstance(version, bool):
@@ -369,6 +424,17 @@ def _decode_orphan_disposition(value: Any, description: str) -> None:
         _decode_orphan_item(item, f"{description} item {index}")
     for index, dependency in enumerate(dependencies):
         _decode_orphan_dependency(dependency, f"{description} dependency {index}")
+    try:
+        decode_component_versions(
+            disposition["rule_dependencies"], f"{description} rule_dependencies"
+        )
+        decode_input_dependencies(
+            disposition["input_dependencies"],
+            f"{description} input_dependencies",
+            require_supported=False,
+        )
+    except ValidationToolError as exc:
+        raise ValidationStateContractError(str(exc)) from exc
 
 
 def _decode_orphan_dispositions(value: Any) -> None:
@@ -443,16 +509,33 @@ def _decode_report(value: Any) -> None:
     _require_sha256(report["sha256"], "validation state report sha256")
 
 
+def _decode_native_state_contract(state: Mapping[str, Any]) -> None:
+    try:
+        decode_component_versions(
+            state["component_versions"], "validation state component_versions"
+        )
+        decode_component_versions(
+            state["input_projection_versions"],
+            "validation state input_projection_versions",
+        )
+    except ValidationToolError as exc:
+        raise ValidationStateContractError(str(exc)) from exc
+    version = state["graph_contract_version"]
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise ValidationStateContractError(
+            "validation state graph_contract_version is invalid"
+        )
+
+
 def _decode_validation_state(
     value: Any,
     *,
     schema_version: int,
-    expected_keys: frozenset[str],
 ) -> dict[str, Any]:
-    """Decode the fields shared by one exact native or v43 state record."""
+    """Decode one exact native validation-state record."""
 
     state = _require_mapping(value, "validation state")
-    if set(state) != expected_keys:
+    if set(state) != VALIDATION_STATE_KEYS:
         raise ValidationStateContractError(
             "validation state has incorrect top-level fields"
         )
@@ -463,11 +546,11 @@ def _decode_validation_state(
     _require_string(state["validation_rules_version"], "validation state rules version")
     for field in ("input_fingerprint", "graph_identity"):
         _require_sha256(state[field], f"validation state {field}")
-    if "local_snapshot_identity" in state:
-        _require_sha256(
-            state["local_snapshot_identity"],
-            "validation state local_snapshot_identity",
-        )
+    _require_sha256(
+        state["local_snapshot_identity"],
+        "validation state local_snapshot_identity",
+    )
+    _decode_native_state_contract(state)
     _decode_identity_map(
         state["input_files"],
         "validation state input_files",
@@ -521,32 +604,5 @@ def decode_validation_state(
     decoded = _decode_validation_state(
         value,
         schema_version=schema_version,
-        expected_keys=VALIDATION_STATE_KEYS,
     )
     return cast(ValidationState, decoded)
-
-
-def decode_legacy_validation_state(value: Any) -> dict[str, Any]:
-    """Decode the exact schema-9 v43 cache without accepting compatibility drift."""
-
-    return _decode_validation_state(
-        value,
-        schema_version=LEGACY_VALIDATION_STATE_SCHEMA_VERSION,
-        expected_keys=LEGACY_VALIDATION_STATE_KEYS,
-    )
-
-
-def decode_compatible_validation_state(
-    value: Any,
-    *,
-    schema_version: int,
-) -> dict[str, Any]:
-    """Decode native state or the one temporary v43 migration source."""
-
-    try:
-        return dict(decode_validation_state(value, schema_version=schema_version))
-    except ValidationStateContractError as native_error:
-        try:
-            return decode_legacy_validation_state(value)
-        except ValidationStateContractError:
-            raise native_error

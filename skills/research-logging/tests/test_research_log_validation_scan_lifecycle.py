@@ -91,7 +91,7 @@ class ScanTests(unittest.TestCase):
                 )
 
     def test_rules_version_is_shared_package_owned(self) -> None:
-        self.assertEqual(RUNTIME.RULES_VERSION, "research-log-validation-v43")
+        self.assertEqual(RUNTIME.RULES_VERSION, "research-log-validation-v44")
 
     def test_scan_extracts_mechanics_without_executing_research_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3292,7 +3292,9 @@ class ScanTests(unittest.TestCase):
                 for row in entry_row["targets"]
                 if row["target"] == item["identity"]
             )
-            self.assertTrue(row["producer_invocation"].startswith("e001:L"))
+            self.assertRegex(
+                row["producer_invocation"], r"^e001:[0-9a-f]{16}:[0-9a-f]{16}:\d+$"
+            )
             graph = GRAPH_ADAPTER.build_dependency_graph(scan, decided)
             self.assertFalse(
                 any("reviewed-workflow" in node.key.identity for node in graph.nodes)
@@ -3347,7 +3349,9 @@ class ScanTests(unittest.TestCase):
             )
 
             self.assertIsNone(row["provenance"])
-            self.assertTrue(row["producer_invocation"].startswith("e001:L"))
+            self.assertRegex(
+                row["producer_invocation"], r"^e001:[0-9a-f]{16}:[0-9a-f]{16}:\d+$"
+            )
             self.assertTrue(
                 any(
                     item["identity"] == output
@@ -3435,7 +3439,10 @@ class ScanTests(unittest.TestCase):
                 for target in prepared_entry["targets"]
                 if target["target"] == output
             )
-            self.assertTrue(decided_row["producer_invocation"].startswith("e001:L"))
+            self.assertRegex(
+                decided_row["producer_invocation"],
+                r"^e001:[0-9a-f]{16}:[0-9a-f]{16}:\d+$",
+            )
 
     def test_generated_input_with_alternative_producers_requires_binding(
         self,

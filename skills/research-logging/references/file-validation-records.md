@@ -30,12 +30,27 @@ and records its subject, complete available decision-input fingerprint, rules
 version, result, date, rationale provenance, and recorded rationale when one
 exists. Never invent reasoning omitted by an older format.
 
+Each completed outcome and durable judgment declares its `rule_dependencies`
+and typed `input_dependencies`. Producer-sensitive outcomes also declare a
+native producer binding with a stable invocation identity and exact,
+collection-scoped, or reviewed coverage. These fields are the compatibility
+contract: a later scan reopens only consumers of a changed component or input
+projection. Line numbers and other source locators may refresh without changing
+the semantic identity.
+
 `validation-state.json` and `validation-index.json` are disposable caches.
 State accelerates local identity, inspection, completed-check, and orphan
 comparison. The index is the owning log's graph slice for on-demand cross-log
 views. Missing, malformed, stale, incompatible, or mixed-generation cache files
 cause bounded recomputation or incomplete cross-log coverage; they do not
 invalidate a readable report or compatible durable judgments.
+
+Reused outcomes retain their original result dates. A current report may
+therefore contain older dates without being stale: the current scan proved that
+the outcome's declared rule and input dependencies remain compatible. During a
+rolling upgrade, a report may also state that cross-log coverage is incomplete
+while incompatible foreign slices are being replaced; its exact local results
+remain valid.
 
 Do not publish or depend on a repository aggregate. A scan discovers
 maintained summaries and assembles an ephemeral view from source-current,

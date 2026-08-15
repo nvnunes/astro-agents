@@ -8,9 +8,18 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple, TypedDict, cast
 
+from .compatibility import (
+    COMPONENT_VERSIONS,
+    INPUT_PROJECTION_VERSIONS,
+    decode_component_versions,
+    decode_input_dependencies,
+    decode_producer_binding,
+    orphan_rule_dependencies,
+    projection,
+)
 from .contracts import ValidationToolError
 
-DECISION_STORE_SCHEMA_VERSION = 1
+DECISION_STORE_SCHEMA_VERSION = 2
 _HEX_IDENTITY = re.compile(r"[0-9a-f]{64}")
 _JUDGMENT_REQUIRED_FIELDS = {
     "identity",
@@ -23,15 +32,19 @@ _JUDGMENT_REQUIRED_FIELDS = {
     "decision_date",
     "date_provenance",
     "rationale_provenance",
+    "rule_dependencies",
+    "input_dependencies",
 }
-_JUDGMENT_OPTIONAL_FIELDS = {"basis", "rationale"}
+_JUDGMENT_OPTIONAL_FIELDS = {"basis", "producer_bindings", "rationale"}
 
 
 class ValidationDecisionStore(TypedDict):
-    """Exact schema-1 durable semantic-judgment record."""
+    """Exact schema-2 durable semantic-judgment record."""
 
     schema_version: int
     validation_rules_version: str
+    component_versions: dict[str, int]
+    input_projection_versions: dict[str, int]
     local_snapshot_identity: str
     judgments: list[dict[str, Any]]
 
@@ -46,6 +59,17 @@ class NativeOrphanJudgmentInput(NamedTuple):
     classification: tuple[str, str | None]
     rules_version: str
     decision_date: str
+
+
+class StoredOrphanJudgmentInput(NamedTuple):
+    """Persisted orphan outcome and its native compatibility surface."""
+
+    entry: str
+    item: Mapping[str, Any]
+    rules_version: str
+    report_date: str
+    rule_dependencies: Mapping[str, int]
+    input_dependencies: Sequence[Mapping[str, Any]]
 
 
 def _json_identity(value: Mapping[str, Any]) -> str:
@@ -70,9 +94,9 @@ def _decision_date(result: str, report_date: str) -> tuple[str, str]:
 def _completed_check_judgment(
     check: Mapping[str, Any], rules_version: str, report_date: str
 ) -> dict[str, Any] | None:
-    """Extract one provable v43 semantic outcome, if the state retained one."""
+    """Extract one reusable semantic outcome when the state retained one."""
 
-    fingerprint = check.get("dependency_signature")
+    fingerprint = check.get("compatibility_identity")
     if not isinstance(fingerprint, str) or _HEX_IDENTITY.fullmatch(fingerprint) is None:
         return None
     findings = check.get("findings")
@@ -106,16 +130,19 @@ def _completed_check_judgment(
         judgment["basis"] = dict(resolution)
     if isinstance(findings, list) and findings:
         judgment["rationale"] = list(findings)
+    judgment["rule_dependencies"] = dict(check["rule_dependencies"])
+    judgment["input_dependencies"] = list(check["input_dependencies"])
+    if check.get("producer_bindings"):
+        judgment["producer_bindings"] = list(check["producer_bindings"])
     judgment["identity"] = _judgment_identity(judgment)
     return judgment
 
 
-def _orphan_judgment(
-    entry: str,
-    item: Mapping[str, Any],
-    rules_version: str,
-    report_date: str,
-) -> dict[str, Any] | None:
+def _orphan_judgment(inputs: StoredOrphanJudgmentInput) -> dict[str, Any] | None:
+    entry = inputs.entry
+    item = inputs.item
+    rules_version = inputs.rules_version
+    report_date = inputs.report_date
     fingerprint = item.get("fingerprint")
     if not isinstance(fingerprint, str) or _HEX_IDENTITY.fullmatch(fingerprint) is None:
         return None
@@ -136,6 +163,15 @@ def _orphan_judgment(
     basis = item.get("basis")
     if isinstance(basis, str) and basis != "-":
         judgment["basis"] = basis
+    judgment["rule_dependencies"] = dict(inputs.rule_dependencies)
+    subject_identity = str(item.get("identity", ""))
+    judgment["input_dependencies"] = [
+        dict(value)
+        for value in inputs.input_dependencies
+        if value.get("kind") == "validation-note"
+        or value.get("semantic_identity")
+        == f"orphan-candidate:{entry}:{subject_identity}"
+    ]
     judgment["identity"] = _judgment_identity(judgment)
     return judgment
 
@@ -170,7 +206,14 @@ def build_decision_store(
             if isinstance(item, Mapping)
             and (
                 judgment := _orphan_judgment(
-                    entry, item, validation_rules_version, report_date
+                    StoredOrphanJudgmentInput(
+                        entry,
+                        item,
+                        validation_rules_version,
+                        report_date,
+                        disposition["rule_dependencies"],
+                        disposition["input_dependencies"],
+                    )
                 )
             )
             is not None
@@ -190,6 +233,8 @@ def build_decision_store(
     return {
         "schema_version": DECISION_STORE_SCHEMA_VERSION,
         "validation_rules_version": validation_rules_version,
+        "component_versions": dict(COMPONENT_VERSIONS),
+        "input_projection_versions": dict(INPUT_PROJECTION_VERSIONS),
         "local_snapshot_identity": local_snapshot_identity,
         "judgments": judgments,
     }
@@ -209,6 +254,8 @@ def merge_native_orphan_batch_judgments(
         current: ValidationDecisionStore = {
             "schema_version": DECISION_STORE_SCHEMA_VERSION,
             "validation_rules_version": validation_rules_version,
+            "component_versions": dict(COMPONENT_VERSIONS),
+            "input_projection_versions": dict(INPUT_PROJECTION_VERSIONS),
             "local_snapshot_identity": local_snapshot_identity,
             "judgments": [],
         }
@@ -352,6 +399,15 @@ def _native_orphan_judgment(
         "date_provenance": "recorded",
         "rationale_provenance": "recorded",
         "rationale": [rationale.strip()],
+        "rule_dependencies": orphan_rule_dependencies(),
+        "input_dependencies": [
+            projection(
+                "orphan-candidate",
+                f"orphan-candidate:{entry}:{identity}",
+                fingerprint,
+                "reviewed-candidate",
+            )
+        ],
     }
     if basis is not None:
         judgment["basis"] = basis
@@ -365,7 +421,7 @@ def _require_text(value: Any, description: str) -> str:
     return value
 
 
-def _decode_judgment(value: Any, index: int, rules_version: str) -> dict[str, Any]:
+def _decode_judgment(value: Any, index: int) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValidationToolError(f"decision judgment {index} must be an object")
     if not _JUDGMENT_REQUIRED_FIELDS <= set(value) <= (
@@ -373,9 +429,28 @@ def _decode_judgment(value: Any, index: int, rules_version: str) -> dict[str, An
     ):
         raise ValidationToolError(f"decision judgment {index} has incorrect fields")
     _decode_judgment_identity(value, index)
-    _decode_judgment_subject(value, index, rules_version)
+    _decode_judgment_subject(value, index)
     _decode_judgment_date(value, index)
     _decode_judgment_rationale(value, index)
+    decode_component_versions(
+        value["rule_dependencies"],
+        f"decision judgment {index} rule_dependencies",
+    )
+    decode_input_dependencies(
+        value["input_dependencies"],
+        f"decision judgment {index} input_dependencies",
+        require_supported=False,
+    )
+    bindings = value.get("producer_bindings", [])
+    if not isinstance(bindings, list):
+        raise ValidationToolError(
+            f"decision judgment {index} producer_bindings must be a list"
+        )
+    for binding_index, binding in enumerate(bindings):
+        decode_producer_binding(
+            binding,
+            f"decision judgment {index} producer binding {binding_index}",
+        )
     return dict(value)
 
 
@@ -388,9 +463,7 @@ def _decode_judgment_identity(value: Mapping[str, Any], index: int) -> None:
         raise ValidationToolError(f"decision judgment {index} identity is invalid")
 
 
-def _decode_judgment_subject(
-    value: Mapping[str, Any], index: int, rules_version: str
-) -> None:
+def _decode_judgment_subject(value: Mapping[str, Any], index: int) -> None:
     if value["provenance"] not in {"native-reviewed", "legacy-attested"}:
         raise ValidationToolError(f"decision judgment {index} provenance is invalid")
     if value["kind"] not in {"completed-check", "orphan-disposition"}:
@@ -407,8 +480,10 @@ def _decode_judgment_subject(
     )
     if _HEX_IDENTITY.fullmatch(fingerprint) is None:
         raise ValidationToolError(f"decision judgment {index} fingerprint is invalid")
-    if value["validation_rules_version"] != rules_version:
-        raise ValidationToolError(f"decision judgment {index} rules version differs")
+    if not isinstance(value["validation_rules_version"], str) or not value[
+        "validation_rules_version"
+    ]:
+        raise ValidationToolError(f"decision judgment {index} rules version is invalid")
 
 
 def _decode_judgment_date(value: Mapping[str, Any], index: int) -> None:
@@ -445,19 +520,23 @@ def _decode_judgment_rationale(value: Mapping[str, Any], index: int) -> None:
 
 
 def decode_decision_store(value: Any) -> ValidationDecisionStore:
-    """Decode one exact schema-1 semantic-judgment store."""
+    """Decode one exact schema-2 semantic-judgment store."""
 
     if not isinstance(value, Mapping) or set(value) != {
         "schema_version",
         "validation_rules_version",
+        "component_versions",
+        "input_projection_versions",
         "local_snapshot_identity",
         "judgments",
     }:
         raise ValidationToolError("validation decision store has incorrect fields")
     if value["schema_version"] != DECISION_STORE_SCHEMA_VERSION:
         raise ValidationToolError("unsupported validation decision store schema")
-    rules_version = _require_text(
-        value["validation_rules_version"], "decision store rules version"
+    _require_text(value["validation_rules_version"], "decision store rules version")
+    decode_component_versions(value["component_versions"], "decision components")
+    decode_component_versions(
+        value["input_projection_versions"], "decision input projections"
     )
     snapshot = _require_text(
         value["local_snapshot_identity"], "decision store local snapshot identity"
@@ -468,7 +547,7 @@ def decode_decision_store(value: Any) -> ValidationDecisionStore:
     if not isinstance(raw_judgments, list):
         raise ValidationToolError("decision store judgments must be a list")
     judgments = [
-        _decode_judgment(judgment, index, rules_version)
+        _decode_judgment(judgment, index)
         for index, judgment in enumerate(raw_judgments)
     ]
     if len({judgment["identity"] for judgment in judgments}) != len(judgments):

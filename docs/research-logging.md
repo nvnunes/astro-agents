@@ -88,8 +88,8 @@ During an active investigation, this is one integrated loop: implement or
 revise scripts, run the research, retain and analyze its outputs, document the
 evidence, and draft observations grounded in those results. Recording updates
 all directly affected material together, including prose, commands, saved
-results, source links, citations, `data.csv`, and `evidence.csv`. It leaves the
-summary's validation record unchanged. Check outputs as they are produced;
+results, source links, citations, `data.csv`, and `evidence.csv`. It preserves
+the fixed report link and every generated validation file. Check outputs as they are produced;
 these checks are part of doing the research and do not establish validation
 status.
 
@@ -216,8 +216,8 @@ Run Update Summary only when you want current understanding or `## Follow-ups`
 to change. Read the relevant entries, then revise `<log>.md` by topic rather
 than by date. Collect follow-ups only from explicit entry `Follow-up:` items;
 do not infer them from general discussion. Keep detailed methods, commands, and
-caveats in entries. Preserve established framing, the AI-use disclosure, and
-the complete `## Validation` section exactly as it is.
+caveats in entries. Preserve established framing, the AI-use disclosure, the
+fixed validation-report link, and every generated validation file exactly.
 
 ### Review
 
@@ -729,19 +729,21 @@ reports the issue rather than repairing it.
 
 ## The current summary
 
-`<log>.md` is the current view of the research. It starts with `## Contents`,
-`## Entries`, and `## Summary`. During Update Summary, add `## Follow-ups` only
-when entries contain intentional `Follow-up:` items, and add its Contents link
-at the same time. Every summary ends with `## Validation` and then `## AI Use`.
+`<log>.md` is the current view of the research. Immediately below its title it
+links to the latest completed generated validation report. It then starts with
+`## Contents`, `## Entries`, and `## Summary`. During Update Summary, add
+`## Follow-ups` only when entries contain intentional `Follow-up:` items, and
+add its Contents link at the same time. Every summary ends with `## AI Use`.
 
 ```md
 # <Log title>
+
+Validation: [latest completed report](<log>/validation.md)
 
 ## Contents
 
 - [Entries](#entries)
 - [Summary](#summary)
-- [Validation](#validation)
 - [AI Use](#ai-use)
 
 ## Entries
@@ -751,12 +753,6 @@ at the same time. Every summary ends with `## Validation` and then `## AI Use`.
 ## Summary
 
 - <Current result, decision, limitation, or unresolved point with an entry link>
-
-## Validation
-
-Last validated on: NOT RUN
-
-Summary statistics: NOT RUN
 
 ## AI Use
 
@@ -813,59 +809,25 @@ outputs have been kept so the results can be checked and reproduced.
 Do not add entry-level `AI Use:` labels. This internal disclosure does not
 replace disclosure rules from a journal, institution, funder, or venue.
 
-### Validation record in the summary
+### Validation link in the summary
 
-Place `## Validation` immediately above `## AI Use` and include it in
-`## Contents`. This section is a dated record of the last completed canonical
-validation, not a live assessment of later research changes.
-
-Before the first completed validation, use this fixed form:
+Place this exact navigation line immediately below the level-one title,
+followed by one blank line:
 
 ```md
-## Validation
-
-Last validated on: NOT RUN
-
-Summary statistics: NOT RUN
+Validation: [latest completed report](<log>/validation.md)
 ```
 
-Do not add rows as entries are created. After validation completes, the section
-links to `validation.md`, identifies the snapshot date, and lists only the
-entry documents included in that validation:
+The link is stable research-document scaffolding. It contains no date, status,
+failure count, freshness claim, or rules version. Do not add a `## Validation`
+section or a Validation item to `## Contents`. Before the first validation, the
+link may point to a report that does not yet exist.
 
-```md
-## Validation
-
-[Detailed validation report](research/validation.md)
-
-Last validated on: 2026-08-11
-
-Summary statistics: 2026-08-11 — 7 checked; 0 failures
-
-| Scope | Last checked | Integrity & Provenance | Reproducibility |
-| --- | --- | --- | --- |
-| e001 | 2026-08-11 | 3 targets checked; 0 failures | `-` |
-```
-
-`Last validated on` is the date this displayed snapshot was produced. Its rows
-do not imply that entries added or changed later were validated. Record,
-Replace, Reorganize, and Update Summary leave the complete section unchanged;
-the next Validate request detects relevant changes and replaces the snapshot.
-
-Integrity means that saved results can be opened, Provenance means that results
-can be traced to their sources, and Reproducibility means that a rerun matched
-the saved result. Summary statistics uses a date and checked/failure counts on
-success, `` `FAIL` - <failed> of <total> statistics failed``, or `N/A` when no
-statistics apply. A target is a saved result being checked. Integrity &
-Provenance reports `<count> targets checked; 0 failures`, `` `FAIL` - <failed>
-of <total> targets failed``, or `N/A`. Reproducibility reports `<current> of
-<eligible> eligible targets reproduced`, `` `FAIL` - <failed> of <eligible>
-eligible targets failed``, `-`, or `N/A`. Detailed dates and failures remain in
-`validation.md`.
-
-Older logs may still display `STALE`. Leave that historical section unchanged
-during research work. The next Validate request replaces it with a complete
-dated snapshot, even when all completed checks can be reused.
+Record, Replace, Reorganize, and Update Summary preserve this link exactly and
+never edit generated validation files. Validate reads the maintained summary
+but never changes it. The generated `<log>/validation.md` report owns the date,
+Summary status, included entry set, Integrity and Provenance counts,
+Reproducibility status, and current failures.
 
 ## Reviewing a research log
 
@@ -955,7 +917,8 @@ and compares the new outputs with the saved results. The validation agent reads
 ### Standard and reproduction checks
 
 Canonical validation always covers the complete log and is the only form that
-updates `validation.md` or the summary. You may instead request a limited
+updates generated validation records. It never updates the maintained summary.
+You may instead request a limited
 diagnostic for a named problem scope, exact result, or type of review. A
 diagnostic uses the complete mechanical scan but reports only the requested
 question; it does not assign validation status or update generated records.
@@ -1082,7 +1045,7 @@ for that run; canonical reproduction retains complete-log scope.
 If material used by a prior reproduction result changes and reproduction is not
 requested, replace its date with `-`; do not report `FAIL` because reproduction
 was not attempted. Only `FAIL`, `-`, and `N/A` use inline code formatting in
-report and summary cells. Successful dates and results use ordinary text.
+generated report cells. Successful dates and results use ordinary text.
 
 Before reusing an earlier result, a standard check confirms that the relevant
 entries, presented results, `evidence.csv` rows, supporting files, and unused-
@@ -1100,18 +1063,17 @@ It records when validation ran, the complete canonical log scope, and whether
 the run was standard or reproduction validation. It does not reduce the log
 to one overall pass-or-fail result.
 
-The report has a Summary section for marked statistics in the current summary
-and a section for each checked entry. Each row shows the relevant entry heading
-and its Integrity, Provenance, and Reproducibility status. Counts show how many
-rows were checked and how many failed. Short notes may identify the presented
-result, explain an approved comparison rule, or state a known inspection
-limitation. Detailed problems and corrective work belong in
-`validation-failures.md`.
+Near the top, `## Status Summary` gives the report-update date, Summary status,
+and one compact row per included entry. Detailed sections cover marked Summary
+statistics and every checked entry target. Counts show how many rows were
+checked and how many failed. Short notes may identify the presented result,
+explain an approved comparison rule, or state a known inspection limitation.
+Detailed problems belong in `validation-failures.md`.
 
 #### Details about problems
 
-`<log>/validation-failures.md` is an optional working document for resolving
-problems; it is not a validation result. The validator creates or rebuilds it
+`<log>/validation-failures.md` is the optional generated remediation queue; it
+is not itself a validation result. The validator creates or rebuilds it
 when failures exist and links it from `validation.md`. Its absence does not
 mean that validation passed.
 
@@ -1120,10 +1082,9 @@ failed, what was found, and any specific unresolved paths or `data.csv`
 references. It is a current work list, not a history: successful checks and
 full command logs do not belong there.
 
-A research agent may clarify findings and record progress while correcting the
-research record. Removing the last working item does not make validation pass
-or change the summary snapshot. The next completed validation rebuilds the
-problem list and replaces the displayed result.
+A research agent does not edit this generated queue. It resolves or disputes a
+finding by changing research-owned evidence or instructions. The next completed
+validation alone rebuilds or removes the queue and republishes the report.
 
 #### Other generated validation files
 
@@ -1149,21 +1110,21 @@ intentionally change research-log inputs while canonical validation is running.
 Only one canonical validation operation runs in a repository at a time; a
 second attempt stops rather than publishing competing records.
 
-The validation agent may read research entries, scripts, saved evidence, and
-`evidence.csv`, but it cannot change them. It records results in the generated
-validation files and in the summary's `## Validation` section. It reports
-problems without repairing the research record.
+The validation agent may read maintained summaries, entries, scripts, saved
+evidence, `data.csv`, `evidence.csv`, and authored `Validation:` notes, but it
+cannot change them. It records results only in generated validation files and
+reports problems without repairing the research record.
 
-The research agent may edit the research record, maintain `evidence.csv`, work
-through `validation-failures.md`, and, under your direction, add or revise a
-`Validation:` note. It cannot assign a completed validation result or edit the
-summary's validation snapshot.
+The research agent may edit the research record, maintain `evidence.csv`, and,
+under your direction, add or revise an authored `Validation:` note. It never
+edits, deletes, repairs, or normalizes generated validation files and cannot
+assign a completed validation result.
 
 Research changes do not trigger validation, reproduction, broad checks, or a
 summary update. Perform only the production check needed to keep changed
 presentation consistent with its retained source. The next Validate request
 compares current inputs with saved fingerprints, reuses only unchanged
-outcomes, and regenerates the complete canonical record and summary snapshot.
+outcomes, and regenerates the complete canonical validation bundle.
 
 Files and owned-directory membership must remain unchanged while they are
 being checked. Validation confirms content and membership again before

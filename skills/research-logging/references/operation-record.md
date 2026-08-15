@@ -23,8 +23,8 @@ should be logged, or adding, revising, or reorganizing log material.
   `skills/research-logging/references/file-entry-naming.md` and
   `skills/research-logging/references/file-entry.md` as needed. Obtain
   researcher approval before changing document boundaries or deleting
-  research-log files. Preserve the summary's `## Validation` section
-  byte-for-byte. Apply
+  research-log files. Preserve the summary's fixed validation-report link and
+  every generated validation file exactly. Apply
   `skills/research-logging/references/operation-record-content.md` to affected
   content, support material, or evidence rows. If removal would supersede
   experimental content, stop and request explicit Replace authorization rather

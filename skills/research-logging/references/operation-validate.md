@@ -4,18 +4,18 @@ Use this operation for independent standard validation or a requested
 reproducibility check. Run it in a fresh task that did not implement the
 research work; successful execution or inspection during Record is not
 validation. Validation may repeat relevant checks independently. Read
-`skills/research-logging/references/file-validation-records.md` for record
-ownership and `skills/research-logging/references/file-summary-validation.md`
-before a canonical run. Use
+`skills/research-logging/references/file-validation-records.md` for the exact
+generated-file ownership boundary before a canonical run. Use
 `skills/research-logging/references/file-presented-evidence.md` only when a
 presented-item association or source locator needs interpretation.
 
 ## Boundaries
 
-- Treat entries, scripts, artifacts, scientific summary content,
+- Treat maintained summaries, entries, scripts, artifacts, `data.csv`,
   `evidence.csv`, and entry `Validation:` notes as read-only.
-- Write only validation working files, validation records, and the summary's
-  `## Validation` section. Never edit `evidence.csv` to resolve a finding.
+- Write only validation working files and the generated validation records
+  listed in `file-validation-records.md`. Never edit research-owned material to
+  resolve a finding.
 - Validate files as they exist on disk. Ignore source-control status.
 - Standard validation may inspect research code but never imports or executes
   it. Run a recorded research command only during requested reproduction.
@@ -104,10 +104,9 @@ log against the complete slice set and rebuild the aggregate once more.
 Consumer-owned cross-log relationships do not require atomic repository
 publication, rollback, or fixed-point generation.
 
-Run `update-summary` after each canonical render. When the complete rollout
-finishes, run an immediate state-backed `scan` for every log. Each unchanged
-scan must reuse all completed checks, require no semantic review, and write
-nothing.
+When the complete rollout finishes, run an immediate state-backed `scan` for
+every log. Each unchanged scan must reuse all completed checks, require no
+semantic review, and write nothing.
 
 `scan` discovers approved presented evidence, resolves retained sources and
 recorded workflow paths, checks known
@@ -116,10 +115,8 @@ and identifies reusable outcomes.
 
 Inspect the scan metrics before preparing adjudication. When a standard scan
 reports `incremental_status: unchanged`, return the cached date, scope, counts,
-and failures immediately. Run `update-summary` against the unchanged canonical
-bundle so the dated snapshot is present and any legacy `STALE` values are
-replaced; this writes nothing when the snapshot already matches. Do not run
-`prepare`, create a review packet, perform semantic review, or render records.
+and failures immediately. Do not run `prepare`, create a review packet, perform
+semantic review, render records, or edit the maintained summary.
 A reproduction request never takes this fast return. A missing or incompatible state, or
 `incremental_status: rules-changed`, requires complete non-incremental
 validation. Otherwise continue with only the checks and dispositions the scan
@@ -389,10 +386,6 @@ temporary regenerated outputs after comparison.
 <project-python> <validation-tool> lint \
   --output-dir <record-dir> \
   --scan <work-dir>/scan.json
-
-<project-python> <validation-tool> update-summary \
-  --summary <log-summary> \
-  --output-dir <record-dir>
 ```
 
 The render also writes `<log>/validation-index.json`. After all intended logs
@@ -410,8 +403,7 @@ An interruption may leave a partial generated bundle. The next canonical
 operation treats that bundle as unusable, performs fresh validation, and
 rebuilds it. It does not roll back through a publication journal. The aggregate
 is likewise disposable and rebuilt whenever its files or contributing slices
-are inconsistent. Run `update-summary` last so its snapshot follows the
-completed report.
+are inconsistent. Canonical validation never updates a maintained summary.
 
 ## Extending The Tool
 
@@ -426,8 +418,8 @@ Keep graph ownership explicit when adding validation mechanics:
   repository aggregate;
 - `validation/records.py` owns the repository advisory lock,
   record-bundle identities, and atomic generated-file replacement;
-- `research_log_summary.py` owns maintained-summary UTF-8 validation and the
-  generated validation snapshot;
+- `validation/report.py` owns generated report parsing and the compact status
+  summary;
 - `validation/state.py` owns the persisted validation-state
   contract and decoder;
 - `validation/contracts.py` owns typed lifecycle record shapes;
@@ -463,9 +455,8 @@ shared producer classifier, the indexed/reference equivalence cases, the
 operation-count assertions, and the canonical review benchmark together. Do
 not add a second eligibility rule in packet rendering or decision application.
 
-Correct decisions and rerender; never hand-edit generated validation records.
-Update the maintained summary after a complete canonical render passes lint or
-after an unchanged fast return against the current canonical bundle. Report
+Correct decisions and rerender; never hand-edit generated validation records
+or maintained research files. Report
 the requested scope, elapsed time, mechanically completed checks,
 semantic-review count, reused checks, report rows, failures, and files changed
 during inspection. For an unchanged fast return, instead report the scan time

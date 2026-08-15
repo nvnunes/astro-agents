@@ -4,10 +4,10 @@ Use this file only when the researcher asks for or approves an update to
 current understanding or `## Follow-ups` in `<log>.md`.
 
 `Update Summary` synthesizes entries into the current summary rather than
-restating them chronologically. Creating, recording, reorganizing, or
-validating may require narrow changes to entry links or the generated
-validation snapshot; those changes do not authorize revisions to current
-understanding or `## Follow-ups`.
+restating them chronologically. Creating, recording, or reorganizing may
+require narrow changes to entry links; those changes do not authorize revisions
+to current understanding or `## Follow-ups`. Validation never edits the
+maintained summary.
 
 Read `skills/research-logging/references/file-summary.md` and
 `skills/research-logging/references/file-presented-evidence.md` for summary
@@ -17,8 +17,8 @@ guidance.
 
 Update the canonical `<log>.md` file with the normal repository editing tools.
 Research and validation are assumed not to modify the same log concurrently.
-The validator's generated snapshot uses the repository validation lock and
-an atomic replacement; ordinary research summary edits need no second lock or
+The validator atomically replaces only generated records under the repository
+validation lock; ordinary research summary edits need no second lock or
 optimistic publication protocol.
 
 - Read the relevant entry documents before changing summary claims.
@@ -35,8 +35,9 @@ optimistic publication protocol.
 - Keep detailed evidence, long caveats, commands, and reconstruction details in entries.
 - Preserve the existing `## AI Use` disclosure exactly unless the researcher
   asks to revise it. Do not reset customized wording to the creation default.
-- Preserve the complete `## Validation` section byte-for-byte. Do not open
-  generated validation records solely because summary content changed.
+- Preserve the fixed validation-report link exactly. Do not open, edit, delete,
+  repair, or normalize generated validation records because summary content
+  changed.
 - Do not add conclusions that are not supported by entries, references, or user-provided direction.
 - If summary text appears stale, unsupported, or inconsistent with entries,
   either fix it when the requested task clearly authorizes that change or

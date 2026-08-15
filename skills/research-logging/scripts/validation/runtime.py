@@ -5,11 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from research_log_summary import (
-    ValidationProjectionPolicy,
-    update_validation_projection,
-)
-
 from .adjudication import (
     AdjudicationPreparationPolicy,
     prepare_adjudication,
@@ -203,13 +198,3 @@ def lint_records(
     """Lint through the current canonical policy."""
 
     return render_lint_records(output_dir, render_policy(), expected_entry_order)
-
-
-def update_summary_validation(summary_path: Path, output_dir: Path) -> dict[str, Any]:
-    """Project current validation results into one maintained summary."""
-
-    return update_validation_projection(
-        summary_path,
-        output_dir,
-        ValidationProjectionPolicy(STATE_SCHEMA_VERSION, RULES_VERSION),
-    )

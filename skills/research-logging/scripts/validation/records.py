@@ -104,6 +104,23 @@ def _publish_one(staged: Path, destination: Path) -> None:
         _fsync_directory(destination.parent)
 
 
+def _validate_publication_paths(
+    staged_dir: Path, output_dir: Path, names: Iterable[str]
+) -> None:
+    if output_dir.is_symlink():
+        raise RecordPublicationError(
+            "publication output directory must not be a symlink"
+        )
+    if staged_dir.is_symlink() or not staged_dir.is_dir():
+        raise RecordPublicationError("publication staging directory is invalid")
+    for name in names:
+        destination = output_dir / name
+        if destination.is_symlink():
+            raise RecordPublicationError(
+                f"publication destination must not be a symlink: {destination}"
+            )
+
+
 def publish_record_bundle(
     staged_dir: Path,
     output_dir: Path,
@@ -120,6 +137,7 @@ def publish_record_bundle(
     """
 
     names = _validated_names(filenames)
+    _validate_publication_paths(staged_dir, output_dir, names)
     if record_bundle_identity(output_dir, names) != expected_identity:
         raise RecordPublicationError("canonical validation bundle changed after scan")
     if validate_publication is not None:

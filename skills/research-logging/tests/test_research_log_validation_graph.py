@@ -5,6 +5,7 @@ from research_log_validation_test_support import (
     GRAPH_ADAPTER,
     GRAPH_QUERIES,
     GRAPH_STORE,
+    IDENTITIES,
     INVENTORY,
     RECORDS,
     RENDER,
@@ -1797,6 +1798,102 @@ class GraphCoreTests(unittest.TestCase):
 
             self.assertTrue(GRAPH_STORE.validate_slice_source_inputs(root, record))
             write(source_path, "second\n")
+            self.assertFalse(GRAPH_STORE.validate_slice_source_inputs(root, record))
+
+    def test_slice_currentness_uses_scope_aware_entry_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            identity = entry.relative_to(root).as_posix()
+            invocation = GRAPH.NodeKey(
+                "docs/mini", GRAPH.NodeKind.INVOCATION, "e001:command:1"
+            )
+            artifact = GRAPH.NodeKey(
+                "docs/other", GRAPH.NodeKind.ARTIFACT, "docs/other/data/shared.csv"
+            )
+            origin = GRAPH.FactOrigin(
+                kind=GRAPH.OriginKind.MECHANICAL,
+                resolver="test-scoped-entry-source",
+                inputs=(GRAPH.OriginInput(identity, "fixture"),),
+                rules_version="test-rules",
+            )
+            builder = GRAPH.GraphBuilder("test-rules")
+            builder.add_node(invocation, origin)
+            builder.add_node(artifact, origin)
+            builder.add_edge(
+                GRAPH.EdgeKind.CROSS_LOG_USE,
+                invocation,
+                artifact,
+                "docs/mini",
+                origin,
+            )
+            record = GRAPH_STORE.slice_record(
+                builder.build(),
+                "docs/mini.md",
+                {identity: IDENTITIES.entry_validation_identity(entry)},
+            )
+
+            write(
+                entry,
+                entry.read_text(encoding="utf-8")
+                + "\n## Historical context\n\nProjection-only note.\n",
+            )
+            self.assertTrue(GRAPH_STORE.validate_slice_source_inputs(root, record))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The retained value is `1.0`", "The retained value is `2.0`"
+                ),
+            )
+            self.assertFalse(GRAPH_STORE.validate_slice_source_inputs(root, record))
+
+    def test_slice_currentness_ignores_fixed_summary_link_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _entry = make_log(root)
+            identity = summary.relative_to(root).as_posix()
+            invocation = GRAPH.NodeKey(
+                "docs/mini", GRAPH.NodeKind.INVOCATION, "e001:command:1"
+            )
+            artifact = GRAPH.NodeKey(
+                "docs/other", GRAPH.NodeKind.ARTIFACT, "docs/other/data/shared.csv"
+            )
+            origin = GRAPH.FactOrigin(
+                kind=GRAPH.OriginKind.MECHANICAL,
+                resolver="test-scoped-summary-source",
+                inputs=(GRAPH.OriginInput(identity, "fixture"),),
+                rules_version="test-rules",
+            )
+            builder = GRAPH.GraphBuilder("test-rules")
+            builder.add_node(invocation, origin)
+            builder.add_node(artifact, origin)
+            builder.add_edge(
+                GRAPH.EdgeKind.CROSS_LOG_USE,
+                invocation,
+                artifact,
+                "docs/mini",
+                origin,
+            )
+            record = GRAPH_STORE.slice_record(
+                builder.build(),
+                "docs/mini.md",
+                {identity: IDENTITIES.summary_validation_identity(summary)},
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8").replace(
+                    "# Mini Log\n\n",
+                    "# Mini Log\n"
+                    "Validation: [latest completed report](mini/validation.md)\n\n",
+                ),
+            )
+            self.assertTrue(GRAPH_STORE.validate_slice_source_inputs(root, record))
+            write(
+                summary,
+                summary.read_text(encoding="utf-8").replace(
+                    "The retained value is `1.0`", "The retained value is `2.0`"
+                ),
+            )
             self.assertFalse(GRAPH_STORE.validate_slice_source_inputs(root, record))
 
     def test_repository_replacement_ignores_own_stale_slice_inputs(self) -> None:

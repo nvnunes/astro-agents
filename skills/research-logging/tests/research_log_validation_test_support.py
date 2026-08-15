@@ -25,12 +25,15 @@ __all__ = [
     "GRAPH_QUERIES",
     "GRAPH_STORE",
     "INVENTORY",
+    "IDENTITIES",
+    "MIGRATION",
+    "PUBLICATION",
+    "REPORT",
     "RECORDS",
     "RENDER",
     "RUNTIME",
     "SCAN",
     "SCRIPT",
-    "SUMMARY",
     "Any",
     "Path",
     "adjudication_for",
@@ -63,12 +66,15 @@ DECISIONS = importlib.import_module("validation.decisions")
 DISCOVERY = importlib.import_module("validation.discovery")
 EVIDENCE = importlib.import_module("validation.evidence")
 INVENTORY = importlib.import_module("validation.inventory")
+IDENTITIES = importlib.import_module("validation.identities")
+MIGRATION = importlib.import_module("validation.migration")
+PUBLICATION = importlib.import_module("validation.publication")
+REPORT = importlib.import_module("validation.report")
 RUNTIME = importlib.import_module("validation.runtime")
 RENDER = importlib.import_module("validation.render")
 SCAN = importlib.import_module("validation.scan")
 RECORDS = importlib.import_module("validation.records")
 STATE = importlib.import_module("validation.state")
-SUMMARY = importlib.import_module("research_log_summary")
 CANONICAL_SCAN_LOG = RUNTIME.scan_log
 
 

@@ -17,7 +17,7 @@ research log. Starting a log is the new-log path within Record.
 6. Write `<log>.md` as a minimal maintained summary using
    `skills/research-logging/references/file-summary.md`. Include only
    user-provided context and do not fabricate current understanding. Initialize
-   the fixed pre-validation snapshot with
+   the fixed validation-report navigation link with
    `skills/research-logging/references/file-summary-validation.md` and
    `## AI Use` with
    `skills/research-logging/references/file-summary-ai-use.md`.

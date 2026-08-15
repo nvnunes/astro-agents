@@ -18,14 +18,14 @@ from typing import (
     cast,
 )
 
-from research_log_summary import (
-    SummaryPublicationError,
+from .graph import GraphContractError
+from .graph_store import load_slice
+from .report import (
+    ReportContractError,
+    install_status_summary,
     parse_markdown_rows,
     report_update_date,
 )
-
-from .graph import GraphContractError
-from .graph_store import load_slice
 from .state import (
     ValidationState,
     ValidationStateContractError,
@@ -193,7 +193,7 @@ def _lint_cached_result(
         return
     try:
         date = report_update_date(report_text)
-    except SummaryPublicationError:
+    except ReportContractError:
         issues.append("validation.md lacks a valid update date")
     else:
         if result["date"] != date:
@@ -302,6 +302,11 @@ def _lint_report(
     issues: List[str],
 ) -> ReportLint:
     text = _read_utf8(report_path, "validation.md", issues)
+    try:
+        if install_status_summary(text) != text:
+            issues.append("validation.md Status Summary is missing or inconsistent")
+    except ReportContractError as exc:
+        issues.append(f"validation.md Status Summary is invalid: {exc}")
     if re.search(r"\bPASS\b", text):
         issues.append("validation.md contains PASS")
     if "| - |" in text:

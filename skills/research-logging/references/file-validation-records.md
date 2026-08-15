@@ -12,20 +12,21 @@ A validation agent may update only:
 - `<log>/validation-index.json`;
 - `<log>/validation-failures.md`;
 - `<project>/.research-log-validation-index/manifest.json`;
-- `<project>/.research-log-validation-index/incoming.json`; and
-- the maintained summary's `## Validation` section.
+- `<project>/.research-log-validation-index/incoming.json`.
 
-It never edits entries, scripts, retained evidence, scientific summary
-content, `data.csv`, or `evidence.csv`. Generate records through
+It never edits a maintained summary, entry, script, retained evidence,
+scientific artifact, authored `Validation:` note, `data.csv`, or `evidence.csv`.
+Generate records through
 `scripts/research_log_validation.py`; correct the scan or decisions rather than
 hand-editing generated files.
 
 ## Records
 
 `validation.md` is the human-readable source of truth for the last completed
-validation. It contains one Summary row per presented summary statistic and
-one target table per entry. It reports row counts and failures without
-assigning one overall log status.
+validation. Its generated `## Status Summary` records the report-update date,
+Summary status, and one status row per included entry. Detailed sections contain
+one Summary row per presented summary statistic and one target table per entry.
+The report gives counts and failures without assigning one overall log status.
 
 `validation-state.json` is an agent-only incremental cache. It contains the
 complete material-input fingerprint, completed successful and failed outcomes,
@@ -81,20 +82,17 @@ If its two files are missing, inconsistent, mixed-version, or stale, discard
 and rebuild the aggregate from compatible slices. It is not a
 crash-recoverable source of truth and has no publication journal.
 
-`validation-failures.md` is the current remediation queue. The validator
-rebuilds it from current failures and deletes it after a clean completed run.
-A research agent may clarify or remove findings it believes resolved but must
-leave the file present with `None.` when the queue becomes empty. The research
-agent leaves the summary snapshot unchanged; only the next completed
-validation can replace the displayed failed result.
+`validation-failures.md` is the generated current remediation queue. The
+validator rebuilds it from current failures and deletes it after a clean
+completed run. A research agent resolves or disputes a finding by changing
+research-owned evidence or instructions; only a later validation run republishes
+the queue.
 
-The maintained summary's `## Validation` section is a dated snapshot of
-`validation.md`. Generate it with the tool's `update-summary` operation after
-a complete canonical render passes lint. Also run `update-summary` after an
-unchanged fast scan return so a legacy or damaged snapshot can be restored
-without rerunning validation. All non-Validate operations preserve the section
-byte-for-byte under
-`skills/research-logging/references/file-summary-validation.md`.
+The maintained summary contains only the fixed navigation line defined in
+`skills/research-logging/references/file-summary-validation.md`. That link is
+research-document scaffolding, not a validation result. Initialization installs
+it once; every research operation preserves it, and validation never rewrites
+it.
 
 ## Status Values
 

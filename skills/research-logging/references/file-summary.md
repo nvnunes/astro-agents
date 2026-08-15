@@ -7,10 +7,11 @@ understanding across entries and point back to supporting entries where useful.
 Its organization may use ordinary sections chosen by the researcher. It does
 not need to follow entry chronology.
 
-The maintained summary starts with `## Contents`, then `## Entries`, then
+Immediately below the level-one title, include the stable report link defined
+in `skills/research-logging/references/file-summary-validation.md`. The
+maintained summary then starts with `## Contents`, followed by `## Entries` and
 `## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups`
-after `## Summary`. Place `## Validation` immediately above the final
-`## AI Use` section.
+after `## Summary`. End with `## AI Use`.
 
 `Contents` links to the main sections. Include the `Follow-ups` link only when the section exists:
 
@@ -18,7 +19,6 @@ after `## Summary`. Place `## Validation` immediately above the final
 - [Entries](#entries)
 - [Summary](#summary)
 - [Follow-ups](#follow-ups)
-- [Validation](#validation)
 - [AI Use](#ai-use)
 ```
 
@@ -45,10 +45,9 @@ entries. Add, revise, or remove these summary items during Update Summary, not
 during Record. Group follow-up items under topic headings when useful, and link
 each item back to the entry label that created it.
 
-Use `## Validation` for the snapshot defined in
-`skills/research-logging/references/file-summary-validation.md`. Every maintained
-summary includes this section. Initialize it only when starting the log. Every
-operation except Validate preserves it byte-for-byte.
+Every maintained summary includes the fixed validation-report link defined in
+`skills/research-logging/references/file-summary-validation.md`. It never
+contains a generated validation-status section.
 
 Use `## AI Use` for the log-level disclosure defined in
 `skills/research-logging/references/file-summary-ai-use.md`. Every maintained

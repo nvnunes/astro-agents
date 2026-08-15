@@ -42,7 +42,8 @@ delete an unmentioned dependent section or file.
 5. Apply
    `skills/research-logging/references/operation-record-content.md` within the
    authorized scope to produce, retain, and check the replacement. Leave the
-   log summary unchanged, including its validation section. When a command must
+   log summary unchanged, including its fixed validation-report link, and do
+   not change generated validation files. When a command must
    overwrite an artifact at the same path, the verified backup must already
    contain the old artifact.
 6. Remove only the explicitly authorized superseded material, and remove it

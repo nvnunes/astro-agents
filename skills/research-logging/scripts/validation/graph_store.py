@@ -34,6 +34,7 @@ from .graph import (
     GraphContractError,
     GraphEdge,
 )
+from .identities import repository_validation_identity
 from .inventory import (
     MaterialInventoryPolicy,
     display_path,
@@ -1090,13 +1091,30 @@ def _content_identity(path: Path) -> Dict[str, Any]:
     return {"size": size, "sha256": digest}
 
 
-def validate_slice_source_inputs(project_root: Path, value: Mapping[str, Any]) -> bool:
-    """Return whether one canonical slice still has exact source inputs."""
+def validate_slice_source_inputs(
+    project_root: Path,
+    value: Mapping[str, Any],
+    summaries: Optional[Sequence[Path]] = None,
+) -> bool:
+    """Return whether one slice's sources match their persisted identity policy."""
 
     load_slice(value)
+    summaries = (
+        list(summaries)
+        if summaries is not None
+        else discover_repository_summaries(project_root)
+    )
     for identity, expected in value["source_inputs"].items():
         path = repository_identity_path(identity, project_root)
-        if not path.is_file() or _content_identity(path) != expected:
+        if not path.is_file():
+            return False
+        try:
+            current = repository_validation_identity(
+                project_root, identity, summaries
+            )
+        except (OSError, UnicodeError, ValidationToolError):
+            return False
+        if {"size": current["size"], "sha256": current["sha256"]} != expected:
             return False
     return True
 
@@ -1109,7 +1127,10 @@ class RepositorySliceSet(NamedTuple):
 
 
 def _load_repository_slice(
-    path: Path, project_root: Path, rules_version: str
+    path: Path,
+    project_root: Path,
+    rules_version: str,
+    summaries: Sequence[Path],
 ) -> tuple[dict[str, Any], str, DependencyGraph]:
     """Load one structurally current repository slice."""
 
@@ -1129,7 +1150,7 @@ def _load_repository_slice(
         raise ValidationToolError(
             f"canonical graph slice uses different validation rules: {path}"
         )
-    if not validate_slice_source_inputs(project_root, value):
+    if not validate_slice_source_inputs(project_root, value, summaries):
         raise ValidationToolError(
             f"canonical graph slice has changed cross-log source inputs: {path}"
         )
@@ -1140,11 +1161,12 @@ def _usable_repository_slice(
     path: Path,
     project_root: Path,
     rules_version: str,
+    summaries: Sequence[Path],
     *,
     allow_unusable: bool,
 ) -> tuple[dict[str, Any], str, DependencyGraph] | None:
     try:
-        return _load_repository_slice(path, project_root, rules_version)
+        return _load_repository_slice(path, project_root, rules_version, summaries)
     except ValidationToolError:
         if allow_unusable:
             return None
@@ -1163,6 +1185,11 @@ def repository_slice_set(
 
     records: List[Dict[str, Any]] = []
     snapshots: Dict[str, Dict[str, Any]] = {}
+    summaries = (
+        list(summaries)
+        if summaries is not None
+        else discover_repository_summaries(project_root)
+    )
     for path in slice_paths(project_root, summaries):
         path_summary = display_path(path.parent.with_suffix(".md"), project_root)
         if path_summary == replacing_summary:
@@ -1171,6 +1198,7 @@ def repository_slice_set(
             path,
             project_root,
             rules_version,
+            summaries,
             allow_unusable=allow_unusable,
         )
         if loaded is None:

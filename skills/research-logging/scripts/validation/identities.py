@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -28,18 +29,44 @@ def _filtered_text_identity(path: Path, text: str) -> dict[str, Any]:
 
 
 def summary_validation_identity(path: Path) -> dict[str, Any]:
-    """Identify summary content excluding generated validation/AI sections."""
+    """Identify research content while excluding validation navigation scaffolding."""
 
     path = path.resolve()
-    lines = path.read_text(encoding="utf-8").splitlines()
+    filtered = _summary_validation_text(path, path.read_text(encoding="utf-8"))
+    return _filtered_text_identity(path, filtered)
+
+
+def summary_validation_text_identity(path: Path, text: str) -> dict[str, Any]:
+    """Identify supplied summary text under one path's projection contract."""
+
+    payload = _summary_validation_text(path, text).encode("utf-8")
+    return {
+        "size": len(payload),
+        "mtime_ns": 0,
+        "ctime_ns": 0,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _summary_validation_text(path: Path, text: str) -> str:
+    """Return validation-relevant summary text under one path's link contract."""
+
+    lines = text.splitlines()
     retained = []
     excluded = False
+    fixed_link = summary_validation_link(path)
     for line in lines:
         if line.startswith("## "):
             excluded = line in {"## Validation", "## AI Use"}
-        if not excluded and line != "- [Validation](#validation)":
+        if not excluded and line not in {"- [Validation](#validation)", fixed_link}:
             retained.append(line)
-    return _filtered_text_identity(path, "\n".join(retained) + "\n")
+    return "\n".join(retained) + "\n"
+
+
+def summary_validation_link(path: Path) -> str:
+    """Return the fixed validation-report navigation line for one summary."""
+
+    return f"Validation: [latest completed report]({path.stem}/validation.md)"
 
 
 def entry_validation_identity(path: Path) -> dict[str, Any]:
@@ -70,6 +97,28 @@ def validation_file_identity(
         entry.get("path") for entry in scan.get("entries", []) if "error" not in entry
     }
     if identity in entry_paths:
+        return entry_validation_identity(path)
+    return file_identity(path)
+
+
+def repository_validation_identity(
+    project_root: Path,
+    identity: str,
+    summary_paths: Sequence[Path],
+) -> dict[str, Any]:
+    """Apply persisted validation identity semantics to a repository source."""
+
+    candidate = Path(identity)
+    path = (
+        candidate if candidate.is_absolute() else project_root / candidate
+    ).resolve()
+    summaries = [summary.resolve() for summary in summary_paths]
+    if path in summaries:
+        return summary_validation_identity(path)
+    if path.suffix.lower() == ".md" and any(
+        path.is_relative_to(summary.with_suffix("") / "entries")
+        for summary in summaries
+    ):
         return entry_validation_identity(path)
     return file_identity(path)
 

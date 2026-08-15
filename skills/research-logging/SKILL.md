@@ -92,5 +92,9 @@ Safety rules:
 - Preserve existing researcher wording when updating entries unless the user asks for rewriting.
 - Do not invent evidence, validation, references, results, uncertainty, decisions, or conclusions.
 - Do not use generative AI to create data, results, figures, or citations.
+- Treat maintained summaries, entries, evidence records, scripts, artifacts,
+  and authored `Validation:` notes as research-owned. Research operations never
+  edit generated validation files; Validate reads research files and writes
+  only the generated files defined in `references/file-validation-records.md`.
 - Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.

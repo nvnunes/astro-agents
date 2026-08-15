@@ -10,12 +10,14 @@ from research_log_validation_test_support import (
     GRAPH,
     GRAPH_ADAPTER,
     GRAPH_STORE,
+    IDENTITIES,
     INVENTORY,
+    PUBLICATION,
     RECORDS,
     RENDER,
+    REPORT,
     RUNTIME,
     STATE,
-    SUMMARY,
     Path,
     adjudication_for,
     complete_adjudication,
@@ -70,10 +72,61 @@ class RenderTests(unittest.TestCase):
                     ):
                         RECORDS.record_bundle_identity(output, filenames)
 
-    def test_projection_count_labels_are_grammatical(self) -> None:
-        self.assertEqual(SUMMARY._counted(1, "target"), "1 target")
-        self.assertEqual(SUMMARY._counted(2, "target"), "2 targets")
-        self.assertEqual(SUMMARY._counted(1, "eligible target"), "1 eligible target")
+    def test_record_publication_rejects_traversal_and_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "staged"
+            staged.mkdir()
+            output = root / "output"
+            output.mkdir()
+            for filenames in (("../summary.md",), ("nested/validation.md",)):
+                with self.subTest(filenames=filenames), self.assertRaisesRegex(
+                    RECORDS.RecordPublicationError, "unique basenames"
+                ):
+                    RECORDS.publish_record_bundle(
+                        staged,
+                        output,
+                        filenames,
+                        expected_identity="unused",
+                    )
+            linked = root / "linked-output"
+            linked.symlink_to(output, target_is_directory=True)
+            with self.assertRaisesRegex(
+                RECORDS.RecordPublicationError, "must not be a symlink"
+            ):
+                RECORDS.publish_record_bundle(
+                    staged,
+                    linked,
+                    ("validation.md",),
+                    expected_identity="unused",
+                )
+
+    def test_validation_publication_requires_exact_generated_allowlist(self) -> None:
+        class Bundle:
+            report_text = ""
+            failure_text = None
+            state = {}
+            graph_record = {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = PUBLICATION.ValidationPublicationTarget(
+                Path(directory) / "log",
+                "unused",
+                ("validation.md", "summary.md"),
+                (),
+                "validation-index.json",
+            )
+            with self.assertRaisesRegex(
+                CONTRACTS.ValidationToolError, "generated-file allowlist"
+            ):
+                PUBLICATION.publish_validation_bundle(
+                    Bundle(), target, lambda: None, lambda *_args: {"ok": True}
+                )
+
+    def test_status_count_labels_are_grammatical(self) -> None:
+        self.assertEqual(REPORT._counted(1, "target"), "1 target")
+        self.assertEqual(REPORT._counted(2, "target"), "2 targets")
+        self.assertEqual(REPORT._counted(1, "eligible target"), "1 eligible target")
 
     def test_render_accepts_documented_orphan_failure_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -273,89 +326,115 @@ class RenderTests(unittest.TestCase):
                 )
             )
 
-    def test_update_summary_rejects_noncanonical_report_directory(self) -> None:
+    def test_render_writes_status_summary_without_changing_maintained_summary(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
+            before = summary.read_bytes()
             scan, _ = RUNTIME.scan_log(summary, jobs=1)
-            output = root / "records"
+            output = summary.with_suffix("")
             RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
 
-            with self.assertRaisesRegex(
-                CONTRACTS.ValidationToolError, "canonical validation report"
-            ):
-                RUNTIME.update_summary_validation(summary, output)
+            report = (output / "validation.md").read_text(encoding="utf-8")
+            self.assertEqual(summary.read_bytes(), before)
+            self.assertIn("## Status Summary", report)
+            self.assertIn("- Report updated: `2026-08-07`", report)
+            self.assertIn("- Summary statistics: 2026-08-07 — 1 checked", report)
+            self.assertIn("`FAIL` - 1 of 3 targets failed", report)
+            self.assertIn("| e001 | 2026-08-07 |", report)
+            self.assertIn(
+                "[validation-failures.md](validation-failures.md)", report
+            )
 
-    def test_update_summary_replaces_legacy_projection_and_is_idempotent(self) -> None:
+    def test_render_leaves_complete_research_owned_tree_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
+            generated = set(RUNTIME.VALIDATION_RECORD_FILENAMES) | {
+                RECORDS.LOCK_FILENAME
+            }
+            before = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file() and path.name not in generated
+            }
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+
+            RUNTIME.render_records(
+                adjudication_for(scan, entry), scan, summary.with_suffix("")
+            )
+
+            after = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file() and path.name not in generated
+            }
+            self.assertEqual(after, before)
+
+    def test_fixed_summary_link_is_projection_neutral(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _entry = make_log(root)
             original = summary.read_text(encoding="utf-8")
             write(
                 summary,
-                original.replace(
-                    "# Mini Log\n\n",
-                    "# Mini Log\n\n## Contents\n\n"
-                    "- [Entries](#entries)\n"
-                    "- [Summary](#summary)\n"
-                    "- [AI Use](#ai-use)\n\n",
-                )
-                + "\n## Validation\n\n"
-                "Summary statistics: `STALE`\n\n"
-                "| Scope | Last checked | Integrity & Provenance | Reproducibility |\n"
-                "| --- | --- | --- | --- |\n"
-                "| e001 | `STALE` | `STALE` | `STALE` |\n\n"
+                original.rstrip()
+                + "\n\n## Validation\n\nLast validated on: NOT RUN\n\n"
+                "Summary statistics: NOT RUN\n\n"
                 "## AI Use\n\nResearcher-led fixture.\n",
             )
-            scan, _ = RUNTIME.scan_log(summary, jobs=1)
-            output = summary.with_suffix("")
-            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
+            before = IDENTITIES.summary_validation_identity(summary)
+            write(
+                summary,
+                original.rstrip().replace(
+                    "# Mini Log\n\n",
+                    "# Mini Log\n"
+                    "Validation: [latest completed report](mini/validation.md)\n\n",
+                )
+                + "\n\n## AI Use\n\nResearcher-led fixture.\n",
+            )
+            self.assertEqual(IDENTITIES.summary_validation_identity(summary), before)
 
-            RUNTIME.update_summary_validation(summary, output)
-            first_mtime = summary.stat().st_mtime_ns
-            RUNTIME.update_summary_validation(summary, output)
-
-            text = summary.read_text(encoding="utf-8")
-            self.assertEqual(text.count("## Validation"), 1)
-            self.assertEqual(text.count("- [Validation](#validation)"), 1)
-            self.assertLess(text.index("## Validation"), text.index("## AI Use"))
-            self.assertIn("[Detailed validation report](mini/validation.md)", text)
-            self.assertIn("Last validated on: 2026-08-07", text)
-            self.assertIn("Summary statistics: 2026-08-07 — 1 checked", text)
-            self.assertIn("`FAIL` - 1 of 3 targets failed", text)
-            self.assertIn("| e001 | 2026-08-07 |", text)
-            self.assertNotIn("`STALE`", text)
-            self.assertEqual(summary.stat().st_mtime_ns, first_mtime)
-
-    def test_generated_summary_projection_does_not_invalidate_state(self) -> None:
+    def test_render_guard_uses_scope_aware_cross_log_source_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
+            identity = entry.relative_to(root).as_posix()
+            scan = {
+                "project_root": root.as_posix(),
+                "repository_scope": {
+                    "expected_summaries": [
+                        summary.relative_to(root).as_posix()
+                    ]
+                },
+                "repository_cross_log_sources": {
+                    "other.md": {
+                        identity: {
+                            key: value
+                            for key, value in IDENTITIES.entry_validation_identity(
+                                entry
+                            ).items()
+                            if key in {"size", "sha256"}
+                        }
+                    }
+                },
+            }
             write(
-                summary,
-                summary.read_text(encoding="utf-8").replace(
-                    "# Mini Log\n\n",
-                    "# Mini Log\n\n## Contents\n\n"
-                    "- [Entries](#entries)\n"
-                    "- [Summary](#summary)\n"
-                    "- [AI Use](#ai-use)\n\n",
-                )
-                + "\n## AI Use\n\nResearcher-led fixture.\n",
+                entry,
+                entry.read_text(encoding="utf-8")
+                + "\n## Historical context\n\nProjection-only note.\n",
             )
-            scan, _ = RUNTIME.scan_log(summary, jobs=1)
-            output = summary.with_suffix("")
-            RUNTIME.render_records(adjudication_for(scan, entry), scan, output)
-            state = json.loads(
-                (output / "validation-state.json").read_text(encoding="utf-8")
+            RENDER._assert_repository_sources_current(scan)
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The retained value is `1.0`", "The retained value is `2.0`"
+                ),
             )
-
-            RUNTIME.update_summary_validation(summary, output)
-            _, metrics = RUNTIME.scan_log(summary, jobs=1, prior_state=state)
-
-            self.assertEqual(metrics["reusable_checks"], 7)
-            self.assertEqual(metrics["rerun_checks"], 0)
-            self.assertEqual(metrics["incremental_status"], "unchanged")
-            self.assertFalse(metrics["semantic_review_required"])
+            with self.assertRaises(CONTRACTS.FileChangedError):
+                RENDER._assert_repository_sources_current(scan)
 
     def test_synthesis_only_entry_change_does_not_invalidate_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

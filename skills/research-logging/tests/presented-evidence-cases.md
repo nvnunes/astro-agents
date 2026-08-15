@@ -130,8 +130,9 @@ from the active log.
 Given an authorized experimental section, Replace may revise `Background:`,
 `Steps:`, `Results:`, and `Observations:`, the section's evidence rows, and its
 exclusively owned scripts or artifacts. Other labels, sections, shared
-material, and summary content—including the summary validation section—remain
-unchanged. A separately authorized Update Summary may run only after Replace.
+material, summary content, the fixed validation-report link, and every generated
+validation file remain unchanged. A separately authorized Update Summary may
+run only after Replace.
 
 Given a decision in the authorized section whose stated basis is removed or
 contradicted, Replace preserves the decision text and prefixes it with
@@ -267,37 +268,36 @@ a requested repair routes to Record or Replace for an entry-level row and
 Update Summary for a log-level row. An ambiguous association is reported rather
 than guessed or recorded.
 
-## Validation Snapshot Boundary
+## Validation Publication Boundary
 
 Given a newly started log with no completed validation, Record creates the
-fixed `Last validated on: NOT RUN` and `Summary statistics: NOT RUN` section
-without an entry table. Later Record operations preserve it unchanged.
+fixed `Validation: [latest completed report](<log>/validation.md)` link directly
+below the title. It does not create a validation-status section or report.
 
 Given a Record request to synchronize an out-of-date Markdown table with an
 already regenerated artifact, Record changes the table, its evidence-based
 observations, and an `evidence.csv` row only when the row's selector, section,
 source, locator, or transformation changed. It performs the narrow production
 check needed to confirm the presentation matches the retained source. It does
-not run validation or change the summary's `## Validation` section.
+not run validation, change the fixed report link, or edit generated records.
 
 Given a source file whose values changed while the evidence selector, section,
 source, locator, and transformation remain correct, Record leaves the
-`evidence.csv` row unchanged and preserves the summary validation snapshot
-byte-for-byte.
+`evidence.csv` row unchanged and preserves the fixed report link and all
+generated validation files byte-for-byte.
 
-Given a new entry created after the displayed `Last validated on` date, Record
-adds no `NOT RUN` or `STALE` row. The snapshot continues to identify only the
-scopes included when it was produced.
+Given a new entry created after the latest report date, Record adds no `NOT RUN`
+or `STALE` marker to the summary. The generated report continues to identify
+only the scopes included when it was produced.
 
 Given changed evidence followed by a Validate request, Validate uses current
 inputs and saved fingerprints to reopen affected outcomes, reuse only unchanged
-outcomes, and publish a complete dated snapshot. Non-Validate operations do
-not precompute this change set.
+outcomes, and publish a complete dated generated bundle. Non-Validate
+operations do not precompute this change set.
 
-Given a legacy summary snapshot containing `STALE`, Record, Replace, Update
-Summary, and Reorganize preserve it byte-for-byte. The next Validate request
-replaces the complete snapshot from the current canonical report, including
-when an unchanged fast scan can reuse every completed check.
+Given an existing generated failure report, Record, Replace, Update Summary,
+and Reorganize leave it unchanged. The next Validate request alone may rebuild
+or remove it from current outcomes.
 
 ## Mechanical-First Validation
 

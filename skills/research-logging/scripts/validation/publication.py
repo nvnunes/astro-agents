@@ -10,6 +10,15 @@ from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol, Seque
 from .contracts import ValidationToolError
 from .records import publish_record_bundle
 
+VALIDATION_BUNDLE_FILENAMES = frozenset(
+    {
+        "validation.md",
+        "validation-failures.md",
+        "validation-state.json",
+        "validation-index.json",
+    }
+)
+
 
 class ValidationBundle(Protocol):
     """Canonical content needed by the publication boundary."""
@@ -75,6 +84,14 @@ def publish_validation_bundle(
 ) -> None:
     """Lint staged content, then publish it under the repository lock."""
 
+    if (
+        frozenset(target.record_names) != VALIDATION_BUNDLE_FILENAMES
+        or len(target.record_names) != len(VALIDATION_BUNDLE_FILENAMES)
+        or target.slice_filename != "validation-index.json"
+    ):
+        raise ValidationToolError(
+            "canonical validation publication has an invalid generated-file allowlist"
+        )
     target.output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         dir=target.output_dir.parent,

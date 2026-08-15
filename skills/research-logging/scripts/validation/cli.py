@@ -11,8 +11,6 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence, cast
 
-from research_log_summary import SummaryPublicationError
-
 from .adjudication import ReviewPacketRequest, make_review_packet
 from .contracts import (
     AdjudicationRecord,
@@ -54,7 +52,6 @@ from .runtime import (
     prepare_adjudication_record,
     render_records,
     scan_log,
-    update_summary_validation,
 )
 
 
@@ -145,13 +142,6 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--scan", required=True, type=Path)
     render.add_argument("--adjudication", required=True, type=Path)
     render.add_argument("--output-dir", required=True, type=Path)
-
-    update_summary = subparsers.add_parser(
-        "update-summary",
-        help="project canonical validation results into the maintained summary",
-    )
-    update_summary.add_argument("--summary", required=True, type=Path)
-    update_summary.add_argument("--output-dir", required=True, type=Path)
 
     lint = subparsers.add_parser("lint", help="lint rendered validation records")
     lint.add_argument("--output-dir", required=True, type=Path)
@@ -405,15 +395,6 @@ def _run_render(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_update_summary(args: argparse.Namespace) -> int:
-    print(
-        json.dumps(
-            update_summary_validation(args.summary, args.output_dir), sort_keys=True
-        )
-    )
-    return 0
-
-
 def _run_lint(args: argparse.Namespace) -> int:
     scan = load_scan_record(args.scan) if args.scan else None
     expected = scan["entry_order"] if scan else None
@@ -429,11 +410,10 @@ COMMAND_HANDLERS = {
     "review": _run_review,
     "decide": _run_decide,
     "render": _run_render,
-    "update-summary": _run_update_summary,
     "lint": _run_lint,
 }
 
-LOCKED_COMMANDS = frozenset({"index", "scan", "render", "update-summary", "lint"})
+LOCKED_COMMANDS = frozenset({"index", "scan", "render", "lint"})
 
 
 def _command_project_root(args: argparse.Namespace) -> Path:
@@ -441,7 +421,7 @@ def _command_project_root(args: argparse.Namespace) -> Path:
 
     if args.command == "index":
         return args.project_root.resolve()
-    if args.command in {"scan", "update-summary"}:
+    if args.command == "scan":
         return find_project_root(args.summary.resolve())
     if args.command == "render":
         return Path(load_scan_record(args.scan)["project_root"])
@@ -467,7 +447,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ValidationToolError,
         GraphContractError,
         RecordPublicationError,
-        SummaryPublicationError,
     ) as exc:
         print(f"research_log_validation: {exc}", file=sys.stderr)
         return 2

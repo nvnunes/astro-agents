@@ -63,6 +63,7 @@ from .graph_store import (
     slice_record,
 )
 from .identities import (
+    repository_validation_identity,
     text_content_identity,
     validation_file_identity,
 )
@@ -86,6 +87,7 @@ from .publication import (
     publish_validation_bundle,
 )
 from .records import record_bundle_identity
+from .report import install_status_summary
 
 Failure = tuple[str, str, dict[str, Any]]
 RESULT_VALUES = {"FAIL", "-", "N/A"}
@@ -877,8 +879,6 @@ def render_report(
         *entries_rendered.completed_checks,
     ]
     report = report_header(adjudication, scan, date)
-    if failures:
-        report.extend(["- Failures: [validation-failures.md](validation-failures.md)"])
     report.extend(
         [
             "",
@@ -914,8 +914,9 @@ def render_report(
     )
     validate_successful_orphan_separation(completed_checks, adjudicated_orphans)
     actual_order = [entry["id"] for entry in entry_rows]
+    report_text = install_status_summary("\n".join(report))
     return RenderedReport(
-        report_text="\n".join(report),
+        report_text=report_text,
         failure_text=failure_report(failures, actual_order),
         failures=failures,
         completed_checks=completed_checks,
@@ -1361,10 +1362,25 @@ def _assert_scanned_directories_current(
 
 def _assert_repository_sources_current(scan: ScanRecord) -> None:
     project_root = Path(scan["project_root"])
+    summaries = [
+        repository_identity_path(identity, project_root)
+        for identity in scan["repository_scope"]["expected_summaries"]
+    ]
     for inputs in scan["repository_cross_log_sources"].values():
         for identity, expected in inputs.items():
             path = repository_identity_path(identity, project_root)
-            if not path.is_file() or _content_identity(path) != expected:
+            if not path.is_file():
+                raise FileChangedError(
+                    "cross-log consuming source changed after scan: " + identity
+                )
+            current = repository_validation_identity(
+                project_root, identity, summaries
+            )
+            source_identity = {
+                "size": current["size"],
+                "sha256": current["sha256"],
+            }
+            if source_identity != expected:
                 raise FileChangedError(
                     "cross-log consuming source changed after scan: " + identity
                 )

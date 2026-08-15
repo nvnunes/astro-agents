@@ -12,6 +12,12 @@ CLI = importlib.import_module("validation.cli")
 
 
 class ValidationCliTests(unittest.TestCase):
+    def test_update_summary_command_is_retired(self) -> None:
+        with self.assertRaises(SystemExit):
+            CLI.build_parser().parse_args(
+                ["update-summary", "--summary", "mini.md", "--output-dir", "mini"]
+            )
+
     def test_review_accepts_combined_diagnostic_filters(self) -> None:
         args = CLI.build_parser().parse_args(
             [

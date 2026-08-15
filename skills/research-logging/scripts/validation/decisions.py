@@ -42,7 +42,9 @@ from .graph_queries import (
 from .producer_bindings import (
     check_workflow_command,
     identity_for_path,
+    producer_bindings_for_check,
     resolved_identity_cache,
+    verify_producer_binding,
 )
 from .review_batches import (
     orphan_candidate_fingerprint,
@@ -552,21 +554,22 @@ def _select_decision_producer(
 
     if selection is None:
         return
-    if not isinstance(selection, int) or isinstance(selection, bool) or selection < 1:
-        raise ValidationToolError("producer must be a one-based candidate number")
+    if not isinstance(selection, str) or not selection:
+        raise ValidationToolError("producer must be an exact invocation identity")
     if context.review_session is None:
         raise ValidationToolError("producer selection requires review index context")
-    invocations = context.review_session.candidate_invocations(
+    invocations = context.review_session.eligible_candidate_invocations(
         context.entry_id,
         context.row.get("target", context.item.get("identity", "")),
         context.item.get("sections", []),
     )
-    if selection > len(invocations):
+    matches = [invocation for invocation in invocations if invocation.key == selection]
+    if len(matches) != 1:
         raise ValidationToolError(
             f"producer candidate {selection} is unavailable for "
             f"{context.item.get('identity', '-')}"
         )
-    invocation = invocations[selection - 1]
+    invocation = matches[0]
     command = invocation.command
     target_identity = context.row.get(
         "target", context.item.get("identity", "")
@@ -590,6 +593,12 @@ def _select_decision_producer(
             "selected producer has deterministic failures: "
             + "; ".join(sorted(set(checked.failures)))
         )
+    verify_producer_binding(
+        context.scan,
+        str(target_identity),
+        invocation.key,
+        context.row.get("dependencies", []),
+    )
     context.row["producer_invocation"] = invocation.key
     existing = {
         (dependency.get("path"), dependency.get("role"))
@@ -619,9 +628,6 @@ class _ReviewDecisionContext(NamedTuple):
 def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
     """Apply bounded dependency edits declared by a reviewed decision."""
 
-    _select_decision_producer(
-        context, context.action.get(PRODUCER_SELECTION_KEY)
-    )
     dependencies = context.row.setdefault("dependencies", [])
     copied_producer = _copy_decision_dependencies(
         context.adjudication,
@@ -629,18 +635,27 @@ def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
         context.entry_id,
         context.action.get("copy_dependencies_from"),
     )
-    if copied_producer and not context.row.get("producer_invocation"):
-        context.row["producer_invocation"] = copied_producer
-    _add_decision_dependencies(
-        context.scan, dependencies, context.action.get("add_dependencies", [])
-    )
     _remove_decision_dependencies(
         dependencies, context.action.get("remove_dependencies", [])
+    )
+    _add_decision_dependencies(
+        context.scan, dependencies, context.action.get("add_dependencies", [])
     )
     _deduplicate_dependencies(dependencies)
     _scope_decision_collections(
         context.scan, dependencies, context.action.get("members", {})
     )
+    _select_decision_producer(
+        context, context.action.get(PRODUCER_SELECTION_KEY)
+    )
+    if copied_producer and not context.row.get("producer_invocation"):
+        verify_producer_binding(
+            context.scan,
+            str(context.row.get("target", context.item.get("identity", ""))),
+            copied_producer,
+            dependencies,
+        )
+        context.row["producer_invocation"] = copied_producer
 
 
 def _apply_summary_support(
@@ -1287,6 +1302,22 @@ def _apply_pass_decision(context: _ReviewDecisionContext) -> None:
         raise ValidationToolError(
             "semantic provenance pass requires a concrete producer candidate"
         )
+    if context.row.get("producer_invocation"):
+        verification_check = {
+            "entry": context.entry_id,
+            "target": context.row.get("target"),
+            "check": "Provenance",
+            "dependencies": context.row.get("dependencies", []),
+            "resolution": {
+                "producer_invocation": context.row["producer_invocation"],
+                **(
+                    {"producer_bindings": context.row["producer_bindings"]}
+                    if context.row.get("producer_bindings")
+                    else {}
+                ),
+            },
+        }
+        producer_bindings_for_check(context.scan, verification_check)
     for check in ("integrity", "provenance"):
         if context.row.get(check) != "N/A":
             context.row[check] = context.date
@@ -1380,6 +1411,14 @@ def _apply_review_item(context: _ReviewDecisionContext) -> None:
             for binding in context.row.get("producer_bindings", [])
         }
         existing.update({binding["material"]: binding for binding in bindings})
+        for binding in existing.values():
+            verify_producer_binding(
+                context.scan,
+                binding["material"],
+                binding["invocation"],
+                context.row.get("dependencies", []),
+                producer_basis="upstream-reviewed",
+            )
         context.row["producer_bindings"] = [
             existing[key] for key in sorted(existing)
         ]

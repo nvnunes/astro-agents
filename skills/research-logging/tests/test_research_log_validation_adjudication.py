@@ -13,6 +13,7 @@ ADJUDICATION = importlib.import_module("validation.adjudication")
 CONTRACTS = importlib.import_module("validation.contracts")
 DECISIONS = importlib.import_module("validation.decisions")
 EVIDENCE = importlib.import_module("validation.evidence")
+PRODUCER_BINDINGS = importlib.import_module("validation.producer_bindings")
 
 
 class AdjudicationAssemblyTests(unittest.TestCase):
@@ -65,7 +66,7 @@ class CandidateCommandTests(unittest.TestCase):
             scan, "e001", "data/result.csv", ["Results"]
         )
 
-        self.assertEqual(candidates, [consumer, producer])
+        self.assertEqual(candidates, [producer, consumer])
 
     def test_reviewed_output_container_ranks_a_producer_before_a_consumer(
         self,
@@ -137,8 +138,7 @@ class CandidateCommandTests(unittest.TestCase):
             scan, "e001", "images/tensor.png", ["Tensor Results"]
         )
 
-        self.assertIs(candidates[0], producer)
-        self.assertEqual(len(candidates), 5)
+        self.assertEqual(candidates, unrelated + [producer])
 
     def test_target_owner_entry_contributes_producer_candidates(self) -> None:
         consumer = {
@@ -308,7 +308,118 @@ class DecisionApplicationTests(unittest.TestCase):
                 ],
             )
 
-    def test_copied_sibling_dependencies_retain_the_reviewed_producer(self) -> None:
+    def test_dependency_replacement_removes_before_adding_same_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collection = Path(directory) / "run"
+            collection.mkdir()
+            (collection / "result.csv").write_text("value\n1\n", encoding="utf-8")
+            context = DECISIONS._ReviewDecisionContext(
+                {
+                    "resolved_paths": {"data/run": str(collection)},
+                    "mechanical_checks": {"data/run": {"type": "directory"}},
+                },
+                {},
+                {},
+                {
+                    "remove_dependencies": ["data/run"],
+                    "add_dependencies": [
+                        {
+                            "path": "data/run",
+                            "role": "producer",
+                            "members": ["result.csv"],
+                        }
+                    ],
+                },
+                "scope",
+                "2026-08-15",
+                "e001",
+                "collection_scope",
+                {
+                    "dependencies": [
+                        {
+                            "path": "data/run",
+                            "role": "input",
+                            "members": ["result.csv"],
+                        }
+                    ]
+                },
+                {},
+            )
+
+            DECISIONS._apply_decision_dependencies(context)
+
+            self.assertEqual(
+                context.row["dependencies"],
+                [
+                    {
+                        "path": "data/run",
+                        "role": "producer",
+                        "members": ["result.csv"],
+                    }
+                ],
+            )
+
+    def test_collection_binding_requires_producer_role_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            collection = root / "data" / "run"
+            collection.mkdir(parents=True)
+            target = collection / "result.csv"
+            target.write_text("value\n1\n", encoding="utf-8")
+            command = {
+                "command": "python produce.py --output-dir data/run",
+                "section": "Results",
+                "path_arguments": [
+                    {"path": str(collection), "role_hint": "output"}
+                ],
+            }
+            invocation = PRODUCER_BINDINGS.invocation_identities(
+                "e001", [command]
+            )[0]
+            scan = {
+                "project_root": str(root),
+                "entries": [{"id": "e001", "commands": [command]}],
+                "resolved_paths": {
+                    "data/run": str(collection),
+                    "data/run/result.csv": str(target),
+                },
+                "mechanical_checks": {"data/run": {"type": "directory"}},
+            }
+            input_scope = {
+                "path": "data/run",
+                "role": "input",
+                "members": ["result.csv"],
+            }
+
+            with self.assertRaisesRegex(
+                CONTRACTS.ValidationToolError,
+                "omits the target",
+            ):
+                PRODUCER_BINDINGS.verify_producer_binding(
+                    scan,
+                    "data/run/result.csv",
+                    invocation,
+                    [input_scope],
+                )
+
+            binding = PRODUCER_BINDINGS.verify_producer_binding(
+                scan,
+                "data/run/result.csv",
+                invocation,
+                [
+                    input_scope,
+                    {
+                        "path": "data/run",
+                        "role": "producer",
+                        "members": ["result.csv"],
+                    },
+                ],
+            )
+
+            self.assertEqual(binding["kind"], "scoped-collection")
+            self.assertEqual(binding["target_member"], "result.csv")
+
+    def test_copied_sibling_dependencies_recheck_destination_coverage(self) -> None:
         source = {
             "target": "summary.csv",
             "producer_invocation": "e001:L12:1:producer",
@@ -344,20 +455,11 @@ class DecisionApplicationTests(unittest.TestCase):
             {},
         )
 
-        DECISIONS._apply_decision_dependencies(context)
-        DECISIONS._apply_pass_decision(context)
-
-        self.assertEqual(
-            sibling["producer_invocation"], "e001:L12:1:producer"
-        )
-        self.assertEqual(
-            sibling["dependencies"],
-            [
-                {"path": "figure.png", "role": "target"},
-                {"path": "produce.py", "role": "producer"},
-                {"path": "input.csv", "role": "input"},
-            ],
-        )
+        with self.assertRaisesRegex(
+            CONTRACTS.ValidationToolError,
+            "missing recorded invocation",
+        ):
+            DECISIONS._apply_decision_dependencies(context)
 
 
 class PreparationTests(unittest.TestCase):
@@ -853,6 +955,39 @@ class WorkflowCheckTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "pass")
             self.assertEqual(result["matched_commands"], 1)
+            self.assertNotIn("producer_invocation", result)
+            self.assertEqual(dependencies, [])
+
+    def test_retained_research_entry_is_a_terminal_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_entry = root / "docs/log/entries/source/e002.md"
+            source_entry.parent.mkdir(parents=True)
+            source_entry.write_text("# Source\n", encoding="utf-8")
+            scan = {
+                "project_root": str(root),
+                "resolved_paths": {
+                    "docs/log/entries/source/e002.md": str(source_entry)
+                },
+                "mechanical_checks": {},
+                "entries": [
+                    {
+                        "id": "e002",
+                        "path": "docs/log/entries/source/e002.md",
+                        "commands": [],
+                    }
+                ],
+            }
+            entry = {"id": "e003", "commands": []}
+
+            result, dependencies = ADJUDICATION.workflow_check(
+                entry,
+                "docs/log/entries/source/e002.md",
+                scan,
+            )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["matched_commands"], 0)
             self.assertNotIn("producer_invocation", result)
             self.assertEqual(dependencies, [])
 

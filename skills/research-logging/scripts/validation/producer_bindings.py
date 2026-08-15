@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence
 
-from .compatibility import invocation_identities
-from .contracts import ScanRecord
+from .compatibility import invocation_identities, normalized_command
+from .contracts import ScanRecord, ValidationToolError
 
 
 class WorkflowCommandCheck(NamedTuple):
@@ -31,6 +31,8 @@ class ProducerCandidateFacts(NamedTuple):
 
     output_identities: frozenset[str]
     output_containers: frozenset[str]
+    input_identities: frozenset[str]
+    unknown_identities: frozenset[str]
     unknown_containers: frozenset[str]
     command_text: str
     section: str
@@ -43,6 +45,18 @@ class ProducerCandidateClass(NamedTuple):
     container: bool
     exact: bool
     section: bool
+
+
+class ProducerEligibility(NamedTuple):
+    """Verifiable relationship between one invocation and one target."""
+
+    eligible: bool
+    kind: str
+    coverage_identity: str
+    direction_evidence: str
+    target_member: str | None
+    review_required: bool
+    reason: str
 
 
 def resolved_identity_cache(scan: ScanRecord) -> Dict[str, str]:
@@ -66,7 +80,7 @@ def identity_for_path(
     if resolved in identities:
         return identities[resolved]
     path = Path(raw).resolve()
-    project_root = Path(scan["project_root"]).resolve()
+    project_root = Path(str(scan.get("project_root", "."))).resolve()
     try:
         return path.relative_to(project_root).as_posix()
     except ValueError:
@@ -78,7 +92,7 @@ def prepare_candidate_facts(
     command: Mapping[str, Any],
     identities: Mapping[str, str],
 ) -> ProducerCandidateFacts:
-    """Prepare current v43 producer-candidate facts without target semantics."""
+    """Prepare current v45 producer-candidate facts without target semantics."""
 
     output_identities = {
         identity_for_path(scan, argument.get("path", ""), identities)
@@ -90,6 +104,11 @@ def prepare_candidate_facts(
         for identity in output_identities
         if scan.get("mechanical_checks", {}).get(identity, {}).get("type")
         == "directory"
+    }
+    input_identities = {
+        identity_for_path(scan, argument.get("path", ""), identities)
+        for argument in command.get("path_arguments", [])
+        if argument.get("role_hint") == "input" and argument.get("path")
     }
     unknown_identities = {
         identity_for_path(scan, argument.get("path", ""), identities)
@@ -106,6 +125,8 @@ def prepare_candidate_facts(
     return ProducerCandidateFacts(
         frozenset(output_identities),
         frozenset(output_containers),
+        frozenset(input_identities),
+        frozenset(unknown_identities),
         frozenset(unknown_containers),
         str(command.get("command", "")),
         str(command.get("section", "")),
@@ -120,7 +141,6 @@ def classify_candidate(
 ) -> ProducerCandidateClass:
     """Classify one prepared invocation against a target under v43 semantics."""
 
-    target_name = Path(identity).name
     direct = identity in facts.output_identities
     container = any(
         identity.startswith(container.rstrip("/") + "/")
@@ -136,9 +156,7 @@ def classify_candidate(
             if len(token) > 1
         }
         container = bool(tokens) and all(token in searchable_source for token in tokens)
-    exact = target_name in facts.command_text or any(
-        Path(path).name == target_name for path in facts.output_identities
-    )
+    exact = identity in facts.output_identities or identity in facts.unknown_identities
     return ProducerCandidateClass(
         direct,
         container,
@@ -151,6 +169,291 @@ def _identity_tokens(value: str) -> set[str]:
     """Return lowercase alphanumeric tokens used by v43 source matching."""
 
     return set(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _containing_identity(identity: str, candidates: Sequence[str]) -> str | None:
+    """Return the most specific normalized candidate containing one target."""
+
+    matches = [
+        candidate
+        for candidate in candidates
+        if identity.startswith(candidate.rstrip("/") + "/")
+    ]
+    return max(matches, key=len) if matches else None
+
+
+def producer_eligibility(
+    scan: ScanRecord,
+    command: Mapping[str, Any],
+    target: str,
+    identity_cache: Optional[Mapping[str, str]] = None,
+) -> ProducerEligibility:
+    """Return the v45 proof form available from one recorded invocation.
+
+    Filename similarity, source tokens, and section locality never enter this
+    decision. They remain useful only when assembling diagnostic context.
+    """
+
+    identities = (
+        identity_cache
+        if identity_cache is not None
+        else resolved_identity_cache(scan)
+    )
+    arguments = [
+        (
+            identity_for_path(scan, str(argument.get("path", "")), identities),
+            str(argument.get("role_hint", "unknown")),
+        )
+        for argument in command.get("path_arguments", [])
+        if argument.get("path")
+    ]
+    if any(identity == target and role == "input" for identity, role in arguments):
+        return ProducerEligibility(
+            False, "", "", "", None, False, "command consumes the target"
+        )
+    exact_roles = [role for identity, role in arguments if identity == target]
+    if "output" in exact_roles:
+        return ProducerEligibility(
+            True,
+            "exact-target",
+            target,
+            "mechanical-output-role",
+            None,
+            False,
+            "parsed output argument resolves exactly to the target",
+        )
+    if exact_roles:
+        return ProducerEligibility(
+            True,
+            "exact-target",
+            target,
+            "reviewed-output-direction",
+            None,
+            True,
+            "exact target is recorded but output direction requires review",
+        )
+
+    input_collection = _containing_identity(
+        target, [identity for identity, role in arguments if role == "input"]
+    )
+    if input_collection is not None:
+        return ProducerEligibility(
+            False,
+            "",
+            input_collection,
+            "",
+            None,
+            False,
+            "command consumes a collection containing the target",
+        )
+    collection = _containing_identity(
+        target,
+        [identity for identity, role in arguments if role in {"output", "unknown"}],
+    )
+    if collection is None:
+        return ProducerEligibility(
+            False,
+            "",
+            "",
+            "",
+            None,
+            False,
+            "command has no exact target or containing output collection",
+        )
+    raw_collection = scan.get("resolved_paths", {}).get(collection)
+    if (
+        raw_collection is None
+        or scan.get("mechanical_checks", {}).get(collection, {}).get("type")
+        != "directory"
+    ):
+        return ProducerEligibility(
+            False,
+            "",
+            collection,
+            "",
+            None,
+            False,
+            "containing command path is not a resolved output collection",
+        )
+    member = target[len(collection.rstrip("/") + "/") :]
+    return ProducerEligibility(
+        True,
+        "scoped-collection",
+        collection,
+        "reviewed-output-direction",
+        member,
+        True,
+        "containing output collection requires reviewed member scope",
+    )
+
+
+def _invocation_lookup(
+    scan: Mapping[str, Any], invocation_identity: str
+) -> tuple[str, Mapping[str, Any], Sequence[Mapping[str, Any]]]:
+    for entry in scan.get("entries", []):
+        entry_id = str(entry.get("id", ""))
+        commands = entry.get("commands", [])
+        identities = invocation_identities(entry_id, commands)
+        for identity, command in zip(identities, commands):
+            if identity == invocation_identity:
+                return entry_id, command, commands
+    raise ValidationToolError(
+        f"producer binding names a missing recorded invocation: {invocation_identity}"
+    )
+
+
+def verify_producer_binding(
+    scan: ScanRecord,
+    target: str,
+    invocation_identity: str,
+    dependencies: Sequence[Mapping[str, Any]],
+    *,
+    producer_basis: str | None = None,
+) -> dict[str, Any]:
+    """Build and verify one complete native v45 producer binding."""
+
+    entry_id, command, commands = _invocation_lookup(scan, invocation_identity)
+    identities = resolved_identity_cache(scan)
+    eligibility = producer_eligibility(scan, command, target, identities)
+    if not eligibility.eligible:
+        raise ValidationToolError(
+            f"producer binding does not cover {target}: {eligibility.reason}"
+        )
+    checked = check_workflow_command(command, scan, identities)
+    if checked.failures:
+        raise ValidationToolError(
+            "producer binding has deterministic workflow failures: "
+            + "; ".join(sorted(set(checked.failures)))
+        )
+    if eligibility.kind == "scoped-collection":
+        scoped = [
+            dependency
+            for dependency in dependencies
+            if dependency.get("path") == eligibility.coverage_identity
+            and dependency.get("role") == "producer"
+            and isinstance(dependency.get("members"), list)
+        ]
+        if len(scoped) != 1 or eligibility.target_member not in scoped[0]["members"]:
+            raise ValidationToolError(
+                "reviewed collection producer omits the target from its exact "
+                f"member scope: {target}"
+            )
+        members = sorted(set(scoped[0]["members"]))
+    else:
+        members = None
+    basis = producer_basis or (
+        "mechanical"
+        if eligibility.direction_evidence == "mechanical-output-role"
+        else "reviewed"
+    )
+    if basis not in {"mechanical", "reviewed", "upstream-reviewed"}:
+        raise ValidationToolError(f"producer binding basis is invalid: {basis}")
+    if (
+        eligibility.direction_evidence == "reviewed-output-direction"
+        and basis == "mechanical"
+    ):
+        raise ValidationToolError(
+            "producer binding requires reviewed output direction"
+        )
+    group = (
+        " ".join(str(command.get("section", "")).split()).casefold(),
+        normalized_command(str(command.get("command", ""))),
+    )
+    binding: dict[str, Any] = {
+        "kind": eligibility.kind,
+        "invocation_identity": invocation_identity,
+        "producer_basis": basis,
+        "coverage_identity": eligibility.coverage_identity,
+        "direction_evidence": eligibility.direction_evidence,
+        "duplicate_count": sum(
+            (
+                " ".join(str(item.get("section", "")).split()).casefold(),
+                normalized_command(str(item.get("command", ""))),
+            )
+            == group
+            for item in commands
+        ),
+        "source_locator": {"entry": entry_id, "line": command.get("line")},
+    }
+    if members is not None:
+        binding.update(
+            {
+                "target_member": eligibility.target_member,
+                "members": members,
+            }
+        )
+    return binding
+
+
+def verify_persisted_producer_binding(
+    scan: ScanRecord,
+    target: str,
+    binding: Mapping[str, Any],
+    dependencies: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Recheck a persisted binding against the exact current invocation."""
+
+    expected = verify_producer_binding(
+        scan,
+        target,
+        str(binding.get("invocation_identity", "")),
+        dependencies,
+        producer_basis=str(binding.get("producer_basis", "")),
+    )
+    semantic_fields = {
+        "kind",
+        "invocation_identity",
+        "producer_basis",
+        "coverage_identity",
+        "direction_evidence",
+        "target_member",
+        "members",
+        "duplicate_count",
+    }
+    if {key: binding.get(key) for key in semantic_fields if key in binding} != {
+        key: expected.get(key) for key in semantic_fields if key in expected
+    }:
+        raise ValidationToolError(
+            f"producer binding disagrees with current invocation coverage: {target}"
+        )
+    return expected
+
+
+def producer_bindings_for_check(
+    scan: ScanRecord, check: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Project one check's raw resolutions through the shared v45 verifier."""
+
+    resolution = check.get("resolution")
+    if not isinstance(resolution, Mapping):
+        return []
+    dependencies = [
+        item for item in check.get("dependencies", []) if isinstance(item, Mapping)
+    ]
+    raw: list[tuple[str, str, str | None]] = []
+    producer = resolution.get("producer_invocation")
+    target = str(check.get("target", ""))
+    if isinstance(producer, str):
+        raw.append((target, producer, None))
+    for binding in resolution.get("producer_bindings", []):
+        if isinstance(binding, Mapping):
+            raw.append(
+                (
+                    str(binding.get("material", "")),
+                    str(binding.get("invocation", "")),
+                    "upstream-reviewed",
+                )
+            )
+    result = [
+        verify_producer_binding(
+            scan, material, invocation, dependencies, producer_basis=basis
+        )
+        for material, invocation, basis in raw
+    ]
+    return sorted(
+        result,
+        key=lambda item: (item["coverage_identity"], item["invocation_identity"]),
+    )
 
 
 def matching_workflow_commands(
@@ -249,6 +552,19 @@ def workflow_check(
         if identity_cache is not None
         else resolved_identity_cache(scan)
     )
+    if any(
+        entry_row.get("path") == target
+        for entry_row in scan.get("entries", [])
+        if isinstance(entry_row, Mapping)
+    ):
+        return (
+            {
+                "status": "pass",
+                "detail": "retained research entry is a terminal source",
+                "matched_commands": 0,
+            },
+            [],
+        )
     selected, direction_confirmed = matching_workflow_commands(
         entry, target, scan, identities
     )

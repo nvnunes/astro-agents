@@ -348,10 +348,12 @@ exact relative-path list or
 `{"glob": "relative/pattern"}` when the reviewed pattern selects exactly the
 material files. Use `add_dependencies`, `remove_dependencies`, or
 `copy_dependencies_from` only for paths already resolved by the scan.
-When provenance needs semantic producer confirmation, add `"producer": N` to
-select the one-based candidate command printed in the packet. The tool binds
-that choice to the exact recorded invocation; a generic reviewed workflow is
-not a valid producer.
+When provenance needs semantic producer confirmation, add
+`"producer": "<invocation-identity>"` using an exact eligible producer identity
+printed in the packet. Diagnostic commands are context only and cannot be
+selected. The tool rechecks exact-target or reviewed collection coverage,
+output direction, collection membership, and deterministic workflow failures
+before accepting the choice.
 
 ```bash
 <project-python> <validation-tool> decide \

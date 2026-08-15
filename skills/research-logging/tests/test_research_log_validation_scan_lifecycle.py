@@ -11,11 +11,13 @@ from research_log_validation_test_support import (
     GRAPH_QUERIES,
     GRAPH_STORE,
     INVENTORY,
+    REVIEW_INDEX,
     RUNTIME,
     SCAN,
     SCRIPT,
     Path,
     adjudication_for,
+    eligible_producer_identity,
     identity_ending,
     importlib,
     json,
@@ -91,7 +93,7 @@ class ScanTests(unittest.TestCase):
                 )
 
     def test_rules_version_is_shared_package_owned(self) -> None:
-        self.assertEqual(RUNTIME.RULES_VERSION, "research-log-validation-v44")
+            self.assertEqual(RUNTIME.RULES_VERSION, "research-log-validation-v45")
 
     def test_scan_extracts_mechanics_without_executing_research_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -131,7 +133,7 @@ class ScanTests(unittest.TestCase):
                 scanned_entry["commands"][0]["data_tokens"][0]["status"], "ambiguous"
             )
             self.assertTrue(
-                scanned_entry["commands"][1]["script"].endswith(
+                scanned_entry["commands"][2]["script"].endswith(
                     "docs/mini/scripts/shared.py"
                 )
             )
@@ -897,6 +899,9 @@ class ScanTests(unittest.TestCase):
                 ]
             )
             row["provenance"] = "2026-08-11"
+            row["producer_invocation"] = eligible_producer_identity(
+                scan, "e001", row["target"]
+            )
             prepared["review_queue"].append(
                 {
                     "entry": "e001",
@@ -1559,7 +1564,7 @@ class ScanTests(unittest.TestCase):
                     "python <log>/scripts/shared.py --flag",
                     "python <log>/scripts/shared.py --flag\n"
                     "python scripts/upstream.py --output data/intermediate.csv\n"
-                    "python scripts/downstream.py\n"
+                    "python scripts/downstream.py --output data/output.csv\n"
                     "python scripts/unrelated.py --input data/unrelated.csv "
                     "--output-dir data",
                 ),
@@ -1584,7 +1589,13 @@ class ScanTests(unittest.TestCase):
                     {
                         "match": {"entry": "e001", "identity": output},
                         "decision": "pass",
-                        "producer": 4,
+                        "producer": next(
+                            invocation.key
+                            for invocation in REVIEW_INDEX.ReviewQuerySession(
+                                REVIEW_INDEX.ReviewContextIndex.build(scan)
+                            ).eligible_candidate_invocations("e001", output, [])
+                            if "scripts/downstream.py" in invocation.command["command"]
+                        ),
                         "add_dependencies": [
                             {"path": downstream, "role": "producer"},
                             {"path": intermediate, "role": "input"},
@@ -2931,7 +2942,9 @@ class ScanTests(unittest.TestCase):
                     {
                         "match": {"entry": "e001", "identity": output},
                         "decision": "pass",
-                        "producer": 2,
+                        "producer": eligible_producer_identity(
+                            scan, "e001", output
+                        ),
                     },
                     {
                         "match": {
@@ -2951,7 +2964,9 @@ class ScanTests(unittest.TestCase):
                     {
                         "match": {"entry": "e001", "identity": collection},
                         "decision": "pass",
-                        "producer": 2,
+                        "producer": eligible_producer_identity(
+                            scan, "e001", collection
+                        ),
                         "members": {collection: {"glob": "a.txt"}},
                     },
                     *orphan_actions,
@@ -3143,6 +3158,10 @@ class ScanTests(unittest.TestCase):
                 root = Path(directory)
                 summary, entry = make_log(root)
                 text = entry.read_text(encoding="utf-8").replace(
+                    "python scripts/no_execute.py --retained-output data/output.csv "
+                    "--collection-output data/collection\n",
+                    "",
+                ).replace(
                     "--output data/command-only.csv",
                     "--output data/output.csv",
                 )
@@ -3225,6 +3244,10 @@ class ScanTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
+                    "python scripts/no_execute.py --retained-output data/output.csv "
+                    "--collection-output data/collection\n",
+                    "",
+                ).replace(
                     "--output data/command-only.csv",
                     "--output data/output.csv",
                 ),
@@ -3238,7 +3261,7 @@ class ScanTests(unittest.TestCase):
             ):
                 RUNTIME.render_records(adjudication, scan, summary.with_suffix(""))
 
-    def test_semantic_producer_pass_selects_recorded_invocation(self) -> None:
+    def test_section_local_command_cannot_invent_a_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = make_log(root)
@@ -3265,9 +3288,19 @@ class ScanTests(unittest.TestCase):
             )
             match = {"entry": item["entry"], "identity": item["identity"]}
 
+            self.assertEqual(item["workflow"]["status"], "fail")
+            self.assertIn("Provenance", item["hard_failures"])
+            self.assertEqual(
+                REVIEW_INDEX.ReviewQuerySession(
+                    REVIEW_INDEX.ReviewContextIndex.build(scan)
+                ).eligible_candidate_invocations(
+                    item["entry"], item["identity"], item["sections"]
+                ),
+                [],
+            )
             with self.assertRaisesRegex(
                 CONTRACTS.ValidationToolError,
-                "requires a concrete producer candidate",
+                "cannot override deterministic failure",
             ):
                 DECISIONS.apply_review_decisions(
                     scan,
@@ -3277,28 +3310,6 @@ class ScanTests(unittest.TestCase):
                         "actions": [{"match": match, "decision": "pass"}],
                     },
                 )
-
-            decided, _ = DECISIONS.apply_review_decisions(
-                scan,
-                prepared,
-                {
-                    "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
-                    "actions": [{"match": match, "decision": "pass", "producer": 2}],
-                },
-            )
-            row = next(
-                row
-                for entry_row in decided["entries"]
-                for row in entry_row["targets"]
-                if row["target"] == item["identity"]
-            )
-            self.assertRegex(
-                row["producer_invocation"], r"^e001:[0-9a-f]{16}:[0-9a-f]{16}:\d+$"
-            )
-            graph = GRAPH_ADAPTER.build_dependency_graph(scan, decided)
-            self.assertFalse(
-                any("reviewed-workflow" in node.key.identity for node in graph.nodes)
-            )
 
     def test_unique_mechanical_producer_records_exact_invocation_for_review(
         self,
@@ -3428,7 +3439,9 @@ class ScanTests(unittest.TestCase):
                         {
                             "match": {"entry": "e001", "identity": output},
                             "decision": "pass",
-                            "producer": 2,
+                            "producer": eligible_producer_identity(
+                                scan, "e001", output, 2
+                            ),
                         }
                     ],
                 },

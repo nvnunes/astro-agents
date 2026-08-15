@@ -74,7 +74,7 @@ from .scan import (
 SCAN_SCHEMA_VERSION = 18
 ADJUDICATION_SCHEMA_VERSION = 8
 STATE_SCHEMA_VERSION = 11
-RULES_VERSION = "research-log-validation-v44"
+RULES_VERSION = "research-log-validation-v45"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
     "validation-decisions.json",

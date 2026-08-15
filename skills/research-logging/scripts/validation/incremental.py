@@ -420,6 +420,7 @@ class _IncrementalCheckContext:
         self.scan = scan
         self.prior_checks = prior_state["completed_checks"]
         self.orphan_dispositions = prior_state["orphan_dispositions"]
+        self.prior_rules_version = str(prior_state["validation_rules_version"])
         self.input_unchanged = input_unchanged
         self.operations = operations
         self.snapshot_cache: Dict[Tuple[str, Tuple[str, ...]], Dict[str, Any]] = {}
@@ -1020,7 +1021,12 @@ def _decision_dependencies(
     dependencies = _decision_subject_dependencies(scan, judgment["subject"])
     collection_members: dict[tuple[str, str], set[str]] = {}
     for item in judgment.get("input_dependencies", []):
-        if item.get("kind") in {"graph-edge", "graph-node", "graph-root"}:
+        if item.get("kind") in {
+            "evidence-association",
+            "graph-edge",
+            "graph-node",
+            "graph-root",
+        }:
             continue
         locator = item.get("source_locator")
         path = locator.get("path") if isinstance(locator, Mapping) else None
@@ -1043,7 +1049,13 @@ def _decision_dependencies(
             collection_members.setdefault(key, set()).add(member)
         dependencies[key] = dependency
     for key, member_set in collection_members.items():
-        dependencies[key]["members"] = sorted(member_set)
+        members = sorted(member_set)
+        dependencies[key]["members"] = members
+        raw = scan.get("resolved_paths", {}).get(dependencies[key]["path"])
+        if isinstance(raw, str) and Path(raw).is_dir():
+            dependencies[key]["identity"] = collection_identity(
+                Path(raw), members
+            )
     return [dependencies[key] for key in sorted(dependencies)]
 
 
@@ -1132,7 +1144,10 @@ def _native_judgment_compatible(
             check,
         )
         stored_bindings = judgment.get("producer_bindings", [])
-        current_bindings = producer_bindings_for_check(scan, check)
+        try:
+            current_bindings = producer_bindings_for_check(scan, check)
+        except ValidationToolError:
+            return False
         if semantic_projection(stored_bindings) != semantic_projection(
             current_bindings
         ):

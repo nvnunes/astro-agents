@@ -56,7 +56,7 @@ class DecisionStoreTests(unittest.TestCase):
                     "input_dependencies": [],
                 }
             ],
-            validation_rules_version="research-log-validation-v44",
+            validation_rules_version="research-log-validation-v45",
             local_snapshot_identity="d" * 64,
             report_date="2026-08-02",
         )
@@ -140,7 +140,7 @@ class DecisionStoreTests(unittest.TestCase):
         store, counts = STORE.merge_native_orphan_batch_judgments(
             None,
             [action],
-            validation_rules_version="research-log-validation-v44",
+            validation_rules_version="research-log-validation-v45",
             local_snapshot_identity="f" * 64,
             decision_date="2026-08-14",
         )
@@ -149,7 +149,7 @@ class DecisionStoreTests(unittest.TestCase):
         repeated, counts = STORE.merge_native_orphan_batch_judgments(
             store,
             [action],
-            validation_rules_version="research-log-validation-v44",
+            validation_rules_version="research-log-validation-v45",
             local_snapshot_identity="f" * 64,
             decision_date="2026-08-14",
         )
@@ -165,7 +165,7 @@ class DecisionStoreTests(unittest.TestCase):
             STORE.merge_native_orphan_batch_judgments(
                 store,
                 [conflicting],
-                validation_rules_version="research-log-validation-v44",
+                validation_rules_version="research-log-validation-v45",
                 local_snapshot_identity="f" * 64,
                 decision_date="2026-08-14",
             )

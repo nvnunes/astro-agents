@@ -18,14 +18,15 @@ from typing import (
     Iterable,
     List,
     Mapping,
-    NamedTuple,
     Optional,
     Sequence,
     Set,
     Tuple,
+    cast,
 )
 
 from .compatibility import invocation_identities
+from .contracts import ScanRecord, ValidationToolError
 from .graph import (
     DependencyGraph,
     EdgeKind,
@@ -40,6 +41,7 @@ from .graph import (
     RootPolicy,
 )
 from .graph_queries import orphan_nodes
+from .producer_bindings import verify_producer_binding
 
 
 def _fingerprint(value: Any) -> str:
@@ -897,97 +899,12 @@ def build_dependency_graph(
     return state.builder.build()
 
 
-class _ReviewedProducerSelection(NamedTuple):
-    namespace: str
-    entry_id: str
-    target_identity: str
-    producer_identity: Any
-    candidates: Sequence[NodeKey]
-    consumer_candidates: Sequence[NodeKey]
-    producer_scripts: Set[NodeKey]
-    invocation_scripts: Mapping[NodeKey, Set[NodeKey]]
-    required: bool
-
-
 @dataclass(frozen=True)
 class _ReviewedRow:
     target: NodeKey
     dependencies: Sequence[Mapping[str, Any]]
     origin: FactOrigin
     invocation: Optional[NodeKey]
-
-
-def _reviewed_input_collection_contains_target(
-    collection: NodeKey,
-    target: NodeKey,
-    dependencies: Sequence[Mapping[str, Any]],
-) -> bool:
-    """Return whether one reviewed input collection includes the target."""
-
-    scoped = [
-        dependency
-        for dependency in dependencies
-        if dependency.get("role") == "input"
-        and dependency.get("path") == collection.identity
-        and isinstance(dependency.get("members"), list)
-    ]
-    if not scoped:
-        return target.identity.startswith(collection.identity.rstrip("/") + "/")
-    selected = {
-        collection.identity.rstrip("/") + "/" + member.lstrip("/")
-        for dependency in scoped
-        for member in dependency["members"]
-        if isinstance(member, str)
-    }
-    return target.identity in selected
-
-
-def _selected_reviewed_invocation(
-    selection: _ReviewedProducerSelection,
-) -> Optional[NodeKey]:
-    """Resolve one semantic producer to an exact recorded invocation."""
-
-    if selection.producer_identity is not None:
-        if not isinstance(selection.producer_identity, str):
-            raise GraphContractError(
-                "reviewed producer identity must be text: "
-                f"{selection.entry_id}: {selection.target_identity}"
-            )
-        exact = NodeKey(
-            selection.namespace,
-            NodeKind.INVOCATION,
-            selection.producer_identity,
-        )
-        if exact in selection.consumer_candidates:
-            if selection.required:
-                raise GraphContractError(
-                    "reviewed producer mechanically consumes its target: "
-                    f"{selection.entry_id}: {selection.target_identity}"
-                )
-            return None
-        valid = exact in selection.invocation_scripts
-        if valid:
-            return exact
-        if selection.required:
-            raise GraphContractError(
-                "reviewed producer is not an exact recorded invocation: "
-                f"{selection.entry_id}: {selection.target_identity}"
-            )
-        return None
-    selected: Optional[NodeKey] = (
-        selection.candidates[0] if len(selection.candidates) == 1 else None
-    )
-    if (
-        selected is None
-        and selection.producer_scripts
-        and not selection.consumer_candidates
-        and selection.required
-    ):
-        raise GraphContractError(
-            "successful provenance lacks a concrete recorded producer: "
-            f"{selection.entry_id}: {selection.target_identity}"
-        )
-    return selected
 
 
 def _add_reviewed_graph_facts(
@@ -1031,26 +948,37 @@ def _add_reviewed_producer_bindings(
 ) -> None:
     """Add exact reviewed upstream producer choices for generated inputs."""
 
-    for binding in row.get("producer_bindings", []):
-        material = state.ensure_material(binding["material"])
+    for raw_binding in row.get("producer_bindings", []):
+        try:
+            binding = verify_producer_binding(
+                cast(ScanRecord, state.scan),
+                raw_binding["material"],
+                raw_binding["invocation"],
+                row.get("dependencies", []),
+                producer_basis="upstream-reviewed",
+            )
+        except ValidationToolError as exc:
+            if not required:
+                continue
+            raise GraphContractError(str(exc)) from exc
+        material = state.ensure_material(raw_binding["material"])
         invocation = NodeKey(
-            state.namespace, NodeKind.INVOCATION, binding["invocation"]
+            state.namespace, NodeKind.INVOCATION, binding["invocation_identity"]
         )
         if invocation not in facts.paths:
             if not required:
                 continue
             raise GraphContractError(
                 "reviewed upstream producer is not a recorded invocation: "
-                f"{binding['invocation']}"
+                f"{binding['invocation_identity']}"
             )
-        outputs = facts.paths[invocation] - facts.inputs[invocation]
-        if material not in outputs:
-            if not required:
-                continue
-            raise GraphContractError(
-                "reviewed upstream producer does not produce material: "
-                f"{binding['material']}: {binding['invocation']}"
-            )
+        state.builder.add_edge(
+            EdgeKind.PRODUCES,
+            invocation,
+            material,
+            invocation.namespace,
+            origin,
+        )
         state.builder.add_edge(
             EdgeKind.SELECTED_PRODUCER,
             material,
@@ -1079,29 +1007,37 @@ def _reviewed_row(
         for item in dependencies
         if item.get("role") == "producer" and isinstance(item.get("path"), str)
     }
-    target_candidates, consumer_candidates = _reviewed_invocation_candidates(
-        facts, entry_id, target, dependencies, producer_scripts
-    )
     producer_identity = row.get("producer_invocation")
-    if producer_identity is not None:
-        consumer_candidates = [
-            candidate
-            for candidate in consumer_candidates
-            if target in facts.inputs.get(candidate, set())
-        ]
-    invocation = _selected_reviewed_invocation(
-        _ReviewedProducerSelection(
+    invocation = None
+    if isinstance(producer_identity, str):
+        try:
+            binding = verify_producer_binding(
+                cast(ScanRecord, state.scan),
+                target_identity,
+                producer_identity,
+                dependencies,
+            )
+        except ValidationToolError as exc:
+            if not required:
+                return None
+            raise GraphContractError(str(exc)) from exc
+        invocation = NodeKey(
             state.namespace,
-            entry_id,
-            target_identity,
-            producer_identity,
-            target_candidates if len(target_candidates) == 1 else [],
-            consumer_candidates,
-            producer_scripts,
-            facts.scripts,
-            required,
+            NodeKind.INVOCATION,
+            binding["invocation_identity"],
         )
-    )
+        if invocation not in facts.paths:
+            if not required:
+                return None
+            raise GraphContractError(
+                "validated producer is absent from command graph: "
+                f"{binding['invocation_identity']}"
+            )
+    elif producer_scripts and required:
+        raise GraphContractError(
+            "successful provenance lacks a concrete recorded producer: "
+            f"{entry_id}: {target_identity}"
+        )
     origin = _origin(
         state.scan,
         "reviewed-producer",
@@ -1118,57 +1054,6 @@ def _reviewed_row(
         semantic_scope=f"{entry_id}:{target_identity}",
     )
     return _ReviewedRow(target, dependencies, origin, invocation)
-
-
-def _reviewed_invocation_candidates(
-    facts: _InvocationFacts,
-    entry_id: str,
-    target: NodeKey,
-    dependencies: Sequence[Mapping[str, Any]],
-    producer_scripts: Set[NodeKey],
-) -> Tuple[List[NodeKey], List[NodeKey]]:
-    eligible = [
-        invocation
-        for invocation, scripts in facts.scripts.items()
-        if invocation.identity.startswith(entry_id + ":") and scripts & producer_scripts
-    ]
-    producers = [
-        invocation
-        for invocation in eligible
-        if _invocation_outputs_target(facts, invocation, target)
-    ]
-    consumers = [
-        invocation
-        for invocation in eligible
-        if not _invocation_outputs_target(facts, invocation, target)
-        and _invocation_inputs_target(facts, invocation, target, dependencies)
-    ]
-    return producers, consumers
-
-
-def _invocation_outputs_target(
-    facts: _InvocationFacts, invocation: NodeKey, target: NodeKey
-) -> bool:
-    outputs = facts.paths.get(invocation, set()) - facts.inputs.get(invocation, set())
-    return target in outputs or any(
-        path.kind is NodeKind.COLLECTION
-        and target.identity.startswith(path.identity.rstrip("/") + "/")
-        for path in outputs
-    )
-
-
-def _invocation_inputs_target(
-    facts: _InvocationFacts,
-    invocation: NodeKey,
-    target: NodeKey,
-    dependencies: Sequence[Mapping[str, Any]],
-) -> bool:
-    inputs = facts.inputs.get(invocation, set())
-    return target in inputs or any(
-        path.kind is NodeKind.COLLECTION
-        and _reviewed_input_collection_contains_target(path, target, dependencies)
-        for path in inputs
-    )
 
 
 def _add_reviewed_invocation_facts(

@@ -7,20 +7,20 @@ import json
 import re
 import shlex
 from collections.abc import Mapping, Sequence
-from typing import Any, NamedTuple
+from typing import Any, cast
 
-from .contracts import ValidationToolError
+from .contracts import ScanRecord, ValidationToolError
 
-GRAPH_CONTRACT_VERSION = 1
+GRAPH_CONTRACT_VERSION = 2
 COMPONENT_VERSIONS: dict[str, int] = {
     "material_identity": 1,
     "mechanical_inspection": 1,
     "integrity": 1,
     "summary_provenance": 1,
-    "entry_provenance": 1,
-    "mechanical_producer": 1,
-    "reviewed_producer": 1,
-    "upstream_reviewed_producer": 1,
+    "entry_provenance": 2,
+    "mechanical_producer": 2,
+    "reviewed_producer": 2,
+    "upstream_reviewed_producer": 2,
     "reproducibility": 1,
     "orphan_inventory": 1,
     "orphan_graph": 1,
@@ -43,9 +43,7 @@ INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "graph-root": 1,
     "graph-resolver": 1,
 }
-PRODUCER_BINDING_KINDS = frozenset(
-    {"exact-material", "scoped-collection", "reviewed-coverage"}
-)
+PRODUCER_BINDING_KINDS = frozenset({"exact-target", "scoped-collection"})
 PRODUCER_BASES = frozenset(
     {"mechanical", "reviewed", "upstream-reviewed"}
 )
@@ -536,7 +534,8 @@ def input_dependencies_for_check(
     result.extend(scoped)
     if scoped:
         result = [item for item in result if item["kind"] != "entry"]
-    result.extend(_graph_projections(check))
+    if check.get("check") != "Integrity":
+        result.extend(_graph_projections(check))
     unique = {
         (item["kind"], item["semantic_identity"], item["relationship"]): item
         for item in result
@@ -551,121 +550,14 @@ def input_dependencies_for_check(
     )
 
 
-class _ProducerBindingContext(NamedTuple):
-    entry_id: str
-    commands: Sequence[Mapping[str, Any]]
-    by_identity: Mapping[str, Mapping[str, Any]]
-    path_identities: Mapping[str, str]
-
-
-def _producer_binding(
-    context: _ProducerBindingContext,
-    check: Mapping[str, Any],
-    material: str,
-    invocation: str,
-    basis: str,
-) -> dict[str, Any]:
-    command = context.by_identity.get(invocation)
-    direction = "reviewed-selection"
-    kind = "reviewed-coverage"
-    members = None
-    if command is not None:
-        exact_outputs = {
-            context.path_identities.get(
-                str(argument.get("path", "")), str(argument.get("path", ""))
-            )
-            for argument in command.get("path_arguments", [])
-            if argument.get("role_hint") == "output"
-        }
-        if material in exact_outputs:
-            kind = "exact-material"
-            direction = "mechanical-output-role"
-        dependency = next(
-            (
-                item
-                for item in check.get("dependencies", [])
-                if item.get("path") == material and item.get("members")
-            ),
-            None,
-        )
-        if dependency is not None:
-            kind = "scoped-collection"
-            members = sorted(dependency["members"])
-    binding: dict[str, Any] = {
-        "kind": kind,
-        "invocation_identity": invocation,
-        "producer_basis": basis,
-        "coverage_identity": material,
-        "direction_evidence": direction,
-    }
-    if members is not None:
-        binding["members"] = members
-    if command is not None:
-        group = (
-            " ".join(str(command.get("section", "")).split()).casefold(),
-            normalized_command(str(command.get("command", ""))),
-        )
-        binding["duplicate_count"] = sum(
-            (
-                " ".join(str(item.get("section", "")).split()).casefold(),
-                normalized_command(str(item.get("command", ""))),
-            )
-            == group
-            for item in context.commands
-        )
-        binding["source_locator"] = {
-            "entry": context.entry_id,
-            "line": command.get("line"),
-        }
-    return binding
-
-
 def producer_bindings_for_check(
     scan: Mapping[str, Any], check: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Project current producer resolutions into native binding records."""
+    """Project producer resolutions through the shared v45 verifier."""
 
-    resolution = check.get("resolution")
-    if not isinstance(resolution, Mapping):
-        return []
-    entry_id = str(check.get("entry", ""))
-    entry = _entry(scan, entry_id)
-    commands = entry.get("commands", []) if entry is not None else []
-    identities = invocation_identities(entry_id, commands)
-    context = _ProducerBindingContext(
-        entry_id,
-        commands,
-        dict(zip(identities, commands)),
-        {
-            str(path): identity
-            for identity, path in scan.get("resolved_paths", {}).items()
-        },
-    )
-    target = str(check.get("target", ""))
-    raw_bindings = []
-    producer = resolution.get("producer_invocation")
-    if isinstance(producer, str):
-        raw_bindings.append((target, producer, "reviewed"))
-    for raw_binding in resolution.get("producer_bindings", []):
-        if isinstance(raw_binding, Mapping):
-            raw_bindings.append(
-                (
-                    str(raw_binding.get("material", "")),
-                    str(raw_binding.get("invocation", "")),
-                    "upstream-reviewed",
-                )
-            )
-    result = [
-        _producer_binding(context, check, material, invocation, basis)
-        for material, invocation, basis in raw_bindings
-    ]
-    return sorted(
-        result,
-        key=lambda item: (
-            item["coverage_identity"],
-            item["invocation_identity"],
-        ),
-    )
+    from .producer_bindings import producer_bindings_for_check as verify
+
+    return verify(cast(ScanRecord, scan), check)
 
 
 def orphan_input_dependencies(
@@ -862,6 +754,7 @@ def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
         "direction_evidence",
         "duplicate_count",
         "members",
+        "target_member",
         "source_locator",
     }:
         raise ValidationToolError(f"{description} has incorrect fields")
@@ -883,6 +776,27 @@ def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
         raise ValidationToolError(f"{description} members are invalid")
     if value["kind"] == "scoped-collection" and members is None:
         raise ValidationToolError(f"{description} requires collection members")
+    target_member = value.get("target_member")
+    if value["kind"] == "scoped-collection" and (
+        not isinstance(target_member, str)
+        or not target_member
+        or not isinstance(members, list)
+        or target_member not in members
+    ):
+        raise ValidationToolError(f"{description} target_member is invalid")
+    if value["kind"] != "scoped-collection" and target_member is not None:
+        raise ValidationToolError(f"{description} target_member is invalid")
+    direction = value["direction_evidence"]
+    if direction not in {"mechanical-output-role", "reviewed-output-direction"}:
+        raise ValidationToolError(f"{description} direction_evidence is invalid")
+    if value["kind"] == "scoped-collection" and direction != (
+        "reviewed-output-direction"
+    ):
+        raise ValidationToolError(f"{description} direction_evidence is invalid")
+    if value["producer_basis"] == "mechanical" and direction != (
+        "mechanical-output-role"
+    ):
+        raise ValidationToolError(f"{description} direction_evidence is invalid")
     duplicate_count = value.get("duplicate_count")
     if duplicate_count is not None and (
         not isinstance(duplicate_count, int)

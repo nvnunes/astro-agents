@@ -69,6 +69,7 @@ class TargetPreparationContext:
     date: str
     mode: str
     mechanical_support: Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, str]]
+    review_session: Optional[ReviewQuerySession] = None
 
 
 @dataclass(frozen=True)
@@ -836,6 +837,18 @@ def prepare_evidence_target(
     workflow, workflow_dependencies = workflow_check(
         entry, target, cast(ScanRecord, context.scan)
     )
+    review_session = context.review_session or ReviewQuerySession(
+        ReviewContextIndex.build(cast(ScanRecord, context.scan))
+    )
+    eligible_producers = review_session.eligible_candidate_invocations(
+        entry["id"], target, grouped["sections"]
+    )
+    if workflow.get("status") == "unresolved" and not eligible_producers:
+        workflow = {
+            "status": "fail",
+            "detail": "no eligible recorded producer covers this generated target",
+            "matched_commands": 0,
+        }
     prior_provenance = context.reusable.get((entry["id"], target, "Provenance"))
     if prior_provenance is None:
         dependencies.extend(workflow_dependencies)
@@ -981,6 +994,7 @@ def prepare_adjudication(
         date,
         mode,
         policy.mechanical_support,
+        ReviewQuerySession(ReviewContextIndex.build(scan)),
     )
     entry_rows = []
     for entry in scan["entries"]:
@@ -1222,12 +1236,31 @@ def _review_command_lines(
     rendered_source: set[tuple[str, str]] = set()
     for candidate_number, invocation in enumerate(commands, 1):
         command = invocation.command
+        eligibility = session.eligibility_for(invocation, identity)
+        label = (
+            f"Eligible producer `{invocation.key}`"
+            if eligibility.eligible
+            else f"Diagnostic command {candidate_number} (not selectable)"
+        )
         lines.append(
-            f"- Candidate command {candidate_number}, "
+            f"- {label}, "
             f"`{command.get('section', '-')}` line "
             f"{command.get('line', '?')}: "
             f"`{_packet_text(command.get('command'), 520)}`"
         )
+        lines.append(f"  - Producer eligibility: {_packet_text(eligibility.reason)}")
+        if eligibility.eligible:
+            lines.append(
+                "  - Proof: "
+                f"`{eligibility.kind}`; scope "
+                f"`{eligibility.coverage_identity}`; direction "
+                f"`{eligibility.direction_evidence}`"
+                + (
+                    f"; target member `{eligibility.target_member}`"
+                    if eligibility.target_member is not None
+                    else ""
+                )
+            )
         context_identities = orphan_identities.get(invocation.key, [identity])
         if invocation.key in orphan_identities:
             lines.append(

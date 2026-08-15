@@ -300,9 +300,7 @@ def _decode_dependency(value: Any, check_index: int, index: int) -> None:
     )
 
 
-def _decode_native_completed_check(
-    check: Mapping[str, Any], index: int
-) -> None:
+def _decode_native_completed_check(check: Mapping[str, Any], index: int) -> None:
     try:
         decode_component_versions(
             check["rule_dependencies"],

@@ -841,34 +841,11 @@ class GraphCoreTests(unittest.TestCase):
             ]
         }
 
-        graph = GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
-        invocation = next(
-            node.key
-            for node in graph.nodes
-            if node.key.kind is GRAPH.NodeKind.INVOCATION
-        )
-        presented = next(
-            node.key
-            for node in graph.nodes
-            if node.key.kind is GRAPH.NodeKind.PRESENTED
-        )
-        source = GRAPH.NodeKey(namespace, GRAPH.NodeKind.ARTIFACT, source_path)
-        script = GRAPH.NodeKey(namespace, GRAPH.NodeKind.SCRIPT, script_path)
-
-        self.assertFalse(
-            any(
-                edge.kind is GRAPH.EdgeKind.PRODUCES
-                and edge.source == invocation
-                and edge.target == source
-                for edge in graph.edges
-            )
-        )
-        provenance = GRAPH_QUERIES.provenance_nodes(
-            graph, [(presented, GRAPH.RootPolicy.PRESENTED)]
-        )
-        self.assertIn(source, provenance)
-        self.assertNotIn(invocation, provenance)
-        self.assertNotIn(script, provenance)
+        with self.assertRaisesRegex(
+            GRAPH.GraphContractError,
+            "lacks a concrete recorded producer",
+        ):
+            GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
 
         adjudication["entries"][0]["targets"][0]["producer_invocation"] = (
             GRAPH_ADAPTER.invocation_identities(
@@ -877,24 +854,28 @@ class GraphCoreTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             GRAPH.GraphContractError,
-            "reviewed producer mechanically consumes its target",
+            "command consumes the target",
         ):
             GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
 
         collection_path = "docs/mini/data"
         command = scan["entries"][0]["commands"][0]
         command["path_arguments"] = [
-            {"path": collection_path, "role_hint": "input", "option": "--root"},
             {"path": source_path, "role_hint": "output", "option": "--output"},
         ]
         scan["resolved_paths"][collection_path] = collection_path
         scan["mechanical_checks"][collection_path] = {"type": "directory"}
         adjudication["entries"][0]["targets"][0]["dependencies"] = [
             {"path": script_path, "role": "producer"},
-            {"path": collection_path, "role": "input"},
         ]
 
         graph = GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
+        invocation = next(
+            node.key
+            for node in graph.nodes
+            if node.key.kind is GRAPH.NodeKind.INVOCATION
+        )
+        source = GRAPH.NodeKey(namespace, GRAPH.NodeKind.ARTIFACT, source_path)
 
         self.assertTrue(
             any(
@@ -914,49 +895,14 @@ class GraphCoreTests(unittest.TestCase):
         )
 
     def test_reviewed_collection_scope_controls_consumer_direction(self) -> None:
-        collection = GRAPH.NodeKey(
-            "docs/mini", GRAPH.NodeKind.COLLECTION, "data"
-        )
-        target = GRAPH.NodeKey(
-            "docs/mini", GRAPH.NodeKind.ARTIFACT, "data/output.csv"
-        )
-
         self.assertFalse(
-            GRAPH_ADAPTER._reviewed_input_collection_contains_target(
-                collection,
-                target,
-                [
-                    {
-                        "path": "data",
-                        "role": "input",
-                        "members": ["input.csv"],
-                    }
-                ],
-            )
-        )
-        self.assertTrue(
-            GRAPH_ADAPTER._reviewed_input_collection_contains_target(
-                collection,
-                target,
-                [
-                    {
-                        "path": "data",
-                        "role": "input",
-                        "members": ["output.csv"],
-                    }
-                ],
-            )
-        )
-        self.assertTrue(
-            GRAPH_ADAPTER._reviewed_input_collection_contains_target(
-                collection,
-                target,
-                [{"path": "data", "role": "input"}],
+            hasattr(
+                GRAPH_ADAPTER,
+                "_reviewed_input_collection_contains_target",
             )
         )
 
-    def test_explicit_producer_may_write_inside_an_input_directory(self) -> None:
-        namespace = "docs/mini"
+    def test_filename_only_output_cannot_override_input_collection(self) -> None:
         target_path = "docs/mini/data/output.csv"
         collection_path = "docs/mini/data"
         script_path = "docs/mini/scripts/produce.py"
@@ -1015,44 +961,14 @@ class GraphCoreTests(unittest.TestCase):
             "summary": [],
         }
 
-        graph = GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
-
-        invocation = next(
-            node.key
-            for node in graph.nodes
-            if node.key.kind is GRAPH.NodeKind.INVOCATION
-        )
-        target = GRAPH.NodeKey(namespace, GRAPH.NodeKind.ARTIFACT, target_path)
-        self.assertTrue(
-            any(
-                edge.kind is GRAPH.EdgeKind.PRODUCES
-                and edge.source == invocation
-                and edge.target == target
-                for edge in graph.edges
-            )
-        )
+        with self.assertRaisesRegex(
+            GRAPH.GraphContractError,
+            "consumes a collection containing the target",
+        ):
+            GRAPH_ADAPTER.build_dependency_graph(scan, adjudication)
     def test_reviewed_target_accepts_an_exact_cross_entry_producer(self) -> None:
-        invocation = GRAPH.NodeKey(
-            "docs/mini", GRAPH.NodeKind.INVOCATION, "e001:L10:1:producer"
-        )
-        script = GRAPH.NodeKey(
-            "docs/mini", GRAPH.NodeKind.SCRIPT, "docs/mini/e001/produce.py"
-        )
-        selection = GRAPH_ADAPTER._ReviewedProducerSelection(
-            namespace="docs/mini",
-            entry_id="e002",
-            target_identity="docs/mini/e001/result.csv",
-            producer_identity=invocation.identity,
-            candidates=[],
-            consumer_candidates=[],
-            producer_scripts={script},
-            invocation_scripts={invocation: {script}},
-            required=True,
-        )
-
-        selected = GRAPH_ADAPTER._selected_reviewed_invocation(selection)
-
-        self.assertEqual(selected, invocation)
+        self.assertFalse(hasattr(GRAPH_ADAPTER, "_ReviewedProducerSelection"))
+        self.assertFalse(hasattr(GRAPH_ADAPTER, "_selected_reviewed_invocation"))
 
     def test_presented_collection_retains_only_selected_members(self) -> None:
         presented = GRAPH.NodeKey(

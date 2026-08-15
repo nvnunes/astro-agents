@@ -13,9 +13,12 @@ from .contracts import ScanRecord
 from .producer_bindings import (
     ProducerCandidateClass,
     ProducerCandidateFacts,
+    ProducerEligibility,
+    check_workflow_command,
     classify_candidate,
     identity_for_path,
     prepare_candidate_facts,
+    producer_eligibility,
     resolved_identity_cache,
 )
 
@@ -293,6 +296,9 @@ class ReviewQuerySession:
     relationship_cache: Dict[
         tuple[str, str, tuple[str, ...]], ProducerCandidateClass
     ] = field(default_factory=dict)
+    eligibility_cache: Dict[tuple[str, str], ProducerEligibility] = field(
+        default_factory=dict
+    )
     candidate_cache: Dict[
         tuple[str, str, tuple[str, ...]], tuple[str, ...]
     ] = field(default_factory=dict)
@@ -371,6 +377,7 @@ class ReviewQuerySession:
         plausible = set(self.index.direct_outputs.get(identity, ()))
         plausible.update(self._container_keys(identity, self.index.output_containers))
         unknown = self._container_keys(identity, self.index.unknown_containers)
+        plausible.update(unknown)
         source_tokens = [
             token for token in _tokens(Path(identity).stem) if len(token) > 1
         ]
@@ -379,7 +386,6 @@ class ReviewQuerySession:
             unknown.intersection_update(
                 self._intersection(source_tokens, self.index.source_tokens)
             )
-            plausible.update(unknown)
         target_name = Path(identity).name
         fragment_size = min(3, len(target_name))
         name_fragments = _command_fragments(target_name, fragment_size)
@@ -394,6 +400,41 @@ class ReviewQuerySession:
             if self.index.invocations[key].candidate_facts.section in section_set
         )
         return plausible & allowed
+
+    def eligibility_for(
+        self, invocation: PreparedInvocation, identity: str
+    ) -> ProducerEligibility:
+        """Return cached v45 eligibility for one invocation-target pair."""
+
+        key = (invocation.key, identity)
+        cached = self.eligibility_cache.get(key)
+        if cached is not None:
+            return cached
+        result = producer_eligibility(
+            self.index.scan,
+            invocation.command,
+            identity,
+            self.index.identities,
+        )
+        if result.eligible:
+            checked = check_workflow_command(
+                invocation.command,
+                self.index.scan,
+                self.index.identities,
+            )
+            if checked.failures:
+                result = ProducerEligibility(
+                    False,
+                    result.kind,
+                    result.coverage_identity,
+                    result.direction_evidence,
+                    result.target_member,
+                    result.review_required,
+                    "deterministic workflow failure: "
+                    + "; ".join(sorted(set(checked.failures))),
+                )
+        self.eligibility_cache[key] = result
+        return result
 
     def _relationship(
         self, invocation: PreparedInvocation, identity: str, sections: Sequence[str]
@@ -460,36 +501,45 @@ class ReviewQuerySession:
                 item.command_position,
             )
         )
-        groups: list[list[PreparedInvocation]] = [[] for _ in range(6)]
+        eligible: list[PreparedInvocation] = []
+        groups: list[list[PreparedInvocation]] = [[] for _ in range(3)]
         for invocation in candidates:
+            if self.eligibility_for(invocation, identity).eligible:
+                eligible.append(invocation)
+                continue
             relationship = self._relationship(
                 invocation, identity, normalized_sections
             )
-            if relationship.direct:
-                groups[0].append(invocation)
-            if relationship.container:
-                if relationship.section:
-                    groups[1].append(invocation)
-                elif invocation.entry_id != entry_id:
-                    groups[2].append(invocation)
-                else:
-                    groups[5].append(invocation)
             if relationship.exact:
-                groups[3].append(invocation)
+                groups[0].append(invocation)
             elif relationship.section:
-                groups[4].append(invocation)
-        eligible = self._deduplicated(groups[:3])
-        diagnostic_limit = max(0, 5 - len(eligible))
+                groups[1].append(invocation)
+            else:
+                groups[2].append(invocation)
+        eligible = self._deduplicated((eligible,))
         eligible_keys = {item.key for item in eligible}
         diagnostics = [
-            item
-            for item in self._deduplicated(groups[3:])
+            item for item in self._deduplicated(groups)
             if item.key not in eligible_keys
-        ][:diagnostic_limit]
+        ][:5]
         ordered = self._deduplicated((eligible, diagnostics))
         self.candidate_cache[cache_key] = tuple(item.key for item in ordered)
         self.counters["candidate_query_seconds"] += time.monotonic() - started
         return ordered
+
+    def eligible_candidate_invocations(
+        self,
+        entry_id: str,
+        identity: str,
+        sections: Sequence[str],
+    ) -> list[PreparedInvocation]:
+        """Return every selectable v45 producer without diagnostic context."""
+
+        return [
+            invocation
+            for invocation in self.candidate_invocations(entry_id, identity, sections)
+            if self.eligibility_for(invocation, identity).eligible
+        ]
 
     def candidate_commands(
         self, entry_id: str, identity: str, sections: Sequence[str]
@@ -556,5 +606,6 @@ class ReviewQuerySession:
         result = dict(self.index.build_metrics)
         result.update(self.counters)
         result["candidate_relationships"] = len(self.relationship_cache)
+        result["producer_eligibility_checks"] = len(self.eligibility_cache)
         result["source_context_cache_entries"] = len(self.source_context_cache)
         return result

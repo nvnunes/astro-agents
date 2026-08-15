@@ -30,6 +30,7 @@ __all__ = [
     "REPORT",
     "RECORDS",
     "RENDER",
+    "REVIEW_INDEX",
     "RUNTIME",
     "SCAN",
     "SCRIPT",
@@ -37,6 +38,7 @@ __all__ = [
     "Path",
     "adjudication_for",
     "complete_adjudication",
+    "eligible_producer_identity",
     "hashlib",
     "identity_ending",
     "importlib",
@@ -70,6 +72,7 @@ PUBLICATION = importlib.import_module("validation.publication")
 REPORT = importlib.import_module("validation.report")
 RUNTIME = importlib.import_module("validation.runtime")
 RENDER = importlib.import_module("validation.render")
+REVIEW_INDEX = importlib.import_module("validation.review_index")
 SCAN = importlib.import_module("validation.scan")
 RECORDS = importlib.import_module("validation.records")
 STATE = importlib.import_module("validation.state")
@@ -152,6 +155,8 @@ def make_log(root: Path) -> tuple[Path, Path]:
         "--direct-input data/direct.csv "
         "--working-parent data/workspace "
         "--output data/command-only.csv\n"
+        "python scripts/no_execute.py --retained-output data/output.csv "
+        "--collection-output data/collection\n"
         "python <log>/scripts/shared.py --flag\n"
         "```\n\n"
         "`Results:`\n\n"
@@ -212,6 +217,20 @@ def identity_ending(scan: dict, suffix: str) -> str:
     return matches[0]
 
 
+def eligible_producer_identity(
+    scan: dict[str, Any], entry_id: str, target: str, ordinal: int = 1
+) -> str:
+    session = REVIEW_INDEX.ReviewQuerySession(
+        REVIEW_INDEX.ReviewContextIndex.build(scan)
+    )
+    eligible = session.eligible_candidate_invocations(entry_id, target, [])
+    if len(eligible) < ordinal:
+        raise AssertionError(
+            f"expected eligible producer {ordinal} for {target}, got {len(eligible)}"
+        )
+    return eligible[ordinal - 1].key
+
+
 def adjudication_for(scan: dict, entry: Path) -> dict:
     summary_item = scan["summary_items"][0]["selector"]
     output = identity_ending(scan, "data/output.csv")
@@ -224,6 +243,13 @@ def adjudication_for(scan: dict, entry: Path) -> dict:
         if "retained value is `1.0`" in line
     )
     scanned_entry = next(item for item in scan["entries"] if item["id"] == "e001")
+    producer_session = REVIEW_INDEX.ReviewQuerySession(
+        REVIEW_INDEX.ReviewContextIndex.build(scan)
+    )
+    eligible = producer_session.eligible_candidate_invocations(
+        "e001", output, []
+    )
+    producer = eligible[0].key if eligible else None
     entry_orphans = scanned_entry.get("orphan_inventory", [])
     note_sha = scanned_entry["validation_notes"][0]["sha256"]
     adjudication = {
@@ -285,6 +311,11 @@ def adjudication_for(scan: dict, entry: Path) -> dict:
                             {"path": entry_identity, "role": "entry"},
                             {"path": output, "role": "target"},
                         ],
+                        **(
+                            {"producer_invocation": producer}
+                            if producer is not None
+                            else {}
+                        ),
                         "findings": [],
                     },
                     {
@@ -302,6 +333,11 @@ def adjudication_for(scan: dict, entry: Path) -> dict:
                                 "members": ["a.txt"],
                             },
                         ],
+                        **(
+                            {"producer_invocation": producer}
+                            if producer is not None
+                            else {}
+                        ),
                         "findings": [],
                     },
                     {
@@ -364,6 +400,8 @@ def complete_adjudication(scan: dict) -> dict:
     output = identity_ending(scan, "data/output.csv")
     invalid = identity_ending(scan, "data/invalid.png")
     collection = identity_ending(scan, "data/collection")
+    output_producer = eligible_producer_identity(scan, "e001", output)
+    collection_producer = eligible_producer_identity(scan, "e001", collection)
     missing = next(
         item["identity"]
         for item in prepared["review_queue"]
@@ -403,7 +441,7 @@ def complete_adjudication(scan: dict) -> dict:
             {
                 "match": {"entry": "e001", "identity": output},
                 "decision": "pass",
-                "producer": 2,
+                "producer": output_producer,
             },
             {
                 "match": {
@@ -423,7 +461,7 @@ def complete_adjudication(scan: dict) -> dict:
             {
                 "match": {"entry": "e001", "identity": collection},
                 "decision": "pass",
-                "producer": 2,
+                "producer": collection_producer,
                 "members": {collection: {"glob": "a.txt"}},
             },
             *orphan_actions,

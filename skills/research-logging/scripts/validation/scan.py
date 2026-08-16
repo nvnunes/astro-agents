@@ -1429,6 +1429,7 @@ class ScanRequest(NamedTuple):
     mode: str
     policy: ScanLifecyclePolicy
     prior_decisions: Optional[Dict[str, Any]]
+    project_root: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -1676,7 +1677,7 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     prior_durable = record_bundle_identity(
         log_root, ("validation-decisions.json", "validation.md")
     )
-    project_root = find_project_root(summary_path)
+    project_root = request.project_root or find_project_root(summary_path)
     repository_metrics = validated_repository_view(
         request.repository_index, request.rules_version
     )

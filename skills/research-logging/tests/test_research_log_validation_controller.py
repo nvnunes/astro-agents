@@ -194,6 +194,75 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertIn("modified CLI-owned fields", rejected["error"])
             self.assertEqual(record_path.read_bytes(), before)
 
+    def test_target_validation_needs_no_git_or_maintained_log_population(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs" / "empty.md"
+            (summary.with_suffix("") / "entries").mkdir(parents=True)
+            write(
+                summary,
+                "# Empty Log\n\n## Summary\n\nNo claims.\n\n## Entries\n",
+            )
+            other = root / "docs" / "other.md"
+            (other.with_suffix("") / "entries").mkdir(parents=True)
+            write(other, "# Other\n\n## Entries\n")
+            write(other.with_suffix("") / "validation-state.json", "{broken")
+
+            with (
+                mock.patch(
+                    "validation.graph_store.discover_repository_summaries",
+                    side_effect=AssertionError("population scan"),
+                ),
+                mock.patch(
+                    "validation.inventory.find_project_root",
+                    side_effect=AssertionError("Git-root lookup"),
+                ),
+            ):
+                result = CONTROLLER.validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+            self.assertEqual(result["status"], "complete")
+
+    def test_other_log_use_does_not_exempt_a_local_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = make_log(root)
+            orphan = entry.parent / "data" / "direct.csv"
+            other = root / "docs" / "other.md"
+            other_entry = (
+                other.with_suffix("")
+                / "entries"
+                / "2026-08-15-e001-other"
+                / "e001.md"
+            )
+            write(
+                other,
+                "# Other\n\n## Entries\n\n"
+                "- [e001](other/entries/2026-08-15-e001-other/e001.md)\n",
+            )
+            write(
+                other_entry,
+                "# Other Entry\n\n## Results\n\n"
+                f"[Cross-log use]({orphan.as_posix()})\n",
+            )
+
+            result = CONTROLLER.validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            template = json.loads(
+                Path(result["decision_file"]).read_text(encoding="utf-8")
+            )
+            orphan_identities = {
+                item["identity"]
+                for item in template["items"]
+                if item["kind"] == "orphan_candidate"
+            }
+            self.assertIn(
+                "docs/mini/entries/2026-08-07-e001-validation-fixture/"
+                "data/direct.csv",
+                orphan_identities,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

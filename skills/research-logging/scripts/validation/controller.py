@@ -12,10 +12,8 @@ from typing import Any, Mapping, cast
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions
 from .graph_store import (
-    discover_repository_summaries,
     replacement_repository_view,
 )
-from .inventory import find_project_root
 from .observations import (
     ObservationSession,
     observe_outcome_dependencies,
@@ -33,8 +31,9 @@ from .runtime import (
     RULES_VERSION,
     prepare_adjudication_record,
     render_policy,
-    scan_log,
+    scan_policy,
 )
+from .scan import ScanRequest, scan_log
 from .target_records import (
     CACHE_FILENAME,
     RECORD_FILENAME,
@@ -70,6 +69,15 @@ class CompletionRequest:
     prior_record: Mapping[str, Any]
     review_judgments: list[dict[str, Any]]
     publish: bool
+
+
+def _project_root(summary_path: Path) -> Path:
+    """Infer the on-disk project root without consulting source control."""
+
+    for parent in summary_path.parents:
+        if parent.name == "docs":
+            return parent.parent
+    return summary_path.parent
 
 
 def _load_target_state(
@@ -115,7 +123,7 @@ def _cached_completion(
         session,
         outcomes,
         cache.get("files", {}),
-        find_project_root(summary_path),
+        _project_root(summary_path),
     )
     retained, reopened = retain_compatible_outcomes(outcomes, observed)
     if reopened or len(retained) != len(outcomes):
@@ -159,11 +167,24 @@ def _target_record(
     return record
 
 
-def _target_cache(bundle: Any) -> dict[str, Any]:
+def _target_cache(bundle: Any, scan: ScanRecord) -> dict[str, Any]:
     state = bundle.state
     files = copy.deepcopy(state.get("input_files", {}))
     for path, identity in state.get("files", {}).items():
         files.setdefault(path, copy.deepcopy(identity))
+    for identity, raw_path in scan.get("resolved_paths", {}).items():
+        if identity not in files:
+            continue
+        try:
+            metadata = Path(raw_path).stat()
+        except OSError:
+            continue
+        files[identity] = {
+            **files[identity],
+            "size": metadata.st_size,
+            "mtime_ns": metadata.st_mtime_ns,
+            "ctime_ns": metadata.st_ctime_ns,
+        }
     cache = empty_cache()
     cache["files"] = files
     cache["directories"] = copy.deepcopy(state.get("directory_memberships", {}))
@@ -223,7 +244,7 @@ def _complete_adjudication(
     target_record = _target_record(request.summary, bundle, request.prior_record)
     _merge_review_judgments(target_record, request.review_judgments)
     target_record["continuation"] = None
-    target_cache = _target_cache(bundle)
+    target_cache = _target_cache(bundle, request.scan)
     if request.publish:
         publish_target_bundle(
             request.output_dir, bundle.report_text, target_record, target_cache
@@ -307,14 +328,13 @@ def validate(
         if cached is not None:
             cached["state_status"] = state_status
             return cached
-        project_root = find_project_root(summary_path)
-        summaries = discover_repository_summaries(project_root)
+        project_root = _project_root(summary_path)
         repository = replacement_repository_view(
             project_root,
             summary_path,
             RULES_VERSION,
             MATERIAL_INVENTORY_POLICY,
-            summaries=summaries,
+            summaries=[summary_path],
         )
         prior_state_path = output_dir / "validation-state.json"
         prior_state = (
@@ -329,11 +349,17 @@ def validate(
             else None
         )
         scan, metrics = scan_log(
-            summary_path,
-            jobs=jobs,
-            prior_state=prior_state,
-            repository_index=repository,
-            prior_decisions=prior_decisions,
+            ScanRequest(
+                summary_path,
+                jobs,
+                prior_state,
+                repository,
+                RULES_VERSION,
+                "standard",
+                scan_policy(),
+                prior_decisions,
+                project_root,
+            )
         )
         adjudication = prepare_adjudication_record(
             scan, result_date or date.today().isoformat()

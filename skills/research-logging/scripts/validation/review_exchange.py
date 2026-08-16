@@ -2304,9 +2304,27 @@ def durable_review_judgments(
                 inputs = review_judgment_inputs(
                     scan, adjudication, queue_item, row, row["decision"]
                 )
+        subject = {
+            "kind": row["kind"],
+            "entry": row["entry"],
+            "identity": row["identity"],
+            **({"material": row["material"]} if "material" in row else {}),
+        }
+        rule_dependencies = (
+            SUBTREE_RULE_DEPENDENCIES
+            if row["kind"] == SUBTREE_REVIEW_KIND
+            else SEMANTIC_REVIEW_RULES
+        )
         judgments.append(
             {
-                "identity": row["id"],
+                "identity": _fingerprint(
+                    {
+                        "subject": subject,
+                        "decision": row["decision"],
+                        "rule_dependencies": rule_dependencies,
+                        "input_dependencies": inputs,
+                    }
+                ),
                 "kind": "review-decision",
                 "result": (
                     str(row["decision"].get("disposition"))
@@ -2327,21 +2345,8 @@ def durable_review_judgments(
                 ),
                 "decision": copy.deepcopy(row["decision"]),
                 "decision_date": decision_date,
-                "subject": {
-                    "kind": row["kind"],
-                    "entry": row["entry"],
-                    "identity": row["identity"],
-                    **(
-                        {"material": row["material"]}
-                        if "material" in row
-                        else {}
-                    ),
-                },
-                "rule_dependencies": (
-                    SUBTREE_RULE_DEPENDENCIES
-                    if row["kind"] == SUBTREE_REVIEW_KIND
-                    else SEMANTIC_REVIEW_RULES
-                ),
+                "subject": subject,
+                "rule_dependencies": rule_dependencies,
                 "input_dependencies": inputs,
                 "rationale": row["rationale"],
                 "rationale_provenance": "recorded",

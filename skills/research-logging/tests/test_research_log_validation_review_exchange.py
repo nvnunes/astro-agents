@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from research_log_validation_test_support import write
 
@@ -61,6 +62,52 @@ def fill_page(path: Path) -> None:
 
 
 class DeferredOrphanReviewTests(unittest.TestCase):
+    def test_durable_judgment_identity_changes_with_dependency_projection(
+        self,
+    ) -> None:
+        row = {
+            "id": "template-subject",
+            "kind": "upstream_producer",
+            "entry": "e001",
+            "identity": "docs/mini/result.csv",
+            "material": "docs/mini/input.csv",
+            "decision": "e001:invocation",
+            "rationale": "The recorded invocation produces this material.",
+        }
+        decisions = {"schema_version": 1, "items": [row]}
+        scan = {"entries": []}
+        adjudication = {
+            "review_queue": [
+                {
+                    "kind": "upstream_producer",
+                    "entry": "e001",
+                    "identity": "docs/mini/result.csv",
+                }
+            ]
+        }
+        dependency = {
+            "kind": "exact-material",
+            "semantic_identity": "exact-material:docs/mini/input.csv",
+            "projection_version": 1,
+            "content_identity": "a" * 64,
+            "relationship": "input",
+        }
+
+        with mock.patch.object(EXCHANGE, "review_judgment_inputs", return_value=[]):
+            legacy = EXCHANGE.durable_review_judgments(
+                decisions, "2026-08-16", scan, adjudication
+            )[0]
+        with mock.patch.object(
+            EXCHANGE, "review_judgment_inputs", return_value=[dependency]
+        ):
+            current = EXCHANGE.durable_review_judgments(
+                decisions, "2026-08-16", scan, adjudication
+            )[0]
+
+        self.assertEqual(legacy["subject"], current["subject"])
+        self.assertEqual(legacy["decision"], current["decision"])
+        self.assertNotEqual(legacy["identity"], current["identity"])
+
     def test_ordinary_resume_rejects_a_superseded_rules_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

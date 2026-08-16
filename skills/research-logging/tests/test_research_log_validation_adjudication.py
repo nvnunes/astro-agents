@@ -238,8 +238,6 @@ class DecisionApplicationTests(unittest.TestCase):
                 "resolved_paths": {},
                 "script_inventory": [],
                 "entries": [],
-                "repository_edges": [],
-                "material_owners": {},
             },
             {
                 "date": "2026-08-11",

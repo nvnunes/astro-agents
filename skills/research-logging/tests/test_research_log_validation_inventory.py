@@ -17,9 +17,8 @@ EXCLUDED_NAMES = {
     "data.csv",
     "evidence.csv",
     "refs.bib",
-    "validation-failures.md",
-    "validation-index.json",
-    "validation-state.json",
+    "validation-cache.json",
+    "validation-record.json",
     "validation.md",
 }
 

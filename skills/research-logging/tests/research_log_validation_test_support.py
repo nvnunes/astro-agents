@@ -14,7 +14,6 @@ from unittest import mock
 
 __all__ = [
     "ADJUDICATION",
-    "CANONICAL_SCAN_LOG",
     "CLI",
     "CONTRACTS",
     "DECISIONS",
@@ -23,10 +22,8 @@ __all__ = [
     "GRAPH",
     "GRAPH_ADAPTER",
     "GRAPH_QUERIES",
-    "GRAPH_STORE",
     "INVENTORY",
     "IDENTITIES",
-    "PUBLICATION",
     "REPORT",
     "RECORDS",
     "RENDER",
@@ -59,7 +56,6 @@ sys.path.insert(0, str(SCRIPT.parent))
 GRAPH = importlib.import_module("validation.graph")
 GRAPH_ADAPTER = importlib.import_module("validation.graph_adapter")
 GRAPH_QUERIES = importlib.import_module("validation.graph_queries")
-GRAPH_STORE = importlib.import_module("validation.graph_store")
 ADJUDICATION = importlib.import_module("validation.adjudication")
 CLI = importlib.import_module("validation.cli")
 CONTRACTS = importlib.import_module("validation.contracts")
@@ -68,43 +64,12 @@ DISCOVERY = importlib.import_module("validation.discovery")
 EVIDENCE = importlib.import_module("validation.evidence")
 INVENTORY = importlib.import_module("validation.inventory")
 IDENTITIES = importlib.import_module("validation.identities")
-PUBLICATION = importlib.import_module("validation.publication")
 REPORT = importlib.import_module("validation.report")
 RUNTIME = importlib.import_module("validation.runtime")
 RENDER = importlib.import_module("validation.render")
 REVIEW_INDEX = importlib.import_module("validation.review_index")
 SCAN = importlib.import_module("validation.scan")
 RECORDS = importlib.import_module("validation.records")
-STATE = importlib.import_module("validation.state")
-CANONICAL_SCAN_LOG = RUNTIME.scan_log
-
-
-def isolated_scan_log(*args: Any, **kwargs: Any) -> Any:
-    """Supply a current edge-empty repository view used by isolated fixtures."""
-
-    if len(args) < 4 and kwargs.get("repository_index") is None:
-        rules_version = str(kwargs.get("rules_version", RUNTIME.RULES_VERSION))
-        summary = Path(args[0] if args else kwargs["summary_path"])
-        project_root = INVENTORY.find_project_root(summary.resolve())
-        kwargs["repository_index"] = GRAPH_STORE.repository_view(
-            rules_version,
-            GRAPH_STORE.repository_material_owners(
-                project_root, RUNTIME.MATERIAL_INVENTORY_POLICY
-            ),
-            [],
-            scope=GRAPH_STORE.RepositoryViewScope(
-                kind="replacement",
-                expected_summaries=[
-                    INVENTORY.display_path(summary.resolve(), project_root)
-                ],
-                refresh_summary=INVENTORY.display_path(summary.resolve(), project_root),
-                cross_log_complete=True,
-            ),
-        )
-    return CANONICAL_SCAN_LOG(*args, **kwargs)
-
-
-RUNTIME.scan_log = isolated_scan_log
 
 
 def write(path: Path, text: str) -> None:

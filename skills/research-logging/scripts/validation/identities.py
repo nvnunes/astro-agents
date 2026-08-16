@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -101,26 +100,6 @@ def validation_file_identity(
     return file_identity(path)
 
 
-def repository_validation_identity(
-    project_root: Path,
-    identity: str,
-    summary_paths: Sequence[Path],
-) -> dict[str, Any]:
-    """Apply persisted validation identity semantics to a repository source."""
-
-    candidate = Path(identity)
-    path = (
-        candidate if candidate.is_absolute() else project_root / candidate
-    ).resolve()
-    summaries = [summary.resolve() for summary in summary_paths]
-    if path in summaries:
-        return summary_validation_identity(path)
-    if path.suffix.lower() == ".md" and any(
-        path.is_relative_to(summary.with_suffix("") / "entries")
-        for summary in summaries
-    ):
-        return entry_validation_identity(path)
-    return file_identity(path)
 
 
 def text_content_identity(text: str) -> dict[str, Any]:

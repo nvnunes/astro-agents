@@ -28,6 +28,7 @@ from .contracts import (
 )
 from .evidence import NUMBER_RE, numeric_value_equivalent
 from .producer_bindings import (
+    resolved_identity_cache,
     workflow_check,
 )
 from .review_batches import (
@@ -70,6 +71,7 @@ class TargetPreparationContext:
     mode: str
     mechanical_support: Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, str]]
     review_session: Optional[ReviewQuerySession] = None
+    identity_cache: Optional[Mapping[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -187,8 +189,6 @@ def merge_reused_dependencies(
 def prepare_orphan_items(
     entry: Mapping[str, Any],
     prior_orphan: Mapping[str, Any],
-    *,
-    deferred: bool = False,
 ) -> PreparedOrphans:
     """Prepare one entry's item-level orphan dispositions and review row."""
 
@@ -203,15 +203,6 @@ def prepare_orphan_items(
     }
     orphan_items = []
     for candidate in orphan_inventory:
-        if deferred:
-            orphan_items.append(
-                {
-                    "identity": candidate["identity"],
-                    "decision": "deferred",
-                    "basis": "cross-log-incomplete",
-                }
-            )
-            continue
         orphan_items.append(
             (
                 prior_items.get(
@@ -835,7 +826,10 @@ def prepare_evidence_target(
             }
         )
     workflow, workflow_dependencies = workflow_check(
-        entry, target, cast(ScanRecord, context.scan)
+        entry,
+        target,
+        cast(ScanRecord, context.scan),
+        context.identity_cache,
     )
     review_session = context.review_session or ReviewQuerySession(
         ReviewContextIndex.build(cast(ScanRecord, context.scan))
@@ -950,7 +944,6 @@ def prepare_entry_row(
     orphans = prepare_orphan_items(
         entry,
         prior_orphan,
-        deferred=not context.scan["repository_scope"]["cross_log_complete"],
     )
     targets.extend(orphans.targets)
     review_items.extend(orphans.review_items)
@@ -995,6 +988,7 @@ def prepare_adjudication(
         mode,
         policy.mechanical_support,
         ReviewQuerySession(ReviewContextIndex.build(scan)),
+        resolved_identity_cache(scan),
     )
     entry_rows = []
     for entry in scan["entries"]:

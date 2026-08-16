@@ -22,9 +22,7 @@ from typing import (
     cast,
 )
 
-from .compatibility import components_compatible
 from .contracts import (
-    CanonicalRepositoryView,
     FileChangedError,
     LifecycleRecordContractError,
     ScanRecord,
@@ -45,23 +43,16 @@ from .discovery import (
 )
 from .graph import (
     DependencyGraph,
-    GraphContractError,
 )
 from .graph_adapter import build_dependency_graph
 from .graph_queries import orphan_locations
-from .graph_store import (
-    inbound_dependencies,
-    validate_repository_view,
-)
 from .identities import (
     entry_validation_identity,
     summary_validation_identity,
 )
 from .incremental import (
     IncrementalOperations,
-    IncrementalPolicy,
-    apply_decision_store_reuse,
-    compare_prior_state,
+    compare_prior_record,
 )
 from .inventory import (
     MaterialInventoryPolicy,
@@ -82,54 +73,7 @@ from .observations import (
     NEW,
     ObservationSession,
 )
-from .records import LOCK_FILENAME, record_bundle_identity
-from .state import (
-    ValidationStateContractError,
-    decode_validation_state,
-)
-
-
-def validated_repository_view(
-    repository_index: Optional[CanonicalRepositoryView], rules_version: str
-) -> Dict[str, Any]:
-    """Validate the explicit repository view used by one scan."""
-
-    if repository_index is None:
-        raise ValidationToolError(
-            "scan_log requires an explicit canonical repository view; use "
-            "empty_repository_view only for an isolated diagnostic"
-        )
-    try:
-        edges = validate_repository_view(repository_index, rules_version)
-    except GraphContractError as exc:
-        raise ValidationToolError(f"repository view is invalid: {exc}") from exc
-    return {"status": "unchanged", "edges": len(edges)}
-
-
-def decoded_prior_state(
-    prior_state: Optional[Dict[str, Any]],
-    rules_version: str,
-    state_schema_version: int,
-) -> Optional[Dict[str, Any]]:
-    """Return structurally safe cache state for compatible scan shortcuts."""
-
-    if not isinstance(prior_state, dict):
-        return None
-    try:
-        decoded = decode_validation_state(
-            prior_state,
-            schema_version=state_schema_version,
-        )
-    except ValidationStateContractError:
-        return None
-    versions = decoded["component_versions"]
-    compatible, _ = components_compatible(
-        {
-            name: versions.get(name)
-            for name in ("material_identity", "mechanical_inspection")
-        }
-    )
-    return dict(decoded) if compatible else None
+from .records import LOCK_FILENAME
 
 
 def validated_jobs(jobs: object) -> int:
@@ -1160,8 +1104,8 @@ def orphan_scope_entries(inputs: OrphanScopeInput) -> list[Dict[str, Any]]:
     return extra_entries
 
 
-def classify_graph_orphan_inventory(scan: Mapping[str, Any]) -> DependencyGraph:
-    """Populate initial orphan candidates from the canonical dependency graph."""
+def classify_local_orphan_inventory(scan: Mapping[str, Any]) -> DependencyGraph:
+    """Populate orphan candidates from this log's deterministic local graph."""
 
     graph = build_dependency_graph(scan)
     namespace = Path(str(scan["summary"])).with_suffix("").as_posix()
@@ -1176,89 +1120,27 @@ def classify_graph_orphan_inventory(scan: Mapping[str, Any]) -> DependencyGraph:
     return graph
 
 
-def _classify_orphans_with_complete_cross_log_view(scan: Mapping[str, Any]) -> None:
-    """Classify orphans only when every maintained log has a current slice."""
-
-    if scan["repository_scope"]["cross_log_complete"]:
-        classify_graph_orphan_inventory(scan)
-
-
 def _json_fingerprint(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _applicable_repository_fingerprint(scan: Mapping[str, Any]) -> Dict[str, Any]:
-    """Return repository facts capable of changing this log's outcomes."""
-
-    dependencies = scan.get("repository_dependencies", [])
-    consumers = {
-        dependency.get("consumer")
-        for dependency in dependencies
-        if isinstance(dependency.get("consumer"), str)
-    }
-    referenced = set(scan.get("resolved_paths", {}))
-    referenced.update(
-        dependency.get("path")
-        for dependency in dependencies
-        if isinstance(dependency.get("path"), str)
-    )
-    owners = scan.get("repository_material_owners", {})
-    sources = scan.get("repository_cross_log_sources", {})
-    slices = scan.get("repository_slices", {})
-    scope = scan.get("repository_scope", {})
-    return {
-        "dependencies": dependencies,
-        "material_owners": {
-            path: owners[path] for path in sorted(referenced & set(owners))
-        },
-        "cross_log_sources": {
-            summary: sources[summary] for summary in sorted(consumers & set(sources))
-        },
-        "slices": {
-            summary: {
-                "graph_identity": slices[summary]["graph_identity"],
-                "source_identity": slices[summary]["source_identity"],
-            }
-            for summary in sorted(consumers & set(slices))
-        },
-        "scope": {
-            "refresh_summary": scope.get("refresh_summary"),
-            "cross_log_complete": scope.get("cross_log_complete"),
-        },
-    }
 
 
 def _owned_snapshot_payload(
     summary: str,
     files: Mapping[str, Any],
     directory_memberships: Mapping[str, Any],
-    maintained_summaries: Sequence[str],
 ) -> Dict[str, Any]:
-    """Return complete local source identities without foreign-log inputs."""
-
-    local_root = Path(summary).with_suffix("").as_posix()
-    foreign_roots = tuple(
-        f"{Path(candidate).with_suffix('').as_posix()}/"
-        for candidate in maintained_summaries
-        if Path(candidate).with_suffix("").as_posix() != local_root
-    )
-
-    def local(identity: str) -> bool:
-        return not identity.startswith(foreign_roots)
-
+    """Return complete source identities observed by this log."""
     return {
         "schema": "local-research-snapshot-v1",
         "summary": summary,
         "files": {
             identity: content_identity(value)
             for identity, value in sorted(files.items())
-            if local(identity)
         },
         "directory_memberships": {
             identity: value
             for identity, value in sorted(directory_memberships.items())
-            if local(identity)
         },
     }
 
@@ -1266,12 +1148,10 @@ def _owned_snapshot_payload(
 def _local_snapshot_payload(scan: Mapping[str, Any]) -> Dict[str, Any]:
     """Return source identities sufficient to reproduce every local projection."""
 
-    maintained = scan.get("repository_scope", {}).get("expected_summaries", [])
     return _owned_snapshot_payload(
         scan["summary"],
         scan.get("files", {}),
         scan.get("directory_memberships", {}),
-        maintained,
     )
 
 
@@ -1282,11 +1162,9 @@ def local_snapshot_identity(scan: Mapping[str, Any]) -> str:
 
 
 def input_fingerprint(scan: Mapping[str, Any]) -> str:
-    """Fingerprint the complete local and applicable cross-log scan surface."""
+    """Fingerprint the complete input surface observed for this log."""
 
-    payload = _local_snapshot_payload(scan)
-    payload["repository"] = _applicable_repository_fingerprint(scan)
-    return _json_fingerprint(payload)
+    return _json_fingerprint(_local_snapshot_payload(scan))
 
 
 @dataclass(frozen=True)
@@ -1294,7 +1172,7 @@ class ScanDocumentFacts:
     """Document and evidence facts assembled by one scan."""
 
     entry_order: Sequence[str]
-    reconciliation: Mapping[str, Any]
+    entry_listing: Mapping[str, Any]
     summary_items: Sequence[Dict[str, Any]]
     entries: Sequence[Dict[str, Any]]
     summary_evidence: Mapping[str, Any]
@@ -1316,14 +1194,6 @@ class ScanMaterialFacts:
 
 
 @dataclass(frozen=True)
-class ScanRepositoryFacts:
-    """Exact repository dependency view consumed by one scan."""
-
-    dependencies: Sequence[Dict[str, Any]]
-    view: CanonicalRepositoryView
-
-
-@dataclass(frozen=True)
 class ScanAssembly:
     """Typed owner of the deterministic scan-record assembly boundary."""
 
@@ -1335,18 +1205,14 @@ class ScanAssembly:
     project_root: str
     documents: ScanDocumentFacts
     materials: ScanMaterialFacts
-    repository: ScanRepositoryFacts
-    durable_record_identity: str
     component_versions: Mapping[str, int]
     input_projection_versions: Mapping[str, int]
-    graph_contract_version: int
 
     def record(self) -> ScanRecord:
         """Serialize the typed assembly into the persisted scan contract."""
 
         documents = self.documents
         materials = self.materials
-        repository = self.repository
         return cast(
             ScanRecord,
             {
@@ -1354,13 +1220,12 @@ class ScanAssembly:
                 "validation_rules_version": self.rules_version,
                 "component_versions": dict(self.component_versions),
                 "input_projection_versions": dict(self.input_projection_versions),
-                "graph_contract_version": self.graph_contract_version,
                 "requested_mode": self.mode,
                 "summary": self.summary,
                 "log_root": self.log_root,
                 "project_root": self.project_root,
                 "entry_order": list(documents.entry_order),
-                "reconciliation": dict(documents.reconciliation),
+                "entry_listing": dict(documents.entry_listing),
                 "summary_items": list(documents.summary_items),
                 "entries": list(documents.entries),
                 "evidence_records": {
@@ -1382,16 +1247,6 @@ class ScanAssembly:
                     path: list(dependencies)
                     for path, dependencies in materials.script_dependency_graph.items()
                 },
-                "repository_dependencies": list(repository.dependencies),
-                "repository_material_owners": dict(repository.view["material_owners"]),
-                "repository_cross_log_sources": dict(
-                    repository.view["cross_log_sources"]
-                ),
-                "repository_slices": dict(repository.view["slices"]),
-                "repository_scope": dict(repository.view["scope"]),
-                "repository_view_identity": repository.view["identity"],
-                "repository_graph_edges": list(repository.view["graph_edges"]),
-                "durable_record_identity": self.durable_record_identity,
                 "input_fingerprint": "",
             },
         )
@@ -1405,7 +1260,6 @@ class ScanLifecyclePolicy:
     """Versions and concrete mechanics governing one complete log scan."""
 
     scan_schema_version: int
-    state_schema_version: int
     orphan_inventory_version: int
     validation_record_names: tuple[str, ...]
     material_inventory: MaterialInventoryPolicy
@@ -1415,7 +1269,6 @@ class ScanLifecyclePolicy:
     incremental_operations: IncrementalOperations
     component_versions: Mapping[str, int]
     input_projection_versions: Mapping[str, int]
-    graph_contract_version: int
 
 
 class ScanRequest(NamedTuple):
@@ -1423,12 +1276,11 @@ class ScanRequest(NamedTuple):
 
     summary_path: Path
     jobs: int
-    prior_state: Optional[Dict[str, Any]]
-    repository_index: Optional[CanonicalRepositoryView]
+    prior_record: Optional[Dict[str, Any]]
+    prior_cache: Optional[Dict[str, Any]]
     rules_version: str
     mode: str
     policy: ScanLifecyclePolicy
-    prior_decisions: Optional[Dict[str, Any]]
     project_root: Optional[Path] = None
 
 
@@ -1559,7 +1411,7 @@ def _finalize_scan_facts(
             *[entry["id"] for entry in discovery["listed"]],
             *[entry["id"] for entry in orphan_entries],
         ],
-        reconciliation={
+        entry_listing={
             "missing_entries": discovery["missing"],
             "unlisted_entries": [
                 display_path(Path(path), project_root)
@@ -1640,26 +1492,15 @@ def _apply_scan_reuse(
     request: ScanRequest,
     policy: ScanLifecyclePolicy,
 ) -> None:
-    if request.prior_state is not None:
-        raw_scan["incremental"] = compare_prior_state(
+    if request.prior_record is not None:
+        raw_scan["incremental"] = compare_prior_record(
             cast(Dict[str, Any], raw_scan),
-            request.prior_state,
-            IncrementalPolicy(
-                policy.state_schema_version, policy.orphan_inventory_version
-            ),
+            request.prior_record,
             policy.incremental_operations,
         )
         raw_scan["resolved_paths"] = dict(
             sorted(raw_scan["resolved_paths"].items())
         )
-    decision_reuse = apply_decision_store_reuse(
-        cast(Dict[str, Any], raw_scan),
-        raw_scan.get("incremental"),
-        request.prior_decisions,
-        policy.incremental_operations,
-    )
-    if decision_reuse is not None:
-        raw_scan["incremental"] = decision_reuse
 
 
 def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
@@ -1674,23 +1515,13 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     if not summary_path.is_file():
         raise ValidationToolError(f"summary does not exist: {summary_path}")
     log_root = summary_path.with_suffix("")
-    prior_durable = record_bundle_identity(
-        log_root, ("validation-decisions.json", "validation.md")
-    )
     project_root = request.project_root or find_project_root(summary_path)
-    repository_metrics = validated_repository_view(
-        request.repository_index, request.rules_version
-    )
-    assert request.repository_index is not None
-    prior = decoded_prior_state(
-        request.prior_state,
-        request.rules_version,
-        policy.state_schema_version,
-    )
+    prior_cache = request.prior_cache or {}
+    prior = {
+        "input_files": prior_cache.get("files", {}),
+        "mechanical_checks": prior_cache.get("inspections", {}),
+    }
     summary_identity = display_path(summary_path, project_root)
-    repository_dependencies = inbound_dependencies(
-        request.repository_index, summary_identity
-    )
     discovery = discover_entries(
         summary_path,
         log_root,
@@ -1821,15 +1652,10 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         project_root=project_root.as_posix(),
         documents=finalized.documents,
         materials=finalized.materials,
-        repository=ScanRepositoryFacts(
-            repository_dependencies, request.repository_index
-        ),
-        durable_record_identity=prior_durable,
         component_versions=policy.component_versions,
         input_projection_versions=policy.input_projection_versions,
-        graph_contract_version=policy.graph_contract_version,
     ).record()
-    _classify_orphans_with_complete_cross_log_view(raw_scan)
+    classify_local_orphan_inventory(raw_scan)
     raw_scan["input_fingerprint"] = input_fingerprint(raw_scan)
     _apply_scan_reuse(raw_scan, request, policy)
     metrics = scan_metrics(
@@ -1842,7 +1668,6 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
             finalized.bytes_hashed,
             finalized.files_reused,
             finalized.inspections_reused,
-            repository_metrics,
         )
     )
     if "incremental" in raw_scan:
@@ -1861,7 +1686,6 @@ class ScanMetricsInput(NamedTuple):
     bytes_hashed: int
     files_reused: int
     inspections_reused: int
-    repository_metrics: Mapping[str, Any]
 
 
 def _section_count(entries: Sequence[Mapping[str, Any]], section_type: str) -> int:
@@ -1911,9 +1735,6 @@ def scan_metrics(inputs: ScanMetricsInput) -> ValidationMetrics:
             "bytes_hashed": inputs.bytes_hashed,
             "files_reused": inputs.files_reused,
             "inspections_reused": inputs.inspections_reused,
-            "repository_index_status": inputs.repository_metrics["status"],
-            "repository_index_edges": inputs.repository_metrics["edges"],
-            "repository_dependencies": len(scan["repository_dependencies"]),
         },
     )
 
@@ -1928,10 +1749,3 @@ def add_incremental_metrics(metrics: ValidationMetrics, scan: ScanRecord) -> Non
     metrics["semantic_review_required"] = incremental.get(
         "semantic_review_required", True
     )
-    metrics["semantic_judgments_reused"] = incremental.get(
-        "decision_judgments_reused", 0
-    )
-    if incremental.get("status") == "unchanged":
-        metrics["cached_result"] = cast(
-            Dict[str, Any], incremental.get("cached_result")
-        )

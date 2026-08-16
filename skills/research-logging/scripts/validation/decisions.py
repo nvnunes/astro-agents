@@ -40,6 +40,7 @@ from .graph_queries import (
     target_provenance_seeds,
 )
 from .producer_bindings import (
+    ProducerBindingOptions,
     check_workflow_command,
     identity_for_path,
     producer_bindings_for_check,
@@ -304,7 +305,12 @@ def semantic_failure_bases(item: Mapping[str, Any]) -> set[str]:
 
 
 def _decision_target(
-    adjudication: Mapping[str, Any], entry_id: str, identity: str
+    adjudication: Mapping[str, Any],
+    entry_id: str,
+    identity: str,
+    sections: Any = None,
+    *,
+    allow_equivalent: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Return the unique adjudication row named by a review-queue item."""
 
@@ -328,6 +334,15 @@ def _decision_target(
             if row.get("target") == identity
         ]
         kind = "entry"
+    if len(matches) > 1 and isinstance(sections, list):
+        matches = [row for row in matches if row.get("sections") == sections]
+    if len(matches) > 1 and allow_equivalent:
+        normalized = [
+            {key: value for key, value in row.items() if key != "sections"}
+            for row in matches
+        ]
+        if all(row == normalized[0] for row in normalized[1:]):
+            matches = matches[:1]
     if len(matches) != 1:
         raise ValidationToolError(
             f"review decision target is not unique: {entry_id}: {identity}"
@@ -854,9 +869,7 @@ def _reconcile_collection_queue(
             }
         )
     else:
-        queued["collections"] = sorted(
-            set(queued.get("collections", [])) | set(collections)
-        )
+        queued["collections"] = sorted(set(collections))
 
 
 def reconcile_semantic_dependencies(
@@ -957,7 +970,7 @@ def reconcile_semantic_dependencies(
 
 
 def _ensure_orphan_row(entry: Dict[str, Any]) -> None:
-    """Create the catch-all row when graph reconciliation reopens review."""
+    """Create the catch-all row when local reachability reopens review."""
 
     if any(row.get("target") == ORPHAN_TARGET for row in entry.get("targets", [])):
         return
@@ -995,8 +1008,6 @@ def reconcile_graph_orphans(
     """Make graph reachability authoritative for orphan classification."""
 
     graph = build_dependency_graph(scan, adjudication)
-    if not scan.get("repository_scope", {}).get("cross_log_complete", True):
-        return graph
     namespace = Path(scan["summary"]).with_suffix("").as_posix()
     graph_orphans = orphan_locations(graph, namespace)
     queue = adjudication.get("review_queue", [])
@@ -1417,7 +1428,7 @@ def _apply_review_item(context: _ReviewDecisionContext) -> None:
                 binding["material"],
                 binding["invocation"],
                 context.row.get("dependencies", []),
-                producer_basis="upstream-reviewed",
+                ProducerBindingOptions("upstream-reviewed"),
             )
         context.row["producer_bindings"] = [
             existing[key] for key in sorted(existing)
@@ -1673,7 +1684,13 @@ def apply_review_decisions(
                 raise ValidationToolError(
                     "review queue items require string entry and identity fields"
                 )
-            kind, row = _decision_target(result, entry_id, identity)
+            kind, row = _decision_target(
+                result,
+                entry_id,
+                identity,
+                item.get("sections"),
+                allow_equivalent=decision == "keep",
+            )
             _apply_review_item(
                 _ReviewDecisionContext(
                     scan=scan,

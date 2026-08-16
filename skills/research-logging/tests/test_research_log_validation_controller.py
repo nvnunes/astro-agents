@@ -10,6 +10,7 @@ from unittest import mock
 from research_log_validation_test_support import CLI, make_log, write
 
 CONTROLLER = importlib.import_module("validation.controller")
+EXCHANGE = importlib.import_module("validation.review_exchange")
 TARGET = importlib.import_module("validation.target_records")
 
 
@@ -32,39 +33,6 @@ def make_no_semantic_log(root: Path) -> Path:
 
 
 class ValidationControllerTests(unittest.TestCase):
-    def test_v45_orphan_outcomes_declare_retired_local_orphan_rule(self) -> None:
-        state = {
-            "component_versions": {
-                "material_identity": 1,
-                "orphan_graph": 1,
-                "orphan_inventory": 1,
-            },
-            "completed_checks": [
-                {
-                    "target": "Orphaned artifacts, scripts, and references",
-                    "rule_dependencies": {"material_identity": 1},
-                },
-                {
-                    "target": "result.csv",
-                    "rule_dependencies": {"material_identity": 1},
-                },
-            ],
-        }
-
-        migrated = CONTROLLER._v45_state_with_local_orphan_dependencies(state)
-
-        self.assertEqual(
-            migrated["completed_checks"][0]["rule_dependencies"]["orphan_graph"],
-            1,
-        )
-        self.assertNotIn(
-            "orphan_graph",
-            migrated["completed_checks"][1]["rule_dependencies"],
-        )
-        self.assertNotIn(
-            "orphan_graph", state["completed_checks"][0]["rule_dependencies"]
-        )
-
     def test_no_semantic_log_completes_and_publishes_only_target_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
@@ -118,7 +86,10 @@ class ValidationControllerTests(unittest.TestCase):
                 CONTROLLER, "scan_log", side_effect=RuntimeError("interrupted")
             ):
                 failed = run_validate(
-                    summary, result_date="2026-08-16", jobs=1
+                    summary,
+                    result_date="2026-08-16",
+                    jobs=1,
+                    mode="reproduction",
                 )
             self.assertEqual(failed["status"], "error")
             self.assertTrue(failed["prior_report_retained"])
@@ -169,26 +140,24 @@ class ValidationControllerTests(unittest.TestCase):
             scanned.assert_called_once()
 
     def test_deterministic_failures_are_durable_result_data(self) -> None:
-        bundle = mock.Mock()
-        bundle.state = {
-            "validation_rules_version": "rules-v1",
-            "component_versions": {"integrity": 1},
-            "input_projection_versions": {"exact-material": 1},
-            "completed_checks": [],
-            "result": {
-                "date": "2026-08-15",
-                "failures": [
-                    {"scope": "e001", "target": "missing.csv", "checks": ["Integrity"]}
-                ],
-            },
+        assembly = mock.Mock()
+        assembly.outcome_inputs.rules_version = "rules-v1"
+        assembly.outcome_inputs.component_versions = {"integrity": 1}
+        assembly.outcome_inputs.input_projection_versions = {"exact-material": 1}
+        assembly.outcome_inputs.completed_checks = []
+        assembly.failures = [
+            {"scope": "e001", "target": "missing.csv", "checks": ["Integrity"]}
+        ]
+        assembly.result.return_value = {
+            "date": "2026-08-15",
+            "failures": assembly.failures,
         }
-        bundle.decisions = {"judgments": []}
         record = CONTROLLER._target_record(
             "docs/mini.md",
-            bundle,
+            assembly,
             TARGET.empty_record("docs/mini.md", "rules-v1"),
         )
-        self.assertEqual(record["failures"], bundle.state["result"]["failures"])
+        self.assertEqual(record["failures"], assembly.failures)
 
     def test_semantic_exchange_accepts_only_decisions_and_rationales(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -229,6 +198,132 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(len(reviewed), 1)
             self.assertEqual(reviewed[0]["rationale"], "Focused fixture decision.")
 
+    def test_collection_scope_exchange_accepts_exact_member_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = {
+                "entry": "e001",
+                "kind": "collection_scope",
+                "identity": "docs/mini/result.csv",
+                "collections": ["docs/mini/models"],
+                "reason": "select material members",
+            }
+            template_item = EXCHANGE._ordinary_template(item)
+            template_item["decision"] = {
+                "members": {
+                    "docs/mini/models": ["run-1/training-history.csv"]
+                }
+            }
+            template_item["rationale"] = "The producer reads this retained history."
+            template = {
+                "schema_version": EXCHANGE.EXCHANGE_SCHEMA_VERSION,
+                "continuation": "continuation",
+                "items": [template_item],
+            }
+            internal = {
+                "schema_version": EXCHANGE.EXCHANGE_SCHEMA_VERSION,
+                "continuation": "continuation",
+                "template": {
+                    **template,
+                    "items": [
+                        {
+                            **template_item,
+                            "decision": None,
+                            "rationale": None,
+                        }
+                    ],
+                },
+                "adjudication": {"review_queue": [item]},
+            }
+            decision_path = root / "review-decisions.json"
+            decision_path.write_text(
+                json.dumps(template, indent=2) + "\n", encoding="utf-8"
+            )
+            (root / EXCHANGE.INTERNAL_FILENAME).write_text(
+                json.dumps(internal) + "\n", encoding="utf-8"
+            )
+
+            decisions, loaded_internal = EXCHANGE.load_decisions(decision_path)
+            actions = EXCHANGE.decisions_to_actions(decisions, loaded_internal)
+
+            self.assertEqual(
+                actions["actions"],
+                [
+                    {
+                        "match": {
+                            "kind": "collection_scope",
+                            "entry": "e001",
+                            "identity": "docs/mini/result.csv",
+                        },
+                        "decision": "pass",
+                        "members": {
+                            "docs/mini/models": [
+                                "run-1/training-history.csv"
+                            ]
+                        },
+                    }
+                ],
+            )
+
+    def test_large_orphan_review_does_not_rewrite_record_between_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            summary = root / "docs" / "mini.md"
+            entry = (
+                root
+                / "docs"
+                / "mini"
+                / "entries"
+                / "2026-08-16-e001-large-orphan-review"
+                / "e001.md"
+            )
+            write(
+                summary,
+                "# Mini\n\n## Entries\n\n"
+                "- [e001](mini/entries/2026-08-16-e001-large-orphan-review/"
+                "e001.md)\n",
+            )
+            write(entry, "# Entry\n\nNo retained result claims.\n")
+            for number in range(201):
+                write(entry.parent / "data" / f"item-{number:04d}.csv", "value\n")
+
+            first = run_validate(summary, result_date="2026-08-16", jobs=1)
+            self.assertEqual(first["status"], "review_required")
+            self.assertIn("session_identity", first)
+            session_dir = Path(first["decision_file"]).parent.parent
+            self.addCleanup(
+                lambda: EXCHANGE.finish_deferred_orphan_session(session_dir)
+                if session_dir.exists()
+                else None
+            )
+            record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
+            record_before = record_path.read_bytes()
+            decision_path = Path(first["decision_file"])
+            template = json.loads(decision_path.read_text(encoding="utf-8"))
+            for item in template["items"]:
+                item["decision"] = "unresolved"
+                item["rationale"] = "No local evidence connection is recorded."
+            write(decision_path, json.dumps(template, indent=2) + "\n")
+
+            second = run_validate(summary, decision_file=decision_path, jobs=1)
+
+            self.assertEqual(second["status"], "review_required")
+            self.assertEqual(record_path.read_bytes(), record_before)
+            second_path = Path(second["decision_file"])
+            second_template = json.loads(second_path.read_text(encoding="utf-8"))
+            for item in second_template["items"]:
+                item["decision"] = "unresolved"
+                item["rationale"] = "No local evidence connection is recorded."
+            write(second_path, json.dumps(second_template, indent=2) + "\n")
+
+            completed = run_validate(
+                summary, decision_file=second_path, jobs=1
+            )
+
+            self.assertEqual(completed["status"], "complete")
+            self.assertFalse(session_dir.exists())
+
     def test_stale_or_modified_semantic_template_cannot_mutate_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))
@@ -268,17 +363,11 @@ class ValidationControllerTests(unittest.TestCase):
             other = root / "docs" / "other.md"
             (other.with_suffix("") / "entries").mkdir(parents=True)
             write(other, "# Other\n\n## Entries\n")
-            write(other.with_suffix("") / "validation-state.json", "{broken")
+            write(other.with_suffix("") / TARGET.RECORD_FILENAME, "{broken")
 
-            with (
-                mock.patch(
-                    "validation.graph_store.discover_repository_summaries",
-                    side_effect=AssertionError("population scan"),
-                ),
-                mock.patch(
-                    "validation.inventory.find_project_root",
-                    side_effect=AssertionError("Git-root lookup"),
-                ),
+            with mock.patch(
+                "validation.inventory.find_project_root",
+                side_effect=AssertionError("Git-root lookup"),
             ):
                 result = run_validate(
                     summary, result_date="2026-08-15", jobs=1

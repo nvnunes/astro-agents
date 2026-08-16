@@ -177,6 +177,45 @@ When deciding where a rule belongs:
 - if it depends on one downstream project's architecture, API, testing strategy, deployment path, or domain contracts, keep it in that project's source-of-truth docs or root `AGENTS.md`
 - if it matters only inside one subtree, keep it in that subtree's `AGENTS.md` or source-of-truth docs
 
+## Research-Log Validation Architecture
+
+This section defines the architectural invariants that constrain future
+research-log validation development. It does not describe the validation
+workflow or its implementation. Use `docs/research-logging.md` for the
+researcher-facing behavior and file contract, and use the `research-logging`
+skill for the operational procedure and implementation.
+
+Future validation changes must preserve these invariants:
+
+- **Independent logs:** Validate each research log independently.
+- **Observational validation:** A log may change while validation is in
+  progress. Validation reflects the information observed when each check was
+  performed.
+- **External evidence:** Evidence may extend across logs. Treat that material
+  as external evidence to the log being validated without adding repository
+  coordination or reconciliation requirements.
+- **Explicit uncertainty:** Missing, inaccessible, or ambiguous evidence must
+  remain visible and must not be treated as successful validation.
+- **Progressive work:** Retain valid completed work as it is produced. Do not
+  discard it merely because other validation work remains incomplete or later
+  work fails.
+- **Maximum reuse:** Reuse compatible past work to minimize validation effort.
+  Use inexpensive metadata to detect possible changes, hash content when that
+  metadata changes, and revalidate only when the content or applicable rules
+  changed.
+- **Proportional cost:** Validation time should grow approximately linearly
+  with the evidence examined wherever possible.
+- **On-disk state:** Validation is source-control agnostic and validates the
+  research material currently present on disk.
+- **Appropriate tool use:** Maximize deterministic tool use where work can be
+  specified mechanically. Reserve agent judgment for work that requires
+  semantic interpretation.
+- **Separate write ownership:** Validation agents manage validation artifacts
+  and do not modify research-log entries, scripts, or artifacts. Research
+  agents manage research material and do not modify validation artifacts.
+- **Low-cost evolution:** Changes to validation rules or implementation should
+  preserve compatible validation artifacts and minimize rebuilding.
+
 ## Validation
 
 Use skills as the primary way to review the agent surface, code quality, and project upgrades:

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     Dict,
     Iterable,
     List,
@@ -22,14 +19,10 @@ from typing import (
 from .adjudication import (
     COMPLETE_SCOPE_DESCRIPTION,
     ORPHAN_TARGET,
-    AdjudicationPreparationPolicy,
     is_success_date,
-    prepare_adjudication,
 )
 from .compatibility import (
     input_dependencies_for_check,
-    orphan_input_dependencies,
-    orphan_rule_dependencies,
     outcome_compatibility_identity,
     producer_bindings_for_check,
     rule_dependencies_for_check,
@@ -44,53 +37,28 @@ from .contracts import (
     decode_adjudication_record,
     decode_scan_record,
 )
-from .decision_store import ValidationDecisionStore, build_decision_store
-from .decisions import semantic_failure_bases
 from .discovery import section_ranges
-from .evidence import (
-    inspect_structure,
-    mechanical_evidence_support,
-)
 from .graph import (
     DependencyGraph,
-    EdgeKind,
-    NodeKind,
-    RootPolicy,
 )
 from .graph_adapter import build_dependency_graph
 from .graph_queries import (
-    display_identity,
     orphan_locations,
-    provenance_nodes,
-    target_provenance_seeds,
-)
-from .graph_store import (
-    SLICE_FILENAME,
-    repository_identity_path,
-    slice_record,
 )
 from .identities import (
-    text_content_identity,
     validation_file_identity,
 )
 from .incremental import (
     dependency_identity_snapshot,
-    orphan_item_fingerprints,
 )
 from .inventory import (
     MaterialInventoryPolicy,
     collection_identity,
     directory_membership_identity,
 )
-from .lint import LintPolicy, lint_validation_records
 from .observations import CONTENT_CHANGED, ObservationSession
-from .publication import (
-    ValidationPublicationTarget,
-    publish_validation_bundle,
-)
-from .records import LOCK_FILENAME, record_bundle_identity
+from .records import LOCK_FILENAME
 from .report import install_status_summary
-from .scan import local_snapshot_identity
 
 Failure = tuple[str, str, dict[str, Any]]
 RESULT_VALUES = {"FAIL", "-", "N/A"}
@@ -102,94 +70,12 @@ class RenderLifecyclePolicy:
 
     scan_schema_version: int
     adjudication_schema_version: int
-    state_schema_version: int
     rules_version: str
     orphan_inventory_version: int
     record_filenames: tuple[str, ...]
     material_inventory_policy: MaterialInventoryPolicy
     component_versions: Mapping[str, int]
     input_projection_versions: Mapping[str, int]
-    graph_contract_version: int
-
-
-def _json_fingerprint(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def check_graph_slice(
-    graph: DependencyGraph, check: Mapping[str, Any]
-) -> Dict[str, Any]:
-    """Return the minimum persisted graph contract supporting one outcome."""
-
-    identities = {
-        dependency["path"]
-        for dependency in check.get("dependencies", [])
-        if isinstance(dependency, dict) and isinstance(dependency.get("path"), str)
-    }
-    seeds = {
-        node.key
-        for node in graph.nodes
-        if display_identity(graph, node.key) in identities
-    }
-    if check.get("check") in {"Provenance", "Reproducibility"}:
-        target_seeds = target_provenance_seeds(
-            graph,
-            check.get("entry", ""),
-            check.get("target", ""),
-            check.get("dependencies", []),
-            check.get("resolution", {}).get("producer_invocation"),
-        )
-        selected = provenance_nodes(
-            graph,
-            ((seed, RootPolicy.PRESENTED) for seed in (target_seeds or seeds)),
-        )
-    else:
-        selected = seeds
-    candidate_edges = tuple(
-        edge
-        for node in selected
-        if node.kind in {
-            NodeKind.ARTIFACT,
-            NodeKind.COLLECTION,
-            NodeKind.MEMBER,
-            NodeKind.EXTERNAL_SOURCE,
-        }
-        for edge in graph.incoming(node, {EdgeKind.PRODUCES, EdgeKind.CAPTURES})
-    )
-    selected = selected | {edge.source for edge in candidate_edges}
-    edges = tuple(
-        edge
-        for edge in graph.edges
-        if edge.source in selected and edge.target in selected
-    )
-    roots = tuple(root for root in graph.roots if root.node in selected)
-    payload = {
-        "nodes": [
-            {
-                "key": key.as_dict(),
-                "attributes": {
-                    name: value
-                    for name, value in graph.node(key).as_dict()["attributes"].items()
-                    if name != "line"
-                },
-            }
-            for key in sorted(selected)
-        ],
-        "edges": [edge.identity for edge in edges],
-        "roots": [
-            {"node": root.node.as_dict(), "policy": root.policy.value}
-            for root in roots
-        ],
-    }
-    return {
-        "identity": _json_fingerprint(payload),
-        "nodes": [key.as_dict() for key in sorted(selected)],
-        "edges": [edge.identity for edge in edges],
-        "roots": [
-            {"node": root.node.as_dict(), "policy": root.policy.value} for root in roots
-        ],
-    }
 
 
 def validation_result(value: Any, field: str) -> str:
@@ -323,17 +209,6 @@ def _validate_summary_support_item(
 
 
 @dataclass(frozen=True)
-class GeneratedValidationBundle:
-    """Deterministic canonical content produced before publication."""
-
-    report_text: str
-    failure_text: Optional[str]
-    decisions: ValidationDecisionStore
-    state: Mapping[str, Any]
-    graph_record: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
 class RenderedSummary:
     """Rendered summary rows and the checks they establish."""
 
@@ -381,16 +256,6 @@ class RenderedReport:
     entries: int
     failed_entries: int
     orphan_scopes: int
-
-
-@dataclass(frozen=True)
-class OrphanDispositionPolicy:
-    """Version and fingerprint operation for persisted orphan dispositions."""
-
-    inventory_version: int
-    item_fingerprints: Callable[
-        [Mapping[str, Any], Mapping[str, Any]], Mapping[str, str]
-    ]
 
 
 @dataclass(frozen=True)
@@ -452,86 +317,41 @@ class RenderMeasurements:
 
 
 @dataclass(frozen=True)
-class RenderStateInputs:
-    """Validated inputs needed to serialize one canonical state record."""
+class RenderOutcomeInputs:
+    """Validated inputs needed for durable outcomes and rebuildable cache data."""
 
-    schema_version: int
     rules_version: str
     component_versions: Mapping[str, int]
     input_projection_versions: Mapping[str, int]
-    graph_contract_version: int
-    local_snapshot_identity: str
-    input_fingerprint: str
     input_files: Mapping[str, Any]
     mechanical_checks: Mapping[str, Any]
     directory_memberships: Mapping[str, Any]
     file_identities: Mapping[str, Any]
     completed_checks: Sequence[Mapping[str, Any]]
-    orphan_dispositions: Sequence[Mapping[str, Any]]
-    report_identity: Mapping[str, Any]
-    graph_identity: str
-
-    def record(self, result: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the persisted validation-state record."""
-
-        return {
-            "schema_version": self.schema_version,
-            "validation_rules_version": self.rules_version,
-            "component_versions": dict(self.component_versions),
-            "input_projection_versions": dict(self.input_projection_versions),
-            "graph_contract_version": self.graph_contract_version,
-            "local_snapshot_identity": self.local_snapshot_identity,
-            "input_fingerprint": self.input_fingerprint,
-            "input_files": dict(self.input_files),
-            "mechanical_checks": dict(self.mechanical_checks),
-            "directory_memberships": dict(self.directory_memberships),
-            "files": dict(self.file_identities),
-            "completed_checks": list(self.completed_checks),
-            "orphan_dispositions": list(self.orphan_dispositions),
-            "result": dict(result),
-            "report": dict(self.report_identity),
-            "graph_identity": self.graph_identity,
-        }
 
 
 @dataclass(frozen=True)
 class RenderAssembly:
-    """Canonical generated bundle plus its command-facing measurements."""
+    """Canonical report and native persistence inputs before publication."""
 
     report_text: str
-    failure_text: Optional[str]
-    graph_record: Mapping[str, Any]
-    state_inputs: RenderStateInputs
+    outcome_inputs: RenderOutcomeInputs
     measurements: RenderMeasurements
     date: str
     mode: str
     requested_scope: str
     scope: Mapping[str, Any]
     failures: Sequence[Mapping[str, Any]]
-    local_snapshot_identity: str
 
-    def bundle(self) -> GeneratedValidationBundle:
-        """Build deterministic content without performing publication I/O."""
+    def result(self) -> dict[str, Any]:
+        """Return the durable target result summary."""
 
-        result = self.measurements.result(
+        return self.measurements.result(
             date=self.date,
             mode=self.mode,
             requested_scope=self.requested_scope,
             scope=self.scope,
             failures=self.failures,
-        )
-        return GeneratedValidationBundle(
-            self.report_text,
-            self.failure_text,
-            build_decision_store(
-                self.state_inputs.completed_checks,
-                self.state_inputs.orphan_dispositions,
-                validation_rules_version=self.state_inputs.rules_version,
-                local_snapshot_identity=self.local_snapshot_identity,
-                report_date=self.date,
-            ),
-            self.state_inputs.record(result),
-            self.graph_record,
         )
 
     def counts(self) -> RenderCounts:
@@ -553,21 +373,7 @@ def report_header(
         f"- Report-update date: `{date}`",
         f"- Validation mode: {adjudication['mode']}",
         f"- Validation-rules version: `{adjudication['validation_rules_version']}`",
-        f"- Local snapshot identity: `{local_snapshot_identity(scan)}`",
     ]
-    if not scan["repository_scope"]["cross_log_complete"]:
-        lines.append(
-            "- Cross-log orphan review: DEFERRED pending complete current-rule slices"
-        )
-    for summary, snapshot in sorted(scan["repository_slices"].items()):
-        lines.append(
-            "- Contributing cross-log slice: "
-            f"`{summary}` at `{snapshot['graph_identity']}`"
-        )
-    for summary, reason in sorted(
-        scan["repository_scope"].get("excluded_slices", {}).items()
-    ):
-        lines.append(f"- Excluded cross-log slice: `{summary}` — {reason}")
     return lines
 
 
@@ -879,71 +685,6 @@ def validate_successful_orphan_separation(
         )
 
 
-def render_orphan_dispositions(
-    scoped_entries: Sequence[str],
-    scan_entries: Mapping[str, Mapping[str, Any]],
-    entry_rows: Sequence[Mapping[str, Any]],
-    scan: ScanRecord,
-    policy: OrphanDispositionPolicy,
-) -> List[Dict[str, Any]]:
-    """Serialize complete item-level orphan outcomes for incremental reuse."""
-
-    cross_log_complete = scan["repository_scope"]["cross_log_complete"]
-    dispositions = []
-    adjudicated = {entry["id"]: entry for entry in entry_rows}
-    for entry_id in scoped_entries:
-        scanned = scan_entries[entry_id]
-        candidates = {item["identity"] for item in scanned.get("orphan_inventory", [])}
-        if not candidates:
-            continue
-        entry = adjudicated[entry_id]
-        items = entry.get("orphan_items", [])
-        if not cross_log_complete and any(
-            item.get("decision") not in {"accepted", "unresolved"}
-            for item in items
-        ):
-            continue
-        if {item["identity"] for item in items} != candidates or any(
-            item["decision"] == "pending" for item in items
-        ):
-            raise ValidationToolError(
-                f"orphan disposition is incomplete for scope: {entry_id}"
-            )
-        unresolved = [
-            item["identity"] for item in items if item["decision"] == "unresolved"
-        ]
-        has_orphan_row = any(
-            row.get("target") == ORPHAN_TARGET for row in entry.get("targets", [])
-        )
-        if bool(unresolved) != has_orphan_row:
-            raise ValidationToolError(
-                f"orphan row and item dispositions disagree: {entry_id}"
-            )
-        fingerprints = policy.item_fingerprints(scanned, scan)
-        dispositions.append(
-            {
-                "inventory_version": policy.inventory_version,
-                "entry": entry_id,
-                "items": sorted(
-                    (
-                        {**item, "fingerprint": fingerprints[item["identity"]]}
-                        for item in items
-                    ),
-                    key=lambda item: item["identity"],
-                ),
-                "dependencies": [
-                    {"path": path, "role": "entry"}
-                    for path in entry.get("scope_paths", [entry["path"]])
-                ],
-                "rule_dependencies": orphan_rule_dependencies(),
-                "input_dependencies": orphan_input_dependencies(
-                    scan, scanned, items
-                ),
-            }
-        )
-    return dispositions
-
-
 def render_report(
     adjudication: AdjudicationRecord,
     scan_entries: Mapping[str, Mapping[str, Any]],
@@ -1086,7 +827,12 @@ def _dependency_identities(
                         f"{path}"
                     )
                 continue
-            current = collection_identity(resolved, sorted(spec["members"]))
+            try:
+                current = collection_identity(resolved, sorted(spec["members"]))
+            except (OSError, ValidationToolError) as exc:
+                if spec["successful"]:
+                    raise
+                current = {"error": str(exc)}
         else:
             current = validation_file_identity(scan, path, resolved)
         baseline = scan_files.get(path)
@@ -1145,93 +891,6 @@ def _stored_checks(
     return stored_checks
 
 
-def _mechanically_locked_outcomes(
-    prepared: Mapping[str, Any],
-) -> set[tuple[str, str, str]]:
-    queued = {
-        (item.get("entry"), item.get("identity"))
-        for item in prepared.get("review_queue", [])
-    }
-    locked = set()
-    for entry in prepared.get("entries", []):
-        for row in entry.get("targets", []):
-            if (entry["id"], row["target"]) in queued:
-                continue
-            for check in ("Integrity", "Provenance"):
-                if is_success_date(row.get(check.lower())):
-                    locked.add((entry["id"], row["target"], check))
-    return locked
-
-
-def _mechanically_failed_outcomes(
-    prepared: Mapping[str, Any],
-) -> set[tuple[str, str, str]]:
-    return {
-        (item["entry"], item["identity"], check)
-        for item in prepared.get("review_queue", [])
-        for check in item.get("hard_failures", [])
-    }
-
-
-def _reject_mechanical_success_overrides(
-    adjudication: Mapping[str, Any],
-    scan: ScanRecord,
-    policy: RenderLifecyclePolicy,
-) -> None:
-    prepared = prepare_adjudication(
-        scan,
-        adjudication["date"],
-        scan["validation_rules_version"],
-        AdjudicationPreparationPolicy(
-            policy.adjudication_schema_version,
-            lambda row, source: mechanical_evidence_support(
-                row, source, inspect_structure
-            ),
-        ),
-        adjudication["mode"],
-    )
-    locked = _mechanically_locked_outcomes(prepared)
-    failed = _mechanically_failed_outcomes(prepared)
-    mixed_review = {
-        (item.get("entry"), item.get("identity")): semantic_failure_bases(item)
-        for item in prepared.get("review_queue", [])
-        if item.get("kind") == "semantic_fallback"
-        and item.get("evidence")
-        and all(
-            evidence_item.get("result", {}).get("status") == "pass"
-            for evidence_item in item["evidence"]
-        )
-    }
-    conflicts = []
-    for entry in adjudication.get("entries", []):
-        for row in entry.get("targets", []):
-            for check in ("Integrity", "Provenance"):
-                if (entry["id"], row["target"], check) in locked and row.get(
-                    check.lower()
-                ) == "FAIL":
-                    conflicts.append(f"{entry['id']}: {row['target']}: {check}")
-                if (entry["id"], row["target"], check) in failed and row.get(
-                    check.lower()
-                ) != "FAIL":
-                    conflicts.append(
-                        f"{entry['id']}: {row['target']}: immutable {check} failure"
-                    )
-            allowed_bases = mixed_review.get((entry["id"], row["target"]))
-            if (
-                row.get("provenance") == "FAIL"
-                and allowed_bases is not None
-                and row.get("_failure_basis") not in allowed_bases
-            ):
-                conflicts.append(
-                    f"{entry['id']}: {row['target']}: unsupported semantic basis"
-                )
-    if conflicts:
-        raise ValidationToolError(
-            "adjudication overrides a mechanically resolved outcome: "
-            + "; ".join(conflicts)
-        )
-
-
 def _validate_render_header(
     adjudication: AdjudicationRecord,
     scan: ScanRecord,
@@ -1252,21 +911,6 @@ def _validate_render_header(
         raise ValidationToolError(
             "canonical rendering requires the current validation-rules version"
         )
-    durable_identity = scan.get("durable_record_identity")
-    if (
-        not isinstance(durable_identity, str)
-        or re.fullmatch(r"[0-9a-f]{64}", durable_identity) is None
-    ):
-        raise ValidationToolError("scan lacks a valid durable-record identity")
-    scope = scan.get("repository_scope", {})
-    if (
-        scope.get("kind") != "replacement"
-        or scope.get("refresh_summary") != scan.get("summary")
-        or scan.get("summary") not in scope.get("expected_summaries", [])
-    ):
-        raise ValidationToolError(
-            "canonical rendering requires a complete repository replacement view"
-        )
     if adjudication.get("log") != scan.get("summary"):
         raise ValidationToolError("adjudication and scan logs differ")
     if adjudication["review_queue"]:
@@ -1282,7 +926,6 @@ def _validate_render_graph(
     scan: ScanRecord,
     policy: RenderLifecyclePolicy,
 ) -> tuple[DependencyGraph, set[tuple[str, str]]]:
-    _reject_mechanical_success_overrides(adjudication, scan, policy)
     graph = build_dependency_graph(scan, adjudication)
     namespace = Path(scan["summary"]).with_suffix("").as_posix()
     graph_orphans = orphan_locations(graph, namespace)
@@ -1297,20 +940,6 @@ def _validate_render_graph(
         for entry in adjudication.get("entries", [])
         for item in entry.get("orphan_items", [])
     }
-    if not scan["repository_scope"]["cross_log_complete"]:
-        deferred = {
-            (entry["id"], item["identity"])
-            for entry in adjudication.get("entries", [])
-            for item in entry.get("orphan_items", [])
-            if item.get("decision") == "deferred"
-            and item.get("basis") == "cross-log-incomplete"
-        }
-        if deferred != inventory:
-            raise ValidationToolError(
-                "incomplete cross-log view requires every orphan disposition "
-                "to remain deferred"
-            )
-        return graph, set()
     expected = graph_orphans & inventory
     if unresolved - expected:
         raise ValidationToolError(
@@ -1323,7 +952,7 @@ def _validate_render_graph(
         )
     if unresolved != expected:
         raise ValidationToolError(
-            "orphan dispositions disagree with canonical graph reachability: "
+            "orphan dispositions disagree with local graph reachability: "
             f"reported-only={sorted(unresolved - expected)!r}; "
             f"graph-only={sorted(expected - unresolved)!r}"
         )
@@ -1353,12 +982,16 @@ def _validated_render_scope(
         )
     partial = not scope["summary"] or scoped_entries != expected_order
     project_root = Path(scan["project_root"])
-    canonical_output = repository_identity_path(scan["log_root"], project_root)
+    canonical_output = (project_root / scan["log_root"]).resolve()
     if output_dir.resolve() == canonical_output and (
         partial or adjudication.get("requested_scope") != COMPLETE_SCOPE_DESCRIPTION
     ):
         raise ValidationToolError("canonical rendering requires complete-log scope")
-    record_names = ("validation.md", "validation-failures.md", "validation-state.json")
+    record_names = (
+        "validation.md",
+        "validation-record.json",
+        "validation-cache.json",
+    )
     if partial and any((output_dir / name).exists() for name in record_names):
         raise ValidationToolError(
             "partial-scope rendering cannot overwrite existing validation records"
@@ -1450,7 +1083,7 @@ def _assert_scanned_directories_current(
     scan: ScanRecord, policy: RenderLifecyclePolicy
 ) -> None:
     project_root = Path(scan["project_root"])
-    log_root = repository_identity_path(scan["log_root"], project_root)
+    log_root = (project_root / scan["log_root"]).resolve()
     generated = {
         (log_root / name).resolve()
         for name in (*policy.record_filenames, LOCK_FILENAME)
@@ -1478,45 +1111,6 @@ def assert_scan_inputs_current(scan: ScanRecord, policy: RenderLifecyclePolicy) 
     _assert_scanned_directories_current(scan, policy)
 
 
-def _assert_scan_snapshot_current(
-    scan: ScanRecord,
-    policy: RenderLifecyclePolicy,
-) -> None:
-    _assert_scanned_files_current(scan)
-    _assert_scanned_directories_current(scan, policy)
-    if scan["repository_scope"]["kind"] != "replacement":
-        raise FileChangedError("scan is not bound to a publishable repository view")
-
-
-def lint_records(
-    output_dir: Path,
-    policy: RenderLifecyclePolicy,
-    expected_entry_order: Optional[Sequence[str]] = None,
-    expected_local_snapshot_identity: Optional[str] = None,
-) -> dict[str, Any]:
-    """Lint one generated canonical record bundle."""
-
-    return lint_validation_records(
-        output_dir,
-        expected_entry_order,
-        LintPolicy(
-            policy.state_schema_version,
-            policy.orphan_inventory_version,
-            ORPHAN_TARGET,
-            SLICE_FILENAME,
-        ),
-        expected_local_snapshot_identity,
-    )
-
-
-def _publication_lint(
-    output_dir: Path,
-    expected_entry_order: Optional[Sequence[str]],
-    policy: RenderLifecyclePolicy,
-) -> dict[str, Any]:
-    return lint_records(output_dir, policy, expected_entry_order)
-
-
 def assemble_records(
     adjudication: AdjudicationRecord,
     scan: ScanRecord,
@@ -1532,7 +1126,6 @@ def assemble_records(
     scoped_entries = _validated_render_scope(adjudication, scan, output_dir)
     scope = adjudication["scope"]
     summary_rows = adjudication["summary"]
-    entry_rows = adjudication["entries"]
     scan_entries = _validated_render_entries(adjudication, scan, scoped_entries)
     _validate_render_summary_scope(summary_rows, scope["summary"], scan)
     rendered = render_report(
@@ -1543,22 +1136,12 @@ def assemble_records(
         scan, list(rendered.completed_checks)
     )
     for completed, stored in zip(rendered.completed_checks, stored_checks):
-        stored["graph_slice"] = check_graph_slice(graph, completed)
         stored["input_dependencies"] = input_dependencies_for_check(scan, stored)
         stored["compatibility_identity"] = outcome_compatibility_identity(
             stored["rule_dependencies"],
             stored["input_dependencies"],
             stored.get("producer_bindings", []),
         )
-    orphan_dispositions = render_orphan_dispositions(
-        scoped_entries,
-        scan_entries,
-        entry_rows,
-        scan,
-        OrphanDispositionPolicy(
-            policy.orphan_inventory_version, orphan_item_fingerprints
-        ),
-    )
     compact_failures = [
         {
             "scope": scope_name,
@@ -1571,13 +1154,6 @@ def assemble_records(
         }
         for scope_name, identity, row in rendered.failures
     ]
-    graph_record = slice_record(
-        graph,
-        scan["summary"],
-        scan["files"],
-        scan["repository_material_owners"],
-        local_snapshot_identity=local_snapshot_identity(scan),
-    )
     measurements = RenderMeasurements(
         summary_rows=rendered.summary_rows,
         summary_failed=rendered.summary_failed,
@@ -1594,24 +1170,15 @@ def assemble_records(
     )
     assembly = RenderAssembly(
         report_text=rendered.report_text,
-        failure_text=rendered.failure_text,
-        graph_record=graph_record,
-        state_inputs=RenderStateInputs(
-            schema_version=policy.state_schema_version,
+        outcome_inputs=RenderOutcomeInputs(
             rules_version=adjudication["validation_rules_version"],
             component_versions=policy.component_versions,
             input_projection_versions=policy.input_projection_versions,
-            graph_contract_version=policy.graph_contract_version,
-            local_snapshot_identity=local_snapshot_identity(scan),
-            input_fingerprint=scan["input_fingerprint"],
             input_files=scan.get("files", {}),
             mechanical_checks=scan.get("mechanical_checks", {}),
             directory_memberships=scan.get("directory_memberships", {}),
             file_identities=identities,
             completed_checks=stored_checks,
-            orphan_dispositions=orphan_dispositions,
-            report_identity=text_content_identity(rendered.report_text),
-            graph_identity=graph_record["graph_identity"],
         ),
         measurements=measurements,
         date=date,
@@ -1619,41 +1186,6 @@ def assemble_records(
         requested_scope=adjudication["requested_scope"],
         scope=scope,
         failures=compact_failures,
-        local_snapshot_identity=local_snapshot_identity(scan),
     )
 
     return assembly
-
-
-def render_records(
-    adjudication: AdjudicationRecord,
-    scan: ScanRecord,
-    output_dir: Path,
-    policy: RenderLifecyclePolicy,
-) -> RenderCounts:
-    """Render and atomically publish authoritative validation records."""
-
-    assembly = assemble_records(adjudication, scan, output_dir, policy)
-
-    project_root = Path(scan["project_root"])
-    canonical_output = repository_identity_path(scan["log_root"], project_root)
-    expected_bundle_identity = (
-        scan["durable_record_identity"]
-        if output_dir.resolve() == canonical_output
-        else record_bundle_identity(
-            output_dir, ("validation-decisions.json", "validation.md")
-        )
-    )
-    publish_validation_bundle(
-        assembly.bundle(),
-        ValidationPublicationTarget(
-            output_dir,
-            expected_bundle_identity,
-            policy.record_filenames,
-            scan.get("entry_order", []),
-            SLICE_FILENAME,
-        ),
-        lambda: _assert_scan_snapshot_current(scan, policy),
-        lambda directory, expected: _publication_lint(directory, expected, policy),
-    )
-    return assembly.counts()

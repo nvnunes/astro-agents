@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     Dict,
     Iterable,
     List,
@@ -33,7 +32,6 @@ from .graph import (
     FactOrigin,
     GraphBuilder,
     GraphContractError,
-    GraphEdge,
     NodeKey,
     NodeKind,
     OriginInput,
@@ -41,7 +39,7 @@ from .graph import (
     RootPolicy,
 )
 from .graph_queries import orphan_nodes
-from .producer_bindings import verify_producer_binding
+from .producer_bindings import ProducerBindingOptions, verify_producer_binding
 
 
 def _fingerprint(value: Any) -> str:
@@ -95,28 +93,9 @@ def _path_identity(scan: Mapping[str, Any], lookup: Mapping[str, str], raw: str)
         return path.as_posix()
 
 
-def _repository_owner_namespaces(scan: Mapping[str, Any]) -> Dict[str, str]:
-    return {
-        identity: owner["namespace"]
-        for identity, owner in scan.get("repository_material_owners", {}).items()
-    }
-
-
-def _repository_material_kinds(scan: Mapping[str, Any]) -> Dict[str, str]:
-    return {
-        identity: owner["kind"]
-        for identity, owner in scan.get("repository_material_owners", {}).items()
-    }
-
-
 def _local_identities(scan: Mapping[str, Any]) -> Set[str]:
     identities = set(scan.get("script_inventory", []))
     for entry in scan.get("entries", []):
-        identities.update(
-            candidate["identity"]
-            for candidate in entry.get("candidate_targets", [])
-            if isinstance(candidate.get("identity"), str)
-        )
         identities.update(
             candidate["identity"]
             for candidate in entry.get("orphan_inventory", [])
@@ -126,53 +105,11 @@ def _local_identities(scan: Mapping[str, Any]) -> Set[str]:
     return identities
 
 
-def _add_typed_repository_edges(
-    builder: GraphBuilder,
-    scan: Mapping[str, Any],
-    namespace: str,
-    ensure_material: Callable[[str], NodeKey],
-) -> None:
-    """Add canonical cross-log facts to the current log graph."""
-
-    for value in scan.get("repository_graph_edges", []):
-        edge = GraphEdge.from_dict(value)
-        inbound = edge.target.namespace == namespace
-        if edge.owner_log != namespace and not inbound:
-            continue
-        target = ensure_material(edge.target.identity)
-        if target != edge.target:
-            raise GraphContractError(
-                "repository edge target does not match resolved ownership: "
-                f"{edge.target.identity}"
-            )
-        attributes = {key: json.loads(encoded) for key, encoded in edge.attributes}
-        for origin in edge.origins:
-            if not builder.has_node(edge.source):
-                builder.add_node(
-                    edge.source,
-                    origin,
-                    {"repository_projection": True},
-                )
-            builder.add_edge(
-                edge.kind,
-                edge.source,
-                target,
-                edge.owner_log,
-                origin,
-                attributes,
-            )
-            if inbound:
-                builder.add_root(target, RootPolicy.INCOMING_CROSS_LOG, origin)
-
-
 def _material_namespace(
     identity: str,
     local_namespace: str,
     local_identities: Set[str],
-    owners: Mapping[str, str],
 ) -> str:
-    if identity in owners:
-        return owners[identity]
     prefix = identity.rstrip("/") + "/"
     if (
         identity in local_identities
@@ -186,15 +123,7 @@ def _material_namespace(
 def _material_kind(
     scan: Mapping[str, Any],
     identity: str,
-    repository_kinds: Mapping[str, str],
 ) -> NodeKind:
-    repository_kind = repository_kinds.get(identity)
-    if repository_kind is not None:
-        return {
-            "artifact": NodeKind.ARTIFACT,
-            "collection": NodeKind.COLLECTION,
-            "script": NodeKind.SCRIPT,
-        }[repository_kind]
     if identity in set(scan.get("script_inventory", [])):
         return NodeKind.SCRIPT
     check = scan.get("mechanical_checks", {}).get(identity, {})
@@ -292,8 +221,6 @@ class _GraphBuildState:
     entries: Dict[str, NodeKey]
     default_entry: Optional[NodeKey]
     lookup: Dict[str, str]
-    owners: Dict[str, str]
-    repository_kinds: Dict[str, str]
     local_identities: Set[str]
     orphanable: Set[str]
     material_keys: Dict[str, NodeKey] = field(default_factory=dict)
@@ -309,9 +236,8 @@ class _GraphBuildState:
             identity,
             self.namespace,
             self.local_identities,
-            self.owners,
         )
-        kind = _material_kind(self.scan, identity, self.repository_kinds)
+        kind = _material_kind(self.scan, identity)
         if owner_namespace == "external" and kind is not NodeKind.SCRIPT:
             kind = NodeKind.EXTERNAL_SOURCE
         key = NodeKey(owner_namespace, kind, identity)
@@ -355,25 +281,6 @@ class _GraphBuildState:
         return key
 
 
-def _add_cross_log_use(
-    state: _GraphBuildState,
-    source: NodeKey,
-    target: NodeKey,
-    origin: FactOrigin,
-) -> None:
-    """Record use of material owned by another maintained research log."""
-
-    if target.namespace in {state.namespace, "external"}:
-        return
-    state.builder.add_edge(
-        EdgeKind.CROSS_LOG_USE,
-        source,
-        target,
-        state.namespace,
-        origin,
-    )
-
-
 @dataclass
 class _InvocationFacts:
     scripts: Dict[NodeKey, Set[NodeKey]] = field(default_factory=dict)
@@ -414,8 +321,6 @@ def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
         entries=entries,
         default_entry=entries.get("Log level") or next(iter(entries.values()), None),
         lookup=_identity_lookup(scan),
-        owners=_repository_owner_namespaces(scan),
-        repository_kinds=_repository_material_kinds(scan),
         local_identities=_local_identities(scan),
         orphanable=_orphanable_inventory(scan),
     )
@@ -424,7 +329,6 @@ def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
 def _add_material_inventory(state: _GraphBuildState) -> None:
     identities = set(state.scan.get("resolved_paths", {}))
     identities.update(state.scan.get("script_inventory", []))
-    identities.update(state.owners)
     for entry in state.scan.get("entries", []):
         identities.update(
             candidate["identity"]
@@ -494,7 +398,6 @@ def _add_command_scripts(
                 state.namespace,
                 origin,
             )
-            _add_cross_log_use(state, invocation, script, origin)
             facts.scripts[invocation].add(script)
 
 
@@ -604,7 +507,6 @@ def _add_command_tokens(
                 state.namespace,
                 origin,
             )
-            _add_cross_log_use(state, invocation, material, origin)
 
 
 def _add_command_paths(
@@ -630,7 +532,6 @@ def _add_command_paths(
                 state.namespace,
                 origin,
             )
-            _add_cross_log_use(state, invocation, target, origin)
             facts.inputs[invocation].add(target)
             facts.connected[invocation].add(target)
         elif role == "output":
@@ -722,7 +623,6 @@ def _add_code_dependencies(state: _GraphBuildState) -> None:
                     state.namespace,
                     origin,
                 )
-                _add_cross_log_use(state, source, dependency, origin)
 
 
 def _add_evidence_presentations(
@@ -764,7 +664,6 @@ def _add_evidence_presentations(
                     state.namespace,
                     origin,
                 )
-                _add_cross_log_use(state, presented, material, origin)
 
 
 def _add_artifact_presentations(
@@ -804,7 +703,6 @@ def _add_artifact_presentations(
             state.namespace,
             origin,
         )
-        _add_cross_log_use(state, presented, material, origin)
 
 
 def _add_entry_presentations(state: _GraphBuildState) -> None:
@@ -889,12 +787,6 @@ def build_dependency_graph(
     _add_code_dependencies(state)
     _add_entry_presentations(state)
     _add_summary_presentations(state)
-    _add_typed_repository_edges(
-        state.builder,
-        state.scan,
-        state.namespace,
-        state.ensure_material,
-    )
     _add_semantic_facts(state, invocation_facts, adjudication)
     return state.builder.build()
 
@@ -955,7 +847,7 @@ def _add_reviewed_producer_bindings(
                 raw_binding["material"],
                 raw_binding["invocation"],
                 row.get("dependencies", []),
-                producer_basis="upstream-reviewed",
+                ProducerBindingOptions("upstream-reviewed", state.lookup),
             )
         except ValidationToolError as exc:
             if not required:
@@ -1016,6 +908,7 @@ def _reviewed_row(
                 target_identity,
                 producer_identity,
                 dependencies,
+                ProducerBindingOptions(identity_cache=state.lookup),
             )
         except ValidationToolError as exc:
             if not required:

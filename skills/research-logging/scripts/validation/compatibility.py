@@ -11,7 +11,6 @@ from typing import Any, cast
 
 from .contracts import ScanRecord, ValidationToolError
 
-GRAPH_CONTRACT_VERSION = 2
 COMPONENT_VERSIONS: dict[str, int] = {
     "material_identity": 1,
     "mechanical_inspection": 1,
@@ -38,10 +37,6 @@ INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "validation-note": 1,
     "orphan-candidate": 1,
     "orphan-disposition": 1,
-    "graph-node": 1,
-    "graph-edge": 1,
-    "graph-root": 1,
-    "graph-resolver": 1,
 }
 PRODUCER_BINDING_KINDS = frozenset({"exact-target", "scoped-collection"})
 PRODUCER_BASES = frozenset(
@@ -473,40 +468,6 @@ def _section_projections(
     return _entry_section_projections(scan, check, entry_id)
 
 
-def _graph_projections(check: Mapping[str, Any]) -> list[dict[str, Any]]:
-    graph_slice = check.get("graph_slice")
-    if not isinstance(graph_slice, Mapping):
-        return []
-    result = [
-        projection(
-            "graph-node",
-            "graph-node:" + json_identity(node),
-            node,
-            "outcome-graph",
-        )
-        for node in graph_slice.get("nodes", [])
-    ]
-    result.extend(
-        projection(
-            "graph-edge",
-            f"graph-edge:{edge}",
-            edge,
-            "outcome-graph",
-        )
-        for edge in graph_slice.get("edges", [])
-    )
-    result.extend(
-        projection(
-            "graph-root",
-            "graph-root:" + json_identity(root),
-            root,
-            "outcome-graph",
-        )
-        for root in graph_slice.get("roots", [])
-    )
-    return result
-
-
 def input_dependencies_for_check(
     scan: Mapping[str, Any], check: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -534,8 +495,6 @@ def input_dependencies_for_check(
     result.extend(scoped)
     if scoped:
         result = [item for item in result if item["kind"] != "entry"]
-    if check.get("check") != "Integrity":
-        result.extend(_graph_projections(check))
     unique = {
         (item["kind"], item["semantic_identity"], item["relationship"]): item
         for item in result
@@ -553,7 +512,7 @@ def input_dependencies_for_check(
 def producer_bindings_for_check(
     scan: Mapping[str, Any], check: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Project producer resolutions through the shared v45 verifier."""
+    """Project producer resolutions through the shared verifier."""
 
     from .producer_bindings import producer_bindings_for_check as verify
 
@@ -572,14 +531,6 @@ def orphan_input_dependencies(
         str(item.get("identity", "")): item
         for item in entry.get("orphan_inventory", [])
     }
-    candidate_identities = {
-        str(item.get("identity", "")) for item in items
-    }
-    relevant_repository_dependencies = [
-        dependency
-        for dependency in scan.get("repository_dependencies", [])
-        if dependency.get("path") in candidate_identities
-    ]
     result = [
         projection(
             "orphan-candidate",
@@ -606,16 +557,6 @@ def orphan_input_dependencies(
             },
         )
         for note in entry.get("validation_notes", [])
-    )
-    result.append(
-        projection(
-            "graph-resolver",
-            f"graph-resolver:{entry_id}",
-            {
-                "repository_dependencies": relevant_repository_dependencies,
-            },
-            "orphan-graph-resolution",
-        )
     )
     unique = {
         (item["kind"], item["semantic_identity"], item["relationship"]): item
@@ -737,9 +678,7 @@ def decode_input_dependencies(
     return decoded
 
 
-def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
-    """Decode one exact producer-binding discriminated union."""
-
+def _validate_producer_binding_shape(value: Any, description: str) -> None:
     if not isinstance(value, Mapping) or not {
         "kind",
         "invocation_identity",
@@ -758,34 +697,38 @@ def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
         "source_locator",
     }:
         raise ValidationToolError(f"{description} has incorrect fields")
-    if value["kind"] not in PRODUCER_BINDING_KINDS:
-        raise ValidationToolError(f"{description} kind is invalid")
-    if value["producer_basis"] not in PRODUCER_BASES:
-        raise ValidationToolError(f"{description} basis is invalid")
-    for field in ("invocation_identity", "coverage_identity", "direction_evidence"):
-        if not isinstance(value[field], str) or not value[field]:
-            raise ValidationToolError(f"{description} {field} is invalid")
+
+
+def _validate_producer_binding_members(
+    value: Mapping[str, Any], description: str
+) -> None:
     members = value.get("members")
-    if members is not None and (
-        value["kind"] != "scoped-collection"
-        or not isinstance(members, list)
-        or not members
-        or members != sorted(set(members))
-        or not all(isinstance(member, str) and member for member in members)
-    ):
+    scoped = value["kind"] == "scoped-collection"
+    valid_members = (
+        isinstance(members, list)
+        and bool(members)
+        and members == sorted(set(members))
+        and all(isinstance(member, str) and member for member in members)
+    )
+    if members is not None and (not scoped or not valid_members):
         raise ValidationToolError(f"{description} members are invalid")
-    if value["kind"] == "scoped-collection" and members is None:
+    if scoped and members is None:
         raise ValidationToolError(f"{description} requires collection members")
     target_member = value.get("target_member")
-    if value["kind"] == "scoped-collection" and (
+    if scoped and (
         not isinstance(target_member, str)
         or not target_member
         or not isinstance(members, list)
         or target_member not in members
     ):
         raise ValidationToolError(f"{description} target_member is invalid")
-    if value["kind"] != "scoped-collection" and target_member is not None:
+    if not scoped and target_member is not None:
         raise ValidationToolError(f"{description} target_member is invalid")
+
+
+def _validate_producer_binding_direction(
+    value: Mapping[str, Any], description: str
+) -> None:
     direction = value["direction_evidence"]
     if direction not in {"mechanical-output-role", "reviewed-output-direction"}:
         raise ValidationToolError(f"{description} direction_evidence is invalid")
@@ -797,6 +740,22 @@ def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
         "mechanical-output-role"
     ):
         raise ValidationToolError(f"{description} direction_evidence is invalid")
+
+
+def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
+    """Decode one exact producer-binding discriminated union."""
+
+    _validate_producer_binding_shape(value, description)
+    assert isinstance(value, Mapping)
+    if value["kind"] not in PRODUCER_BINDING_KINDS:
+        raise ValidationToolError(f"{description} kind is invalid")
+    if value["producer_basis"] not in PRODUCER_BASES:
+        raise ValidationToolError(f"{description} basis is invalid")
+    for field in ("invocation_identity", "coverage_identity", "direction_evidence"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise ValidationToolError(f"{description} {field} is invalid")
+    _validate_producer_binding_members(value, description)
+    _validate_producer_binding_direction(value, description)
     duplicate_count = value.get("duplicate_count")
     if duplicate_count is not None and (
         not isinstance(duplicate_count, int)
@@ -808,21 +767,3 @@ def decode_producer_binding(value: Any, description: str) -> dict[str, Any]:
     if locator is not None and not isinstance(locator, Mapping):
         raise ValidationToolError(f"{description} locator is invalid")
     return dict(value)
-
-
-def graph_contract_identity(
-    graph_identity: str,
-    source_identity: str,
-    *,
-    reviewed_scope: Any,
-) -> str:
-    """Identify graph facts, resolver inputs, and reviewed scope independently."""
-
-    return json_identity(
-        {
-            "version": GRAPH_CONTRACT_VERSION,
-            "graph_identity": graph_identity,
-            "source_identity": source_identity,
-            "reviewed_scope": reviewed_scope,
-        }
-    )

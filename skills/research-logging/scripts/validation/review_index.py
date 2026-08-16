@@ -404,7 +404,7 @@ class ReviewQuerySession:
     def eligibility_for(
         self, invocation: PreparedInvocation, identity: str
     ) -> ProducerEligibility:
-        """Return cached v45 eligibility for one invocation-target pair."""
+        """Return cached eligibility for one invocation-target pair."""
 
         key = (invocation.key, identity)
         cached = self.eligibility_cache.get(key)
@@ -533,7 +533,7 @@ class ReviewQuerySession:
         identity: str,
         sections: Sequence[str],
     ) -> list[PreparedInvocation]:
-        """Return every selectable v45 producer without diagnostic context."""
+        """Return every selectable producer without diagnostic context."""
 
         return [
             invocation

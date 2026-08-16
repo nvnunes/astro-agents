@@ -9,7 +9,6 @@ from .graph import (
     DependencyGraph,
     EdgeKind,
     GraphContractError,
-    GraphEdge,
     NodeKey,
     NodeKind,
     RootPolicy,
@@ -143,7 +142,6 @@ def _presented_transitions(
                 {
                     EdgeKind.CONSUMES,
                     EdgeKind.INVOKES,
-                    EdgeKind.CROSS_LOG_USE,
                 },
             )
             if retain_related_material
@@ -162,7 +160,7 @@ def _presented_transitions(
         yield from (
             (edge.target, phase)
             for edge in graph.outgoing(
-                node, {EdgeKind.DEPENDS_ON_CODE, EdgeKind.CROSS_LOG_USE}
+                node, {EdgeKind.DEPENDS_ON_CODE}
             )
         )
 
@@ -176,14 +174,14 @@ def _recorded_command_neighbors(
         yield from (
             edge.target
             for edge in graph.outgoing(
-                node, {EdgeKind.INVOKES, EdgeKind.CROSS_LOG_USE}
+                node, {EdgeKind.INVOKES}
             )
         )
     elif node.kind is NodeKind.SCRIPT:
         yield from (
             edge.target
             for edge in graph.outgoing(
-                node, {EdgeKind.DEPENDS_ON_CODE, EdgeKind.CROSS_LOG_USE}
+                node, {EdgeKind.DEPENDS_ON_CODE}
             )
         )
 
@@ -221,7 +219,7 @@ def _walk_nodes(
             continue
         graph.node(node)
         reached.add(state)
-        if policy in {RootPolicy.PRESENTED, RootPolicy.INCOMING_CROSS_LOG}:
+        if policy is RootPolicy.PRESENTED:
             transitions = _presented_transitions(
                 graph,
                 node,
@@ -251,7 +249,7 @@ def reachable_nodes(
     graph: DependencyGraph,
     roots: Iterable[Tuple[NodeKey, RootPolicy]] | None = None,
 ) -> Set[NodeKey]:
-    """Return material retained for provenance and orphan reconciliation."""
+    """Return material retained for provenance and local orphan classification."""
 
     return _walk_nodes(
         graph, roots, retain_related_material=True
@@ -402,19 +400,6 @@ def assert_unresolved_orphans_unreachable(
         raise GraphContractError(
             "unresolved orphan is reachable from an applicable root: " + rendered
         )
-
-
-def incoming_cross_log_edges(
-    graph: DependencyGraph, owner_namespace: str
-) -> Tuple[GraphEdge, ...]:
-    """Return cross-log uses targeting material in one owning namespace."""
-
-    return tuple(
-        edge
-        for edge in graph.edges
-        if edge.kind is EdgeKind.CROSS_LOG_USE
-        and edge.target.namespace == owner_namespace
-    )
 
 
 def graph_summary(graph: DependencyGraph) -> Mapping[str, int | str]:

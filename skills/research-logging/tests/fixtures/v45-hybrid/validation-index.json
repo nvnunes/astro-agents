@@ -1,8 +1,0 @@
-{
-  "graph": {"edges": [], "nodes": [], "roots": []},
-  "material_owners": {"docs/hybrid/data.csv": {"kind": "artifact", "namespace": "docs/hybrid"}},
-  "namespace": "docs/hybrid",
-  "schema_version": 8,
-  "summary": "docs/hybrid.md",
-  "validation_rules_version": "research-log-validation-v45"
-}

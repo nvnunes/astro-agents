@@ -345,13 +345,12 @@ consumes an upstream generated artifact, validation follows that artifact to
 its producer and applies the same rule there. A directory connects only the
 members selected during bounded collection review.
 
-Given a file owned by one maintained research log and consumed by an active
-recorded or validated workflow in another, the repository reverse-dependency
-index removes it from the owner's orphan candidates. Its transitive script
-dependencies are also used. A dormant script containing a possible cross-log
-reference does not protect the referenced file. Changing an unrelated log
-without changing the owner's incoming edge slice does not invalidate the
-owner's validation fingerprint.
+Given a file outside the validated log and consumed by one of its active
+recorded workflows, validation observes that file as external evidence for the
+current log. It does not inspect another log's validation state or use that
+external reference to change orphan classification in the file's owning log.
+Changing an unrelated log does not invalidate the current log unless one of
+the current log's recorded dependencies changed.
 
 Given same-named local modules under directories added by consecutive
 `sys.path.insert(0, ...)` calls, validation follows the module found through

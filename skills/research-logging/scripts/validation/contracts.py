@@ -12,8 +12,6 @@ import re
 from collections.abc import Mapping
 from typing import Any, TypedDict, cast
 
-from .graph import GraphContractError, GraphEdge
-
 
 class LifecycleRecordContractError(ValueError):
     """Raised when a scan or adjudication record violates its exact contract."""
@@ -27,31 +25,17 @@ class FileChangedError(ValidationToolError):
     """Raised when a validation input changes during a guarded operation."""
 
 
-class CanonicalRepositoryView(TypedDict):
-    """Complete repository dependency view required by a canonical scan."""
-
-    schema_version: str
-    validation_rules_version: str
-    scope: dict[str, Any]
-    identity: str
-    material_owners: dict[str, dict[str, str]]
-    cross_log_sources: dict[str, dict[str, dict[str, Any]]]
-    slices: dict[str, dict[str, Any]]
-    graph_edges: list[dict[str, Any]]
-
-
 class _ScanRecordRequired(TypedDict):
     schema_version: int
     validation_rules_version: str
     component_versions: dict[str, int]
     input_projection_versions: dict[str, int]
-    graph_contract_version: int
     requested_mode: str
     summary: str
     log_root: str
     project_root: str
     entry_order: list[str]
-    reconciliation: dict[str, Any]
+    entry_listing: dict[str, Any]
     summary_items: list[dict[str, Any]]
     entries: list[dict[str, Any]]
     evidence_records: dict[str, Any]
@@ -62,14 +46,6 @@ class _ScanRecordRequired(TypedDict):
     mechanical_checks: dict[str, Any]
     script_inventory: list[str]
     script_dependency_graph: dict[str, list[str]]
-    repository_dependencies: list[dict[str, Any]]
-    repository_material_owners: dict[str, dict[str, str]]
-    repository_cross_log_sources: dict[str, dict[str, dict[str, Any]]]
-    repository_slices: dict[str, dict[str, Any]]
-    repository_scope: dict[str, Any]
-    repository_view_identity: str
-    repository_graph_edges: list[dict[str, Any]]
-    durable_record_identity: str
     input_fingerprint: str
 
 
@@ -123,10 +99,6 @@ class ValidationMetrics(TypedDict, total=False):
     synthesis_sections: int
     prose_sections: int
     files_identified: int
-    repository_index_status: str
-    repository_index_edges: int
-    repository_dependencies: int
-    repository_index_elapsed_seconds: float
     reusable_checks: int
     rerun_checks: int
     incremental_status: str
@@ -517,7 +489,6 @@ def _validate_orphan_rows(value: Any, description: str) -> None:
         )
         if item["decision"] not in {
             "accepted",
-            "deferred",
             "pending",
             "unresolved",
         }:
@@ -532,11 +503,6 @@ def _validate_orphan_rows(value: Any, description: str) -> None:
             ):
                 raise LifecycleRecordContractError(
                     f"{description} item {index} has an invalid acceptance basis"
-                )
-        elif item["decision"] == "deferred":
-            if basis != "cross-log-incomplete":
-                raise LifecycleRecordContractError(
-                    f"{description} item {index} has an invalid deferral basis"
                 )
         elif basis != "-":
             raise LifecycleRecordContractError(
@@ -556,44 +522,6 @@ def _validate_result(value: Any, description: str, specials: frozenset[str]) -> 
     )
 
 
-def _validate_repository_slice_snapshots(value: Any) -> None:
-    """Validate the exact slice identities bound into one scan record."""
-
-    slices = _mapping(value, "scan repository_slices")
-    for summary, raw_snapshot in slices.items():
-        snapshot = _mapping(raw_snapshot, f"scan repository slice {summary!r}")
-        if (
-            not isinstance(summary, str)
-            or set(snapshot)
-            != {
-                "path",
-                "graph_identity",
-                "source_identity",
-                "local_snapshot_identity",
-                "content_identity",
-            }
-            or not isinstance(snapshot["path"], str)
-            or _HEX_IDENTITY.fullmatch(snapshot["graph_identity"]) is None
-            or _HEX_IDENTITY.fullmatch(snapshot["source_identity"]) is None
-            or _HEX_IDENTITY.fullmatch(snapshot["local_snapshot_identity"])
-            is None
-        ):
-            raise LifecycleRecordContractError("scan repository_slices is invalid")
-        identity = _mapping(
-            snapshot["content_identity"],
-            f"scan repository slice content identity {summary!r}",
-        )
-        if (
-            set(identity) != {"size", "sha256"}
-            or not isinstance(identity["size"], int)
-            or isinstance(identity["size"], bool)
-            or identity["size"] < 0
-            or not isinstance(identity["sha256"], str)
-            or _HEX_IDENTITY.fullmatch(identity["sha256"]) is None
-        ):
-            raise LifecycleRecordContractError("scan repository_slices is invalid")
-
-
 def _validate_scan_scalars(record: Mapping[str, Any]) -> None:
     for field in (
         "validation_rules_version",
@@ -601,30 +529,15 @@ def _validate_scan_scalars(record: Mapping[str, Any]) -> None:
         "summary",
         "log_root",
         "project_root",
-        "durable_record_identity",
         "input_fingerprint",
-        "repository_view_identity",
     ):
         if not isinstance(record[field], str):
             raise LifecycleRecordContractError(
                 f"scan record field {field!r} must be a string"
             )
-    for field in (
-        "durable_record_identity",
-        "input_fingerprint",
-        "repository_view_identity",
-    ):
-        if _HEX_IDENTITY.fullmatch(record[field]) is None:
-            raise LifecycleRecordContractError(
-                f"scan record field {field!r} must be a SHA-256 identity"
-            )
-    if (
-        not isinstance(record["graph_contract_version"], int)
-        or isinstance(record["graph_contract_version"], bool)
-        or record["graph_contract_version"] < 1
-    ):
+    if _HEX_IDENTITY.fullmatch(record["input_fingerprint"]) is None:
         raise LifecycleRecordContractError(
-            "scan graph_contract_version must be a positive integer"
+            "scan record field 'input_fingerprint' must be a SHA-256 identity"
         )
 
 
@@ -643,39 +556,16 @@ def _validate_version_map(value: Any, description: str) -> None:
         )
 
 
-def _validate_scan_repository_owners(value: Any) -> None:
-    owners = _mapping(value, "scan repository_material_owners")
-    valid = all(
-        isinstance(path, str)
-        and path
-        and isinstance(owner, Mapping)
-        and set(owner) == {"namespace", "kind"}
-        and isinstance(owner["namespace"], str)
-        and owner["namespace"]
-        and owner["kind"] in {"artifact", "collection", "script"}
-        for path, owner in owners.items()
-    )
-    if not valid:
-        raise LifecycleRecordContractError(
-            "scan repository_material_owners must map paths to owner records"
-        )
-
-
 def _validate_scan_collections(record: Mapping[str, Any]) -> None:
     entry_order = _string_list(record["entry_order"], "scan entry_order")
     if len(entry_order) != len(set(entry_order)):
         raise LifecycleRecordContractError("scan entry_order contains duplicates")
-    for field in (
-        "summary_items",
-        "entries",
-        "repository_dependencies",
-        "repository_graph_edges",
-    ):
+    for field in ("summary_items", "entries"):
         _mapping_list(record[field], f"scan field {field!r}")
     for field in (
         "component_versions",
         "input_projection_versions",
-        "reconciliation",
+        "entry_listing",
         "evidence_records",
         "bibtex",
         "files",
@@ -683,75 +573,10 @@ def _validate_scan_collections(record: Mapping[str, Any]) -> None:
         "resolved_paths",
         "mechanical_checks",
         "script_dependency_graph",
-        "repository_material_owners",
-        "repository_cross_log_sources",
-        "repository_slices",
-        "repository_scope",
     ):
         _mapping(record[field], f"scan field {field!r}")
     for field in ("component_versions", "input_projection_versions"):
         _validate_version_map(record[field], f"scan field {field!r}")
-    _validate_scan_repository_owners(record["repository_material_owners"])
-    sources = _mapping(
-        record["repository_cross_log_sources"],
-        "scan repository_cross_log_sources",
-    )
-    for summary, inputs in sources.items():
-        if not isinstance(summary, str) or not isinstance(inputs, Mapping):
-            raise LifecycleRecordContractError(
-                "scan repository_cross_log_sources is invalid"
-            )
-        for path, raw_identity in inputs.items():
-            identity = _mapping(
-                raw_identity,
-                f"scan repository cross-log source {summary!r} {path!r}",
-            )
-            if (
-                not isinstance(path, str)
-                or set(identity) != {"size", "sha256"}
-                or not isinstance(identity["size"], int)
-                or isinstance(identity["size"], bool)
-                or identity["size"] < 0
-                or not isinstance(identity["sha256"], str)
-                or _HEX_IDENTITY.fullmatch(identity["sha256"]) is None
-            ):
-                raise LifecycleRecordContractError(
-                    "scan repository_cross_log_sources is invalid"
-                )
-    _validate_repository_slice_snapshots(record["repository_slices"])
-    scope = _mapping(record["repository_scope"], "scan repository_scope")
-    if (
-        set(scope)
-        != {
-            "kind",
-            "expected_summaries",
-            "refresh_summary",
-            "cross_log_complete",
-            "excluded_slices",
-        }
-        or scope.get("kind")
-        not in {
-            "complete",
-            "replacement",
-            "diagnostic",
-        }
-        or not isinstance(scope.get("expected_summaries"), list)
-        or any(
-            not isinstance(summary, str) for summary in scope["expected_summaries"]
-        )
-        or scope.get("refresh_summary") is not None
-        and not isinstance(scope["refresh_summary"], str)
-        or not isinstance(scope.get("cross_log_complete"), bool)
-        or not isinstance(scope.get("excluded_slices"), Mapping)
-        or any(
-            not isinstance(summary, str)
-            or not summary
-            or not isinstance(reason, str)
-            or not reason
-            for summary, reason in scope["excluded_slices"].items()
-        )
-    ):
-        raise LifecycleRecordContractError("scan repository_scope is invalid")
     _string_list(record["script_inventory"], "scan script_inventory")
 
 
@@ -1146,11 +971,11 @@ def _validate_scan_evidence_records(record: Mapping[str, Any]) -> None:
 
 
 def _validate_scan_metadata(record: Mapping[str, Any]) -> None:
-    reconciliation = _mapping(record["reconciliation"], "scan reconciliation")
-    if set(reconciliation) != {"missing_entries", "unlisted_entries"}:
-        raise LifecycleRecordContractError("scan reconciliation has incorrect fields")
-    _string_list(reconciliation["missing_entries"], "scan missing_entries")
-    _string_list(reconciliation["unlisted_entries"], "scan unlisted_entries")
+    entry_listing = _mapping(record["entry_listing"], "scan entry_listing")
+    if set(entry_listing) != {"missing_entries", "unlisted_entries"}:
+        raise LifecycleRecordContractError("scan entry_listing has incorrect fields")
+    _string_list(entry_listing["missing_entries"], "scan missing_entries")
+    _string_list(entry_listing["unlisted_entries"], "scan unlisted_entries")
     bibtex = _mapping(record["bibtex"], "scan bibtex")
     if set(bibtex) != {"keys", "path"}:
         raise LifecycleRecordContractError("scan bibtex has incorrect fields")
@@ -1168,25 +993,6 @@ def _validate_scan_metadata(record: Mapping[str, Any]) -> None:
         raise LifecycleRecordContractError(
             "scan mechanical_checks must map strings to objects"
         )
-    for index, dependency in enumerate(record["repository_dependencies"]):
-        description = f"scan repository dependency {index}"
-        _exact_fields(
-            dependency,
-            description,
-            frozenset({"consumer", "kind", "owner", "path", "source"}),
-        )
-        _validate_string_fields(
-            dependency,
-            description,
-            ("consumer", "kind", "owner", "path", "source"),
-        )
-    for index, edge in enumerate(record["repository_graph_edges"]):
-        try:
-            GraphEdge.from_dict(edge)
-        except GraphContractError as exc:
-            raise LifecycleRecordContractError(
-                f"scan repository graph edge {index} is invalid: {exc}"
-            ) from exc
 
 
 def _validate_scan_entries(record: Mapping[str, Any]) -> None:

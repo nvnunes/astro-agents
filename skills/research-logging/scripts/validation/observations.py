@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .inventory import CHUNK_SIZE, content_identity
+from .inventory import CHUNK_SIZE, content_identity, directory_membership_identity
 
 METADATA_UNCHANGED = "metadata_unchanged"
 CONTENT_UNCHANGED = "content_unchanged"
@@ -243,6 +243,46 @@ class ObservationSession:
         self._observations[key] = result
         return result
 
+    def observe_directory_membership(
+        self, path: Path, cached: Mapping[str, Any]
+    ) -> FileObservation:
+        """Observe one direct directory-membership identity."""
+
+        absolute = _absolute(path)
+        key = f"{absolute.as_posix()}\0directory-membership"
+        prior = self._observations.get(key)
+        if prior is not None:
+            return prior
+        self.diagnostics.metadata_checked += 1
+        try:
+            if not absolute.exists():
+                result = self._unresolved(
+                    absolute, MISSING, cached, "directory no longer exists"
+                )
+            elif not absolute.is_dir():
+                result = self._unresolved(
+                    absolute,
+                    AMBIGUOUS,
+                    cached,
+                    "directory membership requires one directory",
+                )
+            else:
+                identity = directory_membership_identity(absolute)
+                status = (
+                    CONTENT_UNCHANGED if identity == cached else CONTENT_CHANGED
+                )
+                if status == CONTENT_CHANGED:
+                    self.diagnostics.content_changed += 1
+                result = FileObservation(
+                    absolute.as_posix(), status, identity, cached
+                )
+        except PermissionError as exc:
+            result = self._unresolved(
+                absolute, INACCESSIBLE, cached, str(exc)
+            )
+        self._observations[key] = result
+        return result
+
     def inspect(
         self,
         path: Path,
@@ -413,6 +453,23 @@ def retain_compatible_outcomes(
     return retained, reopened
 
 
+def outcomes_are_compatible(
+    outcomes: list[Mapping[str, Any]],
+    observations: Mapping[str, FileObservation],
+) -> bool:
+    """Return whether every outcome dependency remains reusable."""
+
+    return all(
+        observation is None
+        or (observation.resolved and observation.status != CONTENT_CHANGED)
+        for outcome in outcomes
+        for dependency in outcome.get("dependencies", [])
+        for observation in [
+            observations.get(_dependency_observation_key(dependency))
+        ]
+    )
+
+
 def observe_outcome_dependencies(
     session: ObservationSession,
     outcomes: list[Mapping[str, Any]],
@@ -431,7 +488,15 @@ def observe_outcome_dependencies(
             candidate = Path(identity)
             path = candidate if candidate.is_absolute() else project_root / candidate
             dependency_identity = dependency.get("identity")
-            if isinstance(dependency_identity, Mapping) and isinstance(
+            if isinstance(dependency_identity, Mapping) and (
+                set(dependency_identity) == {"members", "sha256"}
+                and isinstance(dependency_identity.get("members"), int)
+            ):
+                observations[observation_key] = (
+                    session.observe_directory_membership(path, dependency_identity)
+                )
+                continue
+            elif isinstance(dependency_identity, Mapping) and isinstance(
                 dependency_identity.get("members"), list
             ):
                 cached = dependency_identity

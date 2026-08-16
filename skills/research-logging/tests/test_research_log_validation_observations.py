@@ -191,6 +191,35 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual(session.diagnostics.bytes_hashed, 0)
             self.assertEqual(session.diagnostics.hashes_reused, 2)
 
+    def test_directory_membership_outcome_is_observed_as_a_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = root / "entry"
+            write(entry / "e001.md", "# Entry\n")
+            inventory = importlib.import_module("validation.inventory")
+            identity = inventory.directory_membership_identity(entry)
+            outcome = {
+                "compatibility_identity": "directory-outcome",
+                "dependencies": [
+                    {"path": "entry", "identity": identity}
+                ],
+            }
+
+            unchanged = OBSERVATIONS.observe_outcome_dependencies(
+                OBSERVATIONS.ObservationSession(), [outcome], {}, root
+            )
+            self.assertTrue(
+                OBSERVATIONS.outcomes_are_compatible([outcome], unchanged)
+            )
+
+            write(entry / "data.csv", "value\n")
+            changed = OBSERVATIONS.observe_outcome_dependencies(
+                OBSERVATIONS.ObservationSession(), [outcome], {}, root
+            )
+            self.assertFalse(
+                OBSERVATIONS.outcomes_are_compatible([outcome], changed)
+            )
+
     def test_metadata_only_change_retains_and_updates_outcome_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.csv"

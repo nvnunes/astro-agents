@@ -50,7 +50,6 @@ def orphan_candidate_fingerprint(
         if isinstance(note.get("sha256"), str)
     )
     payload = {
-        "scan_input_fingerprint": scan.get("input_fingerprint", ""),
         "validation_rules_version": scan.get("validation_rules_version", ""),
         "scan_schema_version": scan.get("schema_version"),
         "adjudication_schema_version": adjudication_schema_version,
@@ -60,13 +59,6 @@ def orphan_candidate_fingerprint(
         "commands": entry.get("commands", []),
         "data_index": entry.get("data_index", {}),
         "validation_notes": notes,
-        "frozen_slices": {
-            summary: {
-                "graph_identity": snapshot.get("graph_identity"),
-                "source_identity": snapshot.get("source_identity"),
-            }
-            for summary, snapshot in sorted(scan.get("repository_slices", {}).items())
-        },
     }
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False

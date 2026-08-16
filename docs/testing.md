@@ -104,11 +104,8 @@ The research-log test gate must verify:
 - target record and cache schemas reject unsupported native formats with an
   actionable diagnostic, while cache absence or corruption remains a bounded
   recomputation case;
-- the migration adapter accepts only the exact deployed v45 decision, state,
-  and index triad, imports it without opening or hashing research evidence,
-  preserves compatible judgments, failures, dates, producer evidence, hashes,
-  inspections, and outcomes, and removes the triad only after successful
-  target publication;
+- unsupported retired artifacts fail before scanning with an actionable
+  diagnostic that directs maintainers to a pre-transition checkout;
 - component and input-projection changes reopen only outcomes that declare the
   changed dependency, while compatible outcomes retain their original dates;
 - unchanged artifact metadata reuses recorded hashes and inspections without
@@ -116,8 +113,8 @@ The research-log test gate must verify:
   shared content hash;
 - progressive completed work survives interruption, unrelated change, later
   operational failure, and semantic continuation;
-- one log validates without maintained-summary discovery, repository
-  reconciliation, Git state, or another log's validation files;
+- one log validates without maintained-summary discovery, repository-wide
+  coordination, Git state, or another log's validation files;
 - an explicit cross-log path is observed as external evidence, while a local
   orphan remains a local problem even when another log refers to it;
 - generated semantic packets are bounded and continuation-bound, expose only
@@ -129,13 +126,11 @@ The research-log test gate must verify:
   Replace, Update Summary, Reorganize, and initialization leave generated
   validation bytes unchanged.
 
-For a validation-contract upgrade, migrate one log at a time without reading
-or validating the remaining population. Dry-run the target operation, inspect
-its reuse and hashing diagnostics, then publish that log and confirm an
+For a future validation-contract upgrade, migrate one log at a time without
+reading or validating the remaining population. Dry-run the target operation,
+inspect its reuse and hashing diagnostics, then publish that log and confirm an
 unchanged follow-up hashes zero artifact bytes and requests no semantic review.
-After every maintained log is native, remove the temporary adapter and
-migration-only tests and fixtures. The final suite must prove that retired
-schemas receive an actionable unsupported-format diagnostic.
+Retired schemas must receive an actionable unsupported-format diagnostic.
 
 ### Validation Review Scaling Benchmark
 

@@ -1,8 +1,8 @@
 """Typed dependency graph contracts for research-log validation.
 
-The graph is the canonical owner of material relationships used by provenance,
-orphan discovery, cross-log reachability, and incremental invalidation. This
-module contains no research-log discovery or report-rendering behavior.
+The graph is the canonical owner of local material relationships used by
+provenance, orphan discovery, and incremental invalidation. This module
+contains no research-log discovery or report-rendering behavior.
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ class EdgeKind(str, enum.Enum):
     SELECTED_PRODUCER = "selected-producer"
     OWNED_BY = "owned-by"
     BELONGS_TO_LOG = "belongs-to-log"
-    CROSS_LOG_USE = "cross-log-use"
 
 
 class OriginKind(str, enum.Enum):
@@ -81,7 +80,6 @@ class RootPolicy(str, enum.Enum):
     PRESENTED = "presented"
     RECORDED_COMMAND = "recorded-command"
     RETENTION = "retention"
-    INCOMING_CROSS_LOG = "incoming-cross-log"
 
 
 @dataclass(frozen=True, order=True)
@@ -420,9 +418,6 @@ def _validate_edge_domain(kind: EdgeKind, source: NodeKey, target: NodeKey) -> N
         and target.kind is NodeKind.ENTRY,
         EdgeKind.BELONGS_TO_LOG: source.kind is not NodeKind.LOG
         and target.kind is NodeKind.LOG,
-        EdgeKind.CROSS_LOG_USE: source.kind
-        in {NodeKind.INVOCATION, NodeKind.PRESENTED, NodeKind.SCRIPT}
-        and target.kind in material | {NodeKind.SCRIPT},
     }[kind]
     if not valid:
         raise GraphContractError(

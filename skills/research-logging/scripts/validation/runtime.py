@@ -16,13 +16,10 @@ from .commands import (
 )
 from .compatibility import (
     COMPONENT_VERSIONS,
-    GRAPH_CONTRACT_VERSION,
     INPUT_PROJECTION_VERSIONS,
 )
 from .contracts import (
     AdjudicationRecord,
-    CanonicalRepositoryView,
-    RenderCounts,
     ScanRecord,
     ValidationMetrics,
 )
@@ -34,14 +31,12 @@ from .evidence import (
     inspect_structure,
     mechanical_evidence_support,
 )
-from .graph_store import SLICE_FILENAME
 from .identities import (
     entry_validation_identity,
     summary_validation_identity,
 )
 from .incremental import (
     IncrementalOperations,
-    current_check_dependency_contract,
     dependency_identity_snapshot,
     orphan_item_fingerprints,
 )
@@ -53,13 +48,6 @@ from .inventory import (
 )
 from .render import (
     RenderLifecyclePolicy,
-    check_graph_slice,
-)
-from .render import (
-    lint_records as render_lint_records,
-)
-from .render import (
-    render_records as render_validation_records,
 )
 from .scan import (
     EntryScanPolicy,
@@ -67,22 +55,17 @@ from .scan import (
     ScanLifecyclePolicy,
     ScanRequest,
 )
-from .scan import (
-    scan_log as run_scan,
-)
+from .scan import scan_log as run_scan
 from .target_records import CACHE_FILENAME, RECORD_FILENAME
 
 SCAN_SCHEMA_VERSION = 18
 ADJUDICATION_SCHEMA_VERSION = 8
-STATE_SCHEMA_VERSION = 11
 RULES_VERSION = "research-log-validation-v45"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
-    "validation-decisions.json",
     "validation.md",
-    "validation-failures.md",
-    "validation-state.json",
-    SLICE_FILENAME,
+    RECORD_FILENAME,
+    CACHE_FILENAME,
 )
 OWNED_INVENTORY_EXCLUDED_NAMES = frozenset(
     {
@@ -109,11 +92,8 @@ def incremental_operations() -> IncrementalOperations:
     """Return current concrete mechanics for incremental outcome reuse."""
 
     return IncrementalOperations(
-        dependency_contract=current_check_dependency_contract,
         dependency_snapshot=dependency_identity_snapshot,
-        graph_slice=check_graph_slice,
         orphan_fingerprints=orphan_item_fingerprints,
-        report_identity=_content_identity,
     )
 
 
@@ -122,7 +102,6 @@ def scan_policy() -> ScanLifecyclePolicy:
 
     return ScanLifecyclePolicy(
         SCAN_SCHEMA_VERSION,
-        STATE_SCHEMA_VERSION,
         ORPHAN_INVENTORY_VERSION,
         VALIDATION_RECORD_FILENAMES,
         MATERIAL_INVENTORY_POLICY,
@@ -140,30 +119,27 @@ def scan_policy() -> ScanLifecyclePolicy:
         incremental_operations(),
         COMPONENT_VERSIONS,
         INPUT_PROJECTION_VERSIONS,
-        GRAPH_CONTRACT_VERSION,
     )
 
 
 def scan_log(
     summary_path: Path,
     jobs: int = 8,
-    prior_state: Optional[dict[str, Any]] = None,
-    repository_index: Optional[CanonicalRepositoryView] = None,
+    prior_record: Optional[dict[str, Any]] = None,
+    prior_cache: Optional[dict[str, Any]] = None,
     mode: str = "standard",
-    prior_decisions: Optional[dict[str, Any]] = None,
 ) -> tuple[ScanRecord, ValidationMetrics]:
-    """Run one scan through the current versioned policy."""
+    """Run one independently scoped scan through the current policy."""
 
     return run_scan(
         ScanRequest(
             summary_path,
             jobs,
-            prior_state,
-            repository_index,
+            prior_record,
+            prior_cache,
             RULES_VERSION,
             mode,
             scan_policy(),
-            prior_decisions,
         )
     )
 
@@ -193,37 +169,10 @@ def render_policy() -> RenderLifecyclePolicy:
     return RenderLifecyclePolicy(
         SCAN_SCHEMA_VERSION,
         ADJUDICATION_SCHEMA_VERSION,
-        STATE_SCHEMA_VERSION,
         RULES_VERSION,
         ORPHAN_INVENTORY_VERSION,
         VALIDATION_RECORD_FILENAMES,
         MATERIAL_INVENTORY_POLICY,
         COMPONENT_VERSIONS,
         INPUT_PROJECTION_VERSIONS,
-        GRAPH_CONTRACT_VERSION,
-    )
-
-
-def render_records(
-    adjudication: AdjudicationRecord,
-    scan: ScanRecord,
-    output_dir: Path,
-) -> RenderCounts:
-    """Render through the current canonical policy."""
-
-    return render_validation_records(adjudication, scan, output_dir, render_policy())
-
-
-def lint_records(
-    output_dir: Path,
-    expected_entry_order: Optional[list[str]] = None,
-    expected_local_snapshot_identity: Optional[str] = None,
-) -> dict[str, Any]:
-    """Lint through the current canonical policy."""
-
-    return render_lint_records(
-        output_dir,
-        render_policy(),
-        expected_entry_order,
-        expected_local_snapshot_identity,
     )

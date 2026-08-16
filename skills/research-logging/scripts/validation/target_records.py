@@ -20,11 +20,7 @@ RECORD_FILENAME = "validation-record.json"
 CACHE_FILENAME = "validation-cache.json"
 RECORD_SCHEMA_VERSION = 1
 CACHE_SCHEMA_VERSION = 1
-V45_RULES_VERSION = "research-log-validation-v45"
-V45_DECISION_SCHEMA_VERSION = 2
-V45_STATE_SCHEMA_VERSION = 11
-V45_INDEX_SCHEMA_VERSION = 8
-V45_FILENAMES = (
+RETIRED_VALIDATION_FILENAMES = (
     "validation-decisions.json",
     "validation-state.json",
     "validation-index.json",
@@ -90,21 +86,43 @@ def _nonempty_string(value: Any, field: str) -> str:
 
 def _validate_identity(identity: Any, field: str) -> None:
     value = _mapping(identity, field)
-    for key in ("size", "mtime_ns", "ctime_ns", "sha256"):
-        if key not in value:
-            raise TargetRecordError(f"{field}.{key} is required")
+    if value == {"missing": True}:
+        return
+    if set(value) == {"error"}:
+        _nonempty_string(value["error"], f"{field}.error")
+        return
+    if set(value) == {"members", "sha256"}:
+        members = value["members"]
+        if isinstance(members, bool) or not isinstance(members, int) or members < 0:
+            raise TargetRecordError(
+                f"{field}.members must be a nonnegative integer"
+            )
+        _validate_sha256(value["sha256"], f"{field}.sha256")
+        return
+    required = {"size", "mtime_ns", "ctime_ns", "sha256"}
+    if not required <= set(value) <= required | {"members"}:
+        raise TargetRecordError(f"{field} has incorrect fields")
     if not isinstance(value["size"], int) or value["size"] < 0:
         raise TargetRecordError(f"{field}.size must be a nonnegative integer")
     for key in ("mtime_ns", "ctime_ns"):
         if not isinstance(value[key], int) or value[key] < 0:
             raise TargetRecordError(f"{field}.{key} must be a nonnegative integer")
-    sha256 = value["sha256"]
+    _validate_sha256(value["sha256"], f"{field}.sha256")
+    if "members" in value and (
+        not isinstance(value["members"], list)
+        or not value["members"]
+        or not all(isinstance(member, str) for member in value["members"])
+    ):
+        raise TargetRecordError(f"{field}.members must be a nonempty string array")
+
+
+def _validate_sha256(sha256: Any, field: str) -> None:
     if (
         not isinstance(sha256, str)
         or len(sha256) != 64
         or any(character not in "0123456789abcdef" for character in sha256)
     ):
-        raise TargetRecordError(f"{field}.sha256 must be a lowercase SHA-256")
+        raise TargetRecordError(f"{field} must be a lowercase SHA-256")
 
 
 def _validate_dependencies(value: Any, field: str) -> None:
@@ -172,6 +190,21 @@ def _validate_judgment(value: Any, number: int) -> None:
 def _validate_outcome(value: Any, number: int) -> None:
     field = f"outcomes[{number}]"
     outcome = _mapping(value, field)
+    allowed = {
+        "check",
+        "compatibility_identity",
+        "dependencies",
+        "entry",
+        "findings",
+        "input_dependencies",
+        "producer_bindings",
+        "resolution",
+        "result",
+        "rule_dependencies",
+        "target",
+    }
+    if not set(outcome) <= allowed:
+        raise TargetRecordError(f"{field} contains unsupported fields")
     for key in ("compatibility_identity", "entry", "check", "target", "result"):
         _nonempty_string(outcome.get(key), f"{field}.{key}")
     _validate_dependencies(outcome.get("dependencies"), f"{field}.dependencies")
@@ -181,8 +214,6 @@ def _validate_outcome(value: Any, number: int) -> None:
     _validate_rule_dependencies(
         outcome.get("rule_dependencies"), f"{field}.rule_dependencies"
     )
-    if "graph_slice" in outcome:
-        raise TargetRecordError(f"{field}.graph_slice has no target-format owner")
 
 
 def _validate_record_header(record: Mapping[str, Any]) -> None:
@@ -217,6 +248,17 @@ def _validate_unique_record_rows(
         raise TargetRecordError(f"{field} contains duplicate identities")
 
 
+def _outcome_row_identity(outcome: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """Identify one durable outcome without conflating compatible rows."""
+
+    return (
+        str(outcome["entry"]),
+        str(outcome["target"]),
+        str(outcome["check"]),
+        str(outcome["compatibility_identity"]),
+    )
+
+
 def decode_record(value: Any) -> dict[str, Any]:
     """Validate and copy one authoritative durable record."""
 
@@ -229,11 +271,10 @@ def decode_record(value: Any) -> dict[str, Any]:
         _validate_judgment(judgment, number)
     for number, outcome in enumerate(outcomes):
         _validate_outcome(outcome, number)
-    for field, rows, identity_key in (
-        ("judgments", judgments, "identity"),
-        ("outcomes", outcomes, "compatibility_identity"),
-    ):
-        _validate_unique_record_rows(field, rows, identity_key)
+    _validate_unique_record_rows("judgments", judgments, "identity")
+    outcome_identities = [_outcome_row_identity(outcome) for outcome in outcomes]
+    if len(outcome_identities) != len(set(outcome_identities)):
+        raise TargetRecordError("outcomes contains duplicate identities")
     failures = _sequence(record.get("failures"), "failures")
     for number, failure in enumerate(failures):
         _mapping(failure, f"failures[{number}]")
@@ -295,6 +336,23 @@ def load_cache(path: Path) -> tuple[dict[str, Any], str]:
         return empty_cache(), "malformed"
 
 
+def assert_no_retired_artifacts(output_dir: Path) -> None:
+    """Reject obsolete generated formats before current validation starts."""
+
+    present = [
+        name
+        for name in RETIRED_VALIDATION_FILENAMES
+        if (output_dir / name).exists()
+    ]
+    if present:
+        raise TargetRecordError(
+            "retired validation artifacts remain: "
+            + ", ".join(present)
+            + "; migrate them with a pre-transition astro-agents checkout "
+            "before using the current validator"
+        )
+
+
 def _json_bytes(value: Mapping[str, Any]) -> bytes:
     return (
         json.dumps(value, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
@@ -327,33 +385,11 @@ def write_record_and_cache(
         ) from exc
 
 
-def _validate_v45_retirement_inputs(output_dir: Path) -> None:
-    schemas = (
-        V45_DECISION_SCHEMA_VERSION,
-        V45_STATE_SCHEMA_VERSION,
-        V45_INDEX_SCHEMA_VERSION,
-    )
-    for name, schema_version in zip(V45_FILENAMES, schemas, strict=True):
-        path = output_dir / name
-        if path.is_symlink():
-            raise RecordPublicationError(
-                f"v45 migration input must not be a symlink: {name}"
-            )
-        _v45_document(path, schema_version)
-
-
-def _retire_v45_files(output_dir: Path) -> None:
-    for name in V45_FILENAMES:
-        (output_dir / name).unlink()
-
-
 def publish_target_bundle(
     output_dir: Path,
     report_text: str,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
-    *,
-    retire_v45: bool = False,
 ) -> None:
     """Publish target files with the report as the final commit point.
 
@@ -375,8 +411,7 @@ def publish_target_bundle(
             raise RecordPublicationError(
                 f"target validation destination must not be a symlink: {name}"
             )
-    if retire_v45:
-        _validate_v45_retirement_inputs(output_dir)
+    assert_no_retired_artifacts(output_dir)
     try:
         with validation_lock(output_dir):
             _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
@@ -384,89 +419,9 @@ def publish_target_bundle(
                 output_dir / RECORD_FILENAME, _json_bytes(valid_record)
             )
             _atomic_write_bytes(output_dir / "validation.md", report_text.encode())
-            if retire_v45:
-                _retire_v45_files(output_dir)
     except RecordPublicationError:
         raise
     except OSError as exc:
         raise RecordPublicationError(
             f"target validation bundle could not be written: {exc}"
         ) from exc
-
-
-def _v45_document(path: Path, schema_version: int) -> dict[str, Any]:
-    try:
-        document = _mapping(_read_json(path), path.name)
-    except FileNotFoundError as exc:
-        raise TargetRecordError(f"v45 migration input is missing: {path}") from exc
-    rules = document.get("validation_rules_version")
-    schema = document.get("schema_version")
-    if rules != V45_RULES_VERSION or schema != schema_version:
-        raise TargetRecordError(
-            f"unsupported pre-v45 validation format in {path}; expected "
-            f"{V45_RULES_VERSION} schema {schema_version}, got rules={rules!r} "
-            f"schema={schema!r}; validate with the last v45 tool before migration"
-        )
-    return copy.deepcopy(dict(document))
-
-
-def import_v45(output_dir: Path, summary: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Import the deployed v45 triad without opening research evidence.
-
-    The importer reads only the three validation-owned JSON records.  Its graph
-    slice is accepted as migration input for local indexes and deliberately is
-    not reproduced in the durable target record.
-    """
-
-    decisions = _v45_document(
-        output_dir / V45_FILENAMES[0], V45_DECISION_SCHEMA_VERSION
-    )
-    state = _v45_document(output_dir / V45_FILENAMES[1], V45_STATE_SCHEMA_VERSION)
-    graph_slice = _v45_document(
-        output_dir / V45_FILENAMES[2], V45_INDEX_SCHEMA_VERSION
-    )
-
-    record = empty_record(summary, V45_RULES_VERSION)
-    record["rule_dependencies"] = {
-        "components": copy.deepcopy(state.get("component_versions", {})),
-        "input_projections": copy.deepcopy(
-            state.get("input_projection_versions", {})
-        ),
-    }
-    judgments = copy.deepcopy(decisions.get("judgments", []))
-    outcomes = []
-    for imported in state.get("completed_checks", []):
-        outcome = copy.deepcopy(imported)
-        outcome.pop("graph_slice", None)
-        outcomes.append(outcome)
-    record["judgments"] = list(
-        {judgment["identity"]: judgment for judgment in judgments}.values()
-    )
-    record["outcomes"] = list(
-        {
-            outcome["compatibility_identity"]: outcome
-            for outcome in outcomes
-        }.values()
-    )
-    record["result"] = copy.deepcopy(state.get("result"))
-    record["failures"] = copy.deepcopy(
-        (state.get("result") or {}).get("failures", [])
-    )
-
-    files: dict[str, Any] = {}
-    for field in ("files", "input_files"):
-        for path, identity in _mapping(state.get(field, {}), field).items():
-            prior = files.get(path)
-            if prior is not None and prior != identity:
-                raise TargetRecordError(
-                    f"v45 cache contains conflicting identities for {path}"
-                )
-            files[path] = copy.deepcopy(identity)
-    cache = empty_cache()
-    cache["files"] = files
-    cache["directories"] = copy.deepcopy(state.get("directory_memberships", {}))
-    cache["inspections"] = copy.deepcopy(state.get("mechanical_checks", {}))
-    cache["local_indexes"] = {
-        "material_owners": copy.deepcopy(graph_slice.get("material_owners", {}))
-    }
-    return decode_record(record), decode_cache(cache)

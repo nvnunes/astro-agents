@@ -78,9 +78,9 @@ Edit only each template item's `decision` and `rationale` fields:
 - leave continuation identities, item identities, questions, allowed choices,
   evidence, and all other CLI-owned fields unchanged.
 
-Do not construct scan records, adjudications, caches, decision stores, graph
-state, batches, or canonical validation files. Do not calculate a missing
-research result from other artifact values to make an association pass.
+Do not construct internal controller state, caches, review batches, or
+canonical validation files. Do not calculate a missing research result from
+other artifact values to make an association pass.
 
 For a requested reproduction item, run only the packet-listed eligible
 invocation. Redirect every output to a temporary location and stop if retained

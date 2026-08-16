@@ -1076,20 +1076,27 @@ record. A research agent resolves or disputes a finding by changing
 research-owned evidence or instructions; the next completed validation alone
 rebuilds the report.
 
-Validation also maintains two internal machine-readable files:
+Validation also maintains machine-readable state:
 
-- `<log>/validation-record.json` is durable CLI-owned state for semantic
-  judgments and rationales, completed outcomes and dates, observed
-  dependencies, failures, and progressive continuation.
+- `<log>/validation-record.json` is the small authoritative manifest. It owns
+  the project-relative summary identity, current stable continuation,
+  completed-report projection, and exact shard references.
 - `<log>/validation-cache.json` is rebuildable acceleration data for file
   identities, hashes, inspections, and local indexes. It has no independent
   correctness authority.
+- `<log>/validation-state/` contains immutable content-addressed shards for
+  semantic judgments and rationales, completed outcomes and dates, observed
+  dependencies, and failures. Completion never recombines these rows into a
+  monolithic JSON record.
 
 Research agents preserve these files exactly; validation agents create,
 update, or remove them through the validation tool. Only `validation.md` is
 intended for direct use as a validation record. Temporary semantic review
-packets and decision templates live outside the research log and are not
-canonical validation artifacts.
+packets and decision templates live under the ignored project-local
+`.astro-agents-validation-work/` root and are not canonical validation
+artifacts. A paged review can resume from the maintained-summary path alone;
+the manifest names the stable session while its small state file owns the
+current page and accepted batches.
 
 Compatible reused outcomes keep their original result dates, so a current
 report can legitimately contain dates older than its report-update date.

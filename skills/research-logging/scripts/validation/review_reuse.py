@@ -1,31 +1,20 @@
-"""Temporary native-v1 to v2 semantic-review reuse adapter.
-
-This module exists only for the Phase 8 migration of the eleven validation
-records.  Remove it, and its call site, after every record is native v2.  It
-projects prior semantic judgments into current review answers; it never
-accepts packets or continuations, whose full identities remain authoritative.
-"""
+"""Stable-subject reuse for current semantic review decisions."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections import defaultdict
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from .adjudication import is_success_date
 from .compatibility import (
     decode_input_dependencies,
     input_dependencies_for_check,
     orphan_input_dependencies,
-    orphan_rule_dependencies,
     projection,
-    rule_dependencies_for_check,
 )
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 
-MIGRATION_RECORD_COUNT = 11
 SEMANTIC_REVIEW_RULES = {"semantic_review": 1}
 
 
@@ -58,7 +47,7 @@ def _decoded_inputs(judgment: Mapping[str, Any]) -> list[dict[str, Any]] | None:
     try:
         return decode_input_dependencies(
             judgment.get("input_dependencies"),
-            "migration judgment inputs",
+            "review judgment inputs",
             require_supported=False,
         )
     except ValidationToolError:
@@ -205,13 +194,6 @@ def _contains_current_inputs(
     )
 
 
-def _native_rules_match(judgment: Mapping[str, Any], entry: str) -> bool:
-    expected = rule_dependencies_for_check(
-        {"check": "Provenance", "entry": entry}
-    )
-    return judgment.get("rule_dependencies") == expected
-
-
 def _answer_allowed(
     queue_item: Mapping[str, Any], template: Mapping[str, Any], answer: Any
 ) -> bool:
@@ -233,100 +215,6 @@ def _answer_allowed(
             for values in members.values()
         )
     )
-
-
-def _matching_completed_checks(
-    judgments: Sequence[Mapping[str, Any]], template: Mapping[str, Any]
-) -> list[Mapping[str, Any]]:
-    subject = {
-        "check": "Provenance",
-        "entry": template.get("entry"),
-        "target": template.get("identity"),
-    }
-    return [
-        judgment
-        for judgment in judgments
-        if judgment.get("kind") == "completed-check"
-        and judgment.get("subject") == subject
-        and is_success_date(judgment.get("result"))
-    ]
-
-
-def _legacy_provenance_answers(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: Mapping[str, Any],
-    template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> list[Any]:
-    kind = template.get("kind")
-    if kind not in {"semantic_provenance", "semantic_fallback", "upstream_producer"}:
-        return []
-    answers: list[Any] = []
-    summary_bases: set[str] = set()
-    for judgment in _matching_completed_checks(judgments, template):
-        projected = _legacy_provenance_for_judgment(
-            scan,
-            adjudication,
-            queue_item,
-            template,
-            judgment,
-        )
-        if projected is None:
-            continue
-        projected_answers, basis = projected
-        if kind == "semantic_provenance" and projected_answers:
-            summary_bases.add(
-                json.dumps(basis, sort_keys=True, separators=(",", ":"))
-            )
-        answers.extend(projected_answers)
-    return [] if len(summary_bases) > 1 else answers
-
-
-def _legacy_provenance_for_judgment(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: Mapping[str, Any],
-    template: Mapping[str, Any],
-    judgment: Mapping[str, Any],
-) -> tuple[list[Any], Any] | None:
-    kind = str(template.get("kind", ""))
-    entry = str(template.get("entry", ""))
-    if not _native_rules_match(judgment, entry):
-        return None
-    basis = judgment.get("basis")
-    current = _current_check_inputs(scan, adjudication, queue_item, basis)
-    if current is None or not _contains_current_inputs(
-        judgment,
-        _without_unscoped_collections(current, _collection_paths(queue_item)),
-    ):
-        return None
-    if kind == "semantic_provenance":
-        return ["pass"], basis
-    if kind == "semantic_fallback":
-        invocation = (
-            basis.get("producer_invocation")
-            if isinstance(basis, Mapping)
-            else None
-        )
-        allowed = template.get("allowed_decisions", [])
-        return ([invocation] if invocation in allowed else []), basis
-    bindings = (
-        basis.get("producer_bindings") if isinstance(basis, Mapping) else None
-    )
-    if not isinstance(bindings, list):
-        bindings = judgment.get("producer_bindings")
-    available_bindings = bindings if isinstance(bindings, list) else []
-    answers = [
-        binding.get("invocation", binding.get("invocation_identity"))
-        for binding in available_bindings
-        if isinstance(binding, Mapping)
-        and binding.get("material", binding.get("coverage_identity"))
-        == template.get("material")
-        and binding.get("invocation", binding.get("invocation_identity"))
-        in template.get("allowed_decisions", [])
-    ]
-    return answers, basis
 
 
 def _selected_collection_identity(
@@ -356,90 +244,11 @@ def _selected_collection_identity(
     }
 
 
-def _legacy_collection_answer(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: Mapping[str, Any],
-    template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> list[Any]:
-    if template.get("kind") != "collection_scope":
-        return []
-    expected_collections = _collection_paths(queue_item)
-    answers = []
-    for judgment in _matching_completed_checks(judgments, template):
-        if not _native_rules_match(judgment, str(template.get("entry", ""))):
-            continue
-        stored = _decoded_inputs(judgment)
-        if stored is None:
-            continue
-        selected = _legacy_collection_selection(stored, expected_collections)
-        if selected is None:
-            continue
-        normalized, relevant, relationships = selected
-        current_check = _current_check_inputs(
-            scan, adjudication, queue_item, judgment.get("basis")
-        )
-        if current_check is None or not _contains_current_inputs(
-            judgment,
-            _without_unscoped_collections(current_check, expected_collections),
-        ):
-            continue
-        current = _current_collection_inputs(
-            scan,
-            normalized,
-            relationships,
-            incremental=_incremental_collection_inputs(
-                scan, queue_item, normalized, relationships
-            ),
-        )
-        if current is None:
-            continue
-        if _scope_map(relevant) == _scope_map(current):
-            answers.append({"members": normalized})
-    return answers
-
-
-def _legacy_collection_selection(
-    stored: Sequence[Mapping[str, Any]], expected: set[str]
-) -> tuple[
-    dict[str, list[str]], list[dict[str, Any]], dict[str, str]
-] | None:
-    members: dict[str, list[str]] = defaultdict(list)
-    relevant: list[dict[str, Any]] = []
-    relationships: dict[str, str] = {}
-    for item in stored:
-        if item.get("kind") not in {"collection-member", "collection-membership"}:
-            continue
-        locator = item.get("source_locator")
-        if not isinstance(locator, Mapping) or not isinstance(
-            locator.get("path"), str
-        ):
-            return None
-        path = str(locator["path"])
-        relevant.append(dict(item))
-        if item.get("kind") == "collection-membership":
-            relationships[path] = str(item.get("relationship", ""))
-        member = locator.get("member")
-        if item.get("kind") == "collection-member" and isinstance(member, str):
-            members[path].append(member)
-    normalized = {
-        path: sorted(set(values)) for path, values in members.items() if values
-    }
-    if set(normalized) != expected or set(relationships) != expected or not relevant:
-        return None
-    return normalized, relevant, relationships
-
-
 def _current_collection_inputs(
     scan: ScanRecord,
     members: Mapping[str, list[str]],
     relationships: Mapping[str, str],
-    *,
-    incremental: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
-    if incremental is not None:
-        return [dict(item) for item in incremental]
     current = []
     for path, selected in sorted(members.items()):
         identity = _selected_collection_identity(scan, path, selected)
@@ -468,60 +277,6 @@ def _current_collection_inputs(
     return current
 
 
-def _incremental_collection_inputs(
-    scan: ScanRecord,
-    queue_item: Mapping[str, Any],
-    members: Mapping[str, list[str]],
-    relationships: Mapping[str, str],
-) -> list[dict[str, Any]] | None:
-    """Return current projections recomputed for a persisted exact member set."""
-
-    matches = [
-        check
-        for check in scan.get("incremental", {}).get("checks", [])
-        if check.get("check") == "Provenance"
-        and check.get("entry") == queue_item.get("entry")
-        and check.get("target") == queue_item.get("identity")
-    ]
-    if len(matches) != 1:
-        return None
-    projected = [
-        dict(item)
-        for item in matches[0].get("input_dependencies", [])
-        if isinstance(item, Mapping)
-        and isinstance(item.get("source_locator"), Mapping)
-        and item["source_locator"].get("path") in members
-        and item.get("kind") in {"collection-member", "collection-membership"}
-    ]
-    if not projected:
-        return None
-    expected_scopes = {
-        (
-            "collection-membership",
-            f"collection-membership:{path}",
-            relationship,
-        )
-        for path, relationship in relationships.items()
-    } | {
-        (
-            "collection-member",
-            f"collection-member:{path}:{member}",
-            relationships[path],
-        )
-        for path, selected in members.items()
-        for member in selected
-    }
-    actual_scopes = {
-        (
-            str(item.get("kind")),
-            str(item.get("semantic_identity")),
-            str(item.get("relationship")),
-        )
-        for item in projected
-    }
-    return projected if actual_scopes == expected_scopes else None
-
-
 def _scan_entry(scan: ScanRecord, entry: str) -> Mapping[str, Any] | None:
     return next(
         (
@@ -531,56 +286,6 @@ def _scan_entry(scan: ScanRecord, entry: str) -> Mapping[str, Any] | None:
         ),
         None,
     )
-
-
-def _legacy_orphan_answers(
-    scan: ScanRecord,
-    template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> list[Any]:
-    if template.get("kind") != "orphan_candidate":
-        return []
-    entry_id = str(template.get("entry", ""))
-    identity = str(template.get("identity", ""))
-    entry = _scan_entry(scan, entry_id)
-    if entry is None:
-        return []
-    candidate = next(
-        (
-            item
-            for item in entry.get("orphan_inventory", [])
-            if item.get("identity") == identity
-        ),
-        None,
-    )
-    if candidate is None:
-        return []
-    current = [
-        item
-        for item in orphan_input_dependencies(scan, entry, [candidate])
-        if item.get("kind") == "orphan-candidate"
-    ]
-    answers = []
-    subject = {"entry": entry_id, "identity": identity}
-    for judgment in judgments:
-        if (
-            judgment.get("kind") != "orphan-disposition"
-            or judgment.get("subject") != subject
-            or judgment.get("rule_dependencies") != orphan_rule_dependencies()
-            or not _contains_current_inputs(judgment, current)
-        ):
-            continue
-        result = judgment.get("result")
-        basis = judgment.get("basis")
-        if result == "unresolved":
-            answers.append("unresolved")
-        elif result == "accepted" and basis in {"graph", "semantic-connection"}:
-            answers.append("connected")
-        elif result == "accepted" and isinstance(basis, str) and basis.startswith(
-            "validation-note:"
-        ):
-            answers.append(f"retain:{basis.removeprefix('validation-note:')}")
-    return answers
 
 
 def _review_decision_answers(
@@ -693,27 +398,18 @@ def _review_collection_selection(
     return normalized
 
 
-def migration_reusable_answer(
+def reusable_review_answer(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
     template: Mapping[str, Any],
     judgments: Sequence[Mapping[str, Any]],
 ) -> tuple[Any, str] | None:
-    """Project one unambiguous compatible prior judgment into a current answer."""
+    """Return one unambiguous compatible prior review decision."""
 
-    candidates = [
-        *_review_decision_answers(
-            scan, adjudication, queue_item, template, judgments
-        ),
-        *_legacy_provenance_answers(
-            scan, adjudication, queue_item, template, judgments
-        ),
-        *_legacy_collection_answer(
-            scan, adjudication, queue_item, template, judgments
-        ),
-        *_legacy_orphan_answers(scan, template, judgments),
-    ]
+    candidates = _review_decision_answers(
+        scan, adjudication, queue_item, template, judgments
+    )
     allowed = [
         answer
         for answer in candidates
@@ -727,5 +423,5 @@ def migration_reusable_answer(
         return None
     return (
         next(iter(unique.values())),
-        "Reused from an exact compatible native judgment during v1-to-v2 migration.",
+        "Reused from an exact compatible stable-subject review decision.",
     )

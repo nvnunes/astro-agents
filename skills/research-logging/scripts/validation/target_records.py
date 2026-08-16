@@ -21,7 +21,6 @@ from .records import RecordPublicationError, _atomic_write_bytes, validation_loc
 RECORD_FILENAME = "validation-record.json"
 CACHE_FILENAME = "validation-cache.json"
 RECORD_SCHEMA_VERSION = 2
-NATIVE_V1_SCHEMA_VERSION = 1
 CACHE_SCHEMA_VERSION = 1
 RETIRED_VALIDATION_FILENAMES = (
     "validation-decisions.json",
@@ -531,104 +530,10 @@ def _read_json(path: Path) -> Any:
         raise TargetRecordError(f"cannot read valid JSON from {path}: {exc}") from exc
 
 
-def _decode_native_v1(value: Any) -> dict[str, Any]:
-    """Decode only the native schema deployed immediately before v2."""
-
-    record = _mapping(value, "native-v1 durable record")
-    expected_fields = {
-        "schema_version",
-        "summary",
-        "validation_rules_version",
-        "rule_dependencies",
-        "judgments",
-        "outcomes",
-        "result",
-        "failures",
-        "continuation",
-    }
-    if set(record) != expected_fields:
-        raise TargetRecordError("native-v1 durable record has incorrect fields")
-    if record.get("schema_version") != NATIVE_V1_SCHEMA_VERSION:
-        raise TargetRecordError("record is not the deployed native-v1 schema")
-    _nonempty_string(record.get("summary"), "summary")
-    _nonempty_string(
-        record.get("validation_rules_version"), "validation_rules_version"
-    )
-    _validate_record_rows(record)
-    continuation = record.get("continuation")
-    if continuation is not None:
-        _mapping(continuation, "continuation")
-    return copy.deepcopy(dict(record))
-
-
-def _native_v1_summary(
-    raw_summary: str, expected_summary: str, project_root: Path
-) -> str:
-    expected = _validate_relative_path(expected_summary, "expected summary")
-    raw_path = Path(raw_summary)
-    expected_path = (project_root / expected).resolve()
-    if raw_path.is_absolute():
-        if raw_path.resolve() != expected_path:
-            raise TargetRecordError(
-                "durable validation record belongs to another summary"
-            )
-        return expected
-    normalized = _validate_relative_path(raw_summary, "summary")
-    if normalized != expected:
-        raise TargetRecordError("durable validation record belongs to another summary")
-    return normalized
-
-
-def _native_v1_completion_dependencies(
-    record: Mapping[str, Any], summary: str
-) -> list[dict[str, Any]]:
-    dependencies: list[dict[str, Any]] = []
-    for outcome in record.get("outcomes", []):
-        for dependency in outcome.get("dependencies", []):
-            if (
-                dependency.get("path") == summary
-                and dependency.get("role") == "summary"
-                and dependency not in dependencies
-            ):
-                dependencies.append(copy.deepcopy(dependency))
-    return dependencies
-
-
-def upgrade_native_v1(
-    value: Any, expected_summary: str, project_root: Path
-) -> dict[str, Any]:
-    """Convert the exact deployed native-v1 record without publishing it."""
-
-    old = _decode_native_v1(value)
-    summary = _native_v1_summary(
-        str(old["summary"]), expected_summary, project_root
-    )
-    continuation = old.get("continuation")
-    if continuation is not None:
-        if set(continuation) != {"identity", "item_count"}:
-            raise TargetRecordError(
-                "active native-v1 continuation cannot be converted safely"
-            )
-        continuation = {"kind": "ordinary", **continuation}
-    converted = {
-        **old,
-        "schema_version": RECORD_SCHEMA_VERSION,
-        "summary": summary,
-        "continuation": continuation,
-        "completion_dependencies": _native_v1_completion_dependencies(
-            old, summary
-        ),
-        "projection": None,
-    }
-    return decode_record(converted)
-
-
 def load_record_with_source(
     path: Path,
     *,
     expected_summary: str | None = None,
-    project_root: Path | None = None,
-    allow_native_v1: bool = True,
 ) -> tuple[dict[str, Any], int]:
     """Load one record and report the native schema found on disk."""
 
@@ -641,28 +546,26 @@ def load_record_with_source(
     raw = _mapping(value, "durable record")
     source_version = raw.get("schema_version")
     if source_version == RECORD_SCHEMA_VERSION:
-        if raw.get("storage_layout") == sharded_state.STORAGE_LAYOUT:
-            manifest = decode_sharded_manifest(raw)
-            if expected_summary is not None and manifest["summary"] != expected_summary:
-                raise TargetRecordError(
-                    "durable validation record belongs to another summary"
-                )
-            record = hydrate_record_shell(_manifest_shell(manifest), path.parent)
-        else:
-            record = decode_record(raw)
+        if raw.get("storage_layout") != sharded_state.STORAGE_LAYOUT:
+            raise TargetRecordError(
+                "monolithic native-v2 validation records are retired; use a "
+                "pre-transition astro-agents checkout to migrate this log"
+            )
+        manifest = decode_sharded_manifest(raw)
+        if expected_summary is not None and manifest["summary"] != expected_summary:
+            raise TargetRecordError(
+                "durable validation record belongs to another summary"
+            )
+        record = hydrate_record_shell(_manifest_shell(manifest), path.parent)
         if expected_summary is not None and record["summary"] != expected_summary:
             raise TargetRecordError(
                 "durable validation record belongs to another summary"
             )
         return record, RECORD_SCHEMA_VERSION
-    if source_version == NATIVE_V1_SCHEMA_VERSION and allow_native_v1:
-        if expected_summary is None or project_root is None:
-            raise TargetRecordError(
-                "native-v1 loading requires the requested summary and project root"
-            )
-        return (
-            upgrade_native_v1(raw, expected_summary, project_root),
-            NATIVE_V1_SCHEMA_VERSION,
+    if source_version == 1:
+        raise TargetRecordError(
+            "native-v1 validation records are retired; use a pre-transition "
+            "astro-agents checkout to migrate this log"
         )
     raise TargetRecordError(
         "unsupported validation-record schema; expected "
@@ -674,10 +577,8 @@ def load_record_header_with_source(
     path: Path,
     *,
     expected_summary: str | None = None,
-    project_root: Path | None = None,
-    allow_native_v1: bool = True,
 ) -> tuple[dict[str, Any], int]:
-    """Load only a sharded manifest, while preserving monolithic compatibility."""
+    """Load only a supported sharded manifest and validate its ownership."""
 
     try:
         value = _read_json(path)
@@ -699,8 +600,6 @@ def load_record_header_with_source(
     return load_record_with_source(
         path,
         expected_summary=expected_summary,
-        project_root=project_root,
-        allow_native_v1=allow_native_v1,
     )
 
 
@@ -708,16 +607,12 @@ def load_record(
     path: Path,
     *,
     expected_summary: str | None = None,
-    project_root: Path | None = None,
-    allow_native_v1: bool = True,
 ) -> dict[str, Any]:
     """Load authoritative state, failing actionably on malformed ownership."""
 
     record, _ = load_record_with_source(
         path,
         expected_summary=expected_summary,
-        project_root=project_root,
-        allow_native_v1=allow_native_v1,
     )
     return record
 

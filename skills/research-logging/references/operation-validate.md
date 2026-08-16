@@ -61,13 +61,19 @@ Interpret the structured result by `status`:
 An unchanged standard validation may complete from compatible saved outcomes.
 Its diagnostics must show that unchanged evidence content was neither opened
 nor hashed. Reproduction never uses the standard cached-completion return.
+Cached completion also requires a loaded cache, compatible completion
+dependencies, a matching manifest projection identity, and report bytes that
+match the manifest's expected report hash. Report existence alone is not
+currentness evidence.
 
 ## Semantic Decision
 
 For `review_required`, use only the reported `review_packet` and
 `decision_file` paths. Read the packet before opening any additional material.
 The packet contains the bounded context and exact allowed decisions for each
-item.
+item. A focused level-1 packet includes the authored passage or inventory
+needed to resolve the original uncertainty; it is the terminal bounded context
+level rather than an invitation to inspect additional research material.
 
 Edit only each template item's `decision` and `rationale` fields:
 
@@ -109,6 +115,12 @@ The continuation returns the same three statuses. If it returns another
 reported packet and template. Compatible completed outcomes and accepted
 judgments remain durable between continuations and after later operational
 failure.
+
+For a paged review, rerunning the public operation with only `--summary` resumes
+the current page from the manifest's stable project-local session. Do not copy,
+reconstruct, or hand-edit session state. Each accepted page becomes durable in
+one immutable judgment shard before the session advances; completion removes
+the referenced work session only after the final manifest/report publication.
 
 ## Validation Meaning
 

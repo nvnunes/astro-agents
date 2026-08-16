@@ -199,6 +199,20 @@ Future validation changes must preserve these invariants:
 - **Progressive work:** Retain valid completed work as it is produced. Do not
   discard it merely because other validation work remains incomplete or later
   work fails.
+- **Sharded authority:** Keep `validation-record.json` as the compact
+  authoritative manifest. Publish immutable outcome, judgment, and failure
+  shards before replacing that manifest, and never rebuild a monolithic
+  durable record at completion.
+- **Coherent completion:** Treat the manifest projection identity, expected
+  report hash, loaded cache, completion dependencies, and current
+  `validation.md` bytes as one cached-completion contract.
+- **Bounded review:** Give every semantic question minimum-sufficient context,
+  bound packets by whole questions and UTF-8 bytes, and make requests for more
+  context a finite identity-changing transition.
+- **Transient continuation:** Store incomplete paged review work under the
+  ignored project-local `.astro-agents-validation-work/` root. The manifest
+  owns only the stable session locator; small session state owns the current
+  page and accepted-batch sequence.
 - **Maximum reuse:** Reuse compatible past work to minimize validation effort.
   Use inexpensive metadata to detect possible changes, hash content when that
   metadata changes, and revalidate only when the content or applicable rules

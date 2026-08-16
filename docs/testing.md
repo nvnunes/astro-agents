@@ -144,6 +144,14 @@ keeps ordinary shards bounded while admitting the largest valid deployed
 legacy row measured during migration (5,781,722 bytes); an individual row may
 therefore occupy a shard by itself.
 
+Public semantic packets are bounded at 65,536 UTF-8 bytes and 200 questions,
+with pagination retaining whole questions. The count aligns a normal accepted
+review batch with one judgment shard. The retained 12,000/24,000-orphan
+workload renders 146 questions and 65,492 bytes; the focused MASTSEL collection
+fixture renders two expanded questions and 52,430 bytes. The byte ceiling is
+roughly 16,000–20,000 tokens depending on JSON density and is a reviewed public
+contract, not an optimization target.
+
 ### Validation Review Scaling Benchmark
 
 When changing research-log candidate selection, producer-source context,

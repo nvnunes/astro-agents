@@ -81,6 +81,30 @@ def review_judgment(number: int) -> dict:
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_native_v1_record_fails_with_retired_format_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / TARGET.RECORD_FILENAME
+            value = native_record()
+            value["schema_version"] = 1
+            path.write_bytes(TARGET._json_bytes(value))
+
+            with self.assertRaisesRegex(
+                TARGET.TargetRecordError,
+                "native-v1 validation records are retired.*pre-transition",
+            ):
+                TARGET.load_record(path, expected_summary="docs/mini.md")
+
+    def test_monolithic_v2_record_fails_with_retired_format_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / TARGET.RECORD_FILENAME
+            path.write_bytes(TARGET._json_bytes(native_record()))
+
+            with self.assertRaisesRegex(
+                TARGET.TargetRecordError,
+                "monolithic native-v2 validation records are retired",
+            ):
+                TARGET.load_record(path, expected_summary="docs/mini.md")
+
     def test_v2_record_rejects_absolute_summary(self) -> None:
         record = native_record()
         record["summary"] = "/tmp/project/docs/mini.md"
@@ -172,7 +196,6 @@ class TargetRecordTests(unittest.TestCase):
             shell, _ = TARGET.load_record_header_with_source(
                 root / TARGET.RECORD_FILENAME,
                 expected_summary="docs/mini.md",
-                project_root=root,
             )
             before = {
                 path.relative_to(root).as_posix(): path.read_bytes()
@@ -221,7 +244,6 @@ class TargetRecordTests(unittest.TestCase):
             shell, _ = TARGET.load_record_header_with_source(
                 root / TARGET.RECORD_FILENAME,
                 expected_summary="docs/mini.md",
-                project_root=root,
             )
             manifest_before = (root / TARGET.RECORD_FILENAME).read_bytes()
             original = TARGET._atomic_write_bytes
@@ -255,7 +277,6 @@ class TargetRecordTests(unittest.TestCase):
             shell, _ = TARGET.load_record_header_with_source(
                 root / TARGET.RECORD_FILENAME,
                 expected_summary="docs/mini.md",
-                project_root=root,
             )
             manifest_before = (root / TARGET.RECORD_FILENAME).read_bytes()
             original = TARGET._atomic_write_bytes

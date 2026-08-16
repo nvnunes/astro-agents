@@ -76,76 +76,6 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
 
-    def test_storage_migration_shards_exact_state_without_scanning(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary = make_no_semantic_log(Path(directory))
-            completed = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
-            self.assertEqual(completed["status"], "complete")
-            output = summary.with_suffix("")
-            record_path = output / TARGET.RECORD_FILENAME
-            logical = TARGET.load_record(record_path)
-            record_path.write_bytes(TARGET._json_bytes(logical))
-            monolithic = record_path.read_bytes()
-            report = (output / "validation.md").read_bytes()
-
-            dry_run = run_validate(
-                summary, jobs=1, migrate_storage=True, publish=False
-            )
-            self.assertEqual(dry_run["status"], "migration_dry_run")
-            self.assertEqual(record_path.read_bytes(), monolithic)
-
-            with mock.patch.object(
-                CONTROLLER,
-                "scan_log",
-                side_effect=AssertionError("storage migration must not scan"),
-            ):
-                migrated = run_validate(
-                    summary, jobs=1, migrate_storage=True
-                )
-            self.assertEqual(migrated["status"], "migrated")
-            self.assertEqual(TARGET.load_record(record_path), logical)
-            self.assertEqual((output / "validation.md").read_bytes(), report)
-            manifest = json.loads(record_path.read_text(encoding="utf-8"))
-            self.assertEqual(manifest["storage_layout"], "sharded-v1")
-
-    def test_native_v1_storage_migration_preserves_exact_upgraded_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary = make_no_semantic_log(root)
-            completed = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
-            self.assertEqual(completed["status"], "complete")
-            output = summary.with_suffix("")
-            record_path = output / TARGET.RECORD_FILENAME
-            current = TARGET.load_record(record_path)
-            native_v1 = {
-                key: copy.deepcopy(value)
-                for key, value in current.items()
-                if key not in {"completion_dependencies", "projection"}
-            }
-            native_v1["schema_version"] = 1
-            native_v1["summary"] = summary.resolve().as_posix()
-            record_path.write_bytes(TARGET._json_bytes(native_v1))
-            expected = TARGET.upgrade_native_v1(
-                native_v1,
-                current["summary"],
-                root,
-            )
-
-            with mock.patch.object(
-                CONTROLLER,
-                "scan_log",
-                side_effect=AssertionError("storage migration must not scan"),
-            ):
-                migrated = run_validate(
-                    summary, jobs=1, migrate_storage=True
-                )
-            self.assertEqual(migrated["status"], "migrated")
-            self.assertEqual(TARGET.load_record(record_path), expected)
-
     def test_missing_cache_for_changed_zero_outcome_log_forces_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
@@ -552,14 +482,11 @@ class ValidationControllerTests(unittest.TestCase):
             record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
             logical = TARGET.load_record(record_path)
             continuation_before = copy.deepcopy(logical["continuation"])
-            record_path.write_bytes(TARGET._json_bytes(logical))
             session_before = {
                 path.relative_to(session_dir).as_posix(): path.read_bytes()
                 for path in session_dir.rglob("*")
                 if path.is_file()
             }
-            migrated = run_validate(summary, jobs=1, migrate_storage=True)
-            self.assertEqual(migrated["status"], "migrated")
             self.assertEqual(
                 TARGET.load_record(record_path)["continuation"],
                 continuation_before,
@@ -923,139 +850,6 @@ class ValidationControllerTests(unittest.TestCase):
                 EXCHANGE.context_request_key(decisions["items"][0]): 1
             })))
 
-    def test_migration_recovery_retains_valid_rows_and_reissues_bare_pass(self) -> None:
-        target = "docs/mini/data/result.csv"
-        adjudication = {
-            "entries": [{"id": "e001", "targets": [{"target": target}]}],
-            "review_queue": [
-                {
-                    "kind": "mechanical_failure",
-                    "entry": "e001",
-                    "identity": target,
-                    "workflow": {"status": "unresolved"},
-                },
-                {
-                    "kind": "semantic_provenance",
-                    "entry": "Summary",
-                    "identity": "4.2%",
-                },
-            ],
-        }
-        invalid = {
-            "kind": "mechanical_failure",
-            "entry": "e001",
-            "identity": target,
-            "decision": "pass",
-        }
-        valid = {
-            "kind": "semantic_provenance",
-            "entry": "Summary",
-            "identity": "4.2%",
-            "decision": "pass",
-        }
-        decisions = {"schema_version": 1, "items": [invalid, valid]}
-
-        recovered = CONTROLLER._migration_recovery_decisions(
-            adjudication, decisions
-        )
-
-        self.assertEqual(recovered, {"schema_version": 1, "items": [valid]})
-
-    def test_migration_normalizes_deferred_dependency_identities(self) -> None:
-        file_identity = {
-            "size": 12,
-            "mtime_ns": 34,
-            "ctime_ns": 56,
-            "sha256": "a" * 64,
-        }
-        collection_identity = {
-            **file_identity,
-            "members": ["case_001.pkl", "case_002.pkl"],
-        }
-        scan = {
-            "files": {"docs/mini/script.py": file_identity},
-            "directory_memberships": {
-                "docs/mini/data": {"members": 3, "sha256": "b" * 64}
-            },
-        }
-        adjudication = {
-            "summary": [],
-            "entries": [
-                {
-                    "targets": [
-                        {
-                            "dependencies": [
-                                {
-                                    "path": "docs/mini/script.py",
-                                    "role": "producer",
-                                    "identity": file_identity,
-                                },
-                                {
-                                    "path": "docs/mini/data",
-                                    "role": "input",
-                                    "members": collection_identity["members"],
-                                    "identity": collection_identity,
-                                },
-                            ]
-                        }
-                    ]
-                }
-            ],
-        }
-
-        normalized = CONTROLLER._normalize_migration_session_dependencies(
-            scan, adjudication
-        )
-
-        dependencies = normalized["entries"][0]["targets"][0]["dependencies"]
-        self.assertNotIn("identity", dependencies[0])
-        self.assertNotIn("identity", dependencies[1])
-        self.assertIn(
-            "identity",
-            adjudication["entries"][0]["targets"][0]["dependencies"][0],
-        )
-
-    def test_migration_rejects_incompatible_deferred_dependency_identity(self) -> None:
-        scan = {
-            "files": {
-                "docs/mini/script.py": {
-                    "size": 12,
-                    "mtime_ns": 34,
-                    "ctime_ns": 56,
-                    "sha256": "a" * 64,
-                }
-            },
-            "directory_memberships": {},
-        }
-        adjudication = {
-            "summary": [],
-            "entries": [
-                {
-                    "targets": [
-                        {
-                            "dependencies": [
-                                {
-                                    "path": "docs/mini/script.py",
-                                    "role": "producer",
-                                    "identity": {
-                                        "size": 13,
-                                        "mtime_ns": 34,
-                                        "ctime_ns": 56,
-                                        "sha256": "a" * 64,
-                                    },
-                                }
-                            ]
-                        }
-                    ]
-                }
-            ],
-        }
-
-        with self.assertRaisesRegex(
-            CONTROLLER.ValidationToolError, "incompatible with its scan snapshot"
-        ):
-            CONTROLLER._normalize_migration_session_dependencies(scan, adjudication)
-
     def test_context_upgrade_publishes_before_old_session_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1144,34 +938,6 @@ class ValidationControllerTests(unittest.TestCase):
                     CONTROLLER._refresh_empty_context_session(context, recovery)
 
             cleanup.assert_not_called()
-
-    def test_migration_normalizes_reviewable_failure_to_producer_choice(self) -> None:
-        adjudication = {
-            "review_queue": [
-                {
-                    "kind": "mechanical_failure",
-                    "hard_failures": [],
-                    "producer_candidates": [{"invocation": "invocation-1"}],
-                },
-                {
-                    "kind": "mechanical_failure",
-                    "hard_failures": ["Integrity"],
-                    "producer_candidates": [{"invocation": "invocation-2"}],
-                },
-            ]
-        }
-
-        normalized = CONTROLLER._normalize_migration_review_kinds(adjudication)
-
-        self.assertEqual(
-            [item["kind"] for item in normalized["review_queue"]],
-            ["semantic_fallback", "mechanical_failure"],
-        )
-        self.assertEqual(
-            [item["kind"] for item in adjudication["review_queue"]],
-            ["mechanical_failure", "mechanical_failure"],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

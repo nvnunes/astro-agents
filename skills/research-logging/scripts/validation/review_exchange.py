@@ -11,11 +11,6 @@ from typing import Any, Callable, Mapping
 
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
-from .migration_review_reuse import (
-    SEMANTIC_REVIEW_RULES,
-    migration_reusable_answer,
-    review_judgment_inputs,
-)
 from .review_batches import (
     OrphanBatchRequest,
     ordered_orphan_candidates,
@@ -23,6 +18,11 @@ from .review_batches import (
     select_orphan_batch,
 )
 from .review_index import ReviewContextIndex, ReviewQuerySession
+from .review_reuse import (
+    SEMANTIC_REVIEW_RULES,
+    reusable_review_answer,
+    review_judgment_inputs,
+)
 
 EXCHANGE_SCHEMA_VERSION = 1
 INTERNAL_FILENAME = ".continuation.json"
@@ -1326,10 +1326,10 @@ def resume_deferred_orphan_session(
     return _deferred_page(session_dir, index, state)
 
 
-def empty_deferred_recovery_context(
+def empty_deferred_refresh_context(
     project_root: Path, continuation: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """Return a validated empty session base for controlled migration restart."""
+    """Return a validated empty session base for context-projection refresh."""
 
     session_dir = _session_path(project_root, str(continuation.get("session", "")))
     state = _read_object(
@@ -2032,7 +2032,7 @@ def _projected_reuse_rows(
                 str(judgment["rationale"]),
             )
         else:
-            answer = migration_reusable_answer(
+            answer = reusable_review_answer(
                 scan, adjudication, queue_item, template, judgments
             )
         if answer is None:

@@ -24,7 +24,7 @@ from .review_exchange import (
     create_exchange,
     decisions_to_actions,
     durable_review_judgments,
-    empty_deferred_recovery_context,
+    empty_deferred_refresh_context,
     finish_deferred_orphan_session,
     finish_review_session,
     load_decisions,
@@ -40,7 +40,6 @@ from .runtime import (
     scan_policy,
 )
 from .scan import ScanRequest, scan_log
-from .sharded_state import prepare_state
 from .target_records import (
     CACHE_FILENAME,
     RECORD_FILENAME,
@@ -94,7 +93,6 @@ class ValidationRequest:
     jobs: int = 8
     publish: bool = True
     mode: str = "standard"
-    migrate_storage: bool = False
 
 
 @dataclass
@@ -155,7 +153,7 @@ def _relative_summary(summary_path: Path, project_root: Path) -> str:
 
 
 def _load_target_state(
-    output_dir: Path, summary: str, project_root: Path
+    output_dir: Path, summary: str
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     assert_no_retired_artifacts(output_dir)
     record_path = output_dir / RECORD_FILENAME
@@ -164,7 +162,6 @@ def _load_target_state(
         record, source_version = load_record_header_with_source(
             record_path,
             expected_summary=summary,
-            project_root=project_root,
         )
         cache, cache_status = load_cache(cache_path)
         return record, cache, f"native-v{source_version}:{cache_status}"
@@ -518,9 +515,7 @@ def _finish_deferred_acceptance(
     """Apply one complete paged session and publish its canonical result."""
 
     scan = cast(ScanRecord, accepted["scan"])
-    adjudication = _normalize_migration_session_dependencies(
-        scan, cast(AdjudicationRecord, accepted["adjudication"])
-    )
+    adjudication = cast(AdjudicationRecord, accepted["adjudication"])
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
     if scanned_summary.resolve() != summary_path:
         raise ValidationToolError("review session belongs to another summary")
@@ -531,17 +526,7 @@ def _finish_deferred_acceptance(
         "orphan_fingerprints": accepted["orphan_fingerprints"],
     }
     actions = decisions_to_actions(decisions, action_internal)
-    try:
-        decided, _ = apply_review_decisions(scan, adjudication, actions)
-    except ValidationToolError:
-        recovered = _migration_recovery_decisions(adjudication, decisions)
-        if recovered is None:
-            raise
-        recovery_actions = decisions_to_actions(recovered, action_internal)
-        decided, _ = apply_review_decisions(
-            scan, adjudication, recovery_actions
-        )
-        decisions = recovered
+    decided, _ = apply_review_decisions(scan, adjudication, actions)
     review_judgments = durable_review_judgments(
         decisions, adjudication["date"], scan, adjudication
     )
@@ -551,9 +536,7 @@ def _finish_deferred_acceptance(
             dict[str, Any],
             _apply_reusable_judgments(
                 scan,
-                _normalize_migration_review_kinds(
-                    cast(AdjudicationRecord, decided)
-                ),
+                cast(AdjudicationRecord, decided),
                 progress.record["judgments"],
             ),
         )
@@ -601,107 +584,6 @@ def _finish_deferred_acceptance(
     }
 
 
-def _normalize_migration_session_dependencies(
-    scan: ScanRecord, adjudication: AdjudicationRecord
-) -> AdjudicationRecord:
-    """Project redundant native-v1 dependency identities into schema v8.
-
-    Some Phase 8 sessions retained an adjudication snapshot after dependency
-    identity ownership moved into the scan record.  Keep the referenced session
-    immutable and normalize its snapshot in memory only when every old identity
-    is still represented exactly by that same snapshot.  Normal publication
-    currentness checks continue to verify the scanned paths before publication.
-    """
-
-    normalized = copy.deepcopy(adjudication)
-    files = scan.get("files", {})
-    directories = scan.get("directory_memberships", {})
-    rows = [
-        *normalized.get("summary", []),
-        *(
-            target
-            for entry in normalized.get("entries", [])
-            for target in entry.get("targets", [])
-        ),
-    ]
-    projected = False
-    for row in rows:
-        for dependency in row.get("dependencies", []):
-            identity = dependency.get("identity")
-            if identity is None:
-                continue
-            path = dependency.get("path")
-            file_compatible = (
-                isinstance(path, str) and files.get(path) == identity
-            )
-            members = dependency.get("members")
-            collection_compatible = (
-                isinstance(path, str)
-                and path in directories
-                and isinstance(identity, Mapping)
-                and isinstance(identity.get("members"), list)
-                and members == identity["members"]
-            )
-            if not (file_compatible or collection_compatible):
-                raise ValidationToolError(
-                    "legacy review session dependency identity is incompatible "
-                    f"with its scan snapshot: {path}"
-                )
-            del dependency["identity"]
-            projected = True
-    if not projected:
-        return adjudication
-    return normalized
-
-
-def _migration_recovery_decisions(
-    adjudication: AdjudicationRecord, decisions: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Omit pre-adapter bare passes that the current producer contract rejects.
-
-    This controlled restart exists only while the eleven Phase 8 records are
-    migrating.  It preserves every other accepted row and lets the normal
-    durable-continuation path reissue the unprojectable questions.
-    """
-
-    resolved = {
-        (entry.get("id"), row.get("target"))
-        for entry in adjudication.get("entries", [])
-        for row in entry.get("targets", [])
-        if isinstance(row.get("producer_invocation"), str)
-    }
-    rejected = {
-        (
-            item.get("kind"),
-            item.get("entry"),
-            item.get("identity"),
-        )
-        for item in adjudication.get("review_queue", [])
-        if item.get("workflow", {}).get("status") == "unresolved"
-        and (item.get("entry"), item.get("identity")) not in resolved
-    }
-    rows = decisions.get("items")
-    if not isinstance(rows, list):
-        return None
-    retained = [
-        row
-        for row in rows
-        if not (
-            isinstance(row, Mapping)
-            and row.get("decision") == "pass"
-            and (
-                row.get("kind"),
-                row.get("entry"),
-                row.get("identity"),
-            )
-            in rejected
-        )
-    ]
-    if len(retained) == len(rows):
-        return None
-    return {"schema_version": decisions.get("schema_version"), "items": retained}
-
-
 def _requested_context_levels(
     decisions: Mapping[str, Any],
 ) -> dict[str, int]:
@@ -726,9 +608,7 @@ def _continue_review(
     output_dir = summary_path.with_suffix("")
     project_root = _project_root(summary_path)
     summary = _relative_summary(summary_path, project_root)
-    record, cache, state_status = _load_target_state(
-        output_dir, summary, project_root
-    )
+    record, cache, state_status = _load_target_state(output_dir, summary)
     continuation = record.get("continuation") or {}
     expected_continuation = (
         deferred.get("session_identity")
@@ -843,7 +723,7 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             return _finish_deferred_acceptance(
                 context.summary_path, resumed, context.progress()
             )
-        recovery = empty_deferred_recovery_context(
+        recovery = empty_deferred_refresh_context(
             context.project_root, continuation
         )
         if (
@@ -854,10 +734,6 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             refreshed = _refresh_empty_context_session(context, recovery)
             if refreshed is not None:
                 return refreshed
-        if not is_sharded_shell(context.record):
-            restarted = _restart_empty_migration_session(context, recovery)
-            if restarted is not None:
-                return restarted
     else:
         raise ValidationToolError("durable continuation kind is unsupported")
     resumed.update(
@@ -903,73 +779,6 @@ def _refresh_empty_context_session(
     return result
 
 
-def _normalize_migration_review_kinds(
-    adjudication: AdjudicationRecord,
-) -> AdjudicationRecord:
-    normalized = copy.deepcopy(adjudication)
-    for item in normalized.get("review_queue", []):
-        if (
-            item.get("kind") == "mechanical_failure"
-            and not item.get("hard_failures")
-            and item.get("producer_candidates")
-        ):
-            item["kind"] = "semantic_fallback"
-    return normalized
-
-
-def _restart_empty_migration_session(
-    context: LoadedValidation, recovery: Mapping[str, Any] | None
-) -> dict[str, Any] | None:
-    """Replace an untouched pre-adapter session through the durable boundary."""
-
-    if recovery is None or not context.request.publish:
-        return None
-    scan = cast(ScanRecord, recovery["scan"])
-    original = cast(AdjudicationRecord, recovery["adjudication"])
-    normalized = _normalize_migration_review_kinds(original)
-    decided = _apply_reusable_judgments(
-        scan, normalized, context.record["judgments"]
-    )
-    if decided == original:
-        return None
-    old_session = Path(str(recovery["session_dir"]))
-    if decided["review_queue"]:
-        result = _review_required(
-            scan, decided, context.progress()
-        )
-        finish_deferred_orphan_session(old_session)
-        result.update(
-            {
-                "summary": context.summary,
-                "state_status": context.state_status,
-            }
-        )
-        return result
-    target_record, assembly = _complete_adjudication(
-        CompletionRequest(
-            context.record_summary,
-            context.output_dir,
-            scan,
-            decided,
-            context.record,
-            [],
-            True,
-        )
-    )
-    finish_deferred_orphan_session(old_session)
-    return {
-        "status": "complete",
-        "summary": context.summary,
-        "record": (context.output_dir / RECORD_FILENAME).as_posix(),
-        "cache": (context.output_dir / CACHE_FILENAME).as_posix(),
-        "report": (context.output_dir / "validation.md").as_posix(),
-        "progress_retained": _record_has_progress(target_record),
-        "published": True,
-        "state_status": context.state_status,
-        "counts": assembly.counts(),
-    }
-
-
 def _apply_reusable_judgments(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -984,47 +793,8 @@ def _apply_reusable_judgments(
     return cast(AdjudicationRecord, decided)
 
 
-def _migrate_storage(context: LoadedValidation) -> dict[str, Any]:
-    """Project exact compatible state into shards without semantic work."""
-
-    if is_sharded_shell(context.record):
-        manifest = context.record["_sharded_manifest"]
-        return {
-            "status": "already_sharded",
-            "summary": context.summary,
-            "published": False,
-            "state_status": context.state_status,
-            "row_counts": copy.deepcopy(manifest["row_counts"]),
-            "shard_counts": {
-                kind: len(refs)
-                for kind, refs in manifest["shards"].items()
-            },
-            "continuation_preserved": context.record.get("continuation")
-            is not None,
-        }
-    prepared = prepare_state(context.record)
-    result = {
-        "status": "migrated" if context.request.publish else "migration_dry_run",
-        "summary": context.summary,
-        "published": context.request.publish,
-        "state_status": context.state_status,
-        "row_counts": copy.deepcopy(prepared.manifest["row_counts"]),
-        "shard_counts": {
-            kind: len(refs)
-            for kind, refs in prepared.manifest["shards"].items()
-        },
-        "subject_count": prepared.manifest["subject_index"]["subject_count"],
-        "continuation_preserved": context.record.get("continuation") is not None,
-    }
-    if context.request.publish:
-        write_record_and_cache(context.output_dir, context.record, context.cache)
-    return result
-
-
 def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     request = context.request
-    if request.migrate_storage:
-        return _migrate_storage(context)
     if request.decision_file is not None:
         return _continue_review(
             context.summary_path,
@@ -1123,7 +893,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
         record, cache, state_status = _load_target_state(
-            output_dir, record_summary, project_root
+            output_dir, record_summary
         )
         return _run_loaded_validation(
             LoadedValidation(

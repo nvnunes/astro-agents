@@ -37,11 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run validation and report the result without publishing artifacts",
     )
-    validate_parser.add_argument(
-        "--migrate-storage",
-        action="store_true",
-        help="project one exact monolithic record into native sharded storage",
-    )
     return parser
 
 
@@ -54,7 +49,6 @@ def _run_validate(args: argparse.Namespace) -> int:
             jobs=args.jobs,
             publish=not args.dry_run,
             mode=args.mode,
-            migrate_storage=args.migrate_storage,
         )
     )
     print(json.dumps(result, sort_keys=True))

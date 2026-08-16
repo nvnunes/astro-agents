@@ -75,6 +75,13 @@ item. A focused level-1 packet includes the authored passage or inventory
 needed to resolve the original uncertainty; it is the terminal bounded context
 level rather than an invitation to inspect additional research material.
 
+An `orphan_subtree` question asks whether every compatible residual descendant
+under the proposed entry-local root has one lifecycle. Choose the exact
+`classify-subtree` object for a shared lifecycle, or `split-subtree` to request
+the immediate child folders and loose files in the next packet. Do not infer a
+subtree classification from prior file decisions; the explicit subtree answer
+creates the prospective rule.
+
 Edit only each template item's `decision` and `rationale` fields:
 
 - choose one exact allowed decision printed for that item;

@@ -128,6 +128,13 @@ class ValidationControllerTests(unittest.TestCase):
                             for value in allowed
                             if str(value).startswith("retain:")
                         )
+                    elif item["kind"] == "orphan_subtree":
+                        decision = next(
+                            value
+                            for value in allowed
+                            if isinstance(value, dict)
+                            and value.get("disposition") == "retained"
+                        )
                     elif (
                         item["kind"] == "collection_scope"
                         and item["context_level"] == 1
@@ -475,9 +482,16 @@ class ValidationControllerTests(unittest.TestCase):
                     "pass"
                     if item["kind"] == "semantic_provenance"
                     else (
-                        "unresolved"
-                        if item["kind"] == "orphan_candidate"
-                        else "needs_context"
+                        {
+                            "action": "classify-subtree",
+                            "disposition": "unresolved",
+                        }
+                        if item["kind"] == "orphan_subtree"
+                        else (
+                            "unresolved"
+                            if item["kind"] == "orphan_candidate"
+                            else "needs_context"
+                        )
                     )
                 )
                 item["rationale"] = "Focused fixture decision."
@@ -617,7 +631,7 @@ class ValidationControllerTests(unittest.TestCase):
             )
             write(entry, "# Entry\n\nNo retained result claims.\n")
             for number in range(201):
-                write(entry.parent / "data" / f"item-{number:04d}.csv", "value\n")
+                write(entry.parent / f"item-{number:04d}.csv", "value\n")
 
             first = run_validate(summary, result_date="2026-08-16", jobs=1)
             self.assertEqual(first["status"], "review_required")
@@ -748,7 +762,7 @@ class ValidationControllerTests(unittest.TestCase):
             )
             write(entry, "# Entry\n\nNo retained result claims.\n")
             for number in range(201):
-                write(entry.parent / "data" / f"item-{number:04d}.csv", "value\n")
+                write(entry.parent / f"item-{number:04d}.csv", "value\n")
             first = run_validate(summary, result_date="2026-08-16", jobs=1)
             self.assertEqual(first["status"], "review_required")
             session_dir = Path(first["decision_file"]).parent.parent
@@ -845,12 +859,15 @@ class ValidationControllerTests(unittest.TestCase):
             orphan_identities = {
                 item["identity"]
                 for item in template["items"]
-                if item["kind"] == "orphan_candidate"
+                if item["kind"] in {"orphan_candidate", "orphan_subtree"}
             }
             self.assertIn(
-                "docs/mini/entries/2026-08-07-e001-validation-fixture/"
-                "data/direct.csv",
+                "docs/mini/entries/2026-08-07-e001-validation-fixture/data",
                 orphan_identities,
+            )
+            self.assertIn(
+                "data/direct.csv",
+                Path(result["review_packet"]).read_text(encoding="utf-8"),
             )
 
     def test_completed_paged_review_restores_scoped_producer_context(self) -> None:

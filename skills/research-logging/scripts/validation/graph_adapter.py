@@ -39,6 +39,7 @@ from .graph import (
     RootPolicy,
 )
 from .graph_queries import orphan_nodes
+from .orphan_rules import effective_basis
 from .producer_bindings import ProducerBindingOptions, verify_producer_binding
 
 
@@ -1084,6 +1085,7 @@ def _retention_note(
     basis: str,
     notes: Sequence[Mapping[str, Any]],
 ) -> tuple[bool, Optional[Dict[str, Any]]]:
+    basis = effective_basis(basis)
     if basis == "semantic-connection":
         return True, None
     if not basis.startswith("validation-note:"):
@@ -1114,7 +1116,7 @@ def _reviewed_retention_candidates(
         notes = notes_by_entry.get(entry_id, [])
         for item in entry.get("orphan_items", []):
             identity = item.get("identity")
-            basis = item.get("basis", "")
+            basis = effective_basis(item.get("basis"))
             if item.get("decision") != "accepted" or not isinstance(identity, str):
                 continue
             retained, note = _retention_note(entry_id, identity, basis, notes)
@@ -1321,9 +1323,7 @@ def _connect_cached_used_candidates(
     for entry in state.scan.get("entries", []):
         entry_id = entry["id"]
         for candidate in entry.get("candidate_targets", []):
-            resolved = _cached_candidate_material(
-                state, candidate, raw_orphans
-            )
+            resolved = _cached_candidate_material(state, candidate, raw_orphans)
             if resolved is None:
                 continue
             identity, material = resolved

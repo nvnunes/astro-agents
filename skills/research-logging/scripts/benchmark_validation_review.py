@@ -420,7 +420,14 @@ def _single_run(mode: str, orphan_count: int) -> dict[str, Any]:
             decision_path = Path(exchange["decision_file"])
             template = json.loads(decision_path.read_text(encoding="utf-8"))
             for item in template["items"]:
-                item["decision"] = "unresolved"
+                item["decision"] = (
+                    {
+                        "action": "classify-subtree",
+                        "disposition": "unresolved",
+                    }
+                    if item["kind"] == "orphan_subtree"
+                    else "unresolved"
+                )
                 item["rationale"] = "No local evidence connection is recorded."
             decision_path.write_text(
                 json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)

@@ -128,6 +128,9 @@ The research-log test gate must verify:
 - generated semantic packets are bounded and continuation-bound, expose only
   minimum-sufficient context, and allow the agent to edit only requested
   decision and rationale fields;
+- prospective orphan-subtree rules apply to new compatible descendants, while
+  graph reachability, exact-path exceptions, and more-specific subtree rules
+  retain their precedence;
 - canonical publication rejects traversal, symlink, unexpected-filename,
   duplicate-identity, path/identity disagreement, and output-directory alias
   attempts;
@@ -158,8 +161,9 @@ semantic review.
 Public semantic packets are bounded at 65,536 UTF-8 bytes and 200 questions,
 with pagination retaining whole questions. The count aligns a normal accepted
 review batch with one judgment shard. The retained 12,000/24,000-orphan
-workload renders 146 questions and 65,492 bytes; the focused MASTSEL collection
-fixture renders two expanded questions and 52,430 bytes. The byte ceiling is
+workload renders one 3,509-byte subtree question at either size; the focused
+MASTSEL collection fixture renders two expanded questions and 52,430 bytes.
+The byte ceiling is
 roughly 16,000–20,000 tokens depending on JSON density and is a reviewed public
 contract, not an optimization target.
 
@@ -172,7 +176,7 @@ fresh-process benchmark:
 ```bash
 ./.conda/bin/python \
   skills/research-logging/scripts/benchmark_validation_review.py \
-  --mode indexed \
+  --mode public \
   --orphans 12000 \
   --orphans 24000 \
   --warmups 1 \
@@ -182,10 +186,9 @@ fresh-process benchmark:
 
 The canonical workload has generator identity
 `ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c`.
-It builds the complete review index, queries every orphan candidate, and
-renders exactly the first 200-candidate packet. Compare the retained workload
-sizes for approximately linear growth in candidates examined and deterministic
-operation counts.
+It exercises the public subtree packet and accepted-decision path. Compare the
+retained workload sizes for approximately linear preparation and verify that
+the structural projection remains one bounded question as membership grows.
 
 Also require one static preparation per invocation, no more than one source
 read per unique producer script, and no repeated evaluation of the same

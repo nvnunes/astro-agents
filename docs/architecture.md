@@ -221,6 +221,11 @@ Future validation changes must preserve these invariants:
   Use inexpensive metadata to detect possible changes, hash content when that
   metadata changes, and revalidate only when the content or applicable rules
   changed.
+- **Prospective orphan rules:** Classify residual orphan material with an
+  entry-local subtree rule when one reviewed lifecycle covers the subtree.
+  Deterministic graph reachability takes precedence; exact-path and
+  more-specific subtree decisions override a broader rule. Membership changes
+  alone do not invalidate the rule.
 - **Proportional cost:** Validation time should grow approximately linearly
   with the evidence examined wherever possible.
 - **On-disk state:** Validation is source-control agnostic and validates the

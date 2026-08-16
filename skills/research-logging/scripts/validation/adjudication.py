@@ -28,6 +28,7 @@ from .contracts import (
     ValidationToolError,
 )
 from .evidence import NUMBER_RE, numeric_value_equivalent
+from .orphan_rules import inherited_basis
 from .producer_bindings import (
     resolved_identity_cache,
     workflow_check,
@@ -209,16 +210,17 @@ def prepare_orphan_items(
     }
     orphan_items = []
     for candidate in orphan_inventory:
+        prior = prior_items.get(candidate["identity"])
+        if prior is not None and inherited_basis(prior.get("basis")):
+            prior = None
         orphan_items.append(
             (
-                prior_items.get(
-                candidate["identity"],
-                {
+                prior
+                or {
                     "identity": candidate["identity"],
                     "decision": "pending",
                     "basis": "-",
-                },
-            )
+                }
                 if candidate["identity"] in candidate_identities
                 else {
                     "identity": candidate["identity"],

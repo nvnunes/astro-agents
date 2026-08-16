@@ -39,6 +39,7 @@ from .graph_queries import (
     provenance_nodes,
     target_provenance_seeds,
 )
+from .orphan_rules import below, effective_basis, material_scope, subtree_basis
 from .producer_bindings import (
     ProducerBindingOptions,
     check_workflow_command,
@@ -52,7 +53,7 @@ from .review_batches import (
 )
 from .review_index import ReviewContextIndex, ReviewQuerySession
 
-DECISION_SCHEMA_VERSION = 6
+DECISION_SCHEMA_VERSION = 7
 DECISION_DEPENDENCY_KEYS = {
     "members",
     "add_dependencies",
@@ -107,6 +108,13 @@ DECISION_FIELDS_BY_OUTCOME = {
         "unresolved",
         "connected",
         "retained",
+        "rule_roots",
+        "subtree_splits",
+    },
+    "orphan-refine": {
+        "match",
+        "decision",
+        "subtree_splits",
     },
     "reproduced": {
         "match",
@@ -266,11 +274,12 @@ def validate_queue_decision_kind(
     if item.get("kind") == "orphan_candidates" and decision not in {
         "orphan",
         "orphan-batch",
+        "orphan-refine",
     }:
         raise ValidationToolError(
             "orphan candidates require an item-level orphan decision"
         )
-    if decision in {"orphan", "orphan-batch"} and item.get("kind") != (
+    if decision in {"orphan", "orphan-batch", "orphan-refine"} and item.get("kind") != (
         "orphan_candidates"
     ):
         raise ValidationToolError(
@@ -1032,9 +1041,10 @@ def reconcile_graph_orphans(
                 item["basis"] = "-"
             elif (entry["id"], identity) not in graph_orphans:
                 item["decision"] = "accepted"
-                if item.get("basis") not in {"semantic-connection"} and not item.get(
-                    "basis", ""
-                ).startswith("validation-note:"):
+                basis = effective_basis(item.get("basis"))
+                if basis != "semantic-connection" and not basis.startswith(
+                    "validation-note:"
+                ):
                     item["basis"] = "graph"
             elif item.get("decision") != "unresolved":
                 item["decision"] = "pending"
@@ -1197,6 +1207,63 @@ def _validated_orphan_batch_item(
     return selected
 
 
+def _validated_subtree_splits(
+    scan: ScanRecord,
+    adjudication: Mapping[str, Any],
+    item: Mapping[str, Any],
+    action: Mapping[str, Any],
+) -> list[str]:
+    """Return exact split roots after candidate and material validation."""
+
+    raw = action.get("subtree_splits", [])
+    if not isinstance(raw, list):
+        raise ValidationToolError("orphan subtree splits must be a list")
+    if not raw:
+        return []
+    current = [
+        candidate
+        for candidate in item.get("candidates", [])
+        if isinstance(candidate, Mapping)
+    ]
+    roots = []
+    for split in raw:
+        if not (
+            isinstance(split, Mapping)
+            and set(split)
+            == {"root", "material", "rationale", "candidate_fingerprints"}
+            and all(
+                isinstance(split.get(key), str) and split.get(key)
+                for key in ("root", "material", "rationale")
+            )
+            and isinstance(split.get("candidate_fingerprints"), Mapping)
+        ):
+            raise ValidationToolError("orphan subtree split is invalid")
+        root = str(split["root"])
+        scope = material_scope(root)
+        covered = {
+            str(candidate.get("identity"))
+            for candidate in current
+            if below(root, str(candidate.get("identity", "")))
+        }
+        if scope is None or scope[0] != split["material"] or not covered:
+            raise ValidationToolError("orphan subtree split names an invalid root")
+        split_fingerprints = split["candidate_fingerprints"]
+        if set(split_fingerprints) != covered:
+            raise ValidationToolError(
+                "orphan subtree split lacks exact candidate stale protection"
+            )
+        _validate_reapplied_fingerprints(
+            scan,
+            adjudication,
+            str(item["entry"]),
+            split_fingerprints,
+        )
+        roots.append(root)
+    if len(roots) != len(set(roots)):
+        raise ValidationToolError("orphan subtree splits contain duplicates")
+    return roots
+
+
 def _apply_orphan_decision(
     adjudication: Dict[str, Any],
     entry_id: str,
@@ -1213,6 +1280,23 @@ def _apply_orphan_decision(
             action.get("retained"),
         )
     )
+    rule_roots = action.get("rule_roots", {})
+    if (
+        not isinstance(rule_roots, Mapping)
+        or not set(rule_roots)
+        <= {
+            *unresolved_identities,
+            *connected_identities,
+            *retained_by_identity,
+        }
+        or not all(
+            isinstance(identity, str)
+            and isinstance(root, str)
+            and below(root, identity)
+            for identity, root in rule_roots.items()
+        )
+    ):
+        raise ValidationToolError("orphan subtree rule roots are invalid")
     entries = [
         entry
         for entry in adjudication.get("entries", [])
@@ -1222,20 +1306,42 @@ def _apply_orphan_decision(
         raise ValidationToolError(f"unknown orphan scope: {entry_id}")
     entry = entries[0]
     for orphan_item in entry.get("orphan_items", []):
-        identity = orphan_item.get("identity")
-        if identity in unresolved_identities:
-            orphan_item.update({"decision": "unresolved", "basis": "-"})
-        elif identity in connected_identities:
-            orphan_item.update(
-                {"decision": "accepted", "basis": "semantic-connection"}
-            )
-        elif identity in retained_by_identity:
-            orphan_item.update(
-                {
-                    "decision": "accepted",
-                    "basis": f"validation-note:{retained_by_identity[identity]}",
-                }
-            )
+        _update_orphan_item(
+            orphan_item,
+            unresolved_identities,
+            connected_identities,
+            retained_by_identity,
+            rule_roots,
+        )
+    _update_orphan_report(adjudication, entry_id, entry)
+
+
+def _update_orphan_item(
+    orphan_item: Dict[str, Any],
+    unresolved: set[str],
+    connected: set[str],
+    retained: Mapping[str, str],
+    rule_roots: Mapping[str, Any],
+) -> None:
+    identity = orphan_item.get("identity")
+    if not isinstance(identity, str):
+        return
+    if identity in unresolved:
+        decision, basis = "unresolved", "-"
+    elif identity in connected:
+        decision, basis = "accepted", "semantic-connection"
+    elif identity in retained:
+        decision, basis = "accepted", f"validation-note:{retained[identity]}"
+    else:
+        return
+    if identity in rule_roots:
+        basis = subtree_basis(str(rule_roots[identity]), basis)
+    orphan_item.update({"decision": decision, "basis": basis})
+
+
+def _update_orphan_report(
+    adjudication: Dict[str, Any], entry_id: str, entry: Mapping[str, Any]
+) -> None:
     unresolved_all = [
         orphan_item["identity"]
         for orphan_item in entry.get("orphan_items", [])
@@ -1436,27 +1542,40 @@ def _apply_review_item(context: _ReviewDecisionContext) -> None:
         context.row["producer_bindings"] = [
             existing[key] for key in sorted(existing)
         ]
-    elif context.decision in {"orphan", "orphan-batch"}:
-        if context.item.get("kind") != "orphan_candidates" or context.kind != "entry":
-            raise ValidationToolError(
-                "orphan decisions apply only to orphan-candidate rows"
-            )
-        item = context.item
-        if context.decision == "orphan-batch":
-            item = _validated_orphan_batch_item(
-                context.scan,
-                context.adjudication,
-                context.item,
-                context.action,
-            )
-        _apply_orphan_decision(
-            context.adjudication,
-            context.entry_id,
-            item,
-            context.action,
-        )
+    elif context.decision in {"orphan", "orphan-batch", "orphan-refine"}:
+        _apply_orphan_review_item(context)
     else:
         _apply_row_decision(context)
+
+
+def _apply_orphan_review_item(context: _ReviewDecisionContext) -> None:
+    if context.item.get("kind") != "orphan_candidates" or context.kind != "entry":
+        raise ValidationToolError(
+            "orphan decisions apply only to orphan-candidate rows"
+        )
+    item = context.item
+    if context.decision in {"orphan-batch", "orphan-refine"}:
+        _validated_subtree_splits(
+            context.scan,
+            context.adjudication,
+            context.item,
+            context.action,
+        )
+    if context.decision == "orphan-refine":
+        return
+    if context.decision == "orphan-batch":
+        item = _validated_orphan_batch_item(
+            context.scan,
+            context.adjudication,
+            context.item,
+            context.action,
+        )
+    _apply_orphan_decision(
+        context.adjudication,
+        context.entry_id,
+        item,
+        context.action,
+    )
 
 
 def _is_incremental_unresolved_orphan_batch(
@@ -1558,6 +1677,12 @@ def _desired_orphan_decisions(
                 "accepted",
                 f"validation-note:{value.get('validation_note')}",
             )
+    roots = action.get("rule_roots", {})
+    if isinstance(roots, Mapping):
+        for identity, root in roots.items():
+            current = desired.get(identity)
+            if current is not None and isinstance(root, str):
+                desired[identity] = (current[0], subtree_basis(root, current[1]))
     return desired
 
 
@@ -1604,6 +1729,15 @@ def _update_batch_queue_after_decision(
     preserve_pending: Optional[set[str]],
 ) -> bool:
     decision = action.get("decision")
+    splits = [
+        str(split["root"])
+        for split in action.get("subtree_splits", [])
+        if isinstance(split, Mapping) and isinstance(split.get("root"), str)
+    ]
+    if splits:
+        item["subtree_splits"] = sorted({*item.get("subtree_splits", []), *splits})
+    if decision == "orphan-refine":
+        return False
     if preserve_pending is not None and decision in {"orphan", "orphan-batch"}:
         preserve_pending.difference_update(
             identity
@@ -1627,6 +1761,38 @@ def _update_batch_queue_after_decision(
             return False
     queue.remove(item)
     return True
+
+
+def _restore_subtree_splits(
+    queue: Sequence[Dict[str, Any]], splits: Mapping[str, set[str]]
+) -> None:
+    """Restore active-session refinement after graph queue reconciliation."""
+
+    for item in queue:
+        entry = item.get("entry")
+        if item.get("kind") != "orphan_candidates" or entry not in splits:
+            continue
+        item["subtree_splits"] = sorted(splits[str(entry)])
+
+
+def _active_subtree_splits(
+    queue: Sequence[Mapping[str, Any]], actions: Sequence[Mapping[str, Any]]
+) -> dict[str, set[str]]:
+    active: dict[str, set[str]] = {}
+    for item in queue:
+        if item.get("kind") == "orphan_candidates":
+            active.setdefault(str(item.get("entry")), set()).update(
+                str(root) for root in item.get("subtree_splits", [])
+            )
+    for action in actions:
+        matcher = action.get("match", {})
+        if isinstance(matcher, Mapping) and isinstance(matcher.get("entry"), str):
+            active.setdefault(str(matcher["entry"]), set()).update(
+                str(split["root"])
+                for split in action.get("subtree_splits", [])
+                if isinstance(split, Mapping) and isinstance(split.get("root"), str)
+            )
+    return active
 
 
 def apply_review_decisions(
@@ -1660,6 +1826,7 @@ def apply_review_decisions(
     has_orphan_batch = any(
         action.get("decision") == "orphan-batch" for action in actions
     )
+    active_splits = _active_subtree_splits(queue, actions)
     incremental_unresolved_batch = _is_incremental_unresolved_orphan_batch(actions)
     reconcile_after_actions = not incremental_unresolved_batch
     preserve_pending = (
@@ -1721,5 +1888,6 @@ def apply_review_decisions(
     if reconcile_after_actions:
         reconcile_semantic_dependencies(scan, result)
         reconcile_graph_orphans(scan, result, preserve_pending)
+        _restore_subtree_splits(queue, active_splits)
     counts["remaining"] = len(queue)
     return result, counts

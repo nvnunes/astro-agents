@@ -1014,6 +1014,13 @@ show mechanically. This is different from a retention exception: the former
 records an evidence connection found during validation, while the latter
 records your explicit decision to keep an otherwise unused item.
 
+For residual material under an entry's `data/`, `images/`, or `scripts/`
+tree, validation may ask whether a proposed subtree has one lifecycle or must
+be split. A classification applies prospectively to compatible descendants;
+splitting returns immediate child folders and loose files in the next bounded
+round. Graph connections take precedence, followed by exact-path exceptions
+and then the most-specific compatible subtree rule.
+
 ### Check results
 
 Every saved result uses three peer checks:

@@ -43,6 +43,7 @@ def deferred_fixture(root: Path, count: int = 401):
                 "entry": "e001",
                 "kind": "orphan_candidates",
                 "candidates": candidates,
+                "subtree_splits": ["docs/mini/entries/e001/data"],
                 "validation_notes": [],
             }
         ],

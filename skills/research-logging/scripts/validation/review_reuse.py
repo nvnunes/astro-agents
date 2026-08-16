@@ -14,6 +14,7 @@ from .compatibility import (
     projection,
 )
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
+from .orphan_rules import SUBTREE_REVIEW_KIND, SUBTREE_RULE_DEPENDENCIES
 
 SEMANTIC_REVIEW_RULES = {"semantic_review": 1}
 
@@ -297,20 +298,31 @@ def _review_decision_answers(
 ) -> list[Any]:
     answers = []
     subject = _template_subject(template)
+    expected_rules = (
+        SUBTREE_RULE_DEPENDENCIES
+        if template.get("kind") == SUBTREE_REVIEW_KIND
+        else SEMANTIC_REVIEW_RULES
+    )
     for judgment in judgments:
         stored_subject = judgment.get("subject")
         if (
             judgment.get("kind") != "review-decision"
             or not isinstance(stored_subject, Mapping)
             or _subject_key(stored_subject) != subject
-            or judgment.get("rule_dependencies") != SEMANTIC_REVIEW_RULES
+            or judgment.get("rule_dependencies") != expected_rules
         ):
             continue
         decision = judgment.get("decision")
         current = review_judgment_inputs(
             scan, adjudication, queue_item, template, decision
         )
-        if current and _contains_current_inputs(judgment, current):
+        compatible = _contains_current_inputs(judgment, current)
+        if template.get("kind") == SUBTREE_REVIEW_KIND:
+            stored = _decoded_inputs(judgment)
+            compatible = stored is not None and _scope_map(stored) == _scope_map(
+                current
+            )
+        if compatible:
             answers.append(decision)
     return answers
 
@@ -326,6 +338,18 @@ def review_judgment_inputs(
 
     if template.get("kind") == "orphan_candidate":
         return _orphan_review_inputs(scan, template)
+    if template.get("kind") == SUBTREE_REVIEW_KIND:
+        return _subtree_review_inputs(scan, template, decision)
+    return _ordinary_review_inputs(scan, adjudication, queue_item, template, decision)
+
+
+def _ordinary_review_inputs(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    template: Mapping[str, Any],
+    decision: Any,
+) -> list[dict[str, Any]]:
     current = _current_check_inputs(scan, adjudication, queue_item)
     if current is None:
         return []
@@ -353,6 +377,23 @@ def review_judgment_inputs(
             item["relationship"],
         ),
     )
+
+
+def _subtree_review_inputs(
+    scan: ScanRecord, template: Mapping[str, Any], decision: Any
+) -> list[dict[str, Any]]:
+    entry = _scan_entry(scan, str(template.get("entry", "")))
+    if entry is None:
+        return []
+    choice = decision if isinstance(decision, Mapping) else {}
+    note_identity = (
+        f"validation-note:{entry.get('id', '')}:{choice.get('validation_note')}"
+    )
+    return [
+        dependency
+        for dependency in orphan_input_dependencies(scan, entry, [])
+        if dependency.get("semantic_identity") == note_identity
+    ]
 
 
 def _orphan_review_inputs(

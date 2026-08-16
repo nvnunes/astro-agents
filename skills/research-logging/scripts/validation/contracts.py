@@ -12,6 +12,8 @@ import re
 from collections.abc import Mapping
 from typing import Any, TypedDict, cast
 
+from .orphan_rules import effective_basis, inherited_basis
+
 
 class LifecycleRecordContractError(ValueError):
     """Raised when a scan or adjudication record violates its exact contract."""
@@ -326,10 +328,12 @@ _REVIEW_ITEM_ALLOWED_KEYS = frozenset(
         "integrity_status",
         "kind",
         "line",
+        "legacy_subtree_coverage",
         "producer_candidates",
         "reason",
         "section",
         "sections",
+        "subtree_splits",
         "validation_notes",
         "workflow",
     }
@@ -495,7 +499,8 @@ def _validate_orphan_rows(value: Any, description: str) -> None:
             raise LifecycleRecordContractError(
                 f"{description} item {index} has an invalid decision"
             )
-        basis = item["basis"]
+        stored_basis = item["basis"]
+        basis = effective_basis(stored_basis)
         if item["decision"] == "accepted":
             if (
                 basis not in {"graph", "semantic-connection"}
@@ -504,7 +509,9 @@ def _validate_orphan_rows(value: Any, description: str) -> None:
                 raise LifecycleRecordContractError(
                     f"{description} item {index} has an invalid acceptance basis"
                 )
-        elif basis != "-":
+        elif basis != "-" or (
+            inherited_basis(stored_basis) and item["decision"] == "pending"
+        ):
             raise LifecycleRecordContractError(
                 f"{description} item {index} has a basis before acceptance"
             )
@@ -1250,7 +1257,7 @@ def _validate_optional_review_fields(row: Mapping[str, Any], description: str) -
         raise LifecycleRecordContractError(
             f"{description} field 'line' must be an integer"
         )
-    for field in ("collections", "hard_failures", "sections"):
+    for field in ("collections", "hard_failures", "sections", "subtree_splits"):
         if field in row:
             _string_list(row[field], f"{description} field {field!r}")
     hard_failures = row.get("hard_failures", [])
@@ -1264,6 +1271,18 @@ def _validate_optional_review_fields(row: Mapping[str, Any], description: str) -
     _validate_producer_candidates(row.get("producer_candidates", []), description)
     if "workflow" in row:
         _mapping(row["workflow"], f"{description} field 'workflow'")
+    _validate_legacy_subtree_coverage(row, description)
+
+
+def _validate_legacy_subtree_coverage(
+    row: Mapping[str, Any], description: str
+) -> None:
+    if "legacy_subtree_coverage" not in row:
+        return
+    _mapping(
+        row["legacy_subtree_coverage"],
+        f"{description} field 'legacy_subtree_coverage'",
+    )
 
 
 def _validate_adjudication_review_rows(record: Mapping[str, Any]) -> None:

@@ -37,6 +37,12 @@ completed work while other work is incomplete. Accepted judgments and
 outcomes have no competing machine-readable owner, and completion does not
 recombine their shards into a monolithic record.
 
+An orphan-subtree judgment uses a stable entry, material class, and
+project-relative subtree root rather than a member list. It therefore governs
+future compatible residual descendants. Its authored-note and validation-rule
+dependencies still control reuse; graph reachability, an exact-path decision,
+or a more-specific subtree decision takes precedence.
+
 `validation/.cache/` is CLI-owned local state. `cache.json` may store reusable
 file identities, hashes, inspections, and directory membership.
 `subject-index.json` and `index-deltas/` map collision-checked stable subjects

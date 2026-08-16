@@ -961,6 +961,101 @@ class ValidationControllerTests(unittest.TestCase):
 
         self.assertEqual(recovered, {"schema_version": 1, "items": [valid]})
 
+    def test_migration_normalizes_deferred_dependency_identities(self) -> None:
+        file_identity = {
+            "size": 12,
+            "mtime_ns": 34,
+            "ctime_ns": 56,
+            "sha256": "a" * 64,
+        }
+        collection_identity = {
+            **file_identity,
+            "members": ["case_001.pkl", "case_002.pkl"],
+        }
+        scan = {
+            "files": {"docs/mini/script.py": file_identity},
+            "directory_memberships": {
+                "docs/mini/data": {"members": 3, "sha256": "b" * 64}
+            },
+        }
+        adjudication = {
+            "summary": [],
+            "entries": [
+                {
+                    "targets": [
+                        {
+                            "dependencies": [
+                                {
+                                    "path": "docs/mini/script.py",
+                                    "role": "producer",
+                                    "identity": file_identity,
+                                },
+                                {
+                                    "path": "docs/mini/data",
+                                    "role": "input",
+                                    "members": collection_identity["members"],
+                                    "identity": collection_identity,
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+
+        normalized = CONTROLLER._normalize_migration_session_dependencies(
+            scan, adjudication
+        )
+
+        dependencies = normalized["entries"][0]["targets"][0]["dependencies"]
+        self.assertNotIn("identity", dependencies[0])
+        self.assertNotIn("identity", dependencies[1])
+        self.assertIn(
+            "identity",
+            adjudication["entries"][0]["targets"][0]["dependencies"][0],
+        )
+
+    def test_migration_rejects_incompatible_deferred_dependency_identity(self) -> None:
+        scan = {
+            "files": {
+                "docs/mini/script.py": {
+                    "size": 12,
+                    "mtime_ns": 34,
+                    "ctime_ns": 56,
+                    "sha256": "a" * 64,
+                }
+            },
+            "directory_memberships": {},
+        }
+        adjudication = {
+            "summary": [],
+            "entries": [
+                {
+                    "targets": [
+                        {
+                            "dependencies": [
+                                {
+                                    "path": "docs/mini/script.py",
+                                    "role": "producer",
+                                    "identity": {
+                                        "size": 13,
+                                        "mtime_ns": 34,
+                                        "ctime_ns": 56,
+                                        "sha256": "a" * 64,
+                                    },
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(
+            CONTROLLER.ValidationToolError, "incompatible with its scan snapshot"
+        ):
+            CONTROLLER._normalize_migration_session_dependencies(scan, adjudication)
+
     def test_migration_normalizes_reviewable_failure_to_producer_choice(self) -> None:
         adjudication = {
             "review_queue": [

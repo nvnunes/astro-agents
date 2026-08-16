@@ -517,7 +517,9 @@ def _finish_deferred_acceptance(
     """Apply one complete paged session and publish its canonical result."""
 
     scan = cast(ScanRecord, accepted["scan"])
-    adjudication = cast(AdjudicationRecord, accepted["adjudication"])
+    adjudication = _normalize_migration_session_dependencies(
+        scan, cast(AdjudicationRecord, accepted["adjudication"])
+    )
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
     if scanned_summary.resolve() != summary_path:
         raise ValidationToolError("review session belongs to another summary")
@@ -596,6 +598,59 @@ def _finish_deferred_acceptance(
         "state_status": progress.state_status,
         "counts": assembly.counts(),
     }
+
+
+def _normalize_migration_session_dependencies(
+    scan: ScanRecord, adjudication: AdjudicationRecord
+) -> AdjudicationRecord:
+    """Project redundant native-v1 dependency identities into schema v8.
+
+    Some Phase 8 sessions retained an adjudication snapshot after dependency
+    identity ownership moved into the scan record.  Keep the referenced session
+    immutable and normalize its snapshot in memory only when every old identity
+    is still represented exactly by that same snapshot.  Normal publication
+    currentness checks continue to verify the scanned paths before publication.
+    """
+
+    normalized = copy.deepcopy(adjudication)
+    files = scan.get("files", {})
+    directories = scan.get("directory_memberships", {})
+    rows = [
+        *normalized.get("summary", []),
+        *(
+            target
+            for entry in normalized.get("entries", [])
+            for target in entry.get("targets", [])
+        ),
+    ]
+    projected = False
+    for row in rows:
+        for dependency in row.get("dependencies", []):
+            identity = dependency.get("identity")
+            if identity is None:
+                continue
+            path = dependency.get("path")
+            file_compatible = (
+                isinstance(path, str) and files.get(path) == identity
+            )
+            members = dependency.get("members")
+            collection_compatible = (
+                isinstance(path, str)
+                and path in directories
+                and isinstance(identity, Mapping)
+                and isinstance(identity.get("members"), list)
+                and members == identity["members"]
+            )
+            if not (file_compatible or collection_compatible):
+                raise ValidationToolError(
+                    "legacy review session dependency identity is incompatible "
+                    f"with its scan snapshot: {path}"
+                )
+            del dependency["identity"]
+            projected = True
+    if not projected:
+        return adjudication
+    return normalized
 
 
 def _migration_recovery_decisions(

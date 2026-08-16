@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
@@ -34,7 +34,9 @@ CONTEXT_PROJECTION_VERSION = 2
 DEFERRED_BASE_FILENAME = "base.json"
 DEFERRED_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
-VALIDATION_WORK_ROOT = ".astro-agents-validation-work"
+VALIDATION_WORK_ROOT = "work"
+VALIDATION_DIRECTORY = "validation"
+LOCAL_CACHE_DIRECTORY = ".cache"
 
 
 def _fingerprint(value: Any) -> str:
@@ -65,24 +67,47 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _summary_work_root(project_root: Path, summary: str) -> Path:
-    summary_identity = _sha256(summary.encode("utf-8"))
-    return project_root / VALIDATION_WORK_ROOT / summary_identity
-
-
-def _session_locator(summary: str, session_identity: str) -> str:
+def _summary_work_root(output_dir: Path) -> Path:
     return (
-        Path(VALIDATION_WORK_ROOT)
-        / _sha256(summary.encode("utf-8"))
-        / session_identity
-    ).as_posix()
+        output_dir
+        / VALIDATION_DIRECTORY
+        / LOCAL_CACHE_DIRECTORY
+        / VALIDATION_WORK_ROOT
+    )
 
 
-def _session_path(project_root: Path, locator: str) -> Path:
-    work_root = (project_root / VALIDATION_WORK_ROOT).resolve()
-    session_dir = (project_root / locator).resolve()
-    if not session_dir.is_relative_to(work_root) or session_dir.is_symlink():
+def _session_locator(session_identity: str) -> str:
+    return (Path(VALIDATION_WORK_ROOT) / session_identity).as_posix()
+
+
+def _session_path(output_dir: Path, locator: str) -> Path:
+    pure = PurePosixPath(locator)
+    if (
+        "\\" in locator
+        or pure.is_absolute()
+        or pure.as_posix() != locator
+        or len(pure.parts) != 2
+        or pure.parts[0] != VALIDATION_WORK_ROOT
+        or ".." in pure.parts
+        or len(pure.parts[1]) != 64
+        or any(character not in "0123456789abcdef" for character in pure.parts[1])
+    ):
         raise ValidationToolError("review session locator is invalid")
+    cache_root = output_dir / VALIDATION_DIRECTORY / LOCAL_CACHE_DIRECTORY
+    work_root = _summary_work_root(output_dir)
+    session_dir = cache_root / locator
+    owned_paths = [
+        output_dir / VALIDATION_DIRECTORY,
+        cache_root,
+        work_root,
+        session_dir,
+    ]
+    if output_dir.is_symlink() or any(path.is_symlink() for path in owned_paths):
+        raise ValidationToolError("review session locator is invalid")
+    try:
+        session_dir.resolve().relative_to(work_root.resolve())
+    except ValueError as exc:
+        raise ValidationToolError("review session locator is invalid") from exc
     return session_dir
 
 
@@ -1130,7 +1155,7 @@ def _deferred_page(
         "continuation": continuation,
         "template": copy.deepcopy(template),
         "deferred_orphan": {
-            "project_root": state["project_root"],
+            "output_dir": state["output_dir"],
             "session": state["session"],
             "session_identity": state["session_identity"],
             "page_number": page_number,
@@ -1185,8 +1210,10 @@ def _create_deferred_orphan_exchange(
     """Create one project-local durable session for a large orphan review."""
 
     project_root = Path(scan["project_root"]).resolve()
-    locator = _session_locator(scan["summary"], index["session_identity"])
-    session_dir = _session_path(project_root, locator)
+    log_root = str(scan.get("log_root") or Path(scan["summary"]).with_suffix(""))
+    output_dir = (project_root / log_root).resolve()
+    locator = _session_locator(index["session_identity"])
+    session_dir = _session_path(output_dir, locator)
     session_dir.mkdir(parents=True, exist_ok=False)
     base = {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
@@ -1204,6 +1231,7 @@ def _create_deferred_orphan_exchange(
         "summary": scan["summary"],
         "review_kind": index["review_kind"],
         "project_root": project_root.as_posix(),
+        "output_dir": output_dir.as_posix(),
         "summary_path": (
             project_root / str(scan["summary"])
         ).resolve().as_posix(),
@@ -1222,8 +1250,8 @@ def _load_deferred_session(
     deferred = internal.get("deferred_orphan")
     if not isinstance(deferred, Mapping):
         raise ValidationToolError("review packet is not a deferred orphan page")
-    project_root = Path(str(deferred.get("project_root", ""))).resolve()
-    session_dir = _session_path(project_root, str(deferred.get("session", "")))
+    output_dir = Path(str(deferred.get("output_dir", ""))).resolve()
+    session_dir = _session_path(output_dir, str(deferred.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
         "deferred orphan session state",
@@ -1384,11 +1412,11 @@ def _validate_session_fragments(session_dir: Path, state: Mapping[str, Any]) -> 
 
 
 def resume_deferred_orphan_session(
-    project_root: Path, continuation: Mapping[str, Any]
+    output_dir: Path, continuation: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Resume the current paged review from its durable record reference."""
 
-    session_dir = _session_path(project_root, str(continuation.get("session", "")))
+    session_dir = _session_path(output_dir, str(continuation.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
         "deferred orphan session state",
@@ -1437,11 +1465,11 @@ def resume_deferred_orphan_session(
 
 
 def empty_deferred_refresh_context(
-    project_root: Path, continuation: Mapping[str, Any]
+    output_dir: Path, continuation: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     """Return a validated empty session base for context-projection refresh."""
 
-    session_dir = _session_path(project_root, str(continuation.get("session", "")))
+    session_dir = _session_path(output_dir, str(continuation.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
         "deferred orphan session state",
@@ -1506,20 +1534,24 @@ def finish_deferred_orphan_session(session_dir: Path) -> None:
     """Remove one completed project-local session after canonical publication."""
 
     resolved = session_dir.resolve()
-    if VALIDATION_WORK_ROOT not in resolved.parts:
+    if not (
+        resolved.parent.name == VALIDATION_WORK_ROOT
+        and resolved.parent.parent.name == LOCAL_CACHE_DIRECTORY
+        and resolved.parent.parent.parent.name == VALIDATION_DIRECTORY
+    ):
         raise ValidationToolError("refusing to remove an invalid review session")
     if (resolved / SESSION_STATE_FILENAME).is_file():
         shutil.rmtree(resolved)
 
 
 def resume_ordinary_exchange(
-    project_root: Path, summary: str, continuation: Mapping[str, Any]
+    output_dir: Path, summary: str, continuation: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Return the current ordinary packet from its stable continuation."""
 
     identity = str(continuation.get("identity", ""))
-    locator = _session_locator(summary, identity)
-    session_dir = _session_path(project_root, locator)
+    locator = _session_locator(identity)
+    session_dir = _session_path(output_dir, locator)
     internal = _read_object(
         session_dir / INTERNAL_FILENAME,
         "ordinary review continuation",
@@ -1550,8 +1582,8 @@ def finish_review_session(internal: Mapping[str, Any]) -> None:
     ordinary = internal.get("ordinary_session")
     if not isinstance(ordinary, Mapping):
         return
-    project_root = Path(str(ordinary.get("project_root", ""))).resolve()
-    session_dir = _session_path(project_root, str(ordinary.get("session", "")))
+    output_dir = Path(str(ordinary.get("output_dir", ""))).resolve()
+    session_dir = _session_path(output_dir, str(ordinary.get("session", "")))
     if (session_dir / INTERNAL_FILENAME).is_file():
         shutil.rmtree(session_dir)
 
@@ -1595,8 +1627,10 @@ def create_exchange(
         )
     items = bounded_items
     project_root = Path(scan["project_root"]).resolve()
-    locator = _session_locator(scan["summary"], continuation)
-    work_dir = _session_path(project_root, locator)
+    log_root = str(scan.get("log_root") or Path(scan["summary"]).with_suffix(""))
+    output_dir = (project_root / log_root).resolve()
+    locator = _session_locator(continuation)
+    work_dir = _session_path(output_dir, locator)
     work_dir.mkdir(parents=True, exist_ok=True)
     template = {
         "schema_version": EXCHANGE_SCHEMA_VERSION,
@@ -1612,7 +1646,7 @@ def create_exchange(
         "orphan_fingerprints": orphan_fingerprints,
         "controller": copy.deepcopy(dict(controller_state)),
         "ordinary_session": {
-            "project_root": project_root.as_posix(),
+            "output_dir": output_dir.as_posix(),
             "session": locator,
         },
     }

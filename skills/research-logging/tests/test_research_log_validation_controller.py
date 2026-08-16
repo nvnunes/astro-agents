@@ -56,9 +56,7 @@ class ValidationControllerTests(unittest.TestCase):
                 generated,
                 {
                     "validation.md",
-                    TARGET.RECORD_FILENAME,
-                    TARGET.CACHE_FILENAME,
-                    "validation-state",
+                    "validation",
                 },
             )
             stored = TARGET.load_record(output / TARGET.RECORD_FILENAME)
@@ -75,6 +73,32 @@ class ValidationControllerTests(unittest.TestCase):
             )
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
+
+    def test_cached_completion_does_not_depend_on_subject_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            index_path = (
+                summary.with_suffix("")
+                / "validation"
+                / ".cache"
+                / STORE.INDEX_FILENAME
+            )
+            index_path.unlink()
+
+            with mock.patch.object(
+                CONTROLLER,
+                "scan_log",
+                side_effect=AssertionError("cached completion must not scan"),
+            ):
+                second = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+
+            self.assertEqual(second["status"], "complete")
+            self.assertTrue(second["cached"])
+            self.assertFalse(index_path.exists())
 
     def test_removed_semantic_evidence_invalidates_only_its_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -293,6 +317,10 @@ class ValidationControllerTests(unittest.TestCase):
             second_summary = root / "docs" / "other.md"
             (second_summary.with_suffix("") / "entries").mkdir(parents=True)
             write(second_summary, "# Other\n\n## Entries\n")
+            (
+                second_summary.with_suffix("")
+                / TARGET.RECORD_FILENAME
+            ).parent.mkdir(parents=True)
             shutil.copy2(
                 first_summary.with_suffix("") / TARGET.RECORD_FILENAME,
                 second_summary.with_suffix("") / TARGET.RECORD_FILENAME,
@@ -597,7 +625,12 @@ class ValidationControllerTests(unittest.TestCase):
             session_dir = Path(first["decision_file"]).parent.parent
             self.assertTrue(
                 session_dir.is_relative_to(
-                    (root / EXCHANGE.VALIDATION_WORK_ROOT).resolve()
+                    (
+                        summary.with_suffix("")
+                        / "validation"
+                        / ".cache"
+                        / EXCHANGE.VALIDATION_WORK_ROOT
+                    ).resolve()
                 )
             )
             self.addCleanup(
@@ -837,7 +870,11 @@ class ValidationControllerTests(unittest.TestCase):
                 "decisions": {"items": []},
                 "orphan_fingerprints": {},
                 "session_dir": (
-                    root / ".astro-agents-validation-work" / "summary" / "session"
+                    summary.with_suffix("")
+                    / "validation"
+                    / ".cache"
+                    / "work"
+                    / "session"
                 ).as_posix(),
             }
             progress = CONTROLLER.ValidationProgress(
@@ -938,7 +975,11 @@ class ValidationControllerTests(unittest.TestCase):
                 "decisions": decisions,
                 "orphan_fingerprints": {},
                 "session_dir": (
-                    root / ".astro-agents-validation-work" / "summary" / "session"
+                    summary.with_suffix("")
+                    / "validation"
+                    / ".cache"
+                    / "work"
+                    / "session"
                 ).as_posix(),
             }
             progress = CONTROLLER.ValidationProgress(

@@ -1,9 +1,8 @@
-"""Persistence contracts for independent research-log validation.
+"""Persistence contracts for one log's durable and local validation state.
 
-``validation-record.json`` is authoritative durable state.  It owns semantic
-judgments, completed outcomes, failures, result dates, dependency contracts,
-observed evidence identities, and continuation state.  ``validation-cache.json``
-is disposable acceleration data: absence or corruption is always a cache miss.
+``validation/manifest.json`` and its row shards are authoritative. Local state
+under ``validation/.cache/`` is rebuildable or transient and never determines
+whether a validation result is correct.
 """
 
 from __future__ import annotations
@@ -18,19 +17,41 @@ from typing import Any
 from . import sharded_state
 from .records import RecordPublicationError, _atomic_write_bytes, validation_lock
 
-RECORD_FILENAME = "validation-record.json"
-CACHE_FILENAME = "validation-cache.json"
+RECORD_FILENAME = "validation/manifest.json"
+CACHE_FILENAME = "validation/.cache/cache.json"
 RECORD_SCHEMA_VERSION = 2
 CACHE_SCHEMA_VERSION = 1
 RETIRED_VALIDATION_FILENAMES = (
     "validation-decisions.json",
     "validation-state.json",
     "validation-index.json",
+    "validation-record.json",
+    "validation-cache.json",
+    "validation-state",
+    ".research-log-validation.lock",
 )
 
 
 class TargetRecordError(ValueError):
     """Raised when authoritative target validation data violates its contract."""
+
+
+def validation_directory(output_dir: Path) -> Path:
+    """Return the durable validation directory owned by one research log."""
+
+    return output_dir / sharded_state.STATE_DIRECTORY
+
+
+def manifest_path(output_dir: Path) -> Path:
+    """Return one log's authoritative manifest path."""
+
+    return output_dir / RECORD_FILENAME
+
+
+def cache_path(output_dir: Path) -> Path:
+    """Return one log's ignored deterministic-cache path."""
+
+    return output_dir / CACHE_FILENAME
 
 
 def empty_record(summary: str, rules_version: str) -> dict[str, Any]:
@@ -340,11 +361,22 @@ def _validate_continuation(value: Any) -> None:
             "session_identity",
         }:
             raise TargetRecordError("paged continuation has incorrect fields")
-        _validate_relative_path(continuation.get("session"), "continuation.session")
+        session = _validate_relative_path(
+            continuation.get("session"), "continuation.session"
+        )
+        session_path = PurePosixPath(session)
+        if len(session_path.parts) != 2 or session_path.parts[0] != "work":
+            raise TargetRecordError(
+                "continuation.session must be work/<session-id>"
+            )
         _validate_sha256(
             continuation.get("session_identity"),
             "continuation.session_identity",
         )
+        if session_path.parts[1] != continuation.get("session_identity"):
+            raise TargetRecordError(
+                "continuation.session must match continuation.session_identity"
+            )
         _nonempty_string(
             continuation.get("review_kind"), "continuation.review_kind"
         )
@@ -413,7 +445,6 @@ def decode_sharded_manifest(value: Any) -> dict[str, Any]:
         "rule_dependencies",
         "shards",
         "row_counts",
-        "subject_index",
         "result",
         "continuation",
         "completion_dependencies",
@@ -438,7 +469,7 @@ def _manifest_shell(manifest: Mapping[str, Any]) -> dict[str, Any]:
     shell = {
         key: copy.deepcopy(value)
         for key, value in manifest.items()
-        if key not in {"storage_layout", "shards", "row_counts", "subject_index"}
+        if key not in {"storage_layout", "shards", "row_counts"}
     }
     shell.update(
         {
@@ -478,11 +509,11 @@ def hydrate_record_shell(record: Mapping[str, Any], output_dir: Path) -> dict[st
     if not is_sharded_shell(record):
         return decode_record(record)
     manifest = decode_sharded_manifest(record["_sharded_manifest"])
-    rows = sharded_state.hydrate_rows(output_dir, manifest)
+    rows = sharded_state.hydrate_rows(validation_directory(output_dir), manifest)
     logical = {
         key: copy.deepcopy(value)
         for key, value in manifest.items()
-        if key not in {"storage_layout", "shards", "row_counts", "subject_index"}
+        if key not in {"storage_layout", "shards", "row_counts"}
     }
     logical.update(rows)
     return decode_record(logical)
@@ -498,7 +529,7 @@ def hydrate_record_rows(
     result = copy.deepcopy(dict(record))
     result.update(
         sharded_state.hydrate_selected_rows(
-            output_dir, record["_sharded_manifest"], kinds
+            validation_directory(output_dir), record["_sharded_manifest"], kinds
         )
     )
     return result
@@ -530,6 +561,11 @@ def _read_json(path: Path) -> Any:
         raise TargetRecordError(f"cannot read valid JSON from {path}: {exc}") from exc
 
 
+def _assert_manifest_source(path: Path) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise TargetRecordError("durable validation manifest must not be a symlink")
+
+
 def load_record_with_source(
     path: Path,
     *,
@@ -537,6 +573,7 @@ def load_record_with_source(
 ) -> tuple[dict[str, Any], int]:
     """Load one record and report the native schema found on disk."""
 
+    _assert_manifest_source(path)
     try:
         value = _read_json(path)
     except FileNotFoundError as exc:
@@ -556,7 +593,7 @@ def load_record_with_source(
             raise TargetRecordError(
                 "durable validation record belongs to another summary"
             )
-        record = hydrate_record_shell(_manifest_shell(manifest), path.parent)
+        record = hydrate_record_shell(_manifest_shell(manifest), path.parent.parent)
         if expected_summary is not None and record["summary"] != expected_summary:
             raise TargetRecordError(
                 "durable validation record belongs to another summary"
@@ -580,6 +617,7 @@ def load_record_header_with_source(
 ) -> tuple[dict[str, Any], int]:
     """Load only a supported sharded manifest and validate its ownership."""
 
+    _assert_manifest_source(path)
     try:
         value = _read_json(path)
     except FileNotFoundError as exc:
@@ -620,6 +658,8 @@ def load_record(
 def load_cache(path: Path) -> tuple[dict[str, Any], str]:
     """Load cache data or return an empty recomputation case and diagnostic."""
 
+    if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():
+        return empty_cache(), "malformed"
     try:
         return decode_cache(_read_json(path)), "loaded"
     except FileNotFoundError:
@@ -640,7 +680,11 @@ def load_judgments_for_subjects(
         judgments = record.get("judgments", [])
         return list(judgments) if isinstance(judgments, list) else []
     return sharded_state.load_subject_rows(
-        output_dir, manifest, "judgments", subjects
+        validation_directory(output_dir),
+        manifest,
+        "judgments",
+        subjects,
+        _atomic_write_bytes,
     )
 
 
@@ -653,12 +697,15 @@ def append_judgment_batch(
 
     for number, judgment in enumerate(judgments):
         _validate_judgment(judgment, number)
+    _assert_output_destinations(output_dir)
+    assert_no_retired_artifacts(output_dir)
     manifest = record.get("_sharded_manifest")
     if not isinstance(manifest, Mapping):
         raise TargetRecordError("accepted-batch append requires sharded state")
     current = decode_sharded_manifest(manifest)
+    state_dir = validation_directory(output_dir)
     prepared = sharded_state.prepare_judgment_append(
-        output_dir, current, judgments
+        state_dir, current, judgments, _atomic_write_bytes
     )
     if not prepared.files:
         return _manifest_shell(current)
@@ -666,17 +713,17 @@ def append_judgment_batch(
     try:
         with validation_lock(output_dir):
             disk = decode_sharded_manifest(
-                _read_json(output_dir / RECORD_FILENAME)
+                _read_json(manifest_path(output_dir))
             )
             if disk != current:
                 raise RecordPublicationError(
                     "durable validation manifest changed during batch acceptance"
                 )
             sharded_state.publish_immutable_files(
-                output_dir, prepared.files, _atomic_write_bytes
+                state_dir, prepared.files, _atomic_write_bytes
             )
             _atomic_write_bytes(
-                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
+                manifest_path(output_dir), _json_bytes(valid_manifest)
             )
     except (RecordPublicationError, sharded_state.ShardedStateError):
         raise
@@ -684,6 +731,16 @@ def append_judgment_batch(
         raise RecordPublicationError(
             f"accepted judgment batch could not be written: {exc}"
         ) from exc
+    if prepared.index_delta is not None:
+        try:
+            sharded_state.write_index_delta(
+                state_dir,
+                prepared.index_delta,
+                valid_manifest,
+                _atomic_write_bytes,
+            )
+        except (OSError, sharded_state.ShardedStateError):
+            pass
     return _manifest_shell(valid_manifest)
 
 
@@ -721,9 +778,53 @@ def _prepare_record_state(
         }
         valid_subset = decode_record(logical)
         return sharded_state.prepare_progress_state(
-            output_dir, record["_sharded_manifest"], valid_subset
+            validation_directory(output_dir),
+            record["_sharded_manifest"],
+            valid_subset,
+            _atomic_write_bytes,
         )
     return sharded_state.prepare_state(decode_record(record))
+
+
+def _write_local_state(
+    output_dir: Path,
+    cache: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Best-effort refresh ignored cache and compact subject index state."""
+
+    try:
+        _atomic_write_bytes(cache_path(output_dir), _json_bytes(cache))
+    except OSError:
+        pass
+    try:
+        sharded_state.compact_subject_index(
+            validation_directory(output_dir), manifest, _atomic_write_bytes
+        )
+    except (OSError, sharded_state.ShardedStateError):
+        pass
+
+
+def _assert_output_destinations(output_dir: Path) -> None:
+    if output_dir.is_symlink():
+        raise RecordPublicationError(
+            "target validation output directory must not be a symlink"
+        )
+    destinations = (
+        manifest_path(output_dir),
+        cache_path(output_dir),
+        output_dir / "validation.md",
+        validation_directory(output_dir),
+    )
+    for destination in destinations:
+        current = output_dir
+        for part in destination.relative_to(output_dir).parts:
+            current /= part
+            if current.is_symlink():
+                raise RecordPublicationError(
+                    "target validation destination must not be a symlink: "
+                    + destination.relative_to(output_dir).as_posix()
+                )
 
 
 def write_record_and_cache(
@@ -731,22 +832,24 @@ def write_record_and_cache(
 ) -> None:
     """Atomically write target state under the per-log validation lock.
 
-    Cache is published first because it has no correctness authority.  The
-    authoritative record is the commit point: a failure before or during that
-    write leaves the prior valid durable record intact.
+    New row shards are published before the manifest commit point. Ignored
+    local state is refreshed afterward and cannot invalidate durable work.
     """
 
     valid_cache = decode_cache(cache)
     prepared = _prepare_record_state(output_dir, record)
     valid_manifest = decode_sharded_manifest(prepared.manifest)
+    _assert_output_destinations(output_dir)
+    assert_no_retired_artifacts(output_dir)
     try:
         with validation_lock(output_dir):
             sharded_state.publish_immutable_files(
-                output_dir, prepared.files, _atomic_write_bytes
+                validation_directory(output_dir),
+                prepared.files,
+                _atomic_write_bytes,
             )
-            _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
             _atomic_write_bytes(
-                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
+                manifest_path(output_dir), _json_bytes(valid_manifest)
             )
     except (RecordPublicationError, sharded_state.ShardedStateError):
         raise
@@ -754,6 +857,7 @@ def write_record_and_cache(
         raise RecordPublicationError(
             f"target validation state could not be written: {exc}"
         ) from exc
+    _write_local_state(output_dir, valid_cache, valid_manifest)
 
 
 def publish_target_bundle(
@@ -764,9 +868,9 @@ def publish_target_bundle(
 ) -> None:
     """Publish target files with the report as the final commit point.
 
-    Progressive durable state and disposable cache are written first.  Every
-    individual replacement is atomic, so a failure leaves the prior completed
-    report intact and retains every authoritative record write that succeeded.
+    Progressive durable state is written first and the report remains the
+    final durable projection write. Local cache/index refresh happens only
+    after durable publication and cannot change the bundle's authority.
     """
 
     valid_cache = decode_cache(cache)
@@ -774,29 +878,17 @@ def publish_target_bundle(
     valid_manifest = decode_sharded_manifest(prepared.manifest)
     if not report_text.endswith("\n"):
         raise TargetRecordError("validation report must end with a newline")
-    if output_dir.is_symlink():
-        raise RecordPublicationError(
-            "target validation output directory must not be a symlink"
-        )
-    for name in (
-        CACHE_FILENAME,
-        RECORD_FILENAME,
-        "validation.md",
-        sharded_state.STATE_DIRECTORY,
-    ):
-        if (output_dir / name).is_symlink():
-            raise RecordPublicationError(
-                f"target validation destination must not be a symlink: {name}"
-            )
+    _assert_output_destinations(output_dir)
     assert_no_retired_artifacts(output_dir)
     try:
         with validation_lock(output_dir):
             sharded_state.publish_immutable_files(
-                output_dir, prepared.files, _atomic_write_bytes
+                validation_directory(output_dir),
+                prepared.files,
+                _atomic_write_bytes,
             )
-            _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
             _atomic_write_bytes(
-                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
+                manifest_path(output_dir), _json_bytes(valid_manifest)
             )
             _atomic_write_bytes(output_dir / "validation.md", report_text.encode())
     except (RecordPublicationError, sharded_state.ShardedStateError):
@@ -805,3 +897,4 @@ def publish_target_bundle(
         raise RecordPublicationError(
             f"target validation bundle could not be written: {exc}"
         ) from exc
+    _write_local_state(output_dir, valid_cache, valid_manifest)

@@ -57,7 +57,6 @@ from .scan import (
 )
 from .scan import scan_log as run_scan
 from .sharded_state import STATE_DIRECTORY
-from .target_records import CACHE_FILENAME, RECORD_FILENAME
 
 SCAN_SCHEMA_VERSION = 18
 ADJUDICATION_SCHEMA_VERSION = 8
@@ -65,17 +64,13 @@ RULES_VERSION = "research-log-validation-v45"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
     "validation.md",
-    RECORD_FILENAME,
-    CACHE_FILENAME,
+    STATE_DIRECTORY,
 )
 OWNED_INVENTORY_EXCLUDED_NAMES = frozenset(
     {
         "data.csv",
         "evidence.csv",
         "refs.bib",
-        ".research-log-validation.lock",
-        CACHE_FILENAME,
-        RECORD_FILENAME,
         STATE_DIRECTORY,
         *VALIDATION_RECORD_FILENAMES,
     }

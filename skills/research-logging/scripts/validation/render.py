@@ -989,9 +989,7 @@ def _validated_render_scope(
         raise ValidationToolError("canonical rendering requires complete-log scope")
     record_names = (
         "validation.md",
-        "validation-record.json",
-        "validation-cache.json",
-        "validation-state",
+        "validation",
     )
     if partial and any((output_dir / name).exists() for name in record_names):
         raise ValidationToolError(

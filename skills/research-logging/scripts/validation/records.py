@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-LOCK_FILENAME = ".research-log-validation.lock"
+LOCK_FILENAME = "validation/.cache/lock"
 
 
 class RecordPublicationError(RuntimeError):
@@ -32,13 +32,21 @@ class PublicationGuard:
 def validation_lock(output_dir: Path) -> Iterator[None]:
     """Hold one log's nonblocking canonical-publication lock.
 
-    The lock file is stable and ignored by source control. The operating system
-    releases the advisory lock automatically when the process exits.
+    The lock file is stable local state under the owning log. The operating
+    system releases the advisory lock automatically when the process exits.
     """
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     lock_path = output_dir / LOCK_FILENAME
+    current = output_dir
+    for part in Path(LOCK_FILENAME).parts:
+        current /= part
+        if current.is_symlink():
+            raise RecordPublicationError(
+                "validation lock path must not contain a symlink"
+            )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

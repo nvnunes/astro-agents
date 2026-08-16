@@ -713,18 +713,18 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         return None
     if continuation.get("kind") == "ordinary":
         resumed = resume_ordinary_exchange(
-            context.project_root, context.record_summary, continuation
+            context.output_dir, context.record_summary, continuation
         )
     elif continuation.get("kind") == "paged":
         resumed = resume_deferred_orphan_session(
-            context.project_root, continuation
+            context.output_dir, continuation
         )
         if resumed["status"] == "ready":
             return _finish_deferred_acceptance(
                 context.summary_path, resumed, context.progress()
             )
         recovery = empty_deferred_refresh_context(
-            context.project_root, continuation
+            context.output_dir, continuation
         )
         if (
             recovery is not None

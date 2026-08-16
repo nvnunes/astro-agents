@@ -63,9 +63,6 @@ A populated log may contain:
   scripts/
   evidence.csv
   validation.md
-  validation-decisions.json
-  validation-state.json
-  validation-index.json
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
@@ -905,11 +902,11 @@ value must support the same claim in context before Provenance can pass.
 
 Validation follows each result back through the materials needed to produce
 it. Shared inputs and code are checked once and their results are reused where
-appropriate. Files used by another maintained research log are recognized as
-in use rather than reported as unexplained material. If the validator does not
-yet have current information for every maintained log, it postpones cross-log
-unused-material conclusions until that coverage is restored; already completed
-per-log results retain the validation-rules version recorded with them.
+appropriate. An explicit path into another log is external evidence of the
+log being checked: the validator observes that path directly without reading
+the other log's validation files or requiring that log to be initialized or
+current. Unused-material status remains local. A file unconnected within its
+own log is still a local validation problem even when another log refers to it.
 
 A standard check inspects the saved record without running research code. A
 reproduction check reruns eligible recorded commands in a temporary location
@@ -918,12 +915,9 @@ and compares the new outputs with the saved results. The validation agent reads
 
 ### Standard and reproduction checks
 
-Canonical validation always covers the complete log and is the only form that
-updates generated validation records. It never updates the maintained summary.
-You may instead request a limited
-diagnostic for a named problem scope, exact result, or type of review. A
-diagnostic uses the complete mechanical scan but reports only the requested
-question; it does not assign validation status or update generated records.
+Canonical validation covers one maintained log and is the only form that
+updates generated validation records. It never updates the maintained summary
+or coordinates validation of the other maintained logs.
 
 A standard check examines presented results, saved files, commands, code, and
 inputs without executing the research workflow. Earlier results may be reused
@@ -997,8 +991,9 @@ Validation also looks for research material that is saved in the log but is
 not connected to a presented result. This includes scripts, files, and
 `data.csv` resources used by recorded commands. Validation reports such items
 as unexplained or unused material; the report uses the established label
-`Orphaned artifacts, scripts, and references`. Material actively used by
-another maintained research log is not considered unused.
+`Orphaned artifacts, scripts, and references`. This status is local to the log:
+use by another maintained research log does not connect the material to a
+presented result in its own log.
 
 One catch-all row is used for each affected entry folder or for the log as a
 whole. The row uses `-` for Section, `N/A` for Integrity and Reproducibility,
@@ -1006,12 +1001,12 @@ whole. The row uses `-` for Section, `N/A` for Integrity and Reproducibility,
 individual paths appear in `validation.md` under `## Remediation`. A `Validation:` note you
 approve can explain why a named item is intentionally kept.
 
-When an unused-material queue is large, validation reviews it in stable
-batches of at most 200 candidates by default. Every candidate remains in the
-canonical pending inventory; batching limits only the material presented for
-one review decision. Batches prepared from the same scan may be applied in any
-order. Candidate-scoped fingerprints reject only changed candidates; exact
-reapplication is a no-op and conflicting reapplication is rejected.
+When semantic review is needed, validation emits a bounded packet containing
+only the unresolved questions and evidence needed for those decisions. The
+validator owns candidate selection and continuation; the agent fills only the
+requested decision and concise rationale fields. A decision bound to changed
+evidence or an older continuation is rejected without changing the durable
+record.
 
 Bounded review may also establish that an apparently unused item participates
 in presented work through a relationship that paths and commands could not
@@ -1049,27 +1044,21 @@ requested, replace its date with `-`; do not report `FAIL` because reproduction
 was not attempted. Only `FAIL`, `-`, and `N/A` use inline code formatting in
 generated report cells. Successful dates and results use ordinary text.
 
-Before reusing an earlier result, a standard check confirms that the relevant
-entries, presented results, `evidence.csv` rows, supporting files, and unused-
-material inventory have not changed. New, renamed, or missing material is
-reflected in the report. File timestamps are only change-detection hints: a
-byte-identical rewrite does not require renewed interpretation after its
-content is confirmed unchanged.
+Before reusing an earlier result, a standard check observes the dependencies
+recorded for that outcome. New, renamed, missing, inaccessible, ambiguous, or
+changing material remains explicit. Size, modification time, and change time
+are inexpensive change-detection evidence: when all three are unchanged, the
+validator reuses the stored content identity without opening the file. When
+metadata changes, one shared hash distinguishes a byte-identical rewrite from
+a content change. Only outcomes that depend on changed content or rules reopen.
 
-### Saved validation files
+### Validation report and generated files
 
-#### Validation report
-
-`<log>/validation.md` is the official record of completed validation results.
-It records when validation ran, the complete canonical log scope, and whether
-the run was standard or reproduction validation. It does not reduce the log
-to one overall pass-or-fail result.
-
-Its local snapshot identity covers validation-relevant source content and
-directory membership while excluding generated records and other maintained
-logs. A later scan can therefore distinguish a current report from an intact
-historical report without requiring state, a graph slice, or a repository
-aggregate.
+`<log>/validation.md` is the official researcher-facing record of completed
+validation results. It assembles dependency-bound observations, preserves each
+outcome's result date, and records whether the operation used standard or
+reproduction validation. It does not claim one repository-wide or whole-log
+snapshot and does not reduce the log to one overall pass-or-fail result.
 
 Near the top, `## Status Summary` gives the report-update date, Summary status,
 and one compact row per included entry. Detailed sections cover marked Summary
@@ -1085,25 +1074,25 @@ entry and identifies which check failed, what was found, and any specific
 unresolved paths or `data.csv` references. It is part of the durable completed
 record. A research agent resolves or disputes a finding by changing
 research-owned evidence or instructions; the next completed validation alone
-rebuilds the report. The former separate `validation-failures.md` file is
-obsolete.
+rebuilds the report.
 
-#### Other generated validation files
+Validation also maintains two internal machine-readable files:
 
-Validation also maintains durable `validation-decisions.json` and disposable
-`validation-state.json` and `validation-index.json`. The decision store retains
-compatible semantic judgments with their exact fingerprints and available
-rationale. State and the graph slice accelerate unchanged work and cross-log
-coverage. Missing or outdated caches cause bounded recomputation or an explicit
-coverage limitation; they do not make the research log fail or invalidate a
-readable completed report. Repository views are assembled on demand from
-compatible per-log slices and are never stored as a shared aggregate.
+- `<log>/validation-record.json` is durable CLI-owned state for semantic
+  judgments and rationales, completed outcomes and dates, observed
+  dependencies, failures, and progressive continuation.
+- `<log>/validation-cache.json` is rebuildable acceleration data for file
+  identities, hashes, inspections, and local indexes. It has no independent
+  correctness authority.
+
+Research agents preserve these files exactly; validation agents create,
+update, or remove them through the validation tool. Only `validation.md` is
+intended for direct use as a validation record. Temporary semantic review
+packets and decision templates live outside the research log and are not
+canonical validation artifacts.
 
 Compatible reused outcomes keep their original result dates, so a current
-report can legitimately contain dates older than its report-update date. During
-a rolling validation upgrade, the report may temporarily identify incomplete
-cross-log coverage while incompatible foreign slices are replaced; exact local
-results remain valid.
+report can legitimately contain dates older than its report-update date.
 
 ## Roles and keeping validation current
 
@@ -1112,9 +1101,11 @@ being checked. This separates the check from the earlier work session, but it
 is not a claim of organizational independence or independent scientific
 replication.
 
-Research changes and canonical validation are separate activities. Do not
-intentionally change the log being published during its final currentness
-check. Canonical writers serialize per log, so different logs may validate and
+Research changes and canonical validation are separate activities. Validation
+is observational: completed outcomes record the dependencies actually observed
+for those checks, while an input that changes during observation remains
+unresolved. Unrelated concurrent changes do not discard compatible completed
+work. Canonical writers serialize per log, so different logs may validate and
 publish concurrently while two writers to the same log cannot compete.
 
 The validation agent may read maintained summaries, entries, scripts, saved
@@ -1130,13 +1121,7 @@ assign a completed validation result.
 Research changes do not trigger validation, reproduction, broad checks, or a
 summary update. Perform only the production check needed to keep changed
 presentation consistent with its retained source. The next Validate request
-compares current inputs with saved fingerprints, reuses only unchanged
-outcomes, and republishes the durable report and decisions before repairing
-disposable caches.
-
-Files and owned-directory membership must remain unchanged while they are
-being checked. Validation confirms content and membership again before
-publishing. If a relevant file, directory addition, or directory removal
-changes during validation, the check stops without reporting a research-log
-failure and must be repeated after the inputs are stable. Validation does not
-inspect or report version-control status.
+compares outcome dependencies with saved observations, reuses compatible work,
+and publishes only the validation report, durable record, and rebuildable
+cache. Missing or changing evidence affects only the outcomes that depend on
+it. Validation does not inspect or report version-control status.

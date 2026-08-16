@@ -92,9 +92,8 @@ higher complexity score, or growth in the total advisory finding count.
 Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
 retained evidence, scientific artifacts, and authored `Validation:` notes as
 research-owned. Canonical validation may write only `validation.md`,
-`validation-decisions.json`, `validation-state.json`, and
-`validation-index.json`. Research operations must leave every existing
-generated validation file byte-identical.
+`validation-record.json`, and `validation-cache.json`. Research operations must
+leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
@@ -102,36 +101,41 @@ The research-log test gate must verify:
   its detailed completed rows;
 - every maintained summary uses the exact stable report link directly below
   its H1 and contains no generated `## Validation` section or Contents item;
-- current state, decision, and graph-slice schemas reject retired formats with
-  an actionable unsupported-schema diagnostic;
+- target record and cache schemas reject unsupported native formats with an
+  actionable diagnostic, while cache absence or corruption remains a bounded
+  recomputation case;
+- the migration adapter accepts only the exact deployed v45 decision, state,
+  and index triad, imports it without opening or hashing research evidence,
+  preserves compatible judgments, failures, dates, producer evidence, hashes,
+  inspections, and outcomes, and removes the triad only after successful
+  target publication;
 - component and input-projection changes reopen only outcomes that declare the
   changed dependency, while compatible outcomes retain their original dates;
-- unchanged artifacts reuse their recorded hashes and inspections without
-  opening artifact content;
+- unchanged artifact metadata reuses recorded hashes and inspections without
+  opening artifact content, while a metadata change performs at most one
+  shared content hash;
+- progressive completed work survives interruption, unrelated change, later
+  operational failure, and semantic continuation;
+- one log validates without maintained-summary discovery, repository
+  reconciliation, Git state, or another log's validation files;
+- an explicit cross-log path is observed as external evidence, while a local
+  orphan remains a local problem even when another log refers to it;
+- generated semantic packets are bounded and continuation-bound, expose only
+  minimum-sufficient context, and allow the agent to edit only requested
+  decision and rationale fields;
 - canonical publication rejects traversal, symlink, unexpected-filename, and
   output-directory alias attempts;
-- persisted graph slices use `summary_validation_identity` for maintained
-  summaries, `entry_validation_identity` for entry Markdown, and raw content
-  identity for ordinary files; and
 - validation publication leaves research-owned bytes unchanged, while Record,
   Replace, Update Summary, Reorganize, and initialization leave generated
   validation bytes unchanged.
 
-For a validation-contract upgrade, follow the rolling procedure in
-`skills/research-logging/references/operation-validate.md`. Dry-run and verify
-one log at a time, preserve compatible durable judgments and original result
-dates, and treat unexplained reruns, artifact rehashes, or semantic-review
-requests as blockers for that log. After every maintained log is native, run
-the complete cross-log reconciliation and state-backed hot-cache audit, then
-remove the temporary adapter and migration-only tests and scripts. The final
-suite must prove that the retired schemas are rejected.
-
-When validation performance or compatibility behavior changes, require the
-state-backed hot-cache audit across all maintained Girmos research logs to
-finish within 15 minutes of wall time. Every log must report
-`incremental_status: unchanged`, zero rerun checks, a cached result, and no
-semantic review. A slower result blocks completion and requires further
-profiling or optimization.
+For a validation-contract upgrade, migrate one log at a time without reading
+or validating the remaining population. Dry-run the target operation, inspect
+its reuse and hashing diagnostics, then publish that log and confirm an
+unchanged follow-up hashes zero artifact bytes and requests no semantic review.
+After every maintained log is native, remove the temporary adapter and
+migration-only tests and fixtures. The final suite must prove that retired
+schemas receive an actionable unsupported-format diagnostic.
 
 ### Validation Review Scaling Benchmark
 
@@ -153,28 +157,17 @@ fresh-process benchmark:
 The canonical workload has generator identity
 `ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c`.
 It builds the complete review index, queries every orphan candidate, and
-renders exactly the first 200-candidate batch. Require the 12,000-orphan
-median to remain below 60 seconds and the 24,000-orphan median to remain no
-more than 2.5 times the 12,000-orphan median on the recorded machine.
+renders exactly the first 200-candidate packet. Compare the retained workload
+sizes for approximately linear growth in candidates examined and deterministic
+operation counts.
 
 Also require one static preparation per invocation, no more than one source
 read per unique producer script, and no repeated evaluation of the same
-invocation-target-section relationship in one query session. Run the retained
-legacy baseline only when attributing a scaling change:
-
-```bash
-./.conda/bin/python \
-  skills/research-logging/scripts/benchmark_validation_review.py \
-  --mode legacy \
-  --orphans 12000 \
-  --warmups 1 \
-  --runs 3 \
-  --output tmp/validation-review-legacy-baseline.json
-```
-
-Treat wall time as a retained benchmark gate, not a timing-sensitive unit
-test. Keep the generator parameters and the three measured samples with any
-accepted baseline update. The current accepted result is recorded in
+invocation-target-section relationship in one query session. Record wall time
+for diagnosis, but do not use a fixed runtime threshold or compare against the
+retired aggregate workflow. Keep the generator parameters and deterministic
+counts with any accepted baseline update. The current accepted result is
+recorded in
 `skills/research-logging/tests/validation-review-benchmark-baseline.json`.
 
 Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused

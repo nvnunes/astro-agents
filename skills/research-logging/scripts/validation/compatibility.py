@@ -23,7 +23,7 @@ COMPONENT_VERSIONS: dict[str, int] = {
     "upstream_reviewed_producer": 2,
     "reproducibility": 1,
     "orphan_inventory": 1,
-    "orphan_graph": 1,
+    "orphan_graph": 2,
     "orphan_semantic_adjudication": 1,
 }
 INPUT_PROJECTION_VERSIONS: dict[str, int] = {

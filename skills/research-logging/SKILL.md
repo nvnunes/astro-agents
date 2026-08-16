@@ -70,7 +70,9 @@ Choose the core operation:
 - Research-log structure, consistency, synthesis, or writing review: read
   `references/operation-review.md`.
 - Agent-led validation or reproduction checking: read
-  `references/operation-validate.md`.
+  `references/operation-validate.md`. Use its single public validation
+  operation; when semantic review is requested, edit only the generated
+  decision and rationale fields and continue through that same operation.
 
 For standalone reference lookup, viewing, or candidate management, read
 `references/operation-reference.md`. During Record, route citation and BibTeX

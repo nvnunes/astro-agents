@@ -22,7 +22,7 @@ from .contracts import (
     decode_adjudication_record,
     decode_scan_record,
 )
-from .controller import validate
+from .controller import ValidationRequest, validate
 from .decision_store import merge_native_orphan_batch_judgments
 from .decisions import apply_review_decisions
 from .discovery import MarkdownDiscoveryError
@@ -63,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--summary", required=True, type=Path)
     validate_parser.add_argument("--decisions", type=Path)
     validate_parser.add_argument("--date")
+    validate_parser.add_argument(
+        "--mode", choices=("standard", "reproduction"), default="standard"
+    )
     validate_parser.add_argument(
         "--jobs", type=int, default=min(32, (os.cpu_count() or 1) + 4)
     )
@@ -289,11 +292,14 @@ def _run_scan(args: argparse.Namespace) -> int:
 
 def _run_validate(args: argparse.Namespace) -> int:
     result = validate(
-        args.summary,
-        decision_file=args.decisions,
-        result_date=args.date,
-        jobs=args.jobs,
-        publish=not args.no_publish,
+        ValidationRequest(
+            args.summary,
+            decision_file=args.decisions,
+            result_date=args.date,
+            jobs=args.jobs,
+            publish=not args.no_publish,
+            mode=args.mode,
+        )
     )
     print(json.dumps(result, sort_keys=True))
     return 2 if result["status"] == "error" else 0

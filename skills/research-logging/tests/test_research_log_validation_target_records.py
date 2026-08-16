@@ -59,6 +59,28 @@ class TargetRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(TARGET.TargetRecordError, "rationale"):
             TARGET.decode_record(record)
 
+    def test_v45_recorded_failure_findings_are_preserved_verbatim(self) -> None:
+        record = TARGET.empty_record("docs/mini.md", "rules-v1")
+        findings = ["First exact failure.", "Second exact failure."]
+        record["judgments"] = [
+            {
+                "identity": "decision-1",
+                "kind": "completed-check",
+                "result": "FAIL",
+                "decision_date": "2026-08-15",
+                "subject": {},
+                "rule_dependencies": {"semantic": 1},
+                "input_dependencies": [],
+                "provenance": "legacy-attested",
+                "rationale_provenance": "recorded",
+                "rationale": findings,
+            }
+        ]
+
+        decoded = TARGET.decode_record(record)
+
+        self.assertEqual(decoded["judgments"][0]["rationale"], findings)
+
     def test_missing_or_malformed_cache_is_a_recomputation_case(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / TARGET.CACHE_FILENAME
@@ -216,6 +238,59 @@ class TargetRecordTests(unittest.TestCase):
                 TARGET.RecordPublicationError, "must not be a symlink"
             ):
                 TARGET.publish_target_bundle(alias, "report\n", record, cache)
+
+    def test_successful_target_migration_retires_exact_v45_triad(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "hybrid"
+            shutil.copytree(FIXTURE, output)
+            record, cache = TARGET.import_v45(output, "docs/hybrid.md")
+
+            TARGET.publish_target_bundle(
+                output,
+                "target report\n",
+                record,
+                cache,
+                retire_v45=True,
+            )
+
+            self.assertEqual(
+                {
+                    path.name
+                    for path in output.iterdir()
+                    if not path.name.startswith(".")
+                },
+                {
+                    "validation.md",
+                    TARGET.RECORD_FILENAME,
+                    TARGET.CACHE_FILENAME,
+                },
+            )
+
+    def test_v45_retirement_rejects_non_v45_input_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "hybrid"
+            shutil.copytree(FIXTURE, output)
+            record, cache = TARGET.import_v45(output, "docs/hybrid.md")
+            state_path = output / "validation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["schema_version"] = 10
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                TARGET.TargetRecordError, "unsupported pre-v45"
+            ):
+                TARGET.publish_target_bundle(
+                    output,
+                    "target report\n",
+                    record,
+                    cache,
+                    retire_v45=True,
+                )
+
+            self.assertFalse((output / TARGET.RECORD_FILENAME).exists())
+            self.assertFalse((output / TARGET.CACHE_FILENAME).exists())
 
 
 if __name__ == "__main__":

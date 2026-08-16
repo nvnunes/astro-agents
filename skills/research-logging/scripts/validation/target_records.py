@@ -24,6 +24,11 @@ V45_RULES_VERSION = "research-log-validation-v45"
 V45_DECISION_SCHEMA_VERSION = 2
 V45_STATE_SCHEMA_VERSION = 11
 V45_INDEX_SCHEMA_VERSION = 8
+V45_FILENAMES = (
+    "validation-decisions.json",
+    "validation-state.json",
+    "validation-index.json",
+)
 
 
 class TargetRecordError(ValueError):
@@ -153,7 +158,14 @@ def _validate_judgment(value: Any, number: int) -> None:
         and rationale_provenance == "unavailable-in-v43"
         and rationale is None
     )
-    if not unavailable_legacy:
+    preserved_legacy_findings = (
+        provenance == "legacy-attested"
+        and rationale_provenance == "recorded"
+        and isinstance(rationale, list)
+        and bool(rationale)
+        and all(isinstance(item, str) and item.strip() for item in rationale)
+    )
+    if not unavailable_legacy and not preserved_legacy_findings:
         _nonempty_string(rationale, f"{field}.rationale")
 
 
@@ -315,11 +327,33 @@ def write_record_and_cache(
         ) from exc
 
 
+def _validate_v45_retirement_inputs(output_dir: Path) -> None:
+    schemas = (
+        V45_DECISION_SCHEMA_VERSION,
+        V45_STATE_SCHEMA_VERSION,
+        V45_INDEX_SCHEMA_VERSION,
+    )
+    for name, schema_version in zip(V45_FILENAMES, schemas, strict=True):
+        path = output_dir / name
+        if path.is_symlink():
+            raise RecordPublicationError(
+                f"v45 migration input must not be a symlink: {name}"
+            )
+        _v45_document(path, schema_version)
+
+
+def _retire_v45_files(output_dir: Path) -> None:
+    for name in V45_FILENAMES:
+        (output_dir / name).unlink()
+
+
 def publish_target_bundle(
     output_dir: Path,
     report_text: str,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
+    *,
+    retire_v45: bool = False,
 ) -> None:
     """Publish target files with the report as the final commit point.
 
@@ -341,6 +375,8 @@ def publish_target_bundle(
             raise RecordPublicationError(
                 f"target validation destination must not be a symlink: {name}"
             )
+    if retire_v45:
+        _validate_v45_retirement_inputs(output_dir)
     try:
         with validation_lock(output_dir):
             _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
@@ -348,6 +384,8 @@ def publish_target_bundle(
                 output_dir / RECORD_FILENAME, _json_bytes(valid_record)
             )
             _atomic_write_bytes(output_dir / "validation.md", report_text.encode())
+            if retire_v45:
+                _retire_v45_files(output_dir)
     except RecordPublicationError:
         raise
     except OSError as exc:
@@ -381,13 +419,11 @@ def import_v45(output_dir: Path, summary: str) -> tuple[dict[str, Any], dict[str
     """
 
     decisions = _v45_document(
-        output_dir / "validation-decisions.json", V45_DECISION_SCHEMA_VERSION
+        output_dir / V45_FILENAMES[0], V45_DECISION_SCHEMA_VERSION
     )
-    state = _v45_document(
-        output_dir / "validation-state.json", V45_STATE_SCHEMA_VERSION
-    )
+    state = _v45_document(output_dir / V45_FILENAMES[1], V45_STATE_SCHEMA_VERSION)
     graph_slice = _v45_document(
-        output_dir / "validation-index.json", V45_INDEX_SCHEMA_VERSION
+        output_dir / V45_FILENAMES[2], V45_INDEX_SCHEMA_VERSION
     )
 
     record = empty_record(summary, V45_RULES_VERSION)

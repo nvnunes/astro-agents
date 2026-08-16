@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, cast
 
+from .compatibility import orphan_rule_dependencies
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions
 from .graph_store import (
@@ -37,6 +38,7 @@ from .scan import ScanRequest, scan_log
 from .target_records import (
     CACHE_FILENAME,
     RECORD_FILENAME,
+    V45_FILENAMES,
     TargetRecordError,
     empty_cache,
     empty_record,
@@ -68,6 +70,31 @@ class CompletionRequest:
     adjudication: AdjudicationRecord
     prior_record: Mapping[str, Any]
     review_judgments: list[dict[str, Any]]
+    publish: bool
+    retire_v45: bool = False
+
+
+@dataclass(frozen=True)
+class ValidationRequest:
+    """Public target-validation inputs for one maintained summary."""
+
+    summary_path: Path
+    decision_file: Path | None = None
+    result_date: str | None = None
+    jobs: int = 8
+    publish: bool = True
+    mode: str = "standard"
+
+
+@dataclass(frozen=True)
+class V45ImportCompletion:
+    """Inputs for completing one unchanged v45 migration."""
+
+    summary: str
+    output_dir: Path
+    record: Mapping[str, Any]
+    cache: Mapping[str, Any]
+    metrics: Mapping[str, Any]
     publish: bool
 
 
@@ -105,18 +132,35 @@ def _load_target_state(
     return empty_record(summary, RULES_VERSION), empty_cache(), "new"
 
 
+def _v45_state_with_local_orphan_dependencies(
+    prior_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Make the retired orphan rule explicit on imported v45 outcomes."""
+
+    migrated = copy.deepcopy(dict(prior_state))
+    stored_components = migrated.get("component_versions", {})
+    orphan_components = orphan_rule_dependencies()
+    for outcome in migrated.get("completed_checks", []):
+        if outcome.get("target") != "Orphaned artifacts, scripts, and references":
+            continue
+        dependencies = outcome.setdefault("rule_dependencies", {})
+        for name in orphan_components:
+            if name in stored_components:
+                dependencies[name] = stored_components[name]
+    return migrated
+
+
 def _cached_completion(
     summary_path: Path,
     output_dir: Path,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
+    publish: bool,
 ) -> dict[str, Any] | None:
     outcomes = list(record.get("outcomes", []))
     if not outcomes or record.get("result") is None:
         return None
-    if record.get("continuation") is not None or not (
-        output_dir / "validation.md"
-    ).is_file():
+    if not (output_dir / "validation.md").is_file():
         return None
     session = ObservationSession()
     observed = observe_outcome_dependencies(
@@ -128,6 +172,11 @@ def _cached_completion(
     retained, reopened = retain_compatible_outcomes(outcomes, observed)
     if reopened or len(retained) != len(outcomes):
         return None
+    recovered_continuation = record.get("continuation") is not None
+    if recovered_continuation and publish:
+        completed_record = copy.deepcopy(dict(record))
+        completed_record["continuation"] = None
+        write_record_and_cache(output_dir, completed_record, cache)
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -136,7 +185,50 @@ def _cached_completion(
         "report": (output_dir / "validation.md").as_posix(),
         "progress_retained": True,
         "cached": True,
+        "recovered_continuation": recovered_continuation,
         "diagnostics": session.diagnostics.as_dict(),
+    }
+
+
+def _diagnostics(metrics: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        "metadata_checked": int(metrics.get("files_identified", 0)),
+        "hashes_reused": int(metrics.get("files_reused", 0)),
+        "files_hashed": int(metrics.get("files_hashed", 0)),
+        "bytes_hashed": int(metrics.get("bytes_hashed", 0)),
+        "content_changed": 0,
+    }
+
+
+def _complete_unchanged_v45_import(
+    request: V45ImportCompletion,
+) -> dict[str, Any]:
+    """Publish an unchanged v45 result without rebuilding or rereviewing it."""
+
+    report_path = request.output_dir / "validation.md"
+    report_text = report_path.read_text(encoding="utf-8")
+    if request.publish:
+        publish_target_bundle(
+            request.output_dir,
+            report_text,
+            request.record,
+            request.cache,
+            retire_v45=True,
+        )
+    result = request.record.get("result") or {}
+    return {
+        "status": "complete",
+        "summary": request.summary,
+        "record": (request.output_dir / RECORD_FILENAME).as_posix(),
+        "cache": (request.output_dir / CACHE_FILENAME).as_posix(),
+        "report": report_path.as_posix(),
+        "progress_retained": bool(request.record.get("outcomes")),
+        "published": request.publish,
+        "state_status": "v45-imported",
+        "migrated_v45": request.publish,
+        "diagnostics": _diagnostics(request.metrics),
+        "counts": copy.deepcopy(result.get("counts", {})),
+        "failures": copy.deepcopy(request.record.get("failures", [])),
     }
 
 
@@ -247,7 +339,11 @@ def _complete_adjudication(
     target_cache = _target_cache(bundle, request.scan)
     if request.publish:
         publish_target_bundle(
-            request.output_dir, bundle.report_text, target_record, target_cache
+            request.output_dir,
+            bundle.report_text,
+            target_record,
+            target_cache,
+            retire_v45=request.retire_v45,
         )
     return target_record, assembly
 
@@ -265,6 +361,10 @@ def _continue_review(
     record, cache, state_status = _load_target_state(
         output_dir, summary_path.as_posix()
     )
+    v45_retirement_pending = all(
+        (output_dir / name).is_file() for name in V45_FILENAMES
+    )
+    migration_status = "v45-imported" if v45_retirement_pending else state_status
     continuation = record.get("continuation") or {}
     if continuation.get("identity") != decisions.get("continuation"):
         raise ValidationToolError("review decisions are stale for the durable record")
@@ -276,10 +376,10 @@ def _continue_review(
         result = _review_required(
             scan,
             cast(AdjudicationRecord, decided),
-            ValidationProgress(record, cache, state_status, publish),
+            ValidationProgress(record, cache, migration_status, publish),
         )
         result.update(
-            {"summary": summary_path.as_posix(), "state_status": state_status}
+            {"summary": summary_path.as_posix(), "state_status": migration_status}
         )
         return result
     target_record, assembly = _complete_adjudication(
@@ -291,6 +391,7 @@ def _continue_review(
             record,
             review_judgments,
             publish,
+            v45_retirement_pending,
         )
     )
     return {
@@ -301,30 +402,33 @@ def _continue_review(
         "report": (output_dir / "validation.md").as_posix(),
         "progress_retained": bool(target_record["outcomes"]),
         "published": publish,
-        "state_status": state_status,
+        "state_status": migration_status,
+        "migrated_v45": publish and v45_retirement_pending,
         "counts": assembly.counts(),
     }
 
 
-def validate(
-    summary_path: Path,
-    decision_file: Path | None = None,
-    result_date: str | None = None,
-    jobs: int = 8,
-    publish: bool = True,
-) -> dict[str, Any]:
+def validate(request: ValidationRequest) -> dict[str, Any]:
     """Validate one maintained summary through the public target operation."""
 
-    summary_path = summary_path.resolve()
+    summary_path = request.summary_path.resolve()
     output_dir = summary_path.with_suffix("")
     summary = summary_path.as_posix()
     report_path = output_dir / "validation.md"
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
         record, cache, state_status = _load_target_state(output_dir, summary)
-        if decision_file is not None:
-            return _continue_review(summary_path, decision_file.resolve(), publish)
-        cached = _cached_completion(summary_path, output_dir, record, cache)
+        if request.decision_file is not None:
+            return _continue_review(
+                summary_path, request.decision_file.resolve(), request.publish
+            )
+        cached = (
+            _cached_completion(
+                summary_path, output_dir, record, cache, request.publish
+            )
+            if request.mode == "standard" and state_status.startswith("native:")
+            else None
+        )
         if cached is not None:
             cached["state_status"] = state_status
             return cached
@@ -342,6 +446,8 @@ def validate(
             if prior_state_path.is_file()
             else None
         )
+        if state_status == "v45-imported" and prior_state is not None:
+            prior_state = _v45_state_with_local_orphan_dependencies(prior_state)
         decisions_path = output_dir / "validation-decisions.json"
         prior_decisions = (
             json.loads(decisions_path.read_text(encoding="utf-8"))
@@ -351,30 +457,56 @@ def validate(
         scan, metrics = scan_log(
             ScanRequest(
                 summary_path,
-                jobs,
+                request.jobs,
                 prior_state,
                 repository,
                 RULES_VERSION,
-                "standard",
+                request.mode,
                 scan_policy(),
                 prior_decisions,
                 project_root,
             )
         )
+        if (
+            state_status == "v45-imported"
+            and request.mode == "standard"
+            and metrics.get("incremental_status") == "unchanged"
+        ):
+            return _complete_unchanged_v45_import(
+                V45ImportCompletion(
+                    summary,
+                    output_dir,
+                    record,
+                    cache,
+                    metrics,
+                    request.publish,
+                )
+            )
         adjudication = prepare_adjudication_record(
-            scan, result_date or date.today().isoformat()
+            scan,
+            request.result_date or date.today().isoformat(),
+            request.mode,
         )
         if adjudication["review_queue"]:
             result = _review_required(
                 scan,
                 adjudication,
-                ValidationProgress(record, cache, state_status, publish),
+                ValidationProgress(
+                    record, cache, state_status, request.publish
+                ),
             )
             result.update({"summary": summary, "state_status": state_status})
             return result
         target_record, assembly = _complete_adjudication(
             CompletionRequest(
-                summary, output_dir, scan, adjudication, record, [], publish
+                summary,
+                output_dir,
+                scan,
+                adjudication,
+                record,
+                [],
+                request.publish,
+                state_status == "v45-imported",
             )
         )
         return {
@@ -384,15 +516,12 @@ def validate(
             "cache": (output_dir / CACHE_FILENAME).as_posix(),
             "report": (output_dir / "validation.md").as_posix(),
             "progress_retained": bool(target_record["outcomes"]),
-            "published": publish,
+            "published": request.publish,
             "state_status": state_status,
-            "diagnostics": {
-                "metadata_checked": metrics.get("files_identified", 0),
-                "hashes_reused": metrics.get("files_reused", 0),
-                "files_hashed": metrics.get("files_hashed", 0),
-                "bytes_hashed": metrics.get("bytes_hashed", 0),
-                "content_changed": 0,
-            },
+            "migrated_v45": (
+                request.publish and state_status == "v45-imported"
+            ),
+            "diagnostics": _diagnostics(metrics),
             "counts": assembly.counts(),
         }
     except Exception as exc:

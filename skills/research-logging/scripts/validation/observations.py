@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,6 +187,62 @@ class ObservationSession:
         self._observations[key] = result
         return result
 
+    def observe_collection(
+        self,
+        path: Path,
+        cached: Mapping[str, Any],
+        member_cache: Mapping[str, Mapping[str, Any]],
+        logical_path: str,
+    ) -> FileObservation:
+        """Observe one exact selected-member directory dependency."""
+
+        absolute = _absolute(path)
+        try:
+            normalized = _normalized_collection_members(cached)
+        except ValueError as exc:
+            return self._unresolved(
+                absolute, AMBIGUOUS, cached, str(exc)
+            )
+        key = f"{absolute.as_posix()}\0{json.dumps(normalized)}"
+        prior = self._observations.get(key)
+        if prior is not None:
+            return prior
+        try:
+            aggregate_metadata = _collection_metadata(self, absolute, normalized)
+        except CollectionObservationError as exc:
+            result = self._unresolved(absolute, exc.status, cached, str(exc))
+            self._observations[key] = result
+            return result
+        if aggregate_metadata == _cached_metadata(cached):
+            self.diagnostics.hashes_reused += len(normalized)
+            result = FileObservation(
+                absolute.as_posix(),
+                METADATA_UNCHANGED,
+                copy.deepcopy(cached),
+                cached,
+            )
+            self._observations[key] = result
+            return result
+        try:
+            identities = _collection_member_identities(
+                self, absolute, normalized, member_cache, logical_path
+            )
+        except CollectionObservationError as exc:
+            result = self._unresolved(absolute, exc.status, cached, str(exc))
+            self._observations[key] = result
+            return result
+        identity = _collection_identity(identities, normalized)
+        status = (
+            CONTENT_UNCHANGED
+            if content_identity(identity) == content_identity(cached)
+            else CONTENT_CHANGED
+        )
+        if status == CONTENT_CHANGED:
+            self.diagnostics.content_changed += 1
+        result = FileObservation(absolute.as_posix(), status, identity, cached)
+        self._observations[key] = result
+        return result
+
     def inspect(
         self,
         path: Path,
@@ -236,6 +293,97 @@ class ObservationSession:
         return result
 
 
+class CollectionObservationError(RuntimeError):
+    """One explicit unresolved status while observing a collection."""
+
+    def __init__(self, status: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+
+
+def _normalized_collection_members(cached: Mapping[str, Any]) -> list[str]:
+    members = cached.get("members")
+    if not isinstance(members, list) or not members:
+        raise ValueError("collection has no exact member scope")
+    return sorted(set(str(member) for member in members))
+
+
+def _collection_metadata(
+    session: ObservationSession, absolute: Path, members: list[str]
+) -> tuple[int, int, int]:
+    if not absolute.is_dir():
+        raise CollectionObservationError(
+            MISSING, f"collection directory is missing: {absolute}"
+        )
+    total_size = 0
+    latest_mtime = 0
+    latest_ctime = 0
+    for raw in members:
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise CollectionObservationError(
+                AMBIGUOUS, f"collection member escapes its directory: {raw}"
+            )
+        member = absolute / relative
+        try:
+            member_stat = session._stat(member)
+        except FileNotFoundError as exc:
+            raise CollectionObservationError(MISSING, str(exc)) from exc
+        except (OSError, PermissionError) as exc:
+            raise CollectionObservationError(INACCESSIBLE, str(exc)) from exc
+        if not member.is_file():
+            raise CollectionObservationError(
+                MISSING, f"collection member is not a regular file: {member}"
+            )
+        total_size += member_stat.st_size
+        latest_mtime = max(latest_mtime, member_stat.st_mtime_ns)
+        latest_ctime = max(latest_ctime, member_stat.st_ctime_ns)
+    return total_size, latest_mtime, latest_ctime
+
+
+def _collection_member_identities(
+    session: ObservationSession,
+    absolute: Path,
+    members: list[str],
+    member_cache: Mapping[str, Mapping[str, Any]],
+    logical_path: str,
+) -> list[tuple[Path, Mapping[str, Any]]]:
+    identities = []
+    for raw in members:
+        relative = Path(raw)
+        member_logical = (Path(logical_path) / relative).as_posix()
+        observation = session.observe(
+            absolute / relative, member_cache.get(member_logical)
+        )
+        if not observation.resolved or observation.identity is None:
+            raise CollectionObservationError(
+                observation.status,
+                observation.detail or f"could not observe collection member {raw}",
+            )
+        identities.append((relative, observation.identity))
+    return identities
+
+
+def _collection_identity(
+    identities: list[tuple[Path, Mapping[str, Any]]], members: list[str]
+) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    for relative, identity in identities:
+        digest.update(
+            (
+                f"{relative.as_posix()}\0{identity['size']}\0"
+                f"{identity['sha256']}\n"
+            ).encode("utf-8")
+        )
+    return {
+        "size": sum(int(identity["size"]) for _, identity in identities),
+        "mtime_ns": max(int(identity["mtime_ns"]) for _, identity in identities),
+        "ctime_ns": max(int(identity["ctime_ns"]) for _, identity in identities),
+        "sha256": digest.hexdigest(),
+        "members": members,
+    }
+
+
 def retain_compatible_outcomes(
     outcomes: list[Mapping[str, Any]],
     observations: Mapping[str, FileObservation],
@@ -253,7 +401,7 @@ def retain_compatible_outcomes(
         outcome = copy.deepcopy(dict(source))
         compatible = True
         for dependency in outcome.get("dependencies", []):
-            observation = observations.get(dependency["path"])
+            observation = observations.get(_dependency_observation_key(dependency))
             if observation is None:
                 continue
             if not observation.resolved or observation.status == CONTENT_CHANGED:
@@ -277,10 +425,33 @@ def observe_outcome_dependencies(
     for outcome in outcomes:
         for dependency in outcome.get("dependencies", []):
             identity = dependency["path"]
-            if identity in observations:
+            observation_key = _dependency_observation_key(dependency)
+            if observation_key in observations:
                 continue
             candidate = Path(identity)
             path = candidate if candidate.is_absolute() else project_root / candidate
-            cached = cached_files.get(identity) or dependency.get("identity")
-            observations[identity] = session.observe(path, cached)
+            dependency_identity = dependency.get("identity")
+            if isinstance(dependency_identity, Mapping) and isinstance(
+                dependency_identity.get("members"), list
+            ):
+                cached = dependency_identity
+            else:
+                cached = cached_files.get(identity) or dependency_identity
+            if isinstance(cached, Mapping) and isinstance(
+                cached.get("members"), list
+            ):
+                observations[observation_key] = session.observe_collection(
+                    path, cached, cached_files, identity
+                )
+            else:
+                observations[observation_key] = session.observe(path, cached)
     return observations
+
+
+def _dependency_observation_key(dependency: Mapping[str, Any]) -> str:
+    path = str(dependency["path"])
+    identity = dependency.get("identity")
+    members = identity.get("members") if isinstance(identity, Mapping) else None
+    if not isinstance(members, list):
+        return path
+    return f"{path}\0{json.dumps(sorted(members), ensure_ascii=False)}"

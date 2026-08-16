@@ -13,6 +13,10 @@ CONTROLLER = importlib.import_module("validation.controller")
 TARGET = importlib.import_module("validation.target_records")
 
 
+def run_validate(summary: Path, **kwargs):
+    return CONTROLLER.validate(CONTROLLER.ValidationRequest(summary, **kwargs))
+
+
 def make_no_semantic_log(root: Path) -> Path:
     (root / ".git").mkdir()
     summary = root / "docs" / "empty.md"
@@ -28,11 +32,44 @@ def make_no_semantic_log(root: Path) -> Path:
 
 
 class ValidationControllerTests(unittest.TestCase):
+    def test_v45_orphan_outcomes_declare_retired_local_orphan_rule(self) -> None:
+        state = {
+            "component_versions": {
+                "material_identity": 1,
+                "orphan_graph": 1,
+                "orphan_inventory": 1,
+            },
+            "completed_checks": [
+                {
+                    "target": "Orphaned artifacts, scripts, and references",
+                    "rule_dependencies": {"material_identity": 1},
+                },
+                {
+                    "target": "result.csv",
+                    "rule_dependencies": {"material_identity": 1},
+                },
+            ],
+        }
+
+        migrated = CONTROLLER._v45_state_with_local_orphan_dependencies(state)
+
+        self.assertEqual(
+            migrated["completed_checks"][0]["rule_dependencies"]["orphan_graph"],
+            1,
+        )
+        self.assertNotIn(
+            "orphan_graph",
+            migrated["completed_checks"][1]["rule_dependencies"],
+        )
+        self.assertNotIn(
+            "orphan_graph", state["completed_checks"][0]["rule_dependencies"]
+        )
+
     def test_no_semantic_log_completes_and_publishes_only_target_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
             before = summary.read_bytes()
-            result = CONTROLLER.validate(
+            result = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
 
@@ -58,10 +95,10 @@ class ValidationControllerTests(unittest.TestCase):
     def test_repeat_no_semantic_validation_needs_no_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
-            first = CONTROLLER.validate(
+            first = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
-            second = CONTROLLER.validate(
+            second = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
             self.assertEqual(first["status"], "complete")
@@ -70,7 +107,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_operational_failure_retains_prior_completed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
-            completed = CONTROLLER.validate(
+            completed = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
             self.assertEqual(completed["status"], "complete")
@@ -80,7 +117,7 @@ class ValidationControllerTests(unittest.TestCase):
             with mock.patch.object(
                 CONTROLLER, "scan_log", side_effect=RuntimeError("interrupted")
             ):
-                failed = CONTROLLER.validate(
+                failed = run_validate(
                     summary, result_date="2026-08-16", jobs=1
                 )
             self.assertEqual(failed["status"], "error")
@@ -107,6 +144,30 @@ class ValidationControllerTests(unittest.TestCase):
             payload = json.loads(printed.call_args.args[0])
             self.assertEqual(payload["status"], "complete")
 
+    def test_reproduction_mode_does_not_use_standard_cached_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            self.assertEqual(first["status"], "complete")
+
+            with mock.patch.object(
+                CONTROLLER,
+                "scan_log",
+                wraps=CONTROLLER.scan_log,
+            ) as scanned:
+                second = run_validate(
+                    summary,
+                    result_date="2026-08-15",
+                    jobs=1,
+                    publish=False,
+                    mode="reproduction",
+                )
+
+            self.assertEqual(second["status"], "complete")
+            scanned.assert_called_once()
+
     def test_deterministic_failures_are_durable_result_data(self) -> None:
         bundle = mock.Mock()
         bundle.state = {
@@ -132,13 +193,14 @@ class ValidationControllerTests(unittest.TestCase):
     def test_semantic_exchange_accepts_only_decisions_and_rationales(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))
-            first = CONTROLLER.validate(
+            first = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
             self.assertEqual(first["status"], "review_required")
             decision_path = Path(first["decision_file"])
             template = json.loads(decision_path.read_text(encoding="utf-8"))
             self.assertEqual(first["item_count"], len(template["items"]))
+            self.assertLessEqual(first["item_count"], 200)
             self.assertGreater(first["byte_count"], 0)
             for item in template["items"]:
                 item["decision"] = (
@@ -151,7 +213,7 @@ class ValidationControllerTests(unittest.TestCase):
                 json.dumps(template, indent=2) + "\n", encoding="utf-8"
             )
 
-            continued = CONTROLLER.validate(
+            continued = run_validate(
                 summary, decision_file=decision_path, jobs=1
             )
             self.assertEqual(continued["status"], "review_required")
@@ -170,7 +232,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_stale_or_modified_semantic_template_cannot_mutate_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))
-            first = CONTROLLER.validate(
+            first = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
             decision_path = Path(first["decision_file"])
@@ -187,7 +249,7 @@ class ValidationControllerTests(unittest.TestCase):
                 json.dumps(template, indent=2) + "\n", encoding="utf-8"
             )
 
-            rejected = CONTROLLER.validate(
+            rejected = run_validate(
                 summary, decision_file=decision_path, jobs=1
             )
             self.assertEqual(rejected["status"], "error")
@@ -218,7 +280,7 @@ class ValidationControllerTests(unittest.TestCase):
                     side_effect=AssertionError("Git-root lookup"),
                 ),
             ):
-                result = CONTROLLER.validate(
+                result = run_validate(
                     summary, result_date="2026-08-15", jobs=1
                 )
             self.assertEqual(result["status"], "complete")
@@ -246,7 +308,7 @@ class ValidationControllerTests(unittest.TestCase):
                 f"[Cross-log use]({orphan.as_posix()})\n",
             )
 
-            result = CONTROLLER.validate(
+            result = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
             template = json.loads(

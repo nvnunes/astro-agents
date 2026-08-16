@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from .adjudication import ReviewPacketRequest, make_review_packet
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
 from .review_batches import OrphanBatchRequest, select_orphan_batch
 
 EXCHANGE_SCHEMA_VERSION = 1
 INTERNAL_FILENAME = ".continuation.json"
+MAX_PACKET_ITEMS = 200
 
 
 def _fingerprint(value: Any) -> str:
@@ -31,7 +32,30 @@ def _question(item: Mapping[str, Any]) -> str:
 
 def _ordinary_template(item: Mapping[str, Any]) -> dict[str, Any]:
     kind = str(item["kind"])
-    if kind == "semantic_provenance":
+    allowed: list[Any]
+    if kind == "upstream_producer":
+        by_material: dict[str, list[str]] = {}
+        for candidate in item.get("producer_candidates", []):
+            material = str(candidate["material"])
+            invocation = str(candidate["invocation"])
+            values = by_material.setdefault(material, [])
+            if invocation not in values:
+                values.append(invocation)
+        allowed = [
+            {
+                "bindings": [
+                    {"material": material, "invocation": invocation}
+                    for material, invocation in zip(
+                        sorted(by_material), choices, strict=True
+                    )
+                ]
+            }
+            for choices in itertools.product(
+                *(by_material[material] for material in sorted(by_material))
+            )
+        ]
+        allowed.append("needs_context")
+    elif kind == "semantic_provenance":
         allowed = ["fail", "needs_context"]
         if item.get("candidates"):
             allowed.insert(0, "pass")
@@ -56,12 +80,13 @@ def _orphan_templates(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     item: Mapping[str, Any],
+    limit: int,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     batch = select_orphan_batch(
         scan,
         adjudication,
         item,
-        OrphanBatchRequest(200, 1, DECISION_SCHEMA_VERSION),
+        OrphanBatchRequest(limit, 1, DECISION_SCHEMA_VERSION),
     )
     notes = [
         str(note["sha256"])
@@ -100,13 +125,93 @@ def _template_items(
     items: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
     for queue_item in adjudication["review_queue"]:
+        remaining = MAX_PACKET_ITEMS - len(items)
+        if remaining < 1:
+            break
         if queue_item["kind"] != "orphan_candidates":
             items.append(_ordinary_template(queue_item))
             continue
-        expanded, fingerprints = _orphan_templates(scan, adjudication, queue_item)
+        expanded, fingerprints = _orphan_templates(
+            scan, adjudication, queue_item, remaining
+        )
         items.extend(expanded)
         orphan_fingerprints[str(queue_item["entry"])] = fingerprints
     return items, orphan_fingerprints
+
+
+def _packet_context(
+    adjudication: AdjudicationRecord, item: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    for queue_item in adjudication["review_queue"]:
+        if queue_item.get("entry") != item.get("entry"):
+            continue
+        if item["kind"] == "orphan_candidate":
+            if queue_item.get("kind") != "orphan_candidates":
+                continue
+            candidate: Mapping[str, Any] = next(
+                (
+                    candidate
+                    for candidate in queue_item.get("candidates", [])
+                    if candidate.get("identity") == item.get("identity")
+                ),
+                {},
+            )
+            return {
+                "candidate": candidate,
+                "validation_notes": queue_item.get("validation_notes", []),
+            }
+        if (
+            queue_item.get("kind") == item.get("kind")
+            and queue_item.get("identity") == item.get("identity")
+        ):
+            return {
+                key: value
+                for key, value in queue_item.items()
+                if key not in {"candidates"}
+            }
+    return {}
+
+
+def _render_packet(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    items: list[dict[str, Any]],
+    continuation: str,
+) -> str:
+    lines = [
+        "# Validation Review Packet",
+        "",
+        f"- Log: `{scan['summary']}`",
+        f"- Continuation: `{continuation}`",
+        f"- Questions: {len(items)}",
+        "- Edit only the paired template's decision and rationale fields.",
+    ]
+    for number, item in enumerate(items, 1):
+        lines.extend(
+            [
+                "",
+                f"## Q{number:03d} — {item.get('entry')}: {item.get('identity')}",
+                "",
+                f"- Kind: `{item['kind']}`",
+                f"- Question: {item['question']}",
+                "- Allowed decisions: "
+                + ", ".join(
+                    f"`{json.dumps(value, sort_keys=True)}`"
+                    for value in item["allowed_decisions"]
+                ),
+                "- Context:",
+                "",
+                "```json",
+                json.dumps(
+                    _packet_context(adjudication, item),
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "```",
+            ]
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _continuation_identity(
@@ -138,11 +243,9 @@ def create_exchange(
     """Write one paired packet/template and private continuation state."""
 
     work_dir = Path(tempfile.mkdtemp(prefix="research-log-validation-review-"))
-    packet, _ = make_review_packet(
-        scan, adjudication, ReviewPacketRequest(batch_size=200)
-    )
     items, orphan_fingerprints = _template_items(scan, adjudication)
     continuation = _continuation_identity(scan, adjudication, items)
+    packet = _render_packet(scan, adjudication, items, continuation)
     template = {
         "schema_version": EXCHANGE_SCHEMA_VERSION,
         "continuation": continuation,
@@ -249,6 +352,12 @@ def _ordinary_action(row: Mapping[str, Any]) -> dict[str, Any] | None:
     }
     if row["kind"] == "semantic_provenance" and decision == "pass":
         return {"match": match, "decision": "support", "candidate": 1}
+    if row["kind"] == "upstream_producer" and isinstance(decision, Mapping):
+        return {
+            "match": match,
+            "decision": "bind",
+            "producer_bindings": copy.deepcopy(decision["bindings"]),
+        }
     if decision == "keep":
         return {"match": match, "decision": "keep"}
     if decision == "fail":
@@ -328,7 +437,11 @@ def durable_review_judgments(
             {
                 "identity": row["id"],
                 "kind": "review-decision",
-                "result": row["decision"],
+                "result": (
+                    row["decision"]
+                    if isinstance(row["decision"], str)
+                    else "bind"
+                ),
                 "decision_date": decision_date,
                 "subject": {
                     "kind": row["kind"],

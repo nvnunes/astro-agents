@@ -157,6 +157,40 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual(session.diagnostics.metadata_checked, 1)
             self.assertEqual(session.diagnostics.files_hashed, 0)
 
+    def test_unchanged_scoped_collection_reuses_member_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            collection = root / "figures"
+            write(collection / "a.png", "a")
+            write(collection / "b.png", "b")
+            inventory = importlib.import_module("validation.inventory")
+            identity = inventory.collection_identity(collection, ["a.png", "b.png"])
+            outcomes = [
+                {
+                    "compatibility_identity": "collection-outcome",
+                    "dependencies": [
+                        {
+                            "path": "figures",
+                            "identity": identity,
+                        }
+                    ],
+                }
+            ]
+            session = OBSERVATIONS.ObservationSession()
+
+            observed = OBSERVATIONS.observe_outcome_dependencies(
+                session, outcomes, {}, root
+            )
+            retained, reopened = OBSERVATIONS.retain_compatible_outcomes(
+                outcomes, observed
+            )
+
+            self.assertEqual(len(retained), 1)
+            self.assertFalse(reopened)
+            self.assertEqual(session.diagnostics.files_hashed, 0)
+            self.assertEqual(session.diagnostics.bytes_hashed, 0)
+            self.assertEqual(session.diagnostics.hashes_reused, 2)
+
     def test_metadata_only_change_retains_and_updates_outcome_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.csv"

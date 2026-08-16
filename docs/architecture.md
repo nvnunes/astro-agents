@@ -202,7 +202,8 @@ Future validation changes must preserve these invariants:
 - **Sharded authority:** Keep `validation/manifest.json` as the compact
   authoritative manifest. Publish immutable outcome, judgment, and failure
   shards before replacing that manifest, and never rebuild a monolithic
-  durable record at completion.
+  durable record at completion. After the replacement manifest and report are
+  verified, collect only shards outside its closure.
 - **Local derived state:** Keep the deterministic cache, stable-subject index,
   active review work, and lock under the owning log's ignored
   `validation/.cache/` directory. None is manifest authority; missing or stale

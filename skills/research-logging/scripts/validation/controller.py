@@ -16,6 +16,7 @@ from .observations import (
     observe_outcome_dependencies,
     outcomes_are_compatible,
 )
+from .orphan_rules import inherited_basis
 from .render import assemble_records
 from .review_exchange import (
     CONTEXT_PROJECTION_VERSION,
@@ -45,10 +46,12 @@ from .target_records import (
     RECORD_FILENAME,
     append_judgment_batch,
     assert_no_retired_artifacts,
+    cleanup_unreachable_shards,
     empty_cache,
     empty_record,
     hydrate_record_rows,
     hydrate_record_shell,
+    inspect_target_cleanup,
     is_sharded_shell,
     load_cache,
     load_judgments_for_subjects,
@@ -124,7 +127,9 @@ class LoadedValidation:
         """Hydrate sharded histories only after continuation-first handling."""
 
         if is_sharded_shell(self.record):
-            self.record = hydrate_record_shell(self.record, self.output_dir)
+            self.record = hydrate_record_shell(
+                self.record, self.output_dir, preserve_manifest=True
+            )
 
 
 def _record_has_progress(record: Mapping[str, Any]) -> bool:
@@ -216,12 +221,13 @@ def _compatible_cached_dependencies(
 
 
 def _cached_completion(
-    summary_path: Path,
+    request: ValidationRequest,
     output_dir: Path,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
     cache_status: str,
 ) -> dict[str, Any] | None:
+    summary_path = request.summary_path.resolve()
     ready = (
         cache_status == "loaded"
         and record.get("validation_rules_version") == RULES_VERSION
@@ -236,6 +242,12 @@ def _cached_completion(
     )
     if session is None:
         return None
+    manifest = record.get("_sharded_manifest")
+    cleanup = (
+        cleanup_unreachable_shards(output_dir, manifest, publish=request.publish)
+        if isinstance(manifest, Mapping)
+        else {}
+    )
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -246,6 +258,7 @@ def _cached_completion(
         "cached": True,
         "recovered_continuation": False,
         "diagnostics": session.diagnostics.as_dict(),
+        "cleanup": cleanup,
     }
 
 
@@ -453,7 +466,7 @@ def _review_required(
 
 def _complete_adjudication(
     request: CompletionRequest,
-) -> tuple[dict[str, Any], Any]:
+) -> tuple[dict[str, Any], Any, dict[str, int]]:
     assembly = assemble_records(
         request.adjudication,
         request.scan,
@@ -481,14 +494,41 @@ def _complete_adjudication(
     target_record["projection"] = projection_for(
         target_record, assembly.report_text
     )
+    superseded_subjects = _superseded_orphan_subjects(request.adjudication)
     if request.publish:
-        publish_target_bundle(
+        cleanup = publish_target_bundle(
             request.output_dir,
             assembly.report_text,
             target_record,
             target_cache,
+            superseded_subjects,
         )
-    return target_record, assembly
+    else:
+        cleanup = inspect_target_cleanup(
+            request.output_dir, target_record, superseded_subjects
+        )
+    return target_record, assembly, cleanup
+
+
+def _superseded_orphan_subjects(
+    adjudication: AdjudicationRecord,
+) -> list[dict[str, str]]:
+    subjects = []
+    for entry in adjudication.get("entries", []):
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str):
+            continue
+        for item in entry.get("orphan_items", []):
+            identity = item.get("identity")
+            if isinstance(identity, str) and inherited_basis(item.get("basis")):
+                subjects.append(
+                    {
+                        "kind": "orphan_candidate",
+                        "entry": entry_id,
+                        "identity": identity,
+                    }
+                )
+    return subjects
 
 
 def _loaded_review_context(
@@ -557,7 +597,7 @@ def _finish_deferred_acceptance(
         return result
     project_root = _project_root(summary_path)
     summary = _relative_summary(summary_path, project_root)
-    target_record, assembly = _complete_adjudication(
+    target_record, assembly, cleanup = _complete_adjudication(
         CompletionRequest(
             summary,
             summary_path.with_suffix(""),
@@ -581,6 +621,7 @@ def _finish_deferred_acceptance(
         "published": progress.publish,
         "state_status": progress.state_status,
         "counts": assembly.counts(),
+        "cleanup": cleanup,
     }
 
 
@@ -653,14 +694,14 @@ def _continue_review(
             )
             return accepted
         if is_sharded_shell(record):
-            record = hydrate_record_shell(record, output_dir)
+            record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
         return _finish_deferred_acceptance(
             summary_path,
             accepted,
             ValidationProgress(record, cache, state_status, publish),
         )
     if is_sharded_shell(record):
-        record = hydrate_record_shell(record, output_dir)
+        record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
     assert scan is not None
     assert adjudication is not None
     actions = decisions_to_actions(decisions, action_internal)
@@ -682,7 +723,7 @@ def _continue_review(
         )
         finish_review_session(internal)
         return result
-    target_record, assembly = _complete_adjudication(
+    target_record, assembly, cleanup = _complete_adjudication(
         CompletionRequest(
             summary,
             output_dir,
@@ -704,6 +745,7 @@ def _continue_review(
         "published": publish,
         "state_status": state_status,
         "counts": assembly.counts(),
+        "cleanup": cleanup,
     }
 
 
@@ -813,7 +855,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         context.ensure_rows()
     cached = (
         _cached_completion(
-            context.summary_path,
+            request,
             context.output_dir,
             context.record,
             context.cache,
@@ -857,7 +899,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             {"summary": context.summary, "state_status": context.state_status}
         )
         return result
-    target_record, assembly = _complete_adjudication(
+    target_record, assembly, cleanup = _complete_adjudication(
         CompletionRequest(
             context.record_summary,
             context.output_dir,
@@ -879,6 +921,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         "state_status": context.state_status,
         "diagnostics": _diagnostics(metrics),
         "counts": assembly.counts(),
+        "cleanup": cleanup,
     }
 
 

@@ -941,3 +941,97 @@ def prepare_progress_state(
         }
     )
     return PreparedState(next_manifest, files)
+
+
+def prepare_judgment_compaction(
+    validation_dir: Path,
+    prepared: PreparedState,
+    superseded_subjects: Sequence[Mapping[str, Any]],
+) -> tuple[PreparedState, dict[str, int]]:
+    """Remove exact superseded judgments while retaining unaffected shards."""
+
+    subjects = [dict(subject) for subject in superseded_subjects]
+    if not subjects:
+        return prepared, {"rows_removed": 0, "shards_replaced": 0}
+    valid = validate_manifest(prepared.manifest)
+    retained_refs: list[dict[str, Any]] = []
+    files = dict(prepared.files)
+    removed = 0
+    replaced = 0
+    for ref in valid["shards"]["judgments"]:
+        path = str(ref["path"])
+        payload = files.get(path)
+        if payload is None:
+            payload = _read_owned_bytes(validation_dir, ref)
+        rows = _decode_jsonl(payload, ref)
+        retained = [
+            row for row in rows if _row_subject("judgments", row) not in subjects
+        ]
+        if len(retained) == len(rows):
+            retained_refs.append(ref)
+            continue
+        removed += len(rows) - len(retained)
+        replaced += 1
+        files.pop(path, None)
+        for batch, replacement_payload in _row_batches(retained):
+            replacement = _shard_ref("judgments", replacement_payload, len(batch))
+            retained_refs.append(replacement)
+            files[str(replacement["path"])] = replacement_payload
+    manifest = copy.deepcopy(valid)
+    manifest["shards"]["judgments"] = retained_refs
+    manifest["row_counts"]["judgments"] = sum(
+        int(ref["row_count"]) for ref in retained_refs
+    )
+    return (
+        PreparedState(manifest, files),
+        {"rows_removed": removed, "shards_replaced": replaced},
+    )
+
+
+def collect_unreachable_shards(
+    validation_dir: Path,
+    manifest: Mapping[str, Any],
+    *,
+    delete: bool,
+) -> dict[str, int]:
+    """Report or delete valid shard files outside the manifest closure."""
+
+    valid = validate_manifest(manifest)
+    referenced = {
+        str(ref["path"])
+        for kind in ROW_KINDS
+        for ref in valid["shards"][kind]
+    }
+    unreachable: list[Path] = []
+    total_bytes = 0
+    for kind in ROW_KINDS:
+        directory = _owned_path(validation_dir, kind)
+        if not directory.exists():
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            raise ShardedStateError(f"validation shard directory is invalid: {kind}")
+        for path in directory.iterdir():
+            relative = f"{kind}/{path.name}"
+            if path.is_symlink() or not path.is_file():
+                raise ShardedStateError(
+                    f"validation shard directory has an invalid entry: {relative}"
+                )
+            name = path.name
+            identity = name.removesuffix(".jsonl")
+            if name != f"{identity}.jsonl":
+                raise ShardedStateError(
+                    f"validation shard has an unexpected name: {relative}"
+                )
+            _digest(identity, f"validation shard {relative}")
+            if relative in referenced:
+                continue
+            unreachable.append(path)
+            total_bytes += path.stat().st_size
+    if delete:
+        for path in unreachable:
+            path.unlink()
+    return {
+        "unreachable_shards": len(unreachable),
+        "unreachable_bytes": total_bytes,
+        "shards_deleted": len(unreachable) if delete else 0,
+    }

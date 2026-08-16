@@ -486,9 +486,7 @@ def _manifest_shell(manifest: Mapping[str, Any]) -> dict[str, Any]:
 def is_sharded_shell(record: Mapping[str, Any]) -> bool:
     """Return whether an in-memory record is a lightweight sharded header."""
 
-    return record.get("_state_loaded") is False and isinstance(
-        record.get("_sharded_manifest"), Mapping
-    )
+    return isinstance(record.get("_sharded_manifest"), Mapping)
 
 
 def record_row_count(record: Mapping[str, Any], kind: str) -> int:
@@ -503,7 +501,12 @@ def record_row_count(record: Mapping[str, Any], kind: str) -> int:
     return len(rows) if isinstance(rows, list) else 0
 
 
-def hydrate_record_shell(record: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+def hydrate_record_shell(
+    record: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    preserve_manifest: bool = False,
+) -> dict[str, Any]:
     """Load every referenced row only when scan, assembly, or completion needs it."""
 
     if not is_sharded_shell(record):
@@ -516,7 +519,11 @@ def hydrate_record_shell(record: Mapping[str, Any], output_dir: Path) -> dict[st
         if key not in {"storage_layout", "shards", "row_counts"}
     }
     logical.update(rows)
-    return decode_record(logical)
+    decoded = decode_record(logical)
+    if preserve_manifest:
+        decoded["_sharded_manifest"] = copy.deepcopy(manifest)
+        decoded["_state_loaded"] = True
+    return decoded
 
 
 def hydrate_record_rows(
@@ -786,6 +793,64 @@ def _prepare_record_state(
     return sharded_state.prepare_state(decode_record(record))
 
 
+def _prepare_compacted_state(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    superseded_subjects: Sequence[Mapping[str, Any]],
+) -> tuple[sharded_state.PreparedState, dict[str, int]]:
+    prepared = _prepare_record_state(output_dir, record)
+    return sharded_state.prepare_judgment_compaction(
+        validation_directory(output_dir), prepared, superseded_subjects
+    )
+
+
+def cleanup_unreachable_shards(
+    output_dir: Path, manifest: Mapping[str, Any], *, publish: bool
+) -> dict[str, int]:
+    """Report or collect shard files outside one verified manifest closure."""
+
+    if not publish:
+        return sharded_state.collect_unreachable_shards(
+            validation_directory(output_dir), manifest, delete=False
+        )
+    try:
+        with validation_lock(output_dir):
+            disk = decode_sharded_manifest(_read_json(manifest_path(output_dir)))
+            expected = decode_sharded_manifest(manifest)
+            if disk != expected:
+                raise RecordPublicationError(
+                    "durable validation manifest changed before shard collection"
+                )
+            return sharded_state.collect_unreachable_shards(
+                validation_directory(output_dir), disk, delete=True
+            )
+    except OSError:
+        return {
+            "unreachable_shards": 0,
+            "unreachable_bytes": 0,
+            "shards_deleted": 0,
+            "cleanup_pending": 1,
+        }
+
+
+def inspect_target_cleanup(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    superseded_subjects: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    """Return the terminal compaction and collection dry-run report."""
+
+    prepared, report = _prepare_compacted_state(
+        output_dir, record, superseded_subjects
+    )
+    return {
+        **report,
+        **cleanup_unreachable_shards(
+            output_dir, prepared.manifest, publish=False
+        ),
+    }
+
+
 def _write_local_state(
     output_dir: Path,
     cache: Mapping[str, Any],
@@ -865,7 +930,8 @@ def publish_target_bundle(
     report_text: str,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
-) -> None:
+    superseded_subjects: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, int]:
     """Publish target files with the report as the final commit point.
 
     Progressive durable state is written first and the report remains the
@@ -874,7 +940,9 @@ def publish_target_bundle(
     """
 
     valid_cache = decode_cache(cache)
-    prepared = _prepare_record_state(output_dir, record)
+    prepared, cleanup = _prepare_compacted_state(
+        output_dir, record, superseded_subjects
+    )
     valid_manifest = decode_sharded_manifest(prepared.manifest)
     if not report_text.endswith("\n"):
         raise TargetRecordError("validation report must end with a newline")
@@ -898,3 +966,7 @@ def publish_target_bundle(
             f"target validation bundle could not be written: {exc}"
         ) from exc
     _write_local_state(output_dir, valid_cache, valid_manifest)
+    return {
+        **cleanup,
+        **cleanup_unreachable_shards(output_dir, valid_manifest, publish=True),
+    }

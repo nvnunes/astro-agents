@@ -131,6 +131,9 @@ The research-log test gate must verify:
 - prospective orphan-subtree rules apply to new compatible descendants, while
   graph reachability, exact-path exceptions, and more-specific subtree rules
   retain their precedence;
+- terminal compaction removes only exact orphan judgments superseded by active
+  subtree rules, publishes the manifest before collecting unreachable shards,
+  and is read-only under `--dry-run`;
 - canonical publication rejects traversal, symlink, unexpected-filename,
   duplicate-identity, path/identity disagreement, and output-directory alias
   attempts;

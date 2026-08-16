@@ -914,7 +914,7 @@ class ValidationControllerTests(unittest.TestCase):
                 mock.patch.object(
                     CONTROLLER,
                     "_complete_adjudication",
-                    return_value=({"outcomes": []}, assembly),
+                    return_value=({"outcomes": []}, assembly, {}),
                 ),
                 mock.patch.object(CONTROLLER, "finish_deferred_orphan_session"),
             ):

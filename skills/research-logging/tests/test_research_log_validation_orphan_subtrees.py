@@ -74,6 +74,43 @@ def _complete(summary: Path) -> dict:
 
 
 class OrphanSubtreeTests(unittest.TestCase):
+    def test_only_rule_inherited_items_supersede_exact_judgments(self) -> None:
+        inherited = "docs/log/entries/e001/data/inherited.csv"
+        exact = "docs/log/entries/e001/data/exception.csv"
+        adjudication = {
+            "entries": [
+                {
+                    "id": "e001",
+                    "orphan_items": [
+                        {
+                            "identity": inherited,
+                            "decision": "accepted",
+                            "basis": ORPHANS.subtree_basis(
+                                "docs/log/entries/e001/data", "semantic-connection"
+                            ),
+                        },
+                        {
+                            "identity": exact,
+                            "decision": "unresolved",
+                            "basis": "-",
+                        },
+                        {
+                            "identity": "docs/log/entries/e001/data/graph.csv",
+                            "decision": "accepted",
+                            "basis": "graph",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        subjects = CONTROLLER._superseded_orphan_subjects(adjudication)
+
+        self.assertEqual(
+            subjects,
+            [{"kind": "orphan_candidate", "entry": "e001", "identity": inherited}],
+        )
+
     def test_complete_legacy_coverage_asks_only_for_the_subtree_unit(self) -> None:
         entry = "e001"
         root = "docs/log/entries/e001/data"

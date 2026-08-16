@@ -1099,6 +1099,12 @@ Validation also maintains machine-readable state:
   active review sessions, and validation lock. None has independent
   correctness authority.
 
+At terminal completion, exact orphan judgments superseded by active compatible
+subtree rules are removed from the new manifest; exact exceptions and
+unrelated history remain. Replacement shards are written before the manifest,
+and old unreferenced shards are deleted only after the new manifest and report
+are coherent. `--dry-run` reports this cleanup without writing it.
+
 Commit `validation.md` and the complete durable `validation/` closure except
 `validation/.cache/`. Ignore `**/validation/.cache/`; a missing cache or index
 only triggers bounded reconstruction from the authoritative manifest and row

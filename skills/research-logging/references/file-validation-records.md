@@ -117,6 +117,13 @@ committed through the manifest. Temporary replacement files and local runtime
 state are generated mechanisms, not research inputs; exclude them from
 discovery and orphan inventory.
 
+Terminal validation compacts exact orphan judgments only when current item
+dispositions prove that a compatible subtree rule supersedes them. It retains
+exact exceptions and unrelated rows, writes replacement shards before the
+manifest, verifies the new bundle, then deletes only shard files outside the
+manifest closure. An interrupted deletion leaves harmless unreachable files
+for the next validation to collect.
+
 The maintained summary contains only the fixed navigation line defined in
 `skills/research-logging/references/file-summary-validation.md`. That link is
 research-document scaffolding, not a validation result. Initialization installs

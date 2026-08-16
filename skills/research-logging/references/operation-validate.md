@@ -51,7 +51,7 @@ linting, publication, and generated records.
 Interpret the structured result by `status`:
 
 - `complete`: report the completed scope, diagnostics, counts, failures, and
-  generated files. No semantic step is needed.
+  generated files, including the cleanup summary. No semantic step is needed.
 - `review_required`: continue with the generated packet and decision template
   as described below.
 - `error`: report the cause, whether compatible progress was retained, and
@@ -65,6 +65,10 @@ Cached completion also requires a loaded cache, compatible completion
 dependencies, a matching manifest projection identity, and report bytes that
 match the manifest's expected report hash. Report existence alone is not
 currentness evidence.
+
+With `--dry-run`, terminal validation also reports prospective superseded rows,
+replacement shards, and unreachable files without changing durable or local
+state. A published completion performs that cleanup automatically.
 
 ## Semantic Decision
 

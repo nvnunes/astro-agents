@@ -80,6 +80,16 @@ def review_judgment(number: int) -> dict:
     }
 
 
+def orphan_judgment(number: int) -> dict:
+    judgment = review_judgment(number)
+    judgment["subject"] = {
+        "kind": "orphan_candidate",
+        "entry": "e001",
+        "identity": f"docs/mini/entries/e001/data/item-{number:04d}.csv",
+    }
+    return judgment
+
+
 def subject_index_path(root: Path) -> Path:
     return (
         TARGET.validation_directory(root)
@@ -97,6 +107,170 @@ def index_delta_directory(root: Path) -> Path:
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_terminal_compaction_replaces_only_affected_shards_and_collects_old_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [
+                orphan_judgment(number) for number in range(2050)
+            ]
+            TARGET.publish_target_bundle(root, "report\n", record, TARGET.empty_cache())
+            before = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME
+            )[0]["_sharded_manifest"]
+            subjects = [
+                orphan_judgment(number)["subject"] for number in range(1950)
+            ]
+
+            loaded = TARGET.hydrate_record_shell(
+                TARGET.load_record_header_with_source(
+                    root / TARGET.RECORD_FILENAME
+                )[0],
+                root,
+            )
+            cleanup = TARGET.publish_target_bundle(
+                root,
+                "report\n",
+                loaded,
+                TARGET.empty_cache(),
+                subjects,
+            )
+
+            after = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME
+            )[0]["_sharded_manifest"]
+            remaining = TARGET.load_record(root / TARGET.RECORD_FILENAME)["judgments"]
+            self.assertEqual(cleanup["rows_removed"], 1950)
+            self.assertEqual(cleanup["shards_replaced"], 10)
+            self.assertEqual(len(remaining), 100)
+            self.assertIn(
+                before["shards"]["judgments"][-1],
+                after["shards"]["judgments"],
+            )
+            self.assertEqual(cleanup["unreachable_shards"], 10)
+            self.assertEqual(cleanup["shards_deleted"], 10)
+            self.assertEqual(
+                TARGET.cleanup_unreachable_shards(root, after, publish=False)[
+                    "unreachable_shards"
+                ],
+                0,
+            )
+
+    def test_cleanup_dry_run_is_read_only_and_collection_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [orphan_judgment(number) for number in range(3)]
+            TARGET.publish_target_bundle(root, "report\n", record, TARGET.empty_cache())
+            shell = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME
+            )[0]
+            loaded = TARGET.hydrate_record_shell(shell, root)
+            before_manifest = (root / TARGET.RECORD_FILENAME).read_bytes()
+            before_files = sorted(
+                path.relative_to(root).as_posix()
+                for path in root.rglob("*")
+                if path.is_file()
+            )
+
+            report = TARGET.inspect_target_cleanup(
+                root, loaded, [orphan_judgment(0)["subject"]]
+            )
+
+            self.assertEqual(report["rows_removed"], 1)
+            self.assertEqual(
+                (root / TARGET.RECORD_FILENAME).read_bytes(), before_manifest
+            )
+            self.assertEqual(
+                sorted(
+                    path.relative_to(root).as_posix()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                ),
+                before_files,
+            )
+            manifest = shell["_sharded_manifest"]
+            first = TARGET.cleanup_unreachable_shards(root, manifest, publish=True)
+            second = TARGET.cleanup_unreachable_shards(root, manifest, publish=True)
+            self.assertEqual(first["shards_deleted"], 0)
+            self.assertEqual(second["shards_deleted"], 0)
+
+    def test_interrupted_collection_leaves_new_manifest_and_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [orphan_judgment(number) for number in range(3)]
+            TARGET.publish_target_bundle(root, "report\n", record, TARGET.empty_cache())
+            loaded = TARGET.load_record(root / TARGET.RECORD_FILENAME)
+            subject = orphan_judgment(0)["subject"]
+
+            with mock.patch.object(
+                TARGET.sharded_state,
+                "collect_unreachable_shards",
+                side_effect=OSError("simulated post-manifest interruption"),
+            ):
+                cleanup = TARGET.publish_target_bundle(
+                    root,
+                    "report\n",
+                    loaded,
+                    TARGET.empty_cache(),
+                    [subject],
+                )
+
+            self.assertEqual(cleanup["cleanup_pending"], 1)
+            current = TARGET.load_record(root / TARGET.RECORD_FILENAME)
+            self.assertEqual(len(current["judgments"]), 2)
+            manifest = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME
+            )[0]["_sharded_manifest"]
+            resumed = TARGET.cleanup_unreachable_shards(
+                root, manifest, publish=True
+            )
+            self.assertGreaterEqual(resumed["shards_deleted"], 1)
+
+    def test_compaction_failure_before_manifest_keeps_prior_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [orphan_judgment(number) for number in range(3)]
+            TARGET.publish_target_bundle(root, "report\n", record, TARGET.empty_cache())
+            before = (root / TARGET.RECORD_FILENAME).read_bytes()
+            loaded = TARGET.load_record(root / TARGET.RECORD_FILENAME)
+            original = TARGET._atomic_write_bytes
+
+            def fail_manifest(path: Path, payload: bytes) -> None:
+                if path == TARGET.manifest_path(root):
+                    raise OSError("simulated manifest interruption")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_manifest
+            ):
+                with self.assertRaises(TARGET.RecordPublicationError):
+                    TARGET.publish_target_bundle(
+                        root,
+                        "report\n",
+                        loaded,
+                        TARGET.empty_cache(),
+                        [orphan_judgment(0)["subject"]],
+                    )
+
+            self.assertEqual((root / TARGET.RECORD_FILENAME).read_bytes(), before)
+            self.assertEqual(
+                len(TARGET.load_record(root / TARGET.RECORD_FILENAME)["judgments"]),
+                3,
+            )
+
+    def test_cleanup_rejects_a_malformed_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed = {"storage_layout": STORE.STORAGE_LAYOUT, "shards": {}}
+            with self.assertRaises(STORE.ShardedStateError):
+                STORE.collect_unreachable_shards(
+                    TARGET.validation_directory(root), malformed, delete=False
+                )
     def test_native_v1_record_fails_with_retired_format_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / TARGET.RECORD_FILENAME
@@ -354,7 +528,9 @@ class TargetRecordTests(unittest.TestCase):
                 for kind in STORE.ROW_KINDS
                 for path in (TARGET.validation_directory(root) / kind).glob("*.jsonl")
             }
-            logical = TARGET.hydrate_record_shell(updated, root)
+            logical = TARGET.hydrate_record_shell(
+                updated, root, preserve_manifest=True
+            )
 
             TARGET.publish_target_bundle(
                 root, "current report\n", logical, TARGET.empty_cache()

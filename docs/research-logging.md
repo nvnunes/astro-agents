@@ -1018,8 +1018,10 @@ For residual material under an entry's `data/`, `images/`, or `scripts/`
 tree, validation may ask whether a proposed subtree has one lifecycle or must
 be split. A classification applies prospectively to compatible descendants;
 splitting returns immediate child folders and loose files in the next bounded
-round. Graph connections take precedence, followed by exact-path exceptions
-and then the most-specific compatible subtree rule.
+round. The material directories themselves are containers, never subtree
+units: questions begin at their immediate subfolders, while loose files use
+exact-path review. Graph connections take precedence, followed by exact-path
+exceptions and then the most-specific compatible subtree rule.
 
 ### Check results
 

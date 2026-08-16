@@ -60,7 +60,7 @@ from .sharded_state import STATE_DIRECTORY
 
 SCAN_SCHEMA_VERSION = 18
 ADJUDICATION_SCHEMA_VERSION = 8
-RULES_VERSION = "research-log-validation-v46"
+RULES_VERSION = "research-log-validation-v47"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
     "validation.md",

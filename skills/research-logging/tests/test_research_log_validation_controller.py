@@ -862,7 +862,7 @@ class ValidationControllerTests(unittest.TestCase):
                 if item["kind"] in {"orphan_candidate", "orphan_subtree"}
             }
             self.assertIn(
-                "docs/mini/entries/2026-08-07-e001-validation-fixture/data",
+                "docs/mini/entries/2026-08-07-e001-validation-fixture/data/direct.csv",
                 orphan_identities,
             )
             self.assertIn(

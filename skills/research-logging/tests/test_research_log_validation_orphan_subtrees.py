@@ -113,7 +113,7 @@ class OrphanSubtreeTests(unittest.TestCase):
 
     def test_complete_legacy_coverage_asks_only_for_the_subtree_unit(self) -> None:
         entry = "e001"
-        root = "docs/log/entries/e001/data"
+        root = "docs/log/entries/e001/data/batch"
         candidates = [_candidate(f"{root}/a.csv"), _candidate(f"{root}/b.csv")]
         queue_item = {
             "entry": entry,
@@ -208,7 +208,7 @@ class OrphanSubtreeTests(unittest.TestCase):
         self.assertEqual(actions[0]["unresolved"], [f"{root}/b.csv"])
         self.assertEqual(actions[0]["subtree_splits"], [])
 
-    def test_refinement_moves_from_material_root_to_children_and_loose_files(
+    def test_material_root_starts_with_subfolders_and_exact_loose_files(
         self,
     ) -> None:
         root = "docs/log/entries/e001/data"
@@ -221,21 +221,28 @@ class OrphanSubtreeTests(unittest.TestCase):
         ]
 
         questions, exact = ORPHANS.refined_questions(candidates, [])
-        self.assertEqual([question["root"] for question in questions], [root])
-        self.assertEqual(
-            [candidate["identity"] for candidate in exact], ["<input_csv>"]
-        )
-
-        questions, exact = ORPHANS.refined_questions(candidates, [root])
         self.assertEqual([question["root"] for question in questions], [f"{root}/set"])
         self.assertEqual(
             [candidate["identity"] for candidate in exact],
             ["<input_csv>", f"{root}/loose.csv"],
         )
 
+        questions, exact = ORPHANS.refined_questions(candidates, [f"{root}/set"])
+        self.assertEqual(questions, [])
+        self.assertEqual(
+            [candidate["identity"] for candidate in exact],
+            [
+                "<input_csv>",
+                f"{root}/loose.csv",
+                f"{root}/set",
+                f"{root}/set/a.csv",
+                f"{root}/set/b.csv",
+            ],
+        )
+
     def test_parent_rule_is_prospective_and_nested_rule_is_more_specific(self) -> None:
         entry = "e001"
-        root = "docs/log/entries/e001/data"
+        root = "docs/log/entries/e001/data/group"
         nested = f"{root}/set"
         candidates = [
             _candidate(f"{root}/loose.csv"),
@@ -365,8 +372,8 @@ class OrphanSubtreeTests(unittest.TestCase):
 
     def test_changed_supporting_note_reopens_only_the_rule_that_uses_it(self) -> None:
         entry = "e001"
-        data_root = "docs/log/entries/e001/data"
-        image_root = "docs/log/entries/e001/images"
+        data_root = "docs/log/entries/e001/data/set"
+        image_root = "docs/log/entries/e001/images/set"
         candidates = [
             _candidate(f"{data_root}/a.csv"),
             _candidate(f"{image_root}/a.png"),

@@ -224,6 +224,9 @@ Future validation changes must preserve these invariants:
   changed.
 - **Prospective orphan rules:** Classify residual orphan material with an
   entry-local subtree rule when one reviewed lifecycle covers the subtree.
+  Treat `data/`, `images/`, and `scripts/` as containers rather than rule
+  subjects; subtree rules begin at their child folders and loose files remain
+  exact-path subjects.
   Deterministic graph reachability takes precedence; exact-path and
   more-specific subtree decisions override a broader rule. Membership changes
   alone do not invalidate the rule.

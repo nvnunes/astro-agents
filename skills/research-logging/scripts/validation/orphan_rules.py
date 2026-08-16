@@ -40,7 +40,7 @@ def below(root: str, identity: str) -> bool:
 
 
 def ancestor_roots(identity: str) -> list[tuple[str, str]]:
-    """Return prospective material-subtree subjects from broadest to narrowest."""
+    """Return prospective subfolder subjects from broadest to narrowest."""
 
     scope = material_scope(identity)
     if scope is None:
@@ -49,10 +49,9 @@ def ancestor_roots(identity: str) -> list[tuple[str, str]]:
     identity_path = PurePosixPath(identity)
     root_path = PurePosixPath(material_root)
     if identity_path == root_path:
-        return [(material, material_root)]
-    parent = identity_path.parent
-    roots = [material_root]
-    relative = parent.relative_to(root_path)
+        return []
+    relative = identity_path.relative_to(root_path)
+    roots: list[str] = []
     current = root_path
     for part in relative.parts:
         current /= part
@@ -226,7 +225,10 @@ def refined_questions(
             visit(material, child_root, groups[child_root])
 
     for (material, root), values in sorted(by_scope.items()):
-        visit(material, root, candidates_below(values, root))
+        groups, loose = _child_groups(candidates_below(values, root), root)
+        exact.extend(loose)
+        for child_root in sorted(groups, key=lambda value: (value.casefold(), value)):
+            visit(material, child_root, groups[child_root])
     return questions, sorted(
         exact,
         key=lambda candidate: (

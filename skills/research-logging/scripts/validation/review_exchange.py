@@ -2560,13 +2560,24 @@ def _migrated_exact_decision(
     )
     if current is None:
         return None
-    compatible = [
+    compatible_rows = [
         judgment
         for judgment in judgments
         if judgment.get("kind") == "orphan-disposition"
         and judgment.get("subject") == {"entry": entry, "identity": identity}
         and _legacy_candidate_dependency(judgment, semantic_identity) == current
     ]
+    compatible = {
+        _fingerprint(
+            {
+                "subject": judgment.get("subject"),
+                "result": judgment.get("result"),
+                "basis": judgment.get("basis"),
+                "input_dependencies": judgment.get("input_dependencies"),
+            }
+        ): judgment
+        for judgment in compatible_rows
+    }
     if len(compatible) != 1:
         return None
     reviewed = [
@@ -2584,7 +2595,7 @@ def _migrated_exact_decision(
     if len(answers) == 1:
         decision, rationale = next(iter(answers.items()))
         return {"decision": decision, "rationale": rationale}
-    projected = _legacy_disposition_answer(compatible[0])
+    projected = _legacy_disposition_answer(next(iter(compatible.values())))
     if projected not in template.get("allowed_decisions", []):
         return None
     return {

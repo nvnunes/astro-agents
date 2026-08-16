@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import tempfile
@@ -180,6 +181,7 @@ class OrphanSubtreeTests(unittest.TestCase):
                     ],
                 }
             )
+        judgments.append(copy.deepcopy(judgments[-1]))
 
         reused = EXCHANGE.reusable_review_actions(scan, adjudication, judgments)
 

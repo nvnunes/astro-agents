@@ -30,6 +30,7 @@ MAX_PACKET_ITEMS = 200
 MAX_PACKET_BYTES = 65_536
 MAX_EXPANDED_CONTEXT_BYTES = MAX_PACKET_BYTES // 2
 DEFERRED_SESSION_SCHEMA_VERSION = 1
+CONTEXT_PROJECTION_VERSION = 2
 DEFERRED_BASE_FILENAME = "base.json"
 DEFERRED_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
@@ -557,15 +558,55 @@ def _minimum_context(
     raise ValidationToolError(f"review kind lacks a context projection: {kind}")
 
 
-def _expanded_context(
+def _expanded_entry_passages(
+    scan: ScanRecord,
+    entry: Mapping[str, Any],
+    queue_item: Mapping[str, Any],
+) -> tuple[dict[str, str], int]:
+    """Return the requested authored entry sections and their byte count."""
+
+    used_bytes = 0
+    section_passages: dict[str, str] = {}
+    requested_sections = set(queue_item.get("sections", []))
+    entry_path = entry.get("path")
+    if requested_sections and isinstance(entry_path, str):
+        raw_path = scan.get("resolved_paths", {}).get(entry_path)
+        path = (
+            Path(raw_path)
+            if isinstance(raw_path, str)
+            else Path(scan["project_root"]) / entry_path
+        )
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise ValidationToolError(
+                f"focused entry context cannot be read: {entry_path}: {exc}"
+            ) from exc
+        for section in entry.get("sections", []):
+            name = section.get("section")
+            if name not in requested_sections:
+                continue
+            start = int(section["line"]) - 1
+            end = int(section["end_line"])
+            passage = "\n".join(lines[start:end])
+            used_bytes += len(passage.encode("utf-8"))
+            if used_bytes > MAX_EXPANDED_CONTEXT_BYTES:
+                raise ValidationToolError(
+                    "focused entry passage exceeds its packet context budget"
+                )
+            section_passages[str(name)] = passage
+    return section_passages, used_bytes
+
+
+def _expanded_collection_inventory(
     scan: ScanRecord,
     queue_item: Mapping[str, Any],
-    minimum: Mapping[str, Any],
-) -> dict[str, Any]:
-    entry = _entry(scan, queue_item)
+    used_bytes: int,
+) -> dict[str, list[str]]:
+    """Return one bounded recursive inventory for focused collection review."""
+
     recursive_inventory: dict[str, list[str]] = {}
     if queue_item.get("kind") == "collection_scope":
-        used_bytes = 0
         for collection in queue_item.get("collections", []):
             raw_path = scan.get("resolved_paths", {}).get(collection)
             members: list[str] = []
@@ -583,6 +624,21 @@ def _expanded_context(
                         )
                     members.append(member)
             recursive_inventory[str(collection)] = members
+    return recursive_inventory
+
+
+def _expanded_context(
+    scan: ScanRecord,
+    queue_item: Mapping[str, Any],
+    minimum: Mapping[str, Any],
+) -> dict[str, Any]:
+    entry = _entry(scan, queue_item)
+    section_passages, used_bytes = _expanded_entry_passages(
+        scan, entry, queue_item
+    )
+    recursive_inventory = _expanded_collection_inventory(
+        scan, queue_item, used_bytes
+    )
     return {
         "minimum": minimum,
         "focused_expansion": {
@@ -590,6 +646,11 @@ def _expanded_context(
             "sections": queue_item.get("sections", []),
             "validation_notes": entry.get("validation_notes", []),
             "decision_hint": queue_item.get("reason"),
+            **(
+                {"entry_section_passages": section_passages}
+                if section_passages
+                else {}
+            ),
             **(
                 {"recursive_member_inventory": recursive_inventory}
                 if recursive_inventory
@@ -828,6 +889,7 @@ def _deferred_orphan_index(
         return None
     session_identity = _fingerprint(
         {
+            "context_projection_version": CONTEXT_PROJECTION_VERSION,
             "summary": scan["summary"],
             "rules": scan["validation_rules_version"],
             "scan": scan["input_fingerprint"],
@@ -843,6 +905,7 @@ def _deferred_orphan_index(
     )
     return {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "context_projection_version": CONTEXT_PROJECTION_VERSION,
         "session_identity": session_identity,
         "summary": scan["summary"],
         "review_kind": "orphan_candidates",
@@ -874,6 +937,7 @@ def _deferred_bounded_index(
         )
     session_identity = _fingerprint(
         {
+            "context_projection_version": CONTEXT_PROJECTION_VERSION,
             "summary": scan["summary"],
             "rules": scan["validation_rules_version"],
             "scan": scan["input_fingerprint"],
@@ -889,6 +953,7 @@ def _deferred_bounded_index(
     )
     return {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "context_projection_version": CONTEXT_PROJECTION_VERSION,
         "session_identity": session_identity,
         "summary": scan["summary"],
         "review_kind": "bounded_review",
@@ -1284,10 +1349,22 @@ def empty_deferred_recovery_context(
     )
     if base.get("session_identity") != state["session_identity"]:
         raise ValidationToolError("deferred orphan session identity differs")
+    index = _read_object(
+        session_dir / DEFERRED_INDEX_FILENAME,
+        "deferred orphan session index",
+    )
+    context_levels = {
+        context_request_key(template): int(template.get("context_level", 0))
+        for item in index.get("items", [])
+        for template in [item.get("template", {})]
+        if isinstance(template, Mapping)
+    }
     return {
         "session_dir": session_dir.as_posix(),
         "scan": base["scan"],
         "adjudication": base["adjudication"],
+        "context_levels": context_levels,
+        "context_projection_version": index.get("context_projection_version", 1),
     }
 
 

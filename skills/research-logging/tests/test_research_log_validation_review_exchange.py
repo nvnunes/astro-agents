@@ -66,17 +66,33 @@ class DeferredOrphanReviewTests(unittest.TestCase):
             collection = root / "output" / "collection"
             write(collection / "nested" / "member.pkl", "payload")
             scan = {
-                "entries": [{"id": "e001", "validation_notes": []}],
+                "project_root": root.as_posix(),
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/mini/e001.md",
+                        "validation_notes": [],
+                        "sections": [
+                            {
+                                "section": "Evidence",
+                                "line": 1,
+                                "end_line": 2,
+                            }
+                        ],
+                    }
+                ],
                 "resolved_paths": {
+                    "docs/mini/e001.md": (root / "docs/mini/e001.md").as_posix(),
                     "output/collection": collection.as_posix(),
                 },
             }
+            write(root / "docs/mini/e001.md", "## Evidence\ncase mapping\n")
             item = {
                 "kind": "collection_scope",
                 "entry": "e001",
                 "identity": "docs/mini/result.csv",
                 "collections": ["output/collection"],
-                "sections": [],
+                "sections": ["Evidence"],
             }
 
             expanded = EXCHANGE._expanded_context(scan, item, {})
@@ -84,6 +100,10 @@ class DeferredOrphanReviewTests(unittest.TestCase):
             self.assertEqual(
                 expanded["focused_expansion"]["recursive_member_inventory"],
                 {"output/collection": ["nested/member.pkl"]},
+            )
+            self.assertEqual(
+                expanded["focused_expansion"]["entry_section_passages"],
+                {"Evidence": "## Evidence\ncase mapping"},
             )
 
     def test_paged_collection_scope_uses_cli_owned_collection_set(self) -> None:

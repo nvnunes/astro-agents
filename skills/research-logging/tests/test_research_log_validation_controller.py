@@ -1056,6 +1056,95 @@ class ValidationControllerTests(unittest.TestCase):
         ):
             CONTROLLER._normalize_migration_session_dependencies(scan, adjudication)
 
+    def test_context_upgrade_publishes_before_old_session_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs/mini.md"
+            old_session = root / "work/old-session"
+            context = CONTROLLER.LoadedValidation(
+                CONTROLLER.ValidationRequest(summary),
+                summary,
+                summary.with_suffix(""),
+                root,
+                "docs/mini.md",
+                {"outcomes": [], "judgments": []},
+                {},
+                "native-v2:loaded",
+            )
+            recovery = {
+                "scan": {},
+                "adjudication": {},
+                "context_levels": {},
+                "session_dir": old_session.as_posix(),
+            }
+            events = []
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "_review_required",
+                    return_value={"session_identity": "new-session"},
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "write_record_and_cache",
+                    side_effect=lambda *args: events.append("manifest"),
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "finish_deferred_orphan_session",
+                    side_effect=lambda *args: events.append("cleanup"),
+                ),
+            ):
+                result = CONTROLLER._refresh_empty_context_session(
+                    context, recovery
+                )
+
+            self.assertEqual(events, ["manifest", "cleanup"])
+            self.assertEqual(result["session_identity"], "new-session")
+
+    def test_context_upgrade_publication_failure_retains_old_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs/mini.md"
+            old_session = root / "work/old-session"
+            context = CONTROLLER.LoadedValidation(
+                CONTROLLER.ValidationRequest(summary),
+                summary,
+                summary.with_suffix(""),
+                root,
+                "docs/mini.md",
+                {"outcomes": [], "judgments": []},
+                {},
+                "native-v2:loaded",
+            )
+            recovery = {
+                "scan": {},
+                "adjudication": {},
+                "context_levels": {},
+                "session_dir": old_session.as_posix(),
+            }
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "_review_required",
+                    return_value={"session_identity": "new-session"},
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "write_record_and_cache",
+                    side_effect=OSError("interrupted"),
+                ),
+                mock.patch.object(
+                    CONTROLLER, "finish_deferred_orphan_session"
+                ) as cleanup,
+            ):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    CONTROLLER._refresh_empty_context_session(context, recovery)
+
+            cleanup.assert_not_called()
+
     def test_migration_normalizes_reviewable_failure_to_producer_choice(self) -> None:
         adjudication = {
             "review_queue": [

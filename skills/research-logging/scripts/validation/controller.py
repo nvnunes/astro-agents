@@ -18,6 +18,7 @@ from .observations import (
 )
 from .render import assemble_records
 from .review_exchange import (
+    CONTEXT_PROJECTION_VERSION,
     accept_deferred_orphan_page,
     context_request_key,
     create_exchange,
@@ -842,10 +843,18 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             return _finish_deferred_acceptance(
                 context.summary_path, resumed, context.progress()
             )
+        recovery = empty_deferred_recovery_context(
+            context.project_root, continuation
+        )
+        if (
+            recovery is not None
+            and recovery.get("context_projection_version")
+            != CONTEXT_PROJECTION_VERSION
+        ):
+            refreshed = _refresh_empty_context_session(context, recovery)
+            if refreshed is not None:
+                return refreshed
         if not is_sharded_shell(context.record):
-            recovery = empty_deferred_recovery_context(
-                context.project_root, continuation
-            )
             restarted = _restart_empty_migration_session(context, recovery)
             if restarted is not None:
                 return restarted
@@ -859,6 +868,39 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         }
     )
     return resumed
+
+
+def _refresh_empty_context_session(
+    context: LoadedValidation, recovery: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Replace an untouched session after a context-projection upgrade."""
+
+    if not context.request.publish:
+        return None
+    progress = ValidationProgress(
+        copy.deepcopy(context.record),
+        copy.deepcopy(context.cache),
+        context.state_status,
+        False,
+    )
+    result = _review_required(
+        cast(ScanRecord, recovery["scan"]),
+        cast(AdjudicationRecord, recovery["adjudication"]),
+        progress,
+        cast(Mapping[str, int], recovery["context_levels"]),
+    )
+    old_session = Path(str(recovery["session_dir"]))
+    if result.get("session_identity") == old_session.name:
+        return None
+    write_record_and_cache(context.output_dir, progress.record, progress.cache)
+    finish_deferred_orphan_session(old_session)
+    result.update(
+        {
+            "summary": context.summary,
+            "state_status": context.state_status,
+        }
+    )
+    return result
 
 
 def _normalize_migration_review_kinds(

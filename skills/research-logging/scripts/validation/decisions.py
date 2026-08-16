@@ -276,9 +276,12 @@ def validate_queue_decision_kind(
         raise ValidationToolError(
             "orphan decisions apply only to orphan-candidate rows"
         )
-    if item.get("kind") == "upstream_producer" and decision != "bind":
+    if item.get("kind") == "upstream_producer" and decision not in {
+        "bind",
+        "fail",
+    }:
         raise ValidationToolError(
-            "upstream producer choices require a bind decision"
+            "upstream producer choices require a bind or fail decision"
         )
     if decision == "bind" and item.get("kind") != "upstream_producer":
         raise ValidationToolError(

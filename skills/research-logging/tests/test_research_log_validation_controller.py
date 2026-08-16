@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,131 @@ class ValidationControllerTests(unittest.TestCase):
             )
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
+
+    def test_missing_cache_for_changed_zero_outcome_log_forces_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            (summary.with_suffix("") / TARGET.CACHE_FILENAME).unlink()
+            write(
+                summary,
+                summary.read_text(encoding="utf-8") + "\nUpdated context.\n",
+            )
+
+            with mock.patch.object(
+                CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+            ) as scanned:
+                second = run_validate(
+                    summary, result_date="2026-08-16", jobs=1
+                )
+
+            self.assertEqual(second["status"], "complete")
+            self.assertNotEqual(second.get("cached"), True)
+            scanned.assert_called_once()
+
+    def test_tampered_report_rejects_cached_completion_and_repairs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            report = summary.with_suffix("") / "validation.md"
+            report.write_text("stale report\n", encoding="utf-8")
+
+            with mock.patch.object(
+                CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+            ) as scanned:
+                repaired = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+
+            self.assertEqual(repaired["status"], "complete")
+            self.assertNotEqual(repaired.get("cached"), True)
+            self.assertNotEqual(report.read_text(encoding="utf-8"), "stale report\n")
+            scanned.assert_called_once()
+
+    def test_failed_report_publication_is_repaired_on_next_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            report = summary.with_suffix("") / "validation.md"
+            prior_report = report.read_bytes()
+            write(
+                summary,
+                summary.read_text(encoding="utf-8") + "\nUpdated context.\n",
+            )
+            original = TARGET._atomic_write_bytes
+
+            def fail_report(path: Path, payload: bytes) -> None:
+                if path.name == "validation.md":
+                    raise OSError("simulated report failure")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_report
+            ):
+                failed = run_validate(
+                    summary, result_date="2026-08-16", jobs=1
+                )
+
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(report.read_bytes(), prior_report)
+            repaired = run_validate(summary, result_date="2026-08-16", jobs=1)
+            self.assertEqual(repaired["status"], "complete")
+            self.assertNotEqual(repaired.get("cached"), True)
+            stored = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertEqual(
+                stored["projection"]["report_sha256"],
+                TARGET.sha256_bytes(report.read_bytes()),
+            )
+
+    def test_record_from_another_summary_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_summary = make_no_semantic_log(root)
+            completed = run_validate(
+                first_summary, result_date="2026-08-15", jobs=1
+            )
+            self.assertEqual(completed["status"], "complete")
+            second_summary = root / "docs" / "other.md"
+            (second_summary.with_suffix("") / "entries").mkdir(parents=True)
+            write(second_summary, "# Other\n\n## Entries\n")
+            shutil.copy2(
+                first_summary.with_suffix("") / TARGET.RECORD_FILENAME,
+                second_summary.with_suffix("") / TARGET.RECORD_FILENAME,
+            )
+
+            rejected = run_validate(
+                second_summary, result_date="2026-08-15", jobs=1
+            )
+
+            self.assertEqual(rejected["status"], "error")
+            self.assertIn("belongs to", rejected["error"])
+
+    def test_relative_record_identity_survives_checkout_relocation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_root = root / "checkout-one"
+            second_root = root / "checkout-two"
+            first_root.mkdir()
+            summary = make_no_semantic_log(first_root)
+            completed = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(completed["status"], "complete")
+            shutil.copytree(first_root, second_root, copy_function=shutil.copy2)
+            relocated = second_root / "docs" / "empty.md"
+
+            result = run_validate(
+                relocated, result_date="2026-08-15", jobs=1
+            )
+
+            self.assertEqual(result["status"], "complete")
+            stored = TARGET.load_record(
+                relocated.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertEqual(stored["summary"], "docs/empty.md")
 
     def test_operational_failure_retains_prior_completed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -171,11 +297,31 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(first["item_count"], len(template["items"]))
             self.assertLessEqual(first["item_count"], 200)
             self.assertGreater(first["byte_count"], 0)
+            packet_text = Path(first["review_packet"]).read_text(encoding="utf-8")
+            self.assertIn(
+                "The retained value is `1.0` in [output](data/output.csv).",
+                packet_text,
+            )
+            partial = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertGreater(len(partial["outcomes"]), 0)
+            self.assertGreater(len(partial["failures"]), 0)
+            self.assertIsNotNone(partial["continuation"])
+            self.assertEqual(partial["continuation"]["kind"], "ordinary")
+            resumed = run_validate(summary, jobs=1)
+            self.assertEqual(resumed["status"], "review_required")
+            self.assertEqual(resumed["continuation"], first["continuation"])
+            self.assertEqual(resumed["decision_file"], first["decision_file"])
             for item in template["items"]:
                 item["decision"] = (
                     "pass"
                     if item["kind"] == "semantic_provenance"
-                    else "needs_context"
+                    else (
+                        "unresolved"
+                        if item["kind"] == "orphan_candidate"
+                        else "needs_context"
+                    )
                 )
                 item["rationale"] = "Focused fixture decision."
             decision_path.write_text(
@@ -187,6 +333,33 @@ class ValidationControllerTests(unittest.TestCase):
             )
             self.assertEqual(continued["status"], "review_required")
             self.assertLess(continued["item_count"], first["item_count"])
+            expanded = json.loads(
+                Path(continued["decision_file"]).read_text(encoding="utf-8")
+            )
+            self.assertTrue(
+                all(item["context_level"] == 1 for item in expanded["items"])
+            )
+            self.assertTrue(
+                all(
+                    "needs_context" not in item["allowed_decisions"]
+                    for item in expanded["items"]
+                )
+            )
+            first_contexts = {
+                (item["kind"], item["entry"], item["identity"]): item[
+                    "context_identity"
+                ]
+                for item in template["items"]
+            }
+            self.assertTrue(
+                all(
+                    item["context_identity"]
+                    != first_contexts[
+                        (item["kind"], item["entry"], item["identity"])
+                    ]
+                    for item in expanded["items"]
+                )
+            )
             record = TARGET.load_record(
                 summary.with_suffix("") / TARGET.RECORD_FILENAME
             )
@@ -194,6 +367,7 @@ class ValidationControllerTests(unittest.TestCase):
                 judgment
                 for judgment in record["judgments"]
                 if judgment["kind"] == "review-decision"
+                and judgment["subject"]["kind"] == "semantic_provenance"
             ]
             self.assertEqual(len(reviewed), 1)
             self.assertEqual(reviewed[0]["rationale"], "Focused fixture decision.")
@@ -292,6 +466,11 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "review_required")
             self.assertIn("session_identity", first)
             session_dir = Path(first["decision_file"]).parent.parent
+            self.assertTrue(
+                session_dir.is_relative_to(
+                    (root / EXCHANGE.VALIDATION_WORK_ROOT).resolve()
+                )
+            )
             self.addCleanup(
                 lambda: EXCHANGE.finish_deferred_orphan_session(session_dir)
                 if session_dir.exists()
@@ -310,6 +489,13 @@ class ValidationControllerTests(unittest.TestCase):
 
             self.assertEqual(second["status"], "review_required")
             self.assertEqual(record_path.read_bytes(), record_before)
+            stored = TARGET.load_record(record_path)
+            self.assertEqual(stored["continuation"]["kind"], "paged")
+            self.assertNotIn("current", stored["continuation"])
+            resumed = run_validate(summary, jobs=1)
+            self.assertEqual(resumed["status"], "review_required")
+            self.assertEqual(resumed["continuation"], second["continuation"])
+            self.assertEqual(record_path.read_bytes(), record_before)
             second_path = Path(second["decision_file"])
             second_template = json.loads(second_path.read_text(encoding="utf-8"))
             for item in second_template["items"]:
@@ -317,12 +503,57 @@ class ValidationControllerTests(unittest.TestCase):
                 item["rationale"] = "No local evidence connection is recorded."
             write(second_path, json.dumps(second_template, indent=2) + "\n")
 
-            completed = run_validate(
-                summary, decision_file=second_path, jobs=1
-            )
+            with mock.patch.object(
+                CONTROLLER,
+                "_finish_deferred_acceptance",
+                side_effect=RuntimeError("interrupted before final combine"),
+            ):
+                interrupted = run_validate(
+                    summary, decision_file=second_path, jobs=1
+                )
+            self.assertEqual(interrupted["status"], "error")
+            self.assertTrue(session_dir.exists())
+
+            completed = run_validate(summary, jobs=1)
 
             self.assertEqual(completed["status"], "complete")
             self.assertFalse(session_dir.exists())
+
+    def test_missing_active_paged_session_fails_without_restarting_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            summary = root / "docs" / "mini.md"
+            entry = (
+                root
+                / "docs"
+                / "mini"
+                / "entries"
+                / "2026-08-16-e001-large-orphan-review"
+                / "e001.md"
+            )
+            write(
+                summary,
+                "# Mini\n\n## Entries\n\n"
+                "- [e001](mini/entries/2026-08-16-e001-large-orphan-review/"
+                "e001.md)\n",
+            )
+            write(entry, "# Entry\n\nNo retained result claims.\n")
+            for number in range(201):
+                write(entry.parent / "data" / f"item-{number:04d}.csv", "value\n")
+            first = run_validate(summary, result_date="2026-08-16", jobs=1)
+            self.assertEqual(first["status"], "review_required")
+            session_dir = Path(first["decision_file"]).parent.parent
+            (session_dir / EXCHANGE.SESSION_STATE_FILENAME).unlink()
+
+            failed = run_validate(summary, jobs=1)
+
+            self.assertEqual(failed["status"], "error")
+            self.assertIn("session state", failed["error"])
+            record = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertEqual(record["continuation"]["kind"], "paged")
 
     def test_stale_or_modified_semantic_template_cannot_mutate_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -413,6 +644,227 @@ class ValidationControllerTests(unittest.TestCase):
                 "data/direct.csv",
                 orphan_identities,
             )
+
+    def test_completed_paged_review_restores_scoped_producer_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            summary = (root / "docs" / "mini.md").resolve()
+            write(summary, "# Mini\n")
+            scan = {
+                "project_root": root.resolve().as_posix(),
+                "summary": "docs/mini.md",
+            }
+            adjudication = {"date": "2026-08-16", "review_queue": []}
+            accepted = {
+                "scan": scan,
+                "adjudication": adjudication,
+                "decisions": {"items": []},
+                "orphan_fingerprints": {},
+                "session_dir": (
+                    root / ".astro-agents-validation-work" / "summary" / "session"
+                ).as_posix(),
+            }
+            progress = CONTROLLER.ValidationProgress(
+                {"outcomes": [], "judgments": []}, {}, "native-v2:loaded", True
+            )
+            assembly = mock.Mock()
+            assembly.counts.return_value = {}
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "decisions_to_actions",
+                    return_value={"schema_version": 6, "actions": []},
+                ) as convert,
+                mock.patch.object(
+                    CONTROLLER,
+                    "apply_review_decisions",
+                    return_value=(adjudication, {}),
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "_complete_adjudication",
+                    return_value=({"outcomes": []}, assembly),
+                ),
+                mock.patch.object(CONTROLLER, "finish_deferred_orphan_session"),
+            ):
+                CONTROLLER._finish_deferred_acceptance(
+                    summary, accepted, progress
+                )
+
+            internal = convert.call_args.args[1]
+            self.assertIs(internal["scan"], scan)
+            self.assertIs(internal["adjudication"], adjudication)
+
+    def test_partial_progress_excludes_targets_with_pending_scope_review(self) -> None:
+        target = "docs/mini/entries/e001/data/result.csv"
+        adjudication = {
+            "summary": [],
+            "review_queue": [
+                {
+                    "kind": "upstream_producer",
+                    "entry": "e001",
+                    "identity": target,
+                    "collections": ["output/collection"],
+                }
+            ],
+            "entries": [
+                {
+                    "id": "e001",
+                    "targets": [
+                        {
+                            "target": target,
+                            "integrity": "2026-08-16",
+                            "provenance": "2026-08-16",
+                            "reproducibility": "-",
+                        }
+                    ],
+                    "orphan_items": [],
+                }
+            ],
+        }
+
+        partial = CONTROLLER._partial_adjudication(adjudication)
+
+        self.assertEqual(partial["entries"][0]["targets"], [])
+
+    def test_completed_paged_context_request_starts_expanded_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / ".git").mkdir()
+            summary = root / "docs" / "mini.md"
+            write(summary, "# Mini\n")
+            queue_item = {
+                "kind": "collection_scope",
+                "entry": "e001",
+                "identity": "docs/mini/result.csv",
+            }
+            adjudication = {
+                "date": "2026-08-16",
+                "review_queue": [queue_item],
+            }
+            decisions = {
+                "items": [
+                    {
+                        **queue_item,
+                        "context_level": 0,
+                        "decision": "needs_context",
+                        "rationale": "Nested members are required.",
+                    }
+                ]
+            }
+            accepted = {
+                "scan": {
+                    "project_root": root.as_posix(),
+                    "summary": "docs/mini.md",
+                },
+                "adjudication": adjudication,
+                "decisions": decisions,
+                "orphan_fingerprints": {},
+                "session_dir": (
+                    root / ".astro-agents-validation-work" / "summary" / "session"
+                ).as_posix(),
+            }
+            progress = CONTROLLER.ValidationProgress(
+                {"outcomes": [], "judgments": []}, {}, "native-v2:loaded", True
+            )
+            next_result = {"status": "review_required"}
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "decisions_to_actions",
+                    return_value={"schema_version": 6, "actions": []},
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "apply_review_decisions",
+                    return_value=(adjudication, {}),
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "durable_review_judgments",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    CONTROLLER, "_review_required", return_value=next_result
+                ) as review,
+                mock.patch.object(CONTROLLER, "finish_deferred_orphan_session"),
+            ):
+                result = CONTROLLER._finish_deferred_acceptance(
+                    summary, accepted, progress
+                )
+
+            self.assertIs(result, next_result)
+            self.assertEqual(review.call_args.args[3], json.loads(json.dumps({
+                EXCHANGE.context_request_key(decisions["items"][0]): 1
+            })))
+
+    def test_migration_recovery_retains_valid_rows_and_reissues_bare_pass(self) -> None:
+        target = "docs/mini/data/result.csv"
+        adjudication = {
+            "entries": [{"id": "e001", "targets": [{"target": target}]}],
+            "review_queue": [
+                {
+                    "kind": "mechanical_failure",
+                    "entry": "e001",
+                    "identity": target,
+                    "workflow": {"status": "unresolved"},
+                },
+                {
+                    "kind": "semantic_provenance",
+                    "entry": "Summary",
+                    "identity": "4.2%",
+                },
+            ],
+        }
+        invalid = {
+            "kind": "mechanical_failure",
+            "entry": "e001",
+            "identity": target,
+            "decision": "pass",
+        }
+        valid = {
+            "kind": "semantic_provenance",
+            "entry": "Summary",
+            "identity": "4.2%",
+            "decision": "pass",
+        }
+        decisions = {"schema_version": 1, "items": [invalid, valid]}
+
+        recovered = CONTROLLER._migration_recovery_decisions(
+            adjudication, decisions
+        )
+
+        self.assertEqual(recovered, {"schema_version": 1, "items": [valid]})
+
+    def test_migration_normalizes_reviewable_failure_to_producer_choice(self) -> None:
+        adjudication = {
+            "review_queue": [
+                {
+                    "kind": "mechanical_failure",
+                    "hard_failures": [],
+                    "producer_candidates": [{"invocation": "invocation-1"}],
+                },
+                {
+                    "kind": "mechanical_failure",
+                    "hard_failures": ["Integrity"],
+                    "producer_candidates": [{"invocation": "invocation-2"}],
+                },
+            ]
+        }
+
+        normalized = CONTROLLER._normalize_migration_review_kinds(adjudication)
+
+        self.assertEqual(
+            [item["kind"] for item in normalized["review_queue"]],
+            ["semantic_fallback", "mechanical_failure"],
+        )
+        self.assertEqual(
+            [item["kind"] for item in adjudication["review_queue"]],
+            ["mechanical_failure", "mechanical_failure"],
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 {
   "findings": {
-    "skills/research-logging/scripts/validation/graph.py:GraphBuilder.add_edge:PLR0913": 6,
-    "skills/research-logging/scripts/validation/runtime.py:scan_log:PLR0913": 6
+    "skills/research-logging/scripts/validation/graph.py:GraphBuilder.add_edge:PLR0913": 6
   }
 }

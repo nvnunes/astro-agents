@@ -21,6 +21,7 @@ from typing import (
     cast,
 )
 
+from .compatibility import normalized_command
 from .contracts import (
     AdjudicationRecord,
     ScanRecord,
@@ -721,7 +722,7 @@ def _target_review_item(
     target: str,
     grouped: Mapping[str, Any],
     assessment: TargetAssessment,
-    hard_failures: Sequence[str],
+    review_details: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Build the bounded semantic packet for one unresolved target."""
 
@@ -729,11 +730,11 @@ def _target_review_item(
         "entry": entry["id"],
         "kind": (
             "mechanical_failure"
-            if "FAIL" in {assessment.integrity, assessment.provenance}
+            if review_details["hard_failures"]
             else "semantic_fallback"
         ),
         "identity": target,
-        "hard_failures": list(hard_failures),
+        "hard_failures": copy.deepcopy(review_details["hard_failures"]),
         "sections": grouped["sections"],
         "integrity": assessment.integrity_detail,
         "integrity_status": (
@@ -744,6 +745,9 @@ def _target_review_item(
             else "unresolved"
         ),
         "workflow": assessment.workflow,
+        "producer_candidates": copy.deepcopy(
+            review_details["producer_candidates"]
+        ),
         "evidence": [
             {
                 "kind": row["kind"],
@@ -757,6 +761,34 @@ def _target_review_item(
             for row, association_source in [(item["row"], item["source"])]
         ],
     }
+
+
+def _review_producer_candidates(
+    target: str,
+    invocations: Sequence[PreparedInvocation],
+    review_session: ReviewQuerySession,
+) -> list[dict[str, Any]]:
+    candidates = []
+    for invocation in invocations:
+        eligibility = review_session.eligibility_for(invocation, target)
+        candidates.append(
+            {
+                "invocation": invocation.key,
+                "entry": invocation.entry_id,
+                "line": invocation.command.get("line"),
+                "command": invocation.command.get("command", ""),
+                "normalized_command": normalized_command(
+                    str(invocation.command.get("command", ""))
+                ),
+                "path_arguments": copy.deepcopy(
+                    invocation.command.get("path_arguments", [])
+                ),
+                "coverage_kind": eligibility.kind,
+                "coverage_identity": eligibility.coverage_identity,
+                "target_member": eligibility.target_member,
+            }
+        )
+    return candidates
 
 
 def _target_hard_failures(
@@ -893,7 +925,14 @@ def prepare_evidence_target(
                 target,
                 grouped,
                 assessment,
-                _target_hard_failures(source, integrity, workflow),
+                {
+                    "hard_failures": _target_hard_failures(
+                        source, integrity, workflow
+                    ),
+                    "producer_candidates": _review_producer_candidates(
+                        target, eligible_producers, review_session
+                    ),
+                },
             )
         )
     reproducibility, reproduction_review = _target_reproducibility(

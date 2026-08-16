@@ -33,7 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs", type=int, default=min(32, (os.cpu_count() or 1) + 4)
     )
     validate_parser.add_argument(
-        "--no-publish", action="store_true", help=argparse.SUPPRESS
+        "--dry-run",
+        action="store_true",
+        help="run validation and report the result without publishing artifacts",
     )
     return parser
 
@@ -45,7 +47,7 @@ def _run_validate(args: argparse.Namespace) -> int:
             decision_file=args.decisions,
             result_date=args.date,
             jobs=args.jobs,
-            publish=not args.no_publish,
+            publish=not args.dry_run,
             mode=args.mode,
         )
     )

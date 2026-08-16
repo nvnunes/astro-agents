@@ -8,10 +8,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, cast
 
+from .adjudication import ORPHAN_TARGET
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions
 from .observations import (
-    METADATA_UNCHANGED,
     ObservationSession,
     observe_outcome_dependencies,
     outcomes_are_compatible,
@@ -19,11 +19,16 @@ from .observations import (
 from .render import assemble_records
 from .review_exchange import (
     accept_deferred_orphan_page,
+    context_request_key,
     create_exchange,
     decisions_to_actions,
     durable_review_judgments,
+    empty_deferred_recovery_context,
     finish_deferred_orphan_session,
+    finish_review_session,
     load_decisions,
+    resume_deferred_orphan_session,
+    resume_ordinary_exchange,
     reusable_review_actions,
 )
 from .runtime import (
@@ -40,7 +45,8 @@ from .target_records import (
     empty_cache,
     empty_record,
     load_cache,
-    load_record,
+    load_record_with_source,
+    projection_for,
     publish_target_bundle,
     write_record_and_cache,
 )
@@ -81,6 +87,32 @@ class ValidationRequest:
     mode: str = "standard"
 
 
+@dataclass
+class LoadedValidation:
+    """Resolved request paths and loaded target state for one invocation."""
+
+    request: ValidationRequest
+    summary_path: Path
+    output_dir: Path
+    project_root: Path
+    record_summary: str
+    record: dict[str, Any]
+    cache: dict[str, Any]
+    state_status: str
+
+    @property
+    def summary(self) -> str:
+        return self.summary_path.as_posix()
+
+    def progress(self) -> ValidationProgress:
+        return ValidationProgress(
+            self.record,
+            self.cache,
+            self.state_status,
+            self.request.publish,
+        )
+
+
 def _project_root(summary_path: Path) -> Path:
     """Infer the on-disk project root without consulting source control."""
 
@@ -90,35 +122,67 @@ def _project_root(summary_path: Path) -> Path:
     return summary_path.parent
 
 
+def _relative_summary(summary_path: Path, project_root: Path) -> str:
+    try:
+        return summary_path.relative_to(project_root).as_posix()
+    except ValueError as exc:
+        raise ValidationToolError(
+            "maintained summary is outside its inferred project root"
+        ) from exc
+
+
 def _load_target_state(
-    output_dir: Path, summary: str
+    output_dir: Path, summary: str, project_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     assert_no_retired_artifacts(output_dir)
     record_path = output_dir / RECORD_FILENAME
     cache_path = output_dir / CACHE_FILENAME
     if record_path.is_file():
-        record = load_record(record_path)
+        record, source_version = load_record_with_source(
+            record_path,
+            expected_summary=summary,
+            project_root=project_root,
+        )
         cache, cache_status = load_cache(cache_path)
-        return record, cache, f"native:{cache_status}"
+        return record, cache, f"native-v{source_version}:{cache_status}"
     return empty_record(summary, RULES_VERSION), empty_cache(), "new"
 
 
-def _cached_completion(
+def _coherent_report_projection(
+    output_dir: Path, record: Mapping[str, Any]
+) -> bool:
+    projection = record.get("projection")
+    if not isinstance(projection, Mapping):
+        return False
+    report_path = output_dir / "validation.md"
+    try:
+        report_text = report_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    return projection_for(record, report_text) == projection
+
+
+def _compatible_cached_dependencies(
     summary_path: Path,
-    output_dir: Path,
     record: Mapping[str, Any],
     cache: Mapping[str, Any],
-    publish: bool,
-) -> dict[str, Any] | None:
-    outcomes = list(record.get("outcomes", []))
-    if record.get("validation_rules_version") != RULES_VERSION:
-        return None
-    if record.get("result") is None:
-        return None
-    if not (output_dir / "validation.md").is_file():
-        return None
+) -> ObservationSession | None:
     session = ObservationSession()
     project_root = _project_root(summary_path)
+    completion_dependencies = list(record.get("completion_dependencies", []))
+    if not completion_dependencies:
+        return None
+    completion_observations = observe_outcome_dependencies(
+        session,
+        [{"dependencies": completion_dependencies}],
+        cache.get("files", {}),
+        project_root,
+    )
+    if not outcomes_are_compatible(
+        [{"dependencies": completion_dependencies}], completion_observations
+    ):
+        return None
+    outcomes = list(record.get("outcomes", []))
     if outcomes:
         observed = observe_outcome_dependencies(
             session,
@@ -128,16 +192,30 @@ def _cached_completion(
         )
         if not outcomes_are_compatible(outcomes, observed):
             return None
-    else:
-        for logical_path, identity in cache.get("files", {}).items():
-            observation = session.observe(project_root / logical_path, identity)
-            if observation.status != METADATA_UNCHANGED:
-                return None
-    recovered_continuation = record.get("continuation") is not None
-    if recovered_continuation and publish:
-        completed_record = copy.deepcopy(dict(record))
-        completed_record["continuation"] = None
-        write_record_and_cache(output_dir, completed_record, cache)
+    return session
+
+
+def _cached_completion(
+    summary_path: Path,
+    output_dir: Path,
+    record: Mapping[str, Any],
+    cache: Mapping[str, Any],
+    cache_status: str,
+) -> dict[str, Any] | None:
+    ready = (
+        cache_status == "loaded"
+        and record.get("validation_rules_version") == RULES_VERSION
+        and record.get("result") is not None
+        and record.get("continuation") is None
+        and _coherent_report_projection(output_dir, record)
+    )
+    session = (
+        _compatible_cached_dependencies(summary_path, record, cache)
+        if ready
+        else None
+    )
+    if session is None:
+        return None
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -146,7 +224,7 @@ def _cached_completion(
         "report": (output_dir / "validation.md").as_posix(),
         "progress_retained": True,
         "cached": True,
-        "recovered_continuation": recovered_continuation,
+        "recovered_continuation": False,
         "diagnostics": session.diagnostics.as_dict(),
     }
 
@@ -226,11 +304,96 @@ def _merge_review_judgments(
     record["judgments"] = list(by_identity.values())
 
 
+def _partial_adjudication(
+    adjudication: AdjudicationRecord,
+) -> AdjudicationRecord:
+    """Return rows whose current checks no longer require semantic work."""
+
+    partial = copy.deepcopy(adjudication)
+    pending_targets = {
+        (str(item.get("entry")), str(item.get("identity")))
+        for item in partial["review_queue"]
+        if item.get("collections")
+        and item.get("entry") is not None
+        and item.get("identity") is not None
+    }
+    partial["review_queue"] = []
+    partial["summary"] = [
+        row for row in partial["summary"] if row.get("provenance") is not None
+    ]
+    for entry in partial["entries"]:
+        entry_id = str(entry.get("id", ""))
+        entry["targets"] = [
+            row
+            for row in entry.get("targets", [])
+            if row.get("target") != ORPHAN_TARGET
+            and (entry_id, str(row.get("target", ""))) not in pending_targets
+            and all(
+                row.get(check) is not None
+                for check in ("integrity", "provenance", "reproducibility")
+            )
+        ]
+        entry["orphan_items"] = [
+            item
+            for item in entry.get("orphan_items", [])
+            if item.get("decision") == "accepted"
+        ]
+    return partial
+
+
+def _merge_outcomes(
+    record: dict[str, Any], outcomes: list[dict[str, Any]]
+) -> None:
+    by_identity = {
+        (
+            row["entry"],
+            row["target"],
+            row["check"],
+            row["compatibility_identity"],
+        ): copy.deepcopy(row)
+        for row in [*record["outcomes"], *outcomes]
+    }
+    record["outcomes"] = list(by_identity.values())
+
+
+def _materialize_partial_progress(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    progress: ValidationProgress,
+) -> None:
+    """Persist deterministic rows without assembling an incomplete report."""
+
+    output_dir = Path(scan["project_root"]) / scan["log_root"]
+    partial_adjudication = _partial_adjudication(adjudication)
+    partial_scan = copy.deepcopy(scan)
+    retained_summary_items = {
+        row["source_item"] for row in partial_adjudication["summary"]
+    }
+    partial_scan["summary_items"] = [
+        item
+        for item in partial_scan["summary_items"]
+        if item["identity"] in retained_summary_items
+    ]
+    assembly = assemble_records(
+        partial_adjudication,
+        partial_scan,
+        output_dir,
+        render_policy(),
+    )
+    partial = _target_record(scan["summary"], assembly, progress.record)
+    progress.record["rule_dependencies"] = partial["rule_dependencies"]
+    _merge_outcomes(progress.record, partial["outcomes"])
+    progress.record["failures"] = copy.deepcopy(partial["failures"])
+    progress.cache = _target_cache(assembly, scan)
+
+
 def _review_required(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     progress: ValidationProgress,
+    context_levels: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
+    _materialize_partial_progress(scan, adjudication, progress)
     result = create_exchange(
         scan,
         adjudication,
@@ -241,11 +404,21 @@ def _review_required(
             "state_status": progress.state_status,
             "publish": progress.publish,
         },
+        context_levels,
     )
-    progress.record["continuation"] = {
-        "identity": result.get("session_identity", result["continuation"]),
-        "item_count": result["item_count"],
-    }
+    if "session_identity" in result:
+        progress.record["continuation"] = {
+            "kind": "paged",
+            "session": result["session"],
+            "session_identity": result["session_identity"],
+            "review_kind": result["review_kind"],
+        }
+    else:
+        progress.record["continuation"] = {
+            "kind": "ordinary",
+            "identity": result["continuation"],
+            "item_count": result["item_count"],
+        }
     if progress.publish:
         output_dir = Path(scan["project_root"]) / scan["log_root"]
         write_record_and_cache(output_dir, progress.record, progress.cache)
@@ -270,6 +443,21 @@ def _complete_adjudication(
     _merge_review_judgments(target_record, request.review_judgments)
     target_record["continuation"] = None
     target_cache = _target_cache(assembly, request.scan)
+    summary_identity = target_cache["files"].get(request.summary)
+    if not isinstance(summary_identity, Mapping):
+        raise ValidationToolError(
+            "completed validation lacks the maintained-summary identity"
+        )
+    target_record["completion_dependencies"] = [
+        {
+            "path": request.summary,
+            "role": "summary",
+            "identity": copy.deepcopy(summary_identity),
+        }
+    ]
+    target_record["projection"] = projection_for(
+        target_record, assembly.report_text
+    )
     if request.publish:
         publish_target_bundle(
             request.output_dir,
@@ -296,14 +484,169 @@ def _loaded_review_context(
     return None, scan, adjudication
 
 
+def _finish_deferred_acceptance(
+    summary_path: Path,
+    accepted: Mapping[str, Any],
+    progress: ValidationProgress,
+) -> dict[str, Any]:
+    """Apply one complete paged session and publish its canonical result."""
+
+    scan = cast(ScanRecord, accepted["scan"])
+    adjudication = cast(AdjudicationRecord, accepted["adjudication"])
+    scanned_summary = Path(scan["project_root"]) / scan["summary"]
+    if scanned_summary.resolve() != summary_path:
+        raise ValidationToolError("review session belongs to another summary")
+    decisions = cast(dict[str, Any], accepted["decisions"])
+    action_internal = {
+        "scan": scan,
+        "adjudication": adjudication,
+        "orphan_fingerprints": accepted["orphan_fingerprints"],
+    }
+    actions = decisions_to_actions(decisions, action_internal)
+    try:
+        decided, _ = apply_review_decisions(scan, adjudication, actions)
+    except ValidationToolError:
+        recovered = _migration_recovery_decisions(adjudication, decisions)
+        if recovered is None:
+            raise
+        recovery_actions = decisions_to_actions(recovered, action_internal)
+        decided, _ = apply_review_decisions(
+            scan, adjudication, recovery_actions
+        )
+        decisions = recovered
+    review_judgments = durable_review_judgments(
+        decisions, adjudication["date"]
+    )
+    _merge_review_judgments(progress.record, review_judgments)
+    if decided["review_queue"]:
+        decided = cast(
+            dict[str, Any],
+            _apply_reusable_judgments(
+                scan,
+                _normalize_migration_review_kinds(
+                    cast(AdjudicationRecord, decided)
+                ),
+                progress.record["judgments"],
+            ),
+        )
+    if decided["review_queue"]:
+        result = _review_required(
+            scan,
+            cast(AdjudicationRecord, decided),
+            progress,
+            _requested_context_levels(decisions),
+        )
+        finish_deferred_orphan_session(Path(str(accepted["session_dir"])))
+        result.update(
+            {
+                "summary": summary_path.as_posix(),
+                "state_status": progress.state_status,
+            }
+        )
+        return result
+    project_root = _project_root(summary_path)
+    summary = _relative_summary(summary_path, project_root)
+    target_record, assembly = _complete_adjudication(
+        CompletionRequest(
+            summary,
+            summary_path.with_suffix(""),
+            scan,
+            cast(AdjudicationRecord, decided),
+            progress.record,
+            review_judgments,
+            progress.publish,
+        )
+    )
+    finish_deferred_orphan_session(Path(str(accepted["session_dir"])))
+    return {
+        "status": "complete",
+        "summary": summary_path.as_posix(),
+        "record": (
+            summary_path.with_suffix("") / RECORD_FILENAME
+        ).as_posix(),
+        "cache": (summary_path.with_suffix("") / CACHE_FILENAME).as_posix(),
+        "report": (summary_path.with_suffix("") / "validation.md").as_posix(),
+        "progress_retained": bool(target_record["outcomes"]),
+        "published": progress.publish,
+        "state_status": progress.state_status,
+        "counts": assembly.counts(),
+    }
+
+
+def _migration_recovery_decisions(
+    adjudication: AdjudicationRecord, decisions: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Omit pre-adapter bare passes that the current producer contract rejects.
+
+    This controlled restart exists only while the eleven Phase 8 records are
+    migrating.  It preserves every other accepted row and lets the normal
+    durable-continuation path reissue the unprojectable questions.
+    """
+
+    resolved = {
+        (entry.get("id"), row.get("target"))
+        for entry in adjudication.get("entries", [])
+        for row in entry.get("targets", [])
+        if isinstance(row.get("producer_invocation"), str)
+    }
+    rejected = {
+        (
+            item.get("kind"),
+            item.get("entry"),
+            item.get("identity"),
+        )
+        for item in adjudication.get("review_queue", [])
+        if item.get("workflow", {}).get("status") == "unresolved"
+        and (item.get("entry"), item.get("identity")) not in resolved
+    }
+    rows = decisions.get("items")
+    if not isinstance(rows, list):
+        return None
+    retained = [
+        row
+        for row in rows
+        if not (
+            isinstance(row, Mapping)
+            and row.get("decision") == "pass"
+            and (
+                row.get("kind"),
+                row.get("entry"),
+                row.get("identity"),
+            )
+            in rejected
+        )
+    ]
+    if len(retained) == len(rows):
+        return None
+    return {"schema_version": decisions.get("schema_version"), "items": retained}
+
+
+def _requested_context_levels(
+    decisions: Mapping[str, Any],
+) -> dict[str, int]:
+    levels: dict[str, int] = {}
+    for row in decisions.get("items", []):
+        if row.get("decision") != "needs_context":
+            continue
+        current = int(row.get("context_level", 0))
+        if current >= 1:
+            raise ValidationToolError(
+                "review context is already at its terminal bounded level"
+            )
+        levels[context_request_key(row)] = current + 1
+    return levels
+
+
 def _continue_review(
     summary_path: Path, decision_file: Path, publish: bool
 ) -> dict[str, Any]:
     decisions, internal = load_decisions(decision_file)
     deferred, scan, adjudication = _loaded_review_context(summary_path, internal)
     output_dir = summary_path.with_suffix("")
+    project_root = _project_root(summary_path)
+    summary = _relative_summary(summary_path, project_root)
     record, cache, state_status = _load_target_state(
-        output_dir, summary_path.as_posix()
+        output_dir, summary, project_root
     )
     continuation = record.get("continuation") or {}
     expected_continuation = (
@@ -311,9 +654,13 @@ def _continue_review(
         if isinstance(deferred, Mapping)
         else decisions.get("continuation")
     )
-    if continuation.get("identity") != expected_continuation:
+    durable_identity = (
+        continuation.get("session_identity")
+        if continuation.get("kind") == "paged"
+        else continuation.get("identity")
+    )
+    if durable_identity != expected_continuation:
         raise ValidationToolError("review decisions are stale for the durable record")
-    session_dir: Path | None = None
     action_internal = internal
     if isinstance(deferred, Mapping):
         accepted = accept_deferred_orphan_page(decisions, internal)
@@ -328,16 +675,11 @@ def _continue_review(
                 }
             )
             return accepted
-        scan = cast(ScanRecord, accepted["scan"])
-        adjudication = cast(AdjudicationRecord, accepted["adjudication"])
-        scanned_summary = Path(scan["project_root"]) / scan["summary"]
-        if scanned_summary.resolve() != summary_path:
-            raise ValidationToolError("review session belongs to another summary")
-        decisions = cast(dict[str, Any], accepted["decisions"])
-        action_internal = {
-            "orphan_fingerprints": accepted["orphan_fingerprints"]
-        }
-        session_dir = Path(str(accepted["session_dir"]))
+        return _finish_deferred_acceptance(
+            summary_path,
+            accepted,
+            ValidationProgress(record, cache, state_status, publish),
+        )
     assert scan is not None
     assert adjudication is not None
     actions = decisions_to_actions(decisions, action_internal)
@@ -345,20 +687,21 @@ def _continue_review(
     review_judgments = durable_review_judgments(decisions, adjudication["date"])
     _merge_review_judgments(record, review_judgments)
     if decided["review_queue"]:
+        context_levels = _requested_context_levels(decisions)
         result = _review_required(
             scan,
             cast(AdjudicationRecord, decided),
             ValidationProgress(record, cache, state_status, publish),
+            context_levels,
         )
         result.update(
             {"summary": summary_path.as_posix(), "state_status": state_status}
         )
-        if session_dir is not None:
-            finish_deferred_orphan_session(session_dir)
+        finish_review_session(internal)
         return result
     target_record, assembly = _complete_adjudication(
         CompletionRequest(
-            summary_path.as_posix(),
+            summary,
             output_dir,
             scan,
             cast(AdjudicationRecord, decided),
@@ -367,8 +710,7 @@ def _continue_review(
             publish,
         )
     )
-    if session_dir is not None:
-        finish_deferred_orphan_session(session_dir)
+    finish_review_session(internal)
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -382,99 +724,234 @@ def _continue_review(
     }
 
 
+def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
+    continuation = context.record.get("continuation")
+    if not isinstance(continuation, Mapping):
+        return None
+    if continuation.get("kind") == "ordinary":
+        resumed = resume_ordinary_exchange(
+            context.project_root, context.record_summary, continuation
+        )
+    elif continuation.get("kind") == "paged":
+        resumed = resume_deferred_orphan_session(
+            context.project_root, continuation
+        )
+        if resumed["status"] == "ready":
+            return _finish_deferred_acceptance(
+                context.summary_path, resumed, context.progress()
+            )
+        recovery = empty_deferred_recovery_context(
+            context.project_root, continuation
+        )
+        restarted = _restart_empty_migration_session(context, recovery)
+        if restarted is not None:
+            return restarted
+    else:
+        raise ValidationToolError("durable continuation kind is unsupported")
+    resumed.update(
+        {
+            "summary": context.summary,
+            "state_status": context.state_status,
+            "progress_retained": bool(
+                context.record["outcomes"] or context.record["judgments"]
+            ),
+        }
+    )
+    return resumed
+
+
+def _normalize_migration_review_kinds(
+    adjudication: AdjudicationRecord,
+) -> AdjudicationRecord:
+    normalized = copy.deepcopy(adjudication)
+    for item in normalized.get("review_queue", []):
+        if (
+            item.get("kind") == "mechanical_failure"
+            and not item.get("hard_failures")
+            and item.get("producer_candidates")
+        ):
+            item["kind"] = "semantic_fallback"
+    return normalized
+
+
+def _restart_empty_migration_session(
+    context: LoadedValidation, recovery: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """Replace an untouched pre-adapter session through the durable boundary."""
+
+    if recovery is None or not context.request.publish:
+        return None
+    scan = cast(ScanRecord, recovery["scan"])
+    original = cast(AdjudicationRecord, recovery["adjudication"])
+    normalized = _normalize_migration_review_kinds(original)
+    decided = _apply_reusable_judgments(
+        scan, normalized, context.record["judgments"]
+    )
+    if decided == original:
+        return None
+    old_session = Path(str(recovery["session_dir"]))
+    if decided["review_queue"]:
+        result = _review_required(
+            scan, decided, context.progress()
+        )
+        finish_deferred_orphan_session(old_session)
+        result.update(
+            {
+                "summary": context.summary,
+                "state_status": context.state_status,
+            }
+        )
+        return result
+    target_record, assembly = _complete_adjudication(
+        CompletionRequest(
+            context.record_summary,
+            context.output_dir,
+            scan,
+            decided,
+            context.record,
+            [],
+            True,
+        )
+    )
+    finish_deferred_orphan_session(old_session)
+    return {
+        "status": "complete",
+        "summary": context.summary,
+        "record": (context.output_dir / RECORD_FILENAME).as_posix(),
+        "cache": (context.output_dir / CACHE_FILENAME).as_posix(),
+        "report": (context.output_dir / "validation.md").as_posix(),
+        "progress_retained": bool(target_record["outcomes"]),
+        "published": True,
+        "state_status": context.state_status,
+        "counts": assembly.counts(),
+    }
+
+
+def _apply_reusable_judgments(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    judgments: list[dict[str, Any]],
+) -> AdjudicationRecord:
+    if not adjudication["review_queue"] or not judgments:
+        return adjudication
+    actions = reusable_review_actions(scan, adjudication, judgments)
+    if not actions["actions"]:
+        return adjudication
+    decided, _ = apply_review_decisions(scan, adjudication, actions)
+    return cast(AdjudicationRecord, decided)
+
+
+def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
+    request = context.request
+    if request.decision_file is not None:
+        return _continue_review(
+            context.summary_path,
+            request.decision_file.resolve(),
+            request.publish,
+        )
+    resumed = _resume_active_review(context)
+    if resumed is not None:
+        return resumed
+    cached = (
+        _cached_completion(
+            context.summary_path,
+            context.output_dir,
+            context.record,
+            context.cache,
+            context.state_status.rsplit(":", 1)[-1],
+        )
+        if request.mode == "standard"
+        and context.state_status.startswith("native-v2:")
+        else None
+    )
+    if cached is not None:
+        cached["state_status"] = context.state_status
+        return cached
+    scan, metrics = scan_log(
+        ScanRequest(
+            context.summary_path,
+            request.jobs,
+            context.record,
+            context.cache,
+            RULES_VERSION,
+            request.mode,
+            scan_policy(),
+            context.project_root,
+        )
+    )
+    adjudication = prepare_adjudication_record(
+        scan,
+        request.result_date or date.today().isoformat(),
+        request.mode,
+    )
+    adjudication = _apply_reusable_judgments(
+        scan, adjudication, context.record["judgments"]
+    )
+    if adjudication["review_queue"]:
+        result = _review_required(scan, adjudication, context.progress())
+        result.update(
+            {"summary": context.summary, "state_status": context.state_status}
+        )
+        return result
+    target_record, assembly = _complete_adjudication(
+        CompletionRequest(
+            context.record_summary,
+            context.output_dir,
+            scan,
+            adjudication,
+            context.record,
+            [],
+            request.publish,
+        )
+    )
+    return {
+        "status": "complete",
+        "summary": context.summary,
+        "record": (context.output_dir / RECORD_FILENAME).as_posix(),
+        "cache": (context.output_dir / CACHE_FILENAME).as_posix(),
+        "report": (context.output_dir / "validation.md").as_posix(),
+        "progress_retained": bool(target_record["outcomes"]),
+        "published": request.publish,
+        "state_status": context.state_status,
+        "diagnostics": _diagnostics(metrics),
+        "counts": assembly.counts(),
+    }
+
+
 def validate(request: ValidationRequest) -> dict[str, Any]:
     """Validate one maintained summary through the public target operation."""
 
     summary_path = request.summary_path.resolve()
     output_dir = summary_path.with_suffix("")
-    summary = summary_path.as_posix()
+    project_root = _project_root(summary_path)
+    record_summary = _relative_summary(summary_path, project_root)
     report_path = output_dir / "validation.md"
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
-        record, cache, state_status = _load_target_state(output_dir, summary)
-        if request.decision_file is not None:
-            return _continue_review(
-                summary_path, request.decision_file.resolve(), request.publish
-            )
-        cached = (
-            _cached_completion(
-                summary_path, output_dir, record, cache, request.publish
-            )
-            if request.mode == "standard" and state_status.startswith("native:")
-            else None
+        record, cache, state_status = _load_target_state(
+            output_dir, record_summary, project_root
         )
-        if cached is not None:
-            cached["state_status"] = state_status
-            return cached
-        project_root = _project_root(summary_path)
-        scan, metrics = scan_log(
-            ScanRequest(
+        return _run_loaded_validation(
+            LoadedValidation(
+                request,
                 summary_path,
-                request.jobs,
+                output_dir,
+                project_root,
+                record_summary,
                 record,
                 cache,
-                RULES_VERSION,
-                request.mode,
-                scan_policy(),
-                project_root,
+                state_status,
             )
         )
-        adjudication = prepare_adjudication_record(
-            scan,
-            request.result_date or date.today().isoformat(),
-            request.mode,
-        )
-        if adjudication["review_queue"] and record["judgments"]:
-            actions = reusable_review_actions(
-                scan, adjudication, record["judgments"]
-            )
-            if actions["actions"]:
-                decided, _ = apply_review_decisions(
-                    scan, adjudication, actions
-                )
-                adjudication = cast(AdjudicationRecord, decided)
-        if adjudication["review_queue"]:
-            result = _review_required(
-                scan,
-                adjudication,
-                ValidationProgress(
-                    record, cache, state_status, request.publish
-                ),
-            )
-            result.update({"summary": summary, "state_status": state_status})
-            return result
-        target_record, assembly = _complete_adjudication(
-            CompletionRequest(
-                summary,
-                output_dir,
-                scan,
-                adjudication,
-                record,
-                [],
-                request.publish,
-            )
-        )
-        return {
-            "status": "complete",
-            "summary": summary,
-            "record": (output_dir / RECORD_FILENAME).as_posix(),
-            "cache": (output_dir / CACHE_FILENAME).as_posix(),
-            "report": (output_dir / "validation.md").as_posix(),
-            "progress_retained": bool(target_record["outcomes"]),
-            "published": request.publish,
-            "state_status": state_status,
-            "diagnostics": _diagnostics(metrics),
-            "counts": assembly.counts(),
-        }
     except Exception as exc:
         report_retained = (
             prior_report is not None
-            and (output_dir / "validation.md").is_file()
-            and (output_dir / "validation.md").read_bytes() == prior_report
+            and report_path.is_file()
+            and report_path.read_bytes() == prior_report
         )
         return {
             "status": "error",
-            "summary": summary,
+            "summary": summary_path.as_posix(),
             "error": str(exc),
             "progress_retained": (output_dir / RECORD_FILENAME).is_file(),
             "prior_report_retained": report_retained,

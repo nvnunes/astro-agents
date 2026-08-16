@@ -9,16 +9,18 @@ is disposable acceleration data: absence or corruption is always a cache miss.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .records import RecordPublicationError, _atomic_write_bytes, validation_lock
 
 RECORD_FILENAME = "validation-record.json"
 CACHE_FILENAME = "validation-cache.json"
-RECORD_SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 2
+NATIVE_V1_SCHEMA_VERSION = 1
 CACHE_SCHEMA_VERSION = 1
 RETIRED_VALIDATION_FILENAMES = (
     "validation-decisions.json",
@@ -34,8 +36,7 @@ class TargetRecordError(ValueError):
 def empty_record(summary: str, rules_version: str) -> dict[str, Any]:
     """Return a valid empty durable record for one maintained summary."""
 
-    if not summary:
-        raise TargetRecordError("durable record summary must be a nonempty path")
+    _validate_relative_path(summary, "summary")
     if not rules_version:
         raise TargetRecordError("durable record rules version must be nonempty")
     return {
@@ -51,6 +52,8 @@ def empty_record(summary: str, rules_version: str) -> dict[str, Any]:
         "result": None,
         "failures": [],
         "continuation": None,
+        "completion_dependencies": [],
+        "projection": None,
     }
 
 
@@ -82,6 +85,45 @@ def _nonempty_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TargetRecordError(f"{field} must be a nonempty string")
     return value
+
+
+def _validate_relative_path(value: Any, field: str) -> str:
+    path = _nonempty_string(value, field)
+    if "\\" in path:
+        raise TargetRecordError(f"{field} must be a project-relative POSIX path")
+    pure = PurePosixPath(path)
+    if pure.is_absolute() or path != pure.as_posix() or ".." in pure.parts:
+        raise TargetRecordError(f"{field} must be a project-relative POSIX path")
+    return path
+
+
+def sha256_bytes(value: bytes) -> str:
+    """Return the lowercase SHA-256 identity of exact bytes."""
+
+    return hashlib.sha256(value).hexdigest()
+
+
+def projection_for(record: Mapping[str, Any], report_text: str) -> dict[str, str]:
+    """Return the single identity and report hash for a complete projection."""
+
+    projection_state = {
+        "validation_rules_version": record["validation_rules_version"],
+        "result": record["result"],
+        "outcomes": record["outcomes"],
+        "failures": record["failures"],
+    }
+    identity = sha256_bytes(
+        json.dumps(
+            projection_state,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    return {
+        "identity": identity,
+        "report_sha256": sha256_bytes(report_text.encode("utf-8")),
+    }
 
 
 def _validate_identity(identity: Any, field: str) -> None:
@@ -222,7 +264,7 @@ def _validate_record_header(record: Mapping[str, Any]) -> None:
             "unsupported validation-record schema; expected "
             f"{RECORD_SCHEMA_VERSION}, got {record.get('schema_version')!r}"
         )
-    _nonempty_string(record.get("summary"), "summary")
+    _validate_relative_path(record.get("summary"), "summary")
     _nonempty_string(
         record.get("validation_rules_version"), "validation_rules_version"
     )
@@ -259,11 +301,58 @@ def _outcome_row_identity(outcome: Mapping[str, Any]) -> tuple[str, str, str, st
     )
 
 
-def decode_record(value: Any) -> dict[str, Any]:
-    """Validate and copy one authoritative durable record."""
+def _validate_projection(value: Any) -> None:
+    if value is None:
+        return
+    projection = _mapping(value, "projection")
+    if set(projection) != {"identity", "report_sha256"}:
+        raise TargetRecordError("projection has incorrect fields")
+    _validate_sha256(projection.get("identity"), "projection.identity")
+    _validate_sha256(
+        projection.get("report_sha256"), "projection.report_sha256"
+    )
 
-    record = _mapping(value, "durable record")
-    _validate_record_header(record)
+
+def _validate_continuation(value: Any) -> None:
+    if value is None:
+        return
+    continuation = _mapping(value, "continuation")
+    kind = continuation.get("kind")
+    if kind == "ordinary":
+        if set(continuation) != {"kind", "identity", "item_count"}:
+            raise TargetRecordError("ordinary continuation has incorrect fields")
+        _validate_sha256(continuation.get("identity"), "continuation.identity")
+        item_count = continuation.get("item_count")
+        if (
+            isinstance(item_count, bool)
+            or not isinstance(item_count, int)
+            or item_count < 1
+        ):
+            raise TargetRecordError(
+                "continuation.item_count must be a positive integer"
+            )
+        return
+    if kind == "paged":
+        if set(continuation) != {
+            "kind",
+            "review_kind",
+            "session",
+            "session_identity",
+        }:
+            raise TargetRecordError("paged continuation has incorrect fields")
+        _validate_relative_path(continuation.get("session"), "continuation.session")
+        _validate_sha256(
+            continuation.get("session_identity"),
+            "continuation.session_identity",
+        )
+        _nonempty_string(
+            continuation.get("review_kind"), "continuation.review_kind"
+        )
+        return
+    raise TargetRecordError("continuation.kind must be ordinary or paged")
+
+
+def _validate_record_rows(record: Mapping[str, Any]) -> None:
     _validate_record_rule_dependencies(record)
     judgments = _sequence(record.get("judgments"), "judgments")
     outcomes = _sequence(record.get("outcomes"), "outcomes")
@@ -281,9 +370,34 @@ def decode_record(value: Any) -> dict[str, Any]:
     result = record.get("result")
     if result is not None:
         _mapping(result, "result")
-    continuation = record.get("continuation")
-    if continuation is not None:
-        _mapping(continuation, "continuation")
+
+
+def decode_record(value: Any) -> dict[str, Any]:
+    """Validate and copy one authoritative durable record."""
+
+    record = _mapping(value, "durable record")
+    expected_fields = {
+        "schema_version",
+        "summary",
+        "validation_rules_version",
+        "rule_dependencies",
+        "judgments",
+        "outcomes",
+        "result",
+        "failures",
+        "continuation",
+        "completion_dependencies",
+        "projection",
+    }
+    if set(record) != expected_fields:
+        raise TargetRecordError("durable record has incorrect fields")
+    _validate_record_header(record)
+    _validate_record_rows(record)
+    _validate_dependencies(
+        record.get("completion_dependencies"), "completion_dependencies"
+    )
+    _validate_projection(record.get("projection"))
+    _validate_continuation(record.get("continuation"))
     return copy.deepcopy(dict(record))
 
 
@@ -313,8 +427,106 @@ def _read_json(path: Path) -> Any:
         raise TargetRecordError(f"cannot read valid JSON from {path}: {exc}") from exc
 
 
-def load_record(path: Path) -> dict[str, Any]:
-    """Load authoritative state, failing actionably on any malformed field."""
+def _decode_native_v1(value: Any) -> dict[str, Any]:
+    """Decode only the native schema deployed immediately before v2."""
+
+    record = _mapping(value, "native-v1 durable record")
+    expected_fields = {
+        "schema_version",
+        "summary",
+        "validation_rules_version",
+        "rule_dependencies",
+        "judgments",
+        "outcomes",
+        "result",
+        "failures",
+        "continuation",
+    }
+    if set(record) != expected_fields:
+        raise TargetRecordError("native-v1 durable record has incorrect fields")
+    if record.get("schema_version") != NATIVE_V1_SCHEMA_VERSION:
+        raise TargetRecordError("record is not the deployed native-v1 schema")
+    _nonempty_string(record.get("summary"), "summary")
+    _nonempty_string(
+        record.get("validation_rules_version"), "validation_rules_version"
+    )
+    _validate_record_rows(record)
+    continuation = record.get("continuation")
+    if continuation is not None:
+        _mapping(continuation, "continuation")
+    return copy.deepcopy(dict(record))
+
+
+def _native_v1_summary(
+    raw_summary: str, expected_summary: str, project_root: Path
+) -> str:
+    expected = _validate_relative_path(expected_summary, "expected summary")
+    raw_path = Path(raw_summary)
+    expected_path = (project_root / expected).resolve()
+    if raw_path.is_absolute():
+        if raw_path.resolve() != expected_path:
+            raise TargetRecordError(
+                "durable validation record belongs to another summary"
+            )
+        return expected
+    normalized = _validate_relative_path(raw_summary, "summary")
+    if normalized != expected:
+        raise TargetRecordError("durable validation record belongs to another summary")
+    return normalized
+
+
+def _native_v1_completion_dependencies(
+    record: Mapping[str, Any], summary: str
+) -> list[dict[str, Any]]:
+    dependencies: list[dict[str, Any]] = []
+    for outcome in record.get("outcomes", []):
+        for dependency in outcome.get("dependencies", []):
+            if (
+                dependency.get("path") == summary
+                and dependency.get("role") == "summary"
+                and dependency not in dependencies
+            ):
+                dependencies.append(copy.deepcopy(dependency))
+    return dependencies
+
+
+def upgrade_native_v1(
+    value: Any, expected_summary: str, project_root: Path
+) -> dict[str, Any]:
+    """Convert the exact deployed native-v1 record without publishing it."""
+
+    old = _decode_native_v1(value)
+    summary = _native_v1_summary(
+        str(old["summary"]), expected_summary, project_root
+    )
+    continuation = old.get("continuation")
+    if continuation is not None:
+        if set(continuation) != {"identity", "item_count"}:
+            raise TargetRecordError(
+                "active native-v1 continuation cannot be converted safely"
+            )
+        continuation = {"kind": "ordinary", **continuation}
+    converted = {
+        **old,
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "summary": summary,
+        "continuation": continuation,
+        "completion_dependencies": _native_v1_completion_dependencies(
+            old, summary
+        ),
+        "projection": None,
+    }
+    return decode_record(converted)
+
+
+def load_record_with_source(
+    path: Path,
+    *,
+    expected_summary: str | None = None,
+    project_root: Path | None = None,
+    allow_native_v1: bool = True,
+) -> tuple[dict[str, Any], int]:
+    """Load one record and report the native schema found on disk."""
 
     try:
         value = _read_json(path)
@@ -322,7 +534,46 @@ def load_record(path: Path) -> dict[str, Any]:
         raise TargetRecordError(
             f"durable validation record is missing: {path}"
         ) from exc
-    return decode_record(value)
+    raw = _mapping(value, "durable record")
+    source_version = raw.get("schema_version")
+    if source_version == RECORD_SCHEMA_VERSION:
+        record = decode_record(raw)
+        if expected_summary is not None and record["summary"] != expected_summary:
+            raise TargetRecordError(
+                "durable validation record belongs to another summary"
+            )
+        return record, RECORD_SCHEMA_VERSION
+    if source_version == NATIVE_V1_SCHEMA_VERSION and allow_native_v1:
+        if expected_summary is None or project_root is None:
+            raise TargetRecordError(
+                "native-v1 loading requires the requested summary and project root"
+            )
+        return (
+            upgrade_native_v1(raw, expected_summary, project_root),
+            NATIVE_V1_SCHEMA_VERSION,
+        )
+    raise TargetRecordError(
+        "unsupported validation-record schema; expected "
+        f"{RECORD_SCHEMA_VERSION}, got {source_version!r}"
+    )
+
+
+def load_record(
+    path: Path,
+    *,
+    expected_summary: str | None = None,
+    project_root: Path | None = None,
+    allow_native_v1: bool = True,
+) -> dict[str, Any]:
+    """Load authoritative state, failing actionably on malformed ownership."""
+
+    record, _ = load_record_with_source(
+        path,
+        expected_summary=expected_summary,
+        project_root=project_root,
+        allow_native_v1=allow_native_v1,
+    )
+    return record
 
 
 def load_cache(path: Path) -> tuple[dict[str, Any], str]:

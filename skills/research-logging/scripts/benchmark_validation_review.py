@@ -18,10 +18,16 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
-from validation.adjudication import ReviewPacketRequest, make_review_packet
 from validation.contracts import AdjudicationRecord, ScanRecord
 from validation.producer_bindings import identity_for_path, resolved_identity_cache
-from validation.review_index import ReviewContextIndex, ReviewQuerySession
+from validation.review_exchange import (
+    MAX_PACKET_BYTES,
+    accept_deferred_orphan_page,
+    create_exchange,
+    finish_deferred_orphan_session,
+    finish_review_session,
+    load_decisions,
+)
 
 GENERATOR_VERSION = 2
 DEFAULT_ORPHANS = 12_000
@@ -139,6 +145,7 @@ def generated_workload(
         {
             "schema_version": 7,
             "validation_rules_version": "research-log-validation-v43",
+            "date": "2026-08-16",
             "summary": [],
             "entries": [],
             "review_queue": [
@@ -409,20 +416,32 @@ def _single_run(mode: str, orphan_count: int) -> dict[str, Any]:
             packet_bytes = len("\n".join(first_batch).encode("utf-8"))
             metrics: dict[str, Any] = counters
         else:
-            index = ReviewContextIndex.build(scan)
-            session = ReviewQuerySession(index)
-            for candidate in adjudication["review_queue"][0]["candidates"]:
-                session.candidate_invocations("e001", candidate["identity"], [])
-            review_metrics: dict[str, Any] = {}
-            packet, _ = make_review_packet(
-                scan,
-                adjudication,
-                ReviewPacketRequest(batch_size=DEFAULT_BATCH_SIZE),
-                metrics=review_metrics,
-                query_session=session,
+            exchange = create_exchange(scan, adjudication, {})
+            decision_path = Path(exchange["decision_file"])
+            template = json.loads(decision_path.read_text(encoding="utf-8"))
+            for item in template["items"]:
+                item["decision"] = "unresolved"
+                item["rationale"] = "No local evidence connection is recorded."
+            decision_path.write_text(
+                json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)
+                + "\n",
+                encoding="utf-8",
             )
-            packet_bytes = len(packet.encode("utf-8"))
-            metrics = review_metrics
+            decisions, internal = load_decisions(decision_path)
+            if "session_identity" in exchange:
+                following = accept_deferred_orphan_page(decisions, internal)
+                finish_deferred_orphan_session(decision_path.parent.parent)
+            else:
+                following = {}
+                finish_review_session(internal)
+            metrics = {
+                "candidates_indexed": orphan_count,
+                "first_packet_items": exchange["item_count"],
+                "accepted_items": len(decisions["items"]),
+                "next_packet_items": following.get("item_count", 0),
+                "packet_byte_bound": MAX_PACKET_BYTES,
+            }
+            packet_bytes = exchange["byte_count"]
         elapsed = time.monotonic() - started
         return {
             "mode": mode,
@@ -432,6 +451,75 @@ def _single_run(mode: str, orphan_count: int) -> dict[str, Any]:
             "peak_memory_bytes": _peak_memory_bytes(),
             "packet_bytes": packet_bytes,
             "metrics": metrics,
+            "machine": _machine_context(),
+        }
+
+
+def _single_fanout(materials: int, candidates_per_material: int) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(
+        prefix="validation-review-fanout-benchmark-"
+    ) as directory:
+        root = Path(directory)
+        candidates = [
+            {
+                "material": f"docs/benchmark/data/material-{material:03d}.csv",
+                "invocation": f"invocation-{candidate:03d}",
+                "entry": "e001",
+                "line": candidate + 1,
+                "command": f"python produce.py --case {candidate}",
+            }
+            for material in range(materials)
+            for candidate in range(candidates_per_material)
+        ]
+        scan = cast(
+            ScanRecord,
+            {
+                "summary": "docs/benchmark.md",
+                "project_root": root.as_posix(),
+                "validation_rules_version": "benchmark-rules",
+                "input_fingerprint": _content_identity(
+                    materials, candidates_per_material
+                ),
+                "entries": [{"id": "e001", "commands": []}],
+            },
+        )
+        adjudication = cast(
+            AdjudicationRecord,
+            {
+                "date": "2026-08-16",
+                "review_queue": [
+                    {
+                        "entry": "e001",
+                        "kind": "upstream_producer",
+                        "identity": "docs/benchmark/data/result.csv",
+                        "producer_candidates": candidates,
+                        "workflow": {"status": "unresolved"},
+                        "evidence": [],
+                    }
+                ],
+                "summary": [],
+            },
+        )
+        started = time.monotonic()
+        exchange = create_exchange(scan, adjudication, {})
+        elapsed = time.monotonic() - started
+        decision_path = Path(exchange["decision_file"])
+        internal = json.loads(
+            (decision_path.parent / ".continuation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        finish_review_session(internal)
+        return {
+            "kind": "upstream_fanout",
+            "materials": materials,
+            "candidates_per_material": candidates_per_material,
+            "candidate_relationships": len(candidates),
+            "question_count": exchange["item_count"],
+            "packet_bytes": exchange["byte_count"],
+            "packet_byte_bound": MAX_PACKET_BYTES,
+            "elapsed_seconds": elapsed,
+            "peak_memory_bytes": _peak_memory_bytes(),
             "machine": _machine_context(),
         }
 
@@ -483,6 +571,32 @@ def _driver(args: argparse.Namespace) -> dict[str, Any]:
                     "samples": samples,
                 }
             )
+    fanout_results = []
+    for fanout in args.fanout:
+        materials, candidates = (int(value) for value in fanout.split("x", 1))
+        samples = []
+        for _ in range(args.runs):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    executable.as_posix(),
+                    "--single-fanout",
+                    fanout,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            samples.append(json.loads(completed.stdout))
+        fanout_results.append(
+            {
+                "fanout": fanout,
+                "median_seconds": statistics.median(
+                    sample["elapsed_seconds"] for sample in samples
+                ),
+                "samples": samples,
+            }
+        )
     return {
         "generator_version": GENERATOR_VERSION,
         "default_generator_identity": _content_identity(
@@ -491,16 +605,19 @@ def _driver(args: argparse.Namespace) -> dict[str, Any]:
         "warmups": args.warmups,
         "runs": args.runs,
         "results": results,
+        "fanout_results": fanout_results,
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--single", action="store_true")
+    parser.add_argument("--single-fanout")
     parser.add_argument(
-        "--mode", action="append", choices=("legacy", "indexed"), default=[]
+        "--mode", action="append", choices=("legacy", "public"), default=[]
     )
     parser.add_argument("--orphans", action="append", type=int, default=[])
+    parser.add_argument("--fanout", action="append", default=[])
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--output", type=Path)
@@ -509,17 +626,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    modes = args.mode or ["indexed"]
+    modes = args.mode or ["public"]
     orphans = args.orphans or [DEFAULT_ORPHANS, DOUBLED_ORPHANS]
+    fanout = args.fanout or ["5x5", "10x10"]
     if any(value < 1 for value in orphans):
         raise SystemExit("--orphans values must be positive")
-    if args.single:
+    if args.single_fanout:
+        materials, candidates = (
+            int(value) for value in args.single_fanout.split("x", 1)
+        )
+        result = _single_fanout(materials, candidates)
+    elif args.single:
         if len(modes) != 1 or len(orphans) != 1:
             raise SystemExit("--single requires one --mode and one --orphans value")
         result = _single_run(modes[0], orphans[0])
     else:
         args.mode = modes
         args.orphans = orphans
+        args.fanout = fanout
         result = _driver(args)
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:

@@ -4,29 +4,35 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import itertools
 import json
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
+from .migration_review_reuse import (
+    SEMANTIC_REVIEW_RULES,
+    migration_reusable_answer,
+)
 from .review_batches import (
     OrphanBatchRequest,
     ordered_orphan_candidates,
     orphan_candidate_fingerprint,
     select_orphan_batch,
 )
+from .review_index import ReviewContextIndex, ReviewQuerySession
 
 EXCHANGE_SCHEMA_VERSION = 1
 INTERNAL_FILENAME = ".continuation.json"
 MAX_PACKET_ITEMS = 200
+MAX_PACKET_BYTES = 65_536
+MAX_EXPANDED_CONTEXT_BYTES = MAX_PACKET_BYTES // 2
 DEFERRED_SESSION_SCHEMA_VERSION = 1
 DEFERRED_BASE_FILENAME = "base.json"
 DEFERRED_INDEX_FILENAME = "index.json"
-DEFERRED_MANIFEST_FILENAME = "manifest.json"
+SESSION_STATE_FILENAME = "state.json"
+VALIDATION_WORK_ROOT = ".astro-agents-validation-work"
 
 
 def _fingerprint(value: Any) -> str:
@@ -57,37 +63,89 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _summary_work_root(project_root: Path, summary: str) -> Path:
+    summary_identity = _sha256(summary.encode("utf-8"))
+    return project_root / VALIDATION_WORK_ROOT / summary_identity
+
+
+def _session_locator(summary: str, session_identity: str) -> str:
+    return (
+        Path(VALIDATION_WORK_ROOT)
+        / _sha256(summary.encode("utf-8"))
+        / session_identity
+    ).as_posix()
+
+
+def _session_path(project_root: Path, locator: str) -> Path:
+    work_root = (project_root / VALIDATION_WORK_ROOT).resolve()
+    session_dir = (project_root / locator).resolve()
+    if not session_dir.is_relative_to(work_root) or session_dir.is_symlink():
+        raise ValidationToolError("review session locator is invalid")
+    return session_dir
+
+
 def _question(item: Mapping[str, Any]) -> str:
-    return str(item.get("reason") or f"Decide the {item['kind']} question.")
+    kind = item["kind"]
+    if kind == "semantic_fallback" and item.get("producer_candidates"):
+        return "Which exact recorded invocation establishes provenance?"
+    questions = {
+        "mechanical_failure": "Retain the reported deterministic failure?",
+        "semantic_fallback": "Does the supplied evidence satisfy the stated contract?",
+        "collection_scope": "Which listed members materially support this target?",
+        "reproduction": "What was the independent retained-evidence comparison result?",
+    }
+    return str(item.get("reason") or questions.get(kind, f"Decide {kind}."))
 
 
-def _ordinary_template(item: Mapping[str, Any]) -> dict[str, Any]:
-    kind = str(item["kind"])
-    allowed: list[Any]
+def _semantic_fallback_choices(item: Mapping[str, Any]) -> list[str]:
+    candidates = [
+        str(candidate["invocation"])
+        for candidate in item.get("producer_candidates", [])
+    ]
+    if candidates:
+        return [*candidates, "fail:workflow"]
+    choices = ["pass"]
+    if item.get("workflow", {}).get("status") in {"fail", "unresolved"}:
+        choices.append("fail:workflow")
+    if any(
+        evidence.get("result", {}).get("status") in {"fail", "unresolved"}
+        for evidence in item.get("evidence", [])
+    ):
+        choices.append("fail:evidence")
+    if item.get("integrity_status") in {"fail", "unresolved"}:
+        choices.append("fail:integrity")
+    return choices
+
+
+def context_request_key(item: Mapping[str, Any]) -> str:
+    """Return the stable subject key for one context-expansion request."""
+
+    return json.dumps(
+        [
+            item.get("kind"),
+            item.get("entry"),
+            item.get("identity"),
+            item.get("material"),
+        ],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _ordinary_allowed_decisions(
+    item: Mapping[str, Any],
+    kind: str,
+    material: str | None,
+    invocations: list[str] | None,
+) -> list[Any]:
     if kind == "upstream_producer":
-        by_material: dict[str, list[str]] = {}
-        for candidate in item.get("producer_candidates", []):
-            material = str(candidate["material"])
-            invocation = str(candidate["invocation"])
-            values = by_material.setdefault(material, [])
-            if invocation not in values:
-                values.append(invocation)
-        allowed = [
-            {
-                "bindings": [
-                    {"material": material, "invocation": invocation}
-                    for material, invocation in zip(
-                        sorted(by_material), choices, strict=True
-                    )
-                ]
-            }
-            for choices in itertools.product(
-                *(by_material[material] for material in sorted(by_material))
+        if material is None or not invocations:
+            raise ValidationToolError(
+                "upstream producer review requires one material and candidates"
             )
-        ]
-        allowed.append("needs_context")
-    elif kind == "collection_scope":
-        allowed = [
+        return [*invocations, "unresolved"]
+    if kind == "collection_scope":
+        return [
             {
                 "members": {
                     str(collection): ["<relative/member>"]
@@ -95,27 +153,104 @@ def _ordinary_template(item: Mapping[str, Any]) -> dict[str, Any]:
                 }
             },
             "fail",
-            "needs_context",
         ]
-    elif kind == "semantic_provenance":
-        allowed = ["fail", "needs_context"]
-        if item.get("candidates"):
-            allowed.insert(0, "pass")
-    elif item.get("hard_failures"):
-        allowed = ["keep", "needs_context"]
-    else:
-        allowed = ["pass", "fail", "needs_context"]
-    identity = _fingerprint(item)
+    if kind == "semantic_provenance":
+        return ["pass", "fail"] if item.get("candidates") else ["fail"]
+    if kind == "semantic_fallback":
+        return _semantic_fallback_choices(item)
+    if kind == "reproduction":
+        return [
+            "reproduced",
+            "reproduction-fail",
+            "not-run",
+            "not-applicable",
+        ]
+    return ["keep"] if item.get("hard_failures") else ["pass", "fail"]
+
+
+def _producer_dependencies(item: Mapping[str, Any]) -> dict[str, Any]:
     return {
+        str(candidate["invocation"]): [
+            {
+                "path": candidate["coverage_identity"],
+                "role": "producer",
+                "members": [candidate["target_member"]],
+            }
+        ]
+        for candidate in item.get("producer_candidates", [])
+        if candidate.get("coverage_kind") == "scoped-collection"
+        and candidate.get("target_member")
+    }
+
+
+def _ordinary_template(
+    item: Mapping[str, Any],
+    context_level: int = 0,
+    *,
+    material: str | None = None,
+    invocations: list[str] | None = None,
+) -> dict[str, Any]:
+    kind = str(item["kind"])
+    allowed = _ordinary_allowed_decisions(item, kind, material, invocations)
+    if context_level == 0:
+        allowed.append("needs_context")
+    identity = (
+        _fingerprint(item)
+        if context_level == 0 and material is None
+        else _fingerprint(
+            {
+                "queue_item": item,
+                "material": material,
+                "context_level": context_level,
+            }
+        )
+    )
+    template = {
         "id": identity,
         "kind": kind,
         "entry": item.get("entry"),
         "identity": item.get("identity"),
-        "question": _question(item),
+        "question": (
+            f"Which recorded invocation produces `{material}`?"
+            if material is not None
+            else _question(item)
+        ),
         "allowed_decisions": allowed,
+        "context_level": context_level,
+        "context_identity": None,
         "decision": None,
         "rationale": None,
     }
+    if material is not None:
+        template["material"] = material
+    if kind == "semantic_fallback":
+        template["producer_dependencies"] = _producer_dependencies(item)
+    return template
+
+
+def _upstream_templates(
+    item: Mapping[str, Any], context_levels: Mapping[str, int]
+) -> list[dict[str, Any]]:
+    by_material: dict[str, list[str]] = {}
+    for candidate in item.get("producer_candidates", []):
+        material = str(candidate["material"])
+        invocation = str(candidate["invocation"])
+        values = by_material.setdefault(material, [])
+        if invocation not in values:
+            values.append(invocation)
+    templates = []
+    for material in sorted(by_material):
+        subject = {**item, "material": material}
+        level = context_levels.get(context_request_key(subject), 0)
+        templates.append(
+            _ordinary_template(
+                item,
+                level,
+                material=material,
+                invocations=by_material[material],
+            )
+        )
+    return templates
 
 
 def _orphan_templates(
@@ -136,7 +271,6 @@ def _orphan_templates(
         if isinstance(note.get("sha256"), str)
     ]
     allowed = ["unresolved", "connected", *[f"retain:{note}" for note in notes]]
-    allowed.append("needs_context")
     templates = []
     for candidate in batch.candidates:
         identity = str(candidate["identity"])
@@ -154,6 +288,8 @@ def _orphan_templates(
                 "identity": identity,
                 "question": "How is this locally unconnected candidate classified?",
                 "allowed_decisions": allowed,
+                "context_level": 0,
+                "context_identity": None,
                 "decision": None,
                 "rationale": None,
             }
@@ -162,27 +298,310 @@ def _orphan_templates(
 
 
 def _template_items(
-    scan: ScanRecord, adjudication: AdjudicationRecord
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    context_levels: Mapping[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    levels = context_levels or {}
     items: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
     for queue_item in adjudication["review_queue"]:
         remaining = MAX_PACKET_ITEMS - len(items)
         if remaining < 1:
             break
+        if queue_item["kind"] == "upstream_producer":
+            expanded = _upstream_templates(queue_item, levels)
+            if len(expanded) > remaining:
+                if items:
+                    break
+                raise ValidationToolError(
+                    "one upstream-producer question group exceeds the item bound"
+                )
+            items.extend(expanded)
+            continue
         if queue_item["kind"] != "orphan_candidates":
-            items.append(_ordinary_template(queue_item))
+            level = levels.get(context_request_key(queue_item), 0)
+            items.append(_ordinary_template(queue_item, level))
             continue
         expanded, fingerprints = _orphan_templates(
             scan, adjudication, queue_item, remaining
         )
         items.extend(expanded)
         orphan_fingerprints[str(queue_item["entry"])] = fingerprints
+    for item in items:
+        context = _packet_context(scan, adjudication, item)
+        item["context_identity"] = _fingerprint(context)
     return items, orphan_fingerprints
 
 
+def _all_template_items(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    context_levels: Mapping[str, int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    """Return the complete linear question set for a bounded session."""
+
+    levels = context_levels or {}
+    items: list[dict[str, Any]] = []
+    orphan_fingerprints: dict[str, dict[str, str]] = {}
+    for queue_item in adjudication["review_queue"]:
+        if queue_item["kind"] == "upstream_producer":
+            items.extend(_upstream_templates(queue_item, levels))
+        elif queue_item["kind"] == "orphan_candidates":
+            candidates = queue_item.get("candidates", [])
+            expanded, fingerprints = _orphan_templates(
+                scan, adjudication, queue_item, max(1, len(candidates))
+            )
+            items.extend(expanded)
+            orphan_fingerprints[str(queue_item["entry"])] = fingerprints
+        else:
+            level = levels.get(context_request_key(queue_item), 0)
+            items.append(_ordinary_template(queue_item, level))
+    for item in items:
+        item["context_identity"] = _fingerprint(
+            _packet_context(scan, adjudication, item)
+        )
+    return items, orphan_fingerprints
+
+
+def _semantic_provenance_context(
+    adjudication: AdjudicationRecord, queue_item: Mapping[str, Any]
+) -> dict[str, Any]:
+    association = next(
+        (
+            row
+            for row in adjudication.get("summary", [])
+            if row.get("item") == queue_item.get("identity")
+        ),
+        {},
+    )
+    return {
+        "summary": {
+            key: queue_item.get(key)
+            for key in ("identity", "section", "line", "reason")
+        },
+        "association": association,
+        "candidates": queue_item.get("candidates", []),
+    }
+
+
+def _upstream_context(
+    queue_item: Mapping[str, Any], material: Any
+) -> dict[str, Any]:
+    return {
+        "target": queue_item.get("identity"),
+        "material": material,
+        "candidates": [
+            candidate
+            for candidate in queue_item.get("producer_candidates", [])
+            if candidate.get("material") == material
+        ],
+        "workflow": queue_item.get("workflow"),
+        "evidence": queue_item.get("evidence", []),
+    }
+
+
+def _collection_context(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+) -> dict[str, Any]:
+    inventories = {}
+    for collection in queue_item.get("collections", []):
+        raw_path = scan.get("resolved_paths", {}).get(collection)
+        members: list[str] = []
+        if isinstance(raw_path, str) and Path(raw_path).is_dir():
+            members = sorted(
+                child.name for child in Path(raw_path).iterdir() if child.is_file()
+            )[:80]
+        inventories[str(collection)] = members
+    return {
+        "identity": queue_item.get("identity"),
+        "collections": queue_item.get("collections", []),
+        "reason": queue_item.get("reason"),
+        "target_dependencies": _target_row(adjudication, queue_item).get(
+            "dependencies", []
+        ),
+        "recorded_invocations": _eligible_invocations(scan, queue_item),
+        "shallow_member_inventory": inventories,
+    }
+
+
+def _entry(scan: ScanRecord, queue_item: Mapping[str, Any]) -> Mapping[str, Any]:
+    return next(
+        (
+            entry
+            for entry in scan.get("entries", [])
+            if entry.get("id") == queue_item.get("entry")
+        ),
+        {},
+    )
+
+
+def _target_row(
+    adjudication: AdjudicationRecord, queue_item: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    entry = next(
+        (
+            row
+            for row in adjudication.get("entries", [])
+            if row.get("id") == queue_item.get("entry")
+        ),
+        {},
+    )
+    return next(
+        (
+            row
+            for row in entry.get("targets", [])
+            if row.get("target") == queue_item.get("identity")
+        ),
+        {},
+    )
+
+
+def _eligible_invocations(
+    scan: ScanRecord, queue_item: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    session = ReviewQuerySession(ReviewContextIndex.build(scan))
+    return [
+        {
+            "invocation": invocation.key,
+            "entry": invocation.entry_id,
+            "line": invocation.command.get("line"),
+            "command": invocation.command.get("command", ""),
+            "path_arguments": invocation.command.get("path_arguments", []),
+        }
+        for invocation in session.eligible_candidate_invocations(
+            str(queue_item.get("entry", "")),
+            str(queue_item.get("identity", "")),
+            queue_item.get("sections", []),
+        )
+    ]
+
+
+def _target_review_context(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+) -> dict[str, Any]:
+    kind = queue_item["kind"]
+    expected = {
+        "mechanical_failure": (
+            "Deterministic failures remain failures; semantic review may retain "
+            "the finding but cannot turn it into a pass."
+        ),
+        "semantic_fallback": (
+            "Integrity and provenance pass only when the supplied workflow and "
+            "presented-evidence associations support the retained target."
+        ),
+    }[kind]
+    entry = _entry(scan, queue_item)
+    return {
+        "target": queue_item.get("identity"),
+        "sections": queue_item.get("sections", []),
+        "failed_checks": queue_item.get("hard_failures", []),
+        "observed": {
+            "integrity": queue_item.get("integrity"),
+            "integrity_status": queue_item.get("integrity_status"),
+            "workflow": queue_item.get("workflow"),
+            "evidence": queue_item.get("evidence", []),
+        },
+        "expected_contract": expected,
+        "producer_candidates": queue_item.get("producer_candidates", []),
+        "target_dependencies": _target_row(adjudication, queue_item).get(
+            "dependencies", []
+        ),
+        "authored_validation_notes": entry.get("validation_notes", []),
+    }
+
+
+def _reproduction_context(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+) -> dict[str, Any]:
+    entry = _entry(scan, queue_item)
+    return {
+        "target": queue_item.get("identity"),
+        "sections": queue_item.get("sections", []),
+        "eligible_invocations": _eligible_invocations(scan, queue_item),
+        "retained_evidence": _target_row(adjudication, queue_item).get(
+            "dependencies", []
+        ),
+        "comparison_rule": entry.get("validation_notes", []),
+        "output_constraint": (
+            "Run only one listed invocation with every output redirected to a "
+            "temporary location; do not change retained evidence."
+        ),
+    }
+
+
+def _minimum_context(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    item: Mapping[str, Any],
+) -> dict[str, Any]:
+    kind = item["kind"]
+    if kind == "semantic_provenance":
+        return _semantic_provenance_context(adjudication, queue_item)
+    if kind == "upstream_producer":
+        return _upstream_context(queue_item, item.get("material"))
+    if kind == "collection_scope":
+        return _collection_context(scan, adjudication, queue_item)
+    if kind in {"mechanical_failure", "semantic_fallback"}:
+        return _target_review_context(scan, adjudication, queue_item)
+    if kind == "reproduction":
+        return _reproduction_context(scan, adjudication, queue_item)
+    raise ValidationToolError(f"review kind lacks a context projection: {kind}")
+
+
+def _expanded_context(
+    scan: ScanRecord,
+    queue_item: Mapping[str, Any],
+    minimum: Mapping[str, Any],
+) -> dict[str, Any]:
+    entry = _entry(scan, queue_item)
+    recursive_inventory: dict[str, list[str]] = {}
+    if queue_item.get("kind") == "collection_scope":
+        used_bytes = 0
+        for collection in queue_item.get("collections", []):
+            raw_path = scan.get("resolved_paths", {}).get(collection)
+            members: list[str] = []
+            if isinstance(raw_path, str) and Path(raw_path).is_dir():
+                root = Path(raw_path)
+                for child in sorted(root.rglob("*")):
+                    if not child.is_file():
+                        continue
+                    member = child.relative_to(root).as_posix()
+                    used_bytes += len(member.encode("utf-8")) + 4
+                    if used_bytes > MAX_EXPANDED_CONTEXT_BYTES:
+                        raise ValidationToolError(
+                            "focused collection inventory exceeds its packet "
+                            "context budget"
+                        )
+                    members.append(member)
+            recursive_inventory[str(collection)] = members
+    return {
+        "minimum": minimum,
+        "focused_expansion": {
+            "entry_path": entry.get("path"),
+            "sections": queue_item.get("sections", []),
+            "validation_notes": entry.get("validation_notes", []),
+            "decision_hint": queue_item.get("reason"),
+            **(
+                {"recursive_member_inventory": recursive_inventory}
+                if recursive_inventory
+                else {}
+            ),
+        },
+    }
+
+
 def _packet_context(
-    adjudication: AdjudicationRecord, item: Mapping[str, Any]
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    item: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     for queue_item in adjudication["review_queue"]:
         if queue_item.get("entry") != item.get("entry"):
@@ -200,17 +619,19 @@ def _packet_context(
             )
             return {
                 "candidate": candidate,
+                "reachability_reason": queue_item.get("reason"),
                 "validation_notes": queue_item.get("validation_notes", []),
             }
-        if (
-            queue_item.get("kind") == item.get("kind")
-            and queue_item.get("identity") == item.get("identity")
-        ):
-            return {
-                key: value
-                for key, value in queue_item.items()
-                if key not in {"candidates"}
-            }
+        if queue_item.get("kind") != item.get("kind") or queue_item.get(
+            "identity"
+        ) != item.get("identity"):
+            continue
+        context = _minimum_context(scan, adjudication, queue_item, item)
+        return (
+            _expanded_context(scan, queue_item, context)
+            if item.get("context_level") == 1
+            else context
+        )
     return {}
 
 
@@ -266,7 +687,7 @@ def _render_packet(
         str(scan["summary"]),
         items,
         continuation,
-        [_packet_context(adjudication, item) for item in items],
+        [_packet_context(scan, adjudication, item) for item in items],
     )
 
 
@@ -291,6 +712,56 @@ def _continuation_identity(
     )
 
 
+def _item_group_ends(items: list[dict[str, Any]]) -> list[int]:
+    ends: list[int] = []
+    start = 0
+    while start < len(items):
+        item = items[start]
+        if item["kind"] == "upstream_producer":
+            key = (item.get("entry"), item.get("identity"))
+            end = start + 1
+            while end < len(items) and (
+                items[end]["kind"] == "upstream_producer"
+                and (items[end].get("entry"), items[end].get("identity")) == key
+            ):
+                end += 1
+        else:
+            end = start + 1
+        ends.append(end)
+        start = end
+    return ends
+
+
+def _bounded_ordinary_packet(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str, str]:
+    """Return the largest whole-question-group packet within the byte bound."""
+
+    group_ends = _item_group_ends(items)
+    if not group_ends:
+        raise ValidationToolError("semantic review produced no answerable questions")
+    low = 0
+    high = len(group_ends) - 1
+    accepted: tuple[list[dict[str, Any]], str, str] | None = None
+    while low <= high:
+        middle = (low + high) // 2
+        selected = items[: group_ends[middle]]
+        continuation = _continuation_identity(scan, adjudication, selected)
+        packet = _render_packet(scan, adjudication, selected, continuation)
+        if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES:
+            accepted = (selected, continuation, packet)
+            low = middle + 1
+        else:
+            high = middle - 1
+    if accepted is None:
+        raise ValidationToolError(
+            "one minimum-sufficient review question exceeds the packet byte bound"
+        )
+    return accepted
+
+
 def _deferred_orphan_index(
     scan: ScanRecord, adjudication: AdjudicationRecord
 ) -> dict[str, Any] | None:
@@ -311,10 +782,14 @@ def _deferred_orphan_index(
             "unresolved",
             "connected",
             *[f"retain:{note}" for note in notes],
-            "needs_context",
         ]
         for candidate in ordered_orphan_candidates(item):
             identity = str(candidate["identity"])
+            context = {
+                "candidate": candidate,
+                "reachability_reason": item.get("reason"),
+                "validation_notes": item.get("validation_notes", []),
+            }
             fingerprint = orphan_candidate_fingerprint(
                 scan,
                 adjudication.get("schema_version"),
@@ -339,13 +814,12 @@ def _deferred_orphan_index(
                             "How is this locally unconnected candidate classified?"
                         ),
                         "allowed_decisions": allowed,
+                        "context_level": 0,
+                        "context_identity": _fingerprint(context),
                         "decision": None,
                         "rationale": None,
                     },
-                    "context": {
-                        "candidate": candidate,
-                        "validation_notes": item.get("validation_notes", []),
-                    },
+                    "context": context,
                     "fingerprint": fingerprint,
                 }
             )
@@ -370,6 +844,53 @@ def _deferred_orphan_index(
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
         "session_identity": session_identity,
         "summary": scan["summary"],
+        "review_kind": "orphan_candidates",
+        "items": indexed_items,
+    }
+
+
+def _deferred_bounded_index(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    items: list[dict[str, Any]],
+    orphan_fingerprints: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    indexed_items: list[dict[str, Any]] = []
+    for item in items:
+        fingerprint = (
+            orphan_fingerprints.get(str(item.get("entry")), {}).get(
+                str(item.get("identity"))
+            )
+            if item["kind"] == "orphan_candidate"
+            else item["id"]
+        )
+        indexed_items.append(
+            {
+                "template": copy.deepcopy(item),
+                "context": _packet_context(scan, adjudication, item),
+                "fingerprint": fingerprint,
+            }
+        )
+    session_identity = _fingerprint(
+        {
+            "summary": scan["summary"],
+            "rules": scan["validation_rules_version"],
+            "scan": scan["input_fingerprint"],
+            "date": adjudication["date"],
+            "items": [
+                {
+                    "id": item["template"]["id"],
+                    "fingerprint": item["fingerprint"],
+                }
+                for item in indexed_items
+            ],
+        }
+    )
+    return {
+        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "session_identity": session_identity,
+        "summary": scan["summary"],
+        "review_kind": "bounded_review",
         "items": indexed_items,
     }
 
@@ -377,32 +898,52 @@ def _deferred_orphan_index(
 def _deferred_page(
     session_dir: Path,
     index: Mapping[str, Any],
-    manifest: dict[str, Any],
+    state: dict[str, Any],
 ) -> dict[str, Any]:
-    """Write the next bounded page and advance only the small manifest."""
+    """Write the next bounded page and advance only small session state."""
 
-    offset = int(manifest["next_offset"])
-    page_number = int(manifest["next_page_number"])
-    selected = list(index["items"])[offset : offset + MAX_PACKET_ITEMS]
-    if not selected:
+    offset = int(state["next_offset"])
+    page_number = int(state["next_page_number"])
+    candidates = list(index["items"])[offset : offset + MAX_PACKET_ITEMS]
+    if not candidates:
         raise ValidationToolError("deferred orphan session has no next page")
-    items = [copy.deepcopy(item["template"]) for item in selected]
-    continuation = _fingerprint(
-        {
-            "session": manifest["session_identity"],
-            "page": page_number,
-            "offset": offset,
-            "items": [item["id"] for item in items],
-        }
-    )
+    low = 1
+    high = len(candidates)
+    bounded: tuple[list[dict[str, Any]], str, str] | None = None
+    while low <= high:
+        count = (low + high) // 2
+        selected = candidates[:count]
+        items = [copy.deepcopy(item["template"]) for item in selected]
+        continuation = _fingerprint(
+            {
+                "session": state["session_identity"],
+                "page": page_number,
+                "offset": offset,
+                "items": [item["id"] for item in items],
+            }
+        )
+        packet = _render_packet_with_contexts(
+            str(index["summary"]),
+            items,
+            continuation,
+            [item["context"] for item in selected],
+        )
+        if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES:
+            bounded = (
+                items,
+                continuation,
+                packet,
+            )
+            low = count + 1
+        else:
+            high = count - 1
+    if bounded is None:
+        raise ValidationToolError(
+            "one minimum-sufficient orphan question exceeds the packet byte bound"
+        )
+    items, continuation, packet = bounded
     page_dir = session_dir / f"page-{page_number:06d}"
-    page_dir.mkdir()
-    packet = _render_packet_with_contexts(
-        str(index["summary"]),
-        items,
-        continuation,
-        [item["context"] for item in selected],
-    )
+    page_dir.mkdir(exist_ok=True)
     template = {
         "schema_version": EXCHANGE_SCHEMA_VERSION,
         "continuation": continuation,
@@ -413,36 +954,47 @@ def _deferred_page(
         "continuation": continuation,
         "template": copy.deepcopy(template),
         "deferred_orphan": {
-            "session_dir": session_dir.as_posix(),
-            "session_identity": manifest["session_identity"],
+            "project_root": state["project_root"],
+            "session": state["session"],
+            "session_identity": state["session_identity"],
             "page_number": page_number,
             "offset": offset,
-            "summary": manifest["summary_path"],
+            "summary": state["summary_path"],
         },
     }
     packet_path = page_dir / "review-packet.md"
     decision_path = page_dir / "review-decisions.json"
-    packet_path.write_text(packet, encoding="utf-8")
-    decision_path.write_text(
-        json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _atomic_write(packet_path, packet.encode("utf-8"))
+    _atomic_write(
+        decision_path,
+        (
+            json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)
+            + "\n"
+        ).encode("utf-8"),
     )
-    (page_dir / INTERNAL_FILENAME).write_bytes(_json_bytes(internal))
-    manifest["current"] = {
+    _atomic_write(page_dir / INTERNAL_FILENAME, _json_bytes(internal))
+    state["current"] = {
         "continuation": continuation,
         "count": len(items),
         "offset": offset,
         "page_number": page_number,
+        "batch_identity": _fingerprint(
+            {
+                "session": state["session_identity"],
+                "page": page_number,
+                "continuation": continuation,
+            }
+        ),
     }
-    _atomic_write(
-        session_dir / DEFERRED_MANIFEST_FILENAME, _json_bytes(manifest)
-    )
+    _atomic_write(session_dir / SESSION_STATE_FILENAME, _json_bytes(state))
     return {
         "status": "review_required",
         "review_packet": packet_path.as_posix(),
         "decision_file": decision_path.as_posix(),
         "continuation": continuation,
-        "session_identity": manifest["session_identity"],
+        "session_identity": state["session_identity"],
+        "session": state["session"],
+        "review_kind": state["review_kind"],
         "item_count": len(items),
         "byte_count": len(packet.encode("utf-8")),
     }
@@ -454,11 +1006,12 @@ def _create_deferred_orphan_exchange(
     controller_state: Mapping[str, Any],
     index: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create one append-only temporary session for a large orphan review."""
+    """Create one project-local durable session for a large orphan review."""
 
-    session_dir = Path(
-        tempfile.mkdtemp(prefix="research-log-validation-orphan-session-")
-    )
+    project_root = Path(scan["project_root"]).resolve()
+    locator = _session_locator(scan["summary"], index["session_identity"])
+    session_dir = _session_path(project_root, locator)
+    session_dir.mkdir(parents=True, exist_ok=False)
     base = {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
         "session_identity": index["session_identity"],
@@ -466,53 +1019,25 @@ def _create_deferred_orphan_exchange(
         "adjudication": adjudication,
         "controller": copy.deepcopy(dict(controller_state)),
     }
-    base_bytes = _json_bytes(base)
-    index_bytes = _json_bytes(index)
-    (session_dir / DEFERRED_BASE_FILENAME).write_bytes(base_bytes)
-    (session_dir / DEFERRED_INDEX_FILENAME).write_bytes(index_bytes)
-    manifest = {
+    _atomic_write(session_dir / DEFERRED_BASE_FILENAME, _json_bytes(base))
+    _atomic_write(session_dir / DEFERRED_INDEX_FILENAME, _json_bytes(index))
+    state = {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
         "session_identity": index["session_identity"],
+        "session": locator,
         "summary": scan["summary"],
+        "review_kind": index["review_kind"],
+        "project_root": project_root.as_posix(),
         "summary_path": (
-            Path(scan["project_root"]) / str(scan["summary"])
+            project_root / str(scan["summary"])
         ).resolve().as_posix(),
-        "base_sha256": _sha256(base_bytes),
-        "index_sha256": _sha256(index_bytes),
         "total_items": len(index["items"]),
         "next_offset": 0,
         "next_page_number": 1,
-        "fragments": [],
+        "accepted_batches": [],
         "current": None,
     }
-    return _deferred_page(session_dir, index, manifest)
-
-
-def _verified_session_object(
-    session_dir: Path, filename: str, expected_sha256: str
-) -> dict[str, Any]:
-    path = session_dir / filename
-    try:
-        value = path.read_bytes()
-    except OSError as exc:
-        raise ValidationToolError(
-            f"deferred orphan session is incomplete: {path}: {exc}"
-        ) from exc
-    if _sha256(value) != expected_sha256:
-        raise ValidationToolError(
-            f"deferred orphan session file changed unexpectedly: {path}"
-        )
-    try:
-        decoded = json.loads(value)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValidationToolError(
-            f"deferred orphan session file is malformed: {path}"
-        ) from exc
-    if not isinstance(decoded, dict):
-        raise ValidationToolError(
-            f"deferred orphan session file must be an object: {path}"
-        )
-    return decoded
+    return _deferred_page(session_dir, index, state)
 
 
 def _load_deferred_session(
@@ -521,59 +1046,58 @@ def _load_deferred_session(
     deferred = internal.get("deferred_orphan")
     if not isinstance(deferred, Mapping):
         raise ValidationToolError("review packet is not a deferred orphan page")
-    session_dir = Path(str(deferred.get("session_dir", ""))).resolve()
-    if not session_dir.name.startswith("research-log-validation-orphan-session-"):
-        raise ValidationToolError("deferred orphan session path is invalid")
-    manifest = _read_object(
-        session_dir / DEFERRED_MANIFEST_FILENAME,
-        "deferred orphan manifest",
+    project_root = Path(str(deferred.get("project_root", ""))).resolve()
+    session_dir = _session_path(project_root, str(deferred.get("session", "")))
+    state = _read_object(
+        session_dir / SESSION_STATE_FILENAME,
+        "deferred orphan session state",
     )
     session_identity = deferred.get("session_identity")
-    current = manifest.get("current")
+    current = state.get("current")
     if (
-        manifest.get("schema_version") != DEFERRED_SESSION_SCHEMA_VERSION
-        or manifest.get("session_identity") != session_identity
+        state.get("schema_version") != DEFERRED_SESSION_SCHEMA_VERSION
+        or state.get("session_identity") != session_identity
+        or state.get("session") != deferred.get("session")
         or not isinstance(current, dict)
         or current.get("continuation") != decisions.get("continuation")
         or current.get("page_number") != deferred.get("page_number")
         or current.get("offset") != deferred.get("offset")
     ):
         raise ValidationToolError("deferred orphan review page is stale")
-    base = _verified_session_object(
-        session_dir,
-        DEFERRED_BASE_FILENAME,
-        str(manifest.get("base_sha256", "")),
+    base = _read_object(
+        session_dir / DEFERRED_BASE_FILENAME,
+        "deferred orphan session base",
     )
-    index = _verified_session_object(
-        session_dir,
-        DEFERRED_INDEX_FILENAME,
-        str(manifest.get("index_sha256", "")),
+    index = _read_object(
+        session_dir / DEFERRED_INDEX_FILENAME,
+        "deferred orphan session index",
     )
     if (
         base.get("session_identity") != session_identity
         or index.get("session_identity") != session_identity
     ):
         raise ValidationToolError("deferred orphan session identity differs")
-    return session_dir, manifest, base, index, session_identity
+    return session_dir, state, base, index, session_identity
 
 
 def _record_deferred_fragment(
     session_dir: Path,
-    manifest: dict[str, Any],
+    state: dict[str, Any],
     decisions: Mapping[str, Any],
     session_identity: Any,
 ) -> list[dict[str, Any]]:
-    current = manifest["current"]
+    current = state["current"]
     page_number = int(current["page_number"])
     fragment = {
         "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
         "session_identity": session_identity,
         "page_number": page_number,
         "continuation": decisions["continuation"],
+        "batch_identity": current["batch_identity"],
         "decisions": copy.deepcopy(dict(decisions)),
     }
     fragment_bytes = _json_bytes(fragment)
-    fragment_name = f"accepted-{page_number:06d}.json"
+    fragment_name = f"accepted-{current['batch_identity']}.json"
     fragment_path = session_dir / fragment_name
     if fragment_path.exists():
         if fragment_path.read_bytes() != fragment_bytes:
@@ -582,18 +1106,18 @@ def _record_deferred_fragment(
             )
     else:
         _atomic_write(fragment_path, fragment_bytes)
-    fragments = list(manifest.get("fragments", []))
+    fragments = list(state.get("accepted_batches", []))
     expected_fragment = {
         "file": fragment_name,
-        "sha256": _sha256(fragment_bytes),
+        "batch_identity": current["batch_identity"],
         "item_count": len(decisions["items"]),
     }
     if expected_fragment not in fragments:
         fragments.append(expected_fragment)
-    manifest["fragments"] = fragments
-    manifest["next_offset"] = int(current["offset"]) + int(current["count"])
-    manifest["next_page_number"] = page_number + 1
-    manifest["current"] = None
+    state["accepted_batches"] = fragments
+    state["next_offset"] = int(current["offset"]) + int(current["count"])
+    state["next_page_number"] = page_number + 1
+    state["current"] = None
     return fragments
 
 
@@ -604,12 +1128,14 @@ def _merged_deferred_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     for retained in fragments:
-        payload = _verified_session_object(
-            session_dir,
-            str(retained["file"]),
-            str(retained["sha256"]),
+        payload = _read_object(
+            session_dir / str(retained["file"]),
+            "accepted orphan fragment",
         )
-        if payload.get("session_identity") != session_identity:
+        if (
+            payload.get("session_identity") != session_identity
+            or payload.get("batch_identity") != retained.get("batch_identity")
+        ):
             raise ValidationToolError("accepted orphan fragment has another session")
         fragment_rows = payload.get("decisions", {}).get("items", [])
         if not isinstance(fragment_rows, list):
@@ -624,30 +1150,25 @@ def _deferred_orphan_fingerprints(
     fingerprints: dict[str, dict[str, str]] = {}
     for item in index["items"]:
         template = item["template"]
+        if template.get("kind") != "orphan_candidate":
+            continue
         fingerprints.setdefault(str(template["entry"]), {})[
             str(template["identity"])
         ] = str(item["fingerprint"])
     return fingerprints
 
 
-def accept_deferred_orphan_page(
-    decisions: Mapping[str, Any], internal: Mapping[str, Any]
+def _ready_deferred_session(
+    session_dir: Path,
+    state: Mapping[str, Any],
+    base: Mapping[str, Any],
+    index: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Append one accepted page and return the next page or final state."""
-
-    session_dir, manifest, base, index, session_identity = _load_deferred_session(
-        decisions, internal
+    fragments = list(state.get("accepted_batches", []))
+    rows = _merged_deferred_rows(
+        session_dir, fragments, state["session_identity"]
     )
-    fragments = _record_deferred_fragment(
-        session_dir, manifest, decisions, session_identity
-    )
-    if int(manifest["next_offset"]) < int(manifest["total_items"]):
-        return _deferred_page(session_dir, index, manifest)
-    _atomic_write(
-        session_dir / DEFERRED_MANIFEST_FILENAME, _json_bytes(manifest)
-    )
-    rows = _merged_deferred_rows(session_dir, fragments, session_identity)
-    if len(rows) != int(manifest["total_items"]):
+    if len(rows) != int(state["total_items"]):
         raise ValidationToolError("deferred orphan session is missing accepted items")
     return {
         "status": "ready",
@@ -657,27 +1178,195 @@ def accept_deferred_orphan_page(
         "controller": base["controller"],
         "decisions": {
             "schema_version": EXCHANGE_SCHEMA_VERSION,
-            "continuation": session_identity,
+            "continuation": state["session_identity"],
             "items": rows,
         },
         "orphan_fingerprints": _deferred_orphan_fingerprints(index),
     }
 
 
+def _validate_session_fragments(session_dir: Path, state: Mapping[str, Any]) -> None:
+    accepted = list(state.get("accepted_batches", []))
+    expected = {str(item.get("file")) for item in accepted}
+    for item in accepted:
+        path = session_dir / str(item.get("file"))
+        if not path.is_file():
+            raise ValidationToolError(
+                f"deferred orphan session state names a missing fragment: {path}"
+            )
+    current = state.get("current")
+    pending = None
+    if isinstance(current, Mapping):
+        pending = f"accepted-{current.get('batch_identity')}.json"
+    present = {path.name for path in session_dir.glob("accepted-*.json")}
+    unexpected = present - expected - ({pending} if pending else set())
+    if unexpected:
+        raise ValidationToolError(
+            "deferred orphan session contains an unowned fragment: "
+            + ", ".join(sorted(unexpected))
+        )
+
+
+def resume_deferred_orphan_session(
+    project_root: Path, continuation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Resume the current paged review from its durable record reference."""
+
+    session_dir = _session_path(project_root, str(continuation.get("session", "")))
+    state = _read_object(
+        session_dir / SESSION_STATE_FILENAME,
+        "deferred orphan session state",
+    )
+    if (
+        state.get("schema_version") != DEFERRED_SESSION_SCHEMA_VERSION
+        or state.get("session_identity") != continuation.get("session_identity")
+        or state.get("session") != continuation.get("session")
+    ):
+        raise ValidationToolError("deferred orphan session state has another owner")
+    base = _read_object(
+        session_dir / DEFERRED_BASE_FILENAME,
+        "deferred orphan session base",
+    )
+    index = _read_object(
+        session_dir / DEFERRED_INDEX_FILENAME,
+        "deferred orphan session index",
+    )
+    if (
+        base.get("session_identity") != state["session_identity"]
+        or index.get("session_identity") != state["session_identity"]
+    ):
+        raise ValidationToolError("deferred orphan session identity differs")
+    _validate_session_fragments(session_dir, state)
+    current = state.get("current")
+    if isinstance(current, Mapping):
+        fragment_path = session_dir / (
+            f"accepted-{current.get('batch_identity')}.json"
+        )
+        if fragment_path.is_file():
+            fragment = _read_object(fragment_path, "accepted orphan fragment")
+            decisions = fragment.get("decisions")
+            if not isinstance(decisions, Mapping):
+                raise ValidationToolError(
+                    "accepted orphan fragment has invalid decisions"
+                )
+            _record_deferred_fragment(
+                session_dir,
+                state,
+                decisions,
+                state["session_identity"],
+            )
+    if int(state["next_offset"]) >= int(state["total_items"]):
+        _atomic_write(session_dir / SESSION_STATE_FILENAME, _json_bytes(state))
+        return _ready_deferred_session(session_dir, state, base, index)
+    return _deferred_page(session_dir, index, state)
+
+
+def empty_deferred_recovery_context(
+    project_root: Path, continuation: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Return a validated empty session base for controlled migration restart."""
+
+    session_dir = _session_path(project_root, str(continuation.get("session", "")))
+    state = _read_object(
+        session_dir / SESSION_STATE_FILENAME,
+        "deferred orphan session state",
+    )
+    if (
+        state.get("session_identity") != continuation.get("session_identity")
+        or state.get("session") != continuation.get("session")
+        or state.get("accepted_batches")
+        or int(state.get("next_offset", -1)) != 0
+    ):
+        return None
+    base = _read_object(
+        session_dir / DEFERRED_BASE_FILENAME,
+        "deferred orphan session base",
+    )
+    if base.get("session_identity") != state["session_identity"]:
+        raise ValidationToolError("deferred orphan session identity differs")
+    return {
+        "session_dir": session_dir.as_posix(),
+        "scan": base["scan"],
+        "adjudication": base["adjudication"],
+    }
+
+
+def accept_deferred_orphan_page(
+    decisions: Mapping[str, Any], internal: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Append one accepted page and return the next page or final state."""
+
+    session_dir, state, base, index, session_identity = _load_deferred_session(
+        decisions, internal
+    )
+    _record_deferred_fragment(session_dir, state, decisions, session_identity)
+    if int(state["next_offset"]) < int(state["total_items"]):
+        return _deferred_page(session_dir, index, state)
+    _atomic_write(
+        session_dir / SESSION_STATE_FILENAME, _json_bytes(state)
+    )
+    return _ready_deferred_session(session_dir, state, base, index)
+
+
 def finish_deferred_orphan_session(session_dir: Path) -> None:
-    """Remove one completed temporary session after canonical publication."""
+    """Remove one completed project-local session after canonical publication."""
 
     resolved = session_dir.resolve()
-    if not resolved.name.startswith("research-log-validation-orphan-session-"):
+    if VALIDATION_WORK_ROOT not in resolved.parts:
         raise ValidationToolError("refusing to remove an invalid review session")
-    if (resolved / DEFERRED_MANIFEST_FILENAME).is_file():
+    if (resolved / SESSION_STATE_FILENAME).is_file():
         shutil.rmtree(resolved)
+
+
+def resume_ordinary_exchange(
+    project_root: Path, summary: str, continuation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the current ordinary packet from its stable continuation."""
+
+    identity = str(continuation.get("identity", ""))
+    locator = _session_locator(summary, identity)
+    session_dir = _session_path(project_root, locator)
+    internal = _read_object(
+        session_dir / INTERNAL_FILENAME,
+        "ordinary review continuation",
+    )
+    if (
+        internal.get("continuation") != identity
+        or internal.get("ordinary_session", {}).get("session") != locator
+        or internal.get("scan", {}).get("summary") != summary
+    ):
+        raise ValidationToolError("ordinary review session has another owner")
+    packet_path = session_dir / "review-packet.md"
+    decision_path = session_dir / "review-decisions.json"
+    if not packet_path.is_file() or not decision_path.is_file():
+        raise ValidationToolError("ordinary review session is incomplete")
+    return {
+        "status": "review_required",
+        "review_packet": packet_path.as_posix(),
+        "decision_file": decision_path.as_posix(),
+        "continuation": identity,
+        "item_count": continuation["item_count"],
+        "byte_count": len(packet_path.read_bytes()),
+    }
+
+
+def finish_review_session(internal: Mapping[str, Any]) -> None:
+    """Remove one accepted ordinary review session."""
+
+    ordinary = internal.get("ordinary_session")
+    if not isinstance(ordinary, Mapping):
+        return
+    project_root = Path(str(ordinary.get("project_root", ""))).resolve()
+    session_dir = _session_path(project_root, str(ordinary.get("session", "")))
+    if (session_dir / INTERNAL_FILENAME).is_file():
+        shutil.rmtree(session_dir)
 
 
 def create_exchange(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     controller_state: Mapping[str, Any],
+    context_levels: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Write one paired packet/template and private continuation state."""
 
@@ -686,10 +1375,35 @@ def create_exchange(
         return _create_deferred_orphan_exchange(
             scan, adjudication, controller_state, deferred_index
         )
-    work_dir = Path(tempfile.mkdtemp(prefix="research-log-validation-review-"))
-    items, orphan_fingerprints = _template_items(scan, adjudication)
-    continuation = _continuation_identity(scan, adjudication, items)
-    packet = _render_packet(scan, adjudication, items, continuation)
+    items, orphan_fingerprints = _all_template_items(
+        scan, adjudication, context_levels
+    )
+    if len(items) > MAX_PACKET_ITEMS:
+        return _create_deferred_orphan_exchange(
+            scan,
+            adjudication,
+            controller_state,
+            _deferred_bounded_index(
+                scan, adjudication, items, orphan_fingerprints
+            ),
+        )
+    bounded_items, continuation, packet = _bounded_ordinary_packet(
+        scan, adjudication, items
+    )
+    if len(bounded_items) < len(items):
+        return _create_deferred_orphan_exchange(
+            scan,
+            adjudication,
+            controller_state,
+            _deferred_bounded_index(
+                scan, adjudication, items, orphan_fingerprints
+            ),
+        )
+    items = bounded_items
+    project_root = Path(scan["project_root"]).resolve()
+    locator = _session_locator(scan["summary"], continuation)
+    work_dir = _session_path(project_root, locator)
+    work_dir.mkdir(parents=True, exist_ok=True)
     template = {
         "schema_version": EXCHANGE_SCHEMA_VERSION,
         "continuation": continuation,
@@ -703,17 +1417,26 @@ def create_exchange(
         "adjudication": adjudication,
         "orphan_fingerprints": orphan_fingerprints,
         "controller": copy.deepcopy(dict(controller_state)),
+        "ordinary_session": {
+            "project_root": project_root.as_posix(),
+            "session": locator,
+        },
     }
     packet_path = work_dir / "review-packet.md"
     decision_path = work_dir / "review-decisions.json"
-    packet_path.write_text(packet, encoding="utf-8")
-    decision_path.write_text(
-        json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _atomic_write(packet_path, packet.encode("utf-8"))
+    _atomic_write(
+        decision_path,
+        (
+            json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)
+            + "\n"
+        ).encode("utf-8"),
     )
-    (work_dir / INTERNAL_FILENAME).write_text(
-        json.dumps(internal, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    _atomic_write(
+        work_dir / INTERNAL_FILENAME,
+        (
+            json.dumps(internal, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode("utf-8"),
     )
     return {
         "status": "review_required",
@@ -759,7 +1482,16 @@ def _valid_collection_scope(
     expected_collections = (
         set(queue_item.get("collections", []))
         if isinstance(queue_item, dict)
-        else set()
+        else next(
+            (
+                set(value["members"])
+                for value in row.get("allowed_decisions", [])
+                if isinstance(value, dict)
+                and set(value) == {"members"}
+                and isinstance(value.get("members"), dict)
+            ),
+            set(),
+        )
     )
     return set(members) == expected_collections and all(
         isinstance(values, list)
@@ -830,57 +1562,174 @@ def load_decisions(decision_path: Path) -> tuple[dict[str, Any], dict[str, Any]]
     return decisions, internal
 
 
-def _ordinary_action(row: Mapping[str, Any]) -> dict[str, Any] | None:
-    decision = row["decision"]
-    if decision == "needs_context":
-        return None
-    match = {
+def _action_match(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
         "kind": row["kind"],
         "entry": row["entry"],
         "identity": row["identity"],
     }
-    result: dict[str, Any] = {"match": match, "decision": "pass"}
-    if row["kind"] == "semantic_provenance" and decision == "pass":
-        result = {"match": match, "decision": "support", "candidate": 1}
-    elif row["kind"] == "upstream_producer" and isinstance(decision, Mapping):
-        result = {
+
+
+def _semantic_fallback_action(row: Mapping[str, Any]) -> dict[str, Any]:
+    decision = row["decision"]
+    match = _action_match(row)
+    if str(decision).startswith("fail:"):
+        return {
             "match": match,
-            "decision": "bind",
-            "producer_bindings": copy.deepcopy(decision["bindings"]),
+            "decision": "fail",
+            "failure_basis": str(decision).split(":", 1)[1],
+            "findings": {"Provenance": row["rationale"]},
         }
+    if decision != "pass":
+        result: dict[str, Any] = {
+            "match": match,
+            "decision": "pass",
+            "producer": decision,
+        }
+        dependencies = row.get("producer_dependencies", {}).get(str(decision), [])
+        if dependencies:
+            result["add_dependencies"] = copy.deepcopy(dependencies)
+        return result
+    return {"match": match, "decision": "pass"}
+
+
+def _reproduction_action(row: Mapping[str, Any]) -> dict[str, Any]:
+    decision = row["decision"]
+    match = _action_match(row)
+    if decision == "reproduction-fail":
+        return {
+            "match": match,
+            "decision": "reproduction-fail",
+            "findings": {"Reproducibility": row["rationale"]},
+        }
+    return {"match": match, "decision": decision}
+
+
+def _ordinary_action(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    decision = row["decision"]
+    if decision == "needs_context":
+        return None
+    match = _action_match(row)
+    if row["kind"] == "semantic_provenance" and decision == "pass":
+        action = {"match": match, "decision": "support", "candidate": 1}
+    elif row["kind"] == "semantic_fallback":
+        action = _semantic_fallback_action(row)
     elif row["kind"] == "collection_scope" and isinstance(decision, Mapping):
-        result = {
+        action = {
             "match": match,
             "decision": "pass",
             "members": copy.deepcopy(decision["members"]),
         }
+    elif row["kind"] == "reproduction":
+        action = _reproduction_action(row)
     elif decision == "keep":
-        result = {"match": match, "decision": "keep"}
+        action = {"match": match, "decision": "keep"}
     elif decision == "fail":
-        result = {
+        action = {
             "match": match,
             "decision": "fail",
             "findings": {"Provenance": row["rationale"]},
         }
-    return result
+    else:
+        action = {"match": match, "decision": "pass"}
+    return action
 
 
-def decisions_to_actions(
-    decisions: Mapping[str, Any], internal: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Translate narrow template decisions into the internal action contract."""
+def _queue_sections(row: Mapping[str, Any], internal: Mapping[str, Any]) -> Any:
+    return next(
+        (
+            item.get("sections", [])
+            for item in internal.get("adjudication", {}).get("review_queue", [])
+            if item.get("kind") == "semantic_fallback"
+            and item.get("entry") == row["entry"]
+            and item.get("identity") == row["identity"]
+        ),
+        [],
+    )
 
-    actions = []
-    orphan_rows: dict[str, list[Mapping[str, Any]]] = {}
-    for row in decisions["items"]:
-        if row["kind"] == "orphan_candidate":
-            orphan_rows.setdefault(str(row["entry"]), []).append(row)
-            continue
-        action = _ordinary_action(row)
-        if action is not None and action not in actions:
+
+def _restore_legacy_producer_scope(
+    row: Mapping[str, Any],
+    action: dict[str, Any] | None,
+    internal: Mapping[str, Any],
+) -> None:
+    if (
+        action is None
+        or row["kind"] != "semantic_fallback"
+        or "producer" not in action
+        or "add_dependencies" in action
+    ):
+        return
+    scan = internal.get("scan")
+    if not isinstance(scan, dict):
+        return
+    session = ReviewQuerySession(ReviewContextIndex.build(scan))
+    invocation = next(
+        (
+            candidate
+            for candidate in session.eligible_candidate_invocations(
+                str(row["entry"]),
+                str(row["identity"]),
+                _queue_sections(row, internal),
+            )
+            if candidate.key == action["producer"]
+        ),
+        None,
+    )
+    if invocation is None:
+        return
+    eligibility = session.eligibility_for(invocation, str(row["identity"]))
+    if eligibility.kind == "scoped-collection" and eligibility.target_member:
+        action["add_dependencies"] = [
+            {
+                "path": eligibility.coverage_identity,
+                "role": "producer",
+                "members": [eligibility.target_member],
+            }
+        ]
+
+
+def _upstream_action(
+    entry: str, identity: str, rows: list[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    if any(row["decision"] == "needs_context" for row in rows):
+        return None
+    match = {"kind": "upstream_producer", "entry": entry, "identity": identity}
+    unresolved = [row for row in rows if row["decision"] == "unresolved"]
+    if unresolved:
+        return {
+            "match": match,
+            "decision": "fail",
+            "findings": {
+                "Provenance": "; ".join(str(row["rationale"]) for row in unresolved)
+            },
+        }
+    return {
+        "match": match,
+        "decision": "bind",
+        "producer_bindings": [
+            {"material": row["material"], "invocation": row["decision"]}
+            for row in rows
+        ],
+    }
+
+
+def _append_upstream_actions(
+    actions: list[dict[str, Any]],
+    grouped: Mapping[tuple[str, str], list[Mapping[str, Any]]],
+) -> None:
+    for (entry, identity), rows in grouped.items():
+        action = _upstream_action(entry, identity, rows)
+        if action is not None:
             actions.append(action)
-    fingerprints = internal.get("orphan_fingerprints", {})
-    for entry, rows in orphan_rows.items():
+
+
+def _append_orphan_actions(
+    actions: list[dict[str, Any]],
+    grouped: Mapping[str, list[Mapping[str, Any]]],
+    fingerprints: Mapping[str, Any],
+) -> None:
+    for entry, rows in grouped.items():
         selected = [row for row in rows if row["decision"] != "needs_context"]
         if not selected:
             continue
@@ -917,6 +1766,32 @@ def decisions_to_actions(
                 ],
             }
         )
+
+
+def decisions_to_actions(
+    decisions: Mapping[str, Any], internal: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Translate narrow template decisions into the internal action contract."""
+
+    actions: list[dict[str, Any]] = []
+    orphan_rows: dict[str, list[Mapping[str, Any]]] = {}
+    upstream_rows: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in decisions["items"]:
+        if row["kind"] == "orphan_candidate":
+            orphan_rows.setdefault(str(row["entry"]), []).append(row)
+        elif row["kind"] == "upstream_producer":
+            upstream_rows.setdefault(
+                (str(row["entry"]), str(row["identity"])), []
+            ).append(row)
+        else:
+            action = _ordinary_action(row)
+            _restore_legacy_producer_scope(row, action, internal)
+            if action is not None and action not in actions:
+                actions.append(action)
+    _append_upstream_actions(actions, upstream_rows)
+    _append_orphan_actions(
+        actions, orphan_rows, internal.get("orphan_fingerprints", {})
+    )
     return {"schema_version": DECISION_SCHEMA_VERSION, "actions": actions}
 
 
@@ -934,7 +1809,12 @@ def durable_review_judgments(
                 "identity": row["id"],
                 "kind": "review-decision",
                 "result": (
-                    row["decision"]
+                    (
+                        "bind"
+                        if row["kind"] == "upstream_producer"
+                        and row["decision"] != "unresolved"
+                        else row["decision"]
+                    )
                     if isinstance(row["decision"], str)
                     else (
                         "scope"
@@ -948,8 +1828,13 @@ def durable_review_judgments(
                     "kind": row["kind"],
                     "entry": row["entry"],
                     "identity": row["identity"],
+                    **(
+                        {"material": row["material"]}
+                        if "material" in row
+                        else {}
+                    ),
                 },
-                "rule_dependencies": {"semantic_review": 1},
+                "rule_dependencies": SEMANTIC_REVIEW_RULES,
                 "input_dependencies": [],
                 "rationale": row["rationale"],
                 "rationale_provenance": "recorded",
@@ -959,6 +1844,99 @@ def durable_review_judgments(
     return judgments
 
 
+def _exact_reusable_judgment(
+    reusable: Mapping[str, list[dict[str, Any]]], identity: str
+) -> dict[str, Any] | None:
+    by_decision = {
+        _fingerprint(judgment.get("decision")): judgment
+        for judgment in reusable.get(identity, [])
+    }
+    return next(iter(by_decision.values())) if len(by_decision) == 1 else None
+
+
+def _legacy_upstream_action(
+    queue_item: Mapping[str, Any],
+    reusable: Mapping[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    legacy = _exact_reusable_judgment(reusable, _fingerprint(queue_item))
+    decision = legacy.get("decision") if legacy is not None else None
+    bindings = decision.get("bindings") if isinstance(decision, Mapping) else None
+    candidates = {
+        (candidate.get("material"), candidate.get("invocation"))
+        for candidate in queue_item.get("producer_candidates", [])
+    }
+    if not (
+        isinstance(bindings, list)
+        and bindings
+        and all(
+            isinstance(binding, Mapping)
+            and (binding.get("material"), binding.get("invocation")) in candidates
+            for binding in bindings
+        )
+    ):
+        return None
+    return {
+        "match": {
+            "kind": "upstream_producer",
+            "entry": queue_item["entry"],
+            "identity": queue_item["identity"],
+        },
+        "decision": "bind",
+        "producer_bindings": copy.deepcopy(bindings),
+    }
+
+
+def _reuse_templates(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    if queue_item["kind"] == "upstream_producer":
+        return _upstream_templates(queue_item, {}), {}
+    if queue_item["kind"] != "orphan_candidates":
+        return [_ordinary_template(queue_item)], {}
+    candidates = queue_item.get("candidates", [])
+    return _orphan_templates(
+        scan, adjudication, queue_item, max(1, len(candidates))
+    )
+
+
+def _projected_reuse_rows(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    templates: list[dict[str, Any]],
+    reuse_sources: tuple[
+        list[dict[str, Any]], Mapping[str, list[dict[str, Any]]]
+    ],
+) -> list[dict[str, Any]]:
+    judgments, reusable = reuse_sources
+    rows = []
+    for template in templates:
+        judgment = _exact_reusable_judgment(reusable, template["id"])
+        answer: tuple[Any, str] | None
+        if judgment is not None:
+            answer = (
+                copy.deepcopy(judgment["decision"]),
+                str(judgment["rationale"]),
+            )
+        else:
+            answer = migration_reusable_answer(
+                scan, adjudication, queue_item, template, judgments
+            )
+        if answer is None:
+            continue
+        decision, rationale = answer
+        rows.append(
+            {
+                **template,
+                "decision": copy.deepcopy(decision),
+                "rationale": rationale,
+            }
+        )
+    return rows
+
+
 def reusable_review_actions(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -966,39 +1944,43 @@ def reusable_review_actions(
 ) -> dict[str, Any]:
     """Return actions for exact current questions with durable native answers."""
 
-    reusable = {
-        judgment["identity"]: judgment
-        for judgment in judgments
-        if judgment.get("kind") == "review-decision"
-        and "decision" in judgment
-        and judgment.get("rule_dependencies") == {"semantic_review": 1}
-    }
-    if not reusable:
-        return {"schema_version": DECISION_SCHEMA_VERSION, "actions": []}
+    reusable: dict[str, list[dict[str, Any]]] = {}
+    for judgment in judgments:
+        if (
+            judgment.get("kind") == "review-decision"
+            and "decision" in judgment
+            and judgment.get("rule_dependencies") == SEMANTIC_REVIEW_RULES
+        ):
+            reusable.setdefault(str(judgment.get("identity", "")), []).append(
+                judgment
+            )
 
     rows: list[dict[str, Any]] = []
+    legacy_actions: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
     for queue_item in adjudication["review_queue"]:
-        if queue_item["kind"] != "orphan_candidates":
-            templates = [_ordinary_template(queue_item)]
-        else:
-            candidates = queue_item.get("candidates", [])
-            templates, fingerprints = _orphan_templates(
-                scan, adjudication, queue_item, max(1, len(candidates))
-            )
-            orphan_fingerprints[str(queue_item["entry"])] = fingerprints
-        for template in templates:
-            judgment = reusable.get(template["id"])
-            if judgment is None:
+        if queue_item["kind"] == "upstream_producer":
+            legacy = _legacy_upstream_action(queue_item, reusable)
+            if legacy is not None:
+                legacy_actions.append(legacy)
                 continue
-            rows.append(
-                {
-                    **template,
-                    "decision": copy.deepcopy(judgment["decision"]),
-                    "rationale": judgment["rationale"],
-                }
-            )
-    return decisions_to_actions(
+        templates, fingerprints = _reuse_templates(scan, adjudication, queue_item)
+        if fingerprints:
+            orphan_fingerprints[str(queue_item["entry"])] = fingerprints
+        projected_rows = _projected_reuse_rows(
+            scan,
+            adjudication,
+            queue_item,
+            templates,
+            (judgments, reusable),
+        )
+        if queue_item["kind"] != "upstream_producer" or len(projected_rows) == len(
+            templates
+        ):
+            rows.extend(projected_rows)
+    result = decisions_to_actions(
         {"schema_version": EXCHANGE_SCHEMA_VERSION, "items": rows},
         {"adjudication": adjudication, "orphan_fingerprints": orphan_fingerprints},
     )
+    result["actions"] = [*legacy_actions, *result["actions"]]
+    return result

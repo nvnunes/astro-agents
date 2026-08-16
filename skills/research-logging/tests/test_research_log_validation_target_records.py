@@ -48,10 +48,56 @@ def native_record() -> dict:
         }
     ]
     record["result"] = {"date": "2026-08-15"}
+    record["completion_dependencies"] = copy.deepcopy(
+        record["outcomes"][0]["dependencies"]
+    )
+    record["projection"] = {
+        "identity": "c" * 64,
+        "report_sha256": "d" * 64,
+    }
     return record
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_v2_record_rejects_absolute_summary(self) -> None:
+        record = native_record()
+        record["summary"] = "/tmp/project/docs/mini.md"
+        with self.assertRaisesRegex(TARGET.TargetRecordError, "project-relative"):
+            TARGET.decode_record(record)
+
+    def test_v2_record_rejects_malformed_projection(self) -> None:
+        record = native_record()
+        record["projection"] = {
+            "identity": "not-a-sha",
+            "report_sha256": "d" * 64,
+        }
+        with self.assertRaisesRegex(TARGET.TargetRecordError, "projection.identity"):
+            TARGET.decode_record(record)
+
+    def test_v2_record_distinguishes_ordinary_and_paged_continuations(self) -> None:
+        ordinary = native_record()
+        ordinary["continuation"] = {
+            "kind": "ordinary",
+            "identity": "a" * 64,
+            "item_count": 2,
+        }
+        self.assertEqual(
+            TARGET.decode_record(ordinary)["continuation"],
+            ordinary["continuation"],
+        )
+        paged = native_record()
+        paged["continuation"] = {
+            "kind": "paged",
+            "session": ".astro-agents-validation-work/summary/session",
+            "session_identity": "b" * 64,
+            "review_kind": "orphan_candidates",
+        }
+        self.assertEqual(
+            TARGET.decode_record(paged)["continuation"], paged["continuation"]
+        )
+        paged["continuation"]["current"] = {"page": 2}
+        with self.assertRaisesRegex(TARGET.TargetRecordError, "incorrect fields"):
+            TARGET.decode_record(paged)
     def test_target_round_trip_preserves_durable_owned_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -749,6 +749,29 @@ class PreparationTests(unittest.TestCase):
             self.assertEqual(len(prepared.review_items), 1)
             self.assertEqual(prepared.review_items[0]["kind"], "semantic_fallback")
 
+    def test_reviewable_evidence_failure_keeps_producer_choice_kind(self) -> None:
+        assessment = ADJUDICATION.TargetAssessment(
+            integrity="2026-08-16",
+            provenance="FAIL",
+            integrity_detail="passed",
+            workflow={"status": "unresolved"},
+            support_results=[{"status": "fail"}],
+            prior_integrity=None,
+            prior_provenance=None,
+            prior_reproduction=None,
+            mode="standard",
+        )
+
+        item = ADJUDICATION._target_review_item(
+            {"id": "e001"},
+            "result.csv",
+            {"sections": [], "associations": []},
+            assessment,
+            {"hard_failures": (), "producer_candidates": [{"invocation": "i1"}]},
+        )
+
+        self.assertEqual(item["kind"], "semantic_fallback")
+
 
 class ReviewPacketTests(unittest.TestCase):
     def test_owner_filters_and_renders_review_items(self) -> None:

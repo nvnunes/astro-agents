@@ -37,6 +37,7 @@ class ValidationCliTests(unittest.TestCase):
                 "2026-08-16",
                 "--jobs",
                 "3",
+                "--dry-run",
             ]
         )
 
@@ -44,6 +45,7 @@ class ValidationCliTests(unittest.TestCase):
         self.assertEqual(args.decisions, Path("review-decisions.json"))
         self.assertEqual(args.date, "2026-08-16")
         self.assertEqual(args.jobs, 3)
+        self.assertTrue(args.dry_run)
 
 
 if __name__ == "__main__":

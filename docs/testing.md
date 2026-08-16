@@ -138,6 +138,12 @@ inspect its reuse and hashing diagnostics, then publish that log and confirm an
 unchanged follow-up hashes zero artifact bytes and requests no semantic review.
 Retired schemas must receive an actionable unsupported-format diagnostic.
 
+Durable validation-state shards are bounded at 200 rows and 8 MiB. The row
+limit aligns one normal 200-item semantic batch with one shard. The byte limit
+keeps ordinary shards bounded while admitting the largest valid deployed
+legacy row measured during migration (5,781,722 bytes); an individual row may
+therefore occupy a shard by itself.
+
 ### Validation Review Scaling Benchmark
 
 When changing research-log candidate selection, producer-source context,

@@ -175,6 +175,11 @@ def merge_reused_dependencies(
     if not prior:
         return
     for stored in prior.get("dependencies", []):
+        normalized = {
+            key: copy.deepcopy(stored[key])
+            for key in ("path", "role", "members")
+            if key in stored
+        }
         matches = [
             dependency
             for dependency in dependencies
@@ -182,7 +187,7 @@ def merge_reused_dependencies(
             and dependency.get("role") == stored.get("role")
         ]
         if not matches:
-            dependencies.append(copy.deepcopy(stored))
+            dependencies.append(normalized)
         elif isinstance(stored.get("members"), list):
             matches[0]["members"] = list(stored["members"])
 

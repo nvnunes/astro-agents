@@ -106,6 +106,106 @@ class DeferredOrphanReviewTests(unittest.TestCase):
                 {"Evidence": "## Evidence\ncase mapping"},
             )
 
+    def test_collection_context_expansion_truncates_to_its_byte_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            collection = root / "output" / "collection"
+            for number in range(1000):
+                write(
+                    collection / f"member-{number:04d}-{'x' * 48}.pkl",
+                    "payload",
+                )
+            scan = {
+                "project_root": root.as_posix(),
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/mini/e001.md",
+                        "validation_notes": [],
+                        "sections": [],
+                    }
+                ],
+                "resolved_paths": {
+                    "output/collection": collection.as_posix(),
+                },
+            }
+            item = {
+                "kind": "collection_scope",
+                "entry": "e001",
+                "identity": "docs/mini/result.csv",
+                "collections": ["output/collection"],
+                "sections": [],
+            }
+
+            expanded = EXCHANGE._expanded_context(scan, item, {})
+            focused = expanded["focused_expansion"]
+
+            self.assertEqual(
+                focused["truncated_recursive_inventories"],
+                ["output/collection"],
+            )
+            self.assertLess(
+                len(focused["recursive_member_inventory"]["output/collection"]),
+                1000,
+            )
+            self.assertLessEqual(
+                len(json.dumps(expanded).encode("utf-8")),
+                EXCHANGE.MAX_EXPANDED_CONTEXT_BYTES,
+            )
+
+    def test_oversized_collection_context_gets_terminal_bounded_projection(
+        self,
+    ) -> None:
+        item = {
+            "kind": "collection_scope",
+            "entry": "e001",
+            "identity": "docs/mini/result.csv",
+            "question": "Which members support this target?",
+            "allowed_decisions": ["fail"],
+        }
+        context = {
+            "minimum": {
+                "identity": item["identity"],
+                "collections": ["output/collection"],
+                "reason": "select exact material members",
+                "target_dependencies": [
+                    {
+                        "path": "output/collection",
+                        "role": "input",
+                        "members": [
+                            f"member-{number:04d}.pkl"
+                            for number in range(1000)
+                        ],
+                    }
+                ],
+                "recorded_invocations": [],
+            },
+            "focused_expansion": {
+                "recursive_member_inventory": {
+                    "output/collection": [
+                        f"member-{number:04d}-{'x' * 48}.pkl"
+                        for number in range(1000)
+                    ]
+                },
+                "truncated_recursive_inventories": ["output/collection"],
+            },
+        }
+
+        packet, projected = EXCHANGE._render_contexts(
+            "docs/mini.md", [item], "continuation", [context]
+        )
+
+        self.assertLessEqual(
+            len(packet.encode("utf-8")), EXCHANGE.MAX_PACKET_BYTES
+        )
+        self.assertEqual(
+            projected[0]["context_projection"],
+            "bounded-terminal-collection",
+        )
+        self.assertTrue(
+            projected[0]["member_inventory"]["output/collection"]["truncated"]
+        )
+
     def test_paged_collection_scope_uses_cli_owned_collection_set(self) -> None:
         row = {
             "kind": "collection_scope",

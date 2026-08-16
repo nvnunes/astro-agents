@@ -36,6 +36,41 @@ class AdjudicationAssemblyTests(unittest.TestCase):
         self.assertEqual(decoded["scope"], {"summary": True, "entries": []})
         self.assertEqual(decoded["review_queue"], [])
 
+    def test_reused_dependency_drops_durable_identity_snapshot(self) -> None:
+        dependencies: list[dict] = []
+        prior = {
+            "dependencies": [
+                {
+                    "path": "data/result.csv",
+                    "role": "target",
+                    "identity": {"size": 4, "sha256": "a" * 64},
+                },
+                {
+                    "path": "output/cases",
+                    "role": "input",
+                    "members": ["case-1.pkl"],
+                    "identity": {
+                        "members": ["case-1.pkl"],
+                        "sha256": "b" * 64,
+                    },
+                },
+            ]
+        }
+
+        ADJUDICATION.merge_reused_dependencies(dependencies, prior)
+
+        self.assertEqual(
+            dependencies,
+            [
+                {"path": "data/result.csv", "role": "target"},
+                {
+                    "path": "output/cases",
+                    "role": "input",
+                    "members": ["case-1.pkl"],
+                },
+            ],
+        )
+
 
 class CandidateCommandTests(unittest.TestCase):
     def test_exact_consumer_does_not_hide_section_local_producer(self) -> None:

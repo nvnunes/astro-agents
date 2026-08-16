@@ -1089,6 +1089,11 @@ Validation also maintains machine-readable state:
   dependencies, and failures. Completion never recombines these rows into a
   monolithic JSON record.
 
+Commit `validation.md`, `validation-record.json`, and the `validation-state/`
+files referenced by the manifest. Ignore `validation-cache.json`,
+`.astro-agents-validation-work/`, and `.research-log-validation.lock`; a
+missing cache only triggers recomputation.
+
 Research agents preserve these files exactly; validation agents create,
 update, or remove them through the validation tool. Only `validation.md` is
 intended for direct use as a validation record. Temporary semantic review

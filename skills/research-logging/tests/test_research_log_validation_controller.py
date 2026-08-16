@@ -76,6 +76,132 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
 
+    def test_removed_semantic_evidence_invalidates_only_its_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = make_log(Path(directory))
+            result = run_validate(summary, result_date="2026-08-16", jobs=1)
+            while result["status"] == "review_required":
+                decision_path = Path(result["decision_file"])
+                template = json.loads(
+                    decision_path.read_text(encoding="utf-8")
+                )
+                for item in template["items"]:
+                    allowed = item["allowed_decisions"]
+                    decision: object
+                    if item["kind"] == "semantic_provenance":
+                        decision = "pass"
+                    elif item["kind"] == "semantic_fallback":
+                        decision = next(
+                            value
+                            for value in allowed
+                            if value not in {"fail:workflow", "needs_context"}
+                        )
+                    elif item["kind"] == "mechanical_failure":
+                        decision = "keep"
+                    elif item["kind"] == "orphan_candidate":
+                        decision = next(
+                            value
+                            for value in allowed
+                            if str(value).startswith("retain:")
+                        )
+                    elif (
+                        item["kind"] == "collection_scope"
+                        and item["context_level"] == 1
+                    ):
+                        collections = next(
+                            value["members"]
+                            for value in allowed
+                            if isinstance(value, dict)
+                        )
+                        decision = {
+                            "members": {
+                                path: ["a.txt"] for path in collections
+                            }
+                        }
+                    else:
+                        decision = "needs_context"
+                    item["decision"] = decision
+                    item["rationale"] = "Focused fixture decision."
+                decision_path.write_text(
+                    json.dumps(template, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                result = run_validate(
+                    summary, decision_file=decision_path, jobs=1
+                )
+
+            self.assertEqual(result["status"], "complete")
+            output = summary.with_suffix("")
+            before = TARGET.load_record(output / TARGET.RECORD_FILENAME)
+            affected_judgments = [
+                judgment
+                for judgment in before["judgments"]
+                if judgment.get("subject", {}).get("identity", "").endswith(
+                    "data/output.csv"
+                )
+            ]
+            self.assertTrue(affected_judgments)
+            unaffected_outcomes = {
+                outcome["compatibility_identity"]
+                for outcome in before["outcomes"]
+                if all(
+                    not dependency["path"].endswith("data/output.csv")
+                    for dependency in outcome["dependencies"]
+                )
+            }
+            self.assertTrue(unaffected_outcomes)
+
+            (entry.parent / "data" / "output.csv").unlink()
+            with mock.patch.object(
+                CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+            ) as scanned:
+                rerun = run_validate(
+                    summary, result_date="2026-08-16", jobs=1
+                )
+
+            self.assertEqual(rerun["status"], "review_required")
+            self.assertNotEqual(rerun.get("cached"), True)
+            scanned.assert_called_once()
+            decisions = json.loads(
+                Path(rerun["decision_file"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(decisions["items"]), 1)
+            self.assertEqual(
+                (
+                    decisions["items"][0]["kind"],
+                    decisions["items"][0]["identity"],
+                ),
+                (
+                    "mechanical_failure",
+                    (
+                        "docs/mini/entries/2026-08-07-e001-validation-fixture/"
+                        "data/output.csv"
+                    ),
+                ),
+            )
+
+            current = TARGET.load_record(output / TARGET.RECORD_FILENAME)
+            current_judgments = {
+                judgment["identity"] for judgment in current["judgments"]
+            }
+            self.assertTrue(
+                all(
+                    judgment["identity"] in current_judgments
+                    for judgment in affected_judgments
+                )
+            )
+            current_outcomes = {
+                outcome["compatibility_identity"]
+                for outcome in current["outcomes"]
+            }
+            self.assertTrue(unaffected_outcomes <= current_outcomes)
+            self.assertTrue(
+                any(
+                    failure["target"].endswith("data/output.csv")
+                    for failure in current["failures"]
+                )
+            )
+
     def test_missing_cache_for_changed_zero_outcome_log_forces_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))

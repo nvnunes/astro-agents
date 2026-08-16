@@ -602,10 +602,12 @@ def _expanded_collection_inventory(
     scan: ScanRecord,
     queue_item: Mapping[str, Any],
     used_bytes: int,
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], list[str]]:
     """Return one bounded recursive inventory for focused collection review."""
 
     recursive_inventory: dict[str, list[str]] = {}
+    truncated: list[str] = []
+    inventory_limit = MAX_EXPANDED_CONTEXT_BYTES - 1024
     if queue_item.get("kind") == "collection_scope":
         for collection in queue_item.get("collections", []):
             raw_path = scan.get("resolved_paths", {}).get(collection)
@@ -616,15 +618,14 @@ def _expanded_collection_inventory(
                     if not child.is_file():
                         continue
                     member = child.relative_to(root).as_posix()
-                    used_bytes += len(member.encode("utf-8")) + 4
-                    if used_bytes > MAX_EXPANDED_CONTEXT_BYTES:
-                        raise ValidationToolError(
-                            "focused collection inventory exceeds its packet "
-                            "context budget"
-                        )
+                    member_bytes = len(member.encode("utf-8")) + 4
+                    if used_bytes + member_bytes > inventory_limit:
+                        truncated.append(str(collection))
+                        break
+                    used_bytes += member_bytes
                     members.append(member)
             recursive_inventory[str(collection)] = members
-    return recursive_inventory
+    return recursive_inventory, truncated
 
 
 def _expanded_context(
@@ -636,7 +637,7 @@ def _expanded_context(
     section_passages, used_bytes = _expanded_entry_passages(
         scan, entry, queue_item
     )
-    recursive_inventory = _expanded_collection_inventory(
+    recursive_inventory, truncated_inventory = _expanded_collection_inventory(
         scan, queue_item, used_bytes
     )
     return {
@@ -654,6 +655,11 @@ def _expanded_context(
             **(
                 {"recursive_member_inventory": recursive_inventory}
                 if recursive_inventory
+                else {}
+            ),
+            **(
+                {"truncated_recursive_inventories": truncated_inventory}
+                if truncated_inventory
                 else {}
             ),
         },
@@ -737,6 +743,110 @@ def _render_packet_with_contexts(
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _bounded_collection_packet_context(
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project an oversized collection context into a terminal bounded view."""
+
+    minimum = context.get("minimum", context)
+    if not isinstance(minimum, Mapping):
+        minimum = {}
+    focused = context.get("focused_expansion", {})
+    if not isinstance(focused, Mapping):
+        focused = {}
+    dependencies = []
+    for dependency in minimum.get("target_dependencies", []):
+        if not isinstance(dependency, Mapping):
+            continue
+        members = dependency.get("members", [])
+        dependencies.append(
+            {
+                key: copy.deepcopy(dependency[key])
+                for key in ("path", "role")
+                if key in dependency
+            }
+            | (
+                {
+                    "members": list(members[:20]),
+                    "member_count": len(members),
+                    "members_truncated": len(members) > 20,
+                }
+                if isinstance(members, list) and members
+                else {}
+            )
+        )
+    invocations = []
+    for invocation in minimum.get("recorded_invocations", [])[:20]:
+        if not isinstance(invocation, Mapping):
+            continue
+        invocations.append(
+            {
+                key: copy.deepcopy(invocation[key])
+                for key in ("invocation", "entry", "line", "command")
+                if key in invocation
+            }
+        )
+    inventories = {}
+    source_inventories = focused.get(
+        "recursive_member_inventory",
+        minimum.get("shallow_member_inventory", {}),
+    )
+    if isinstance(source_inventories, Mapping):
+        for collection, members in source_inventories.items():
+            if not isinstance(members, list):
+                continue
+            inventories[str(collection)] = {
+                "members": list(members[:20]),
+                "listed_member_count": len(members),
+                "truncated": len(members) > 20
+                or str(collection)
+                in focused.get("truncated_recursive_inventories", []),
+            }
+    return {
+        "context_projection": "bounded-terminal-collection",
+        "identity": minimum.get("identity"),
+        "collections": minimum.get("collections", []),
+        "reason": minimum.get("reason"),
+        "target_dependencies": dependencies,
+        "recorded_invocations": invocations,
+        "member_inventory": inventories,
+        "decision_constraint": (
+            "Select members only when this bounded view establishes the exact "
+            "material set; otherwise record a provenance failure."
+        ),
+        "omitted_context": (
+            "The complete collection context exceeds the packet byte bound; "
+            "its full identity remains continuation-bound."
+        ),
+    }
+
+
+def _render_contexts(
+    summary: str,
+    items: list[dict[str, Any]],
+    continuation: str,
+    contexts: list[Mapping[str, Any]],
+) -> tuple[str, list[Mapping[str, Any]]]:
+    """Render once, bounding oversized terminal collection projections."""
+
+    packet = _render_packet_with_contexts(
+        summary, items, continuation, contexts
+    )
+    if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES or len(items) != 1:
+        return packet, contexts
+    if items[0].get("kind") != "collection_scope":
+        return packet, contexts
+    bounded_contexts: list[Mapping[str, Any]] = [
+        _bounded_collection_packet_context(contexts[0])
+    ]
+    return (
+        _render_packet_with_contexts(
+            summary, items, continuation, bounded_contexts
+        ),
+        bounded_contexts,
+    )
 
 
 def _render_packet(
@@ -988,7 +1098,7 @@ def _deferred_page(
                 "items": [item["id"] for item in items],
             }
         )
-        packet = _render_packet_with_contexts(
+        packet, _ = _render_contexts(
             str(index["summary"]),
             items,
             continuation,

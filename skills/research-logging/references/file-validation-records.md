@@ -42,6 +42,10 @@ store reusable file identities, hashes, inspections, directory membership, and
 local indexes. Missing, malformed, or stale cache data causes recomputation;
 it cannot invalidate a readable report or make an uncertain result succeed.
 
+Commit `validation.md`, `validation-record.json`, and the `validation-state/`
+files referenced by the manifest. Ignore `validation-cache.json`,
+`.astro-agents-validation-work/`, and `.research-log-validation.lock`.
+
 Generated semantic packets and decision templates are temporary task files
 outside the research log. They are paired to one continuation and may be
 regenerated from the durable record and current evidence. The agent edits only

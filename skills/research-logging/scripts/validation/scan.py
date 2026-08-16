@@ -75,6 +75,13 @@ from .inventory import (
     owned_entry_folders,
     owned_inventory,
 )
+from .observations import (
+    CHANGED_DURING_OBSERVATION,
+    CONTENT_CHANGED,
+    CONTENT_UNCHANGED,
+    NEW,
+    ObservationSession,
+)
 from .records import LOCK_FILENAME, record_bundle_identity
 from .state import (
     ValidationStateContractError,
@@ -504,62 +511,78 @@ class IdentityInspectionResult(NamedTuple):
     inspections_reused: int
 
 
-def _inspect_identity(
-    path: Path, inputs: IdentityInspectionInput
-) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int]]:
-    """Inspect one input, reusing a stable prior identity when possible."""
-
+def _inspection_key(path: Path, inputs: IdentityInspectionInput) -> str:
     policy = inputs.policy
     logical_path = Path(os.path.abspath(str(path)))
-    key = inputs.logical_identities.get(
+    return inputs.logical_identities.get(
         logical_path, policy.display_identity(path, inputs.project_root)
     )
+
+
+def _inspect_projected_source(
+    path: Path, inputs: IdentityInspectionInput, key: str
+) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int], bool]:
+    policy = inputs.policy
+    summary = path.resolve() == inputs.summary_path
+    identity = (
+        policy.summary_identity(path) if summary else policy.entry_identity(path)
+    )
     observed = inputs.observed_identities.get(path.resolve())
-    if path.resolve() == inputs.summary_path:
-        identity = policy.summary_identity(path)
-        hashed = identity["size"]
-    elif path.resolve() in inputs.entry_paths:
-        identity = policy.entry_identity(path)
-        hashed = identity["size"]
-    else:
-        previous = inputs.prior_files.get(key)
-        before = path.stat() if path.is_file() and not path.is_symlink() else None
-        if (
-            before is not None
-            and isinstance(previous, dict)
-            and previous.get("size") == before.st_size
-            and previous.get("mtime_ns") == before.st_mtime_ns
-            and previous.get("ctime_ns") == before.st_ctime_ns
-            and key in inputs.prior_checks
-            and (observed is None or previous == observed)
-        ):
-            identity = previous
-            structure = inputs.prior_checks[key]
-            after = path.stat()
-            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            ):
-                raise FileChangedError(
-                    f"file changed during cached identity check: {path}"
-                )
-            return key, identity, structure, None
-        identity = policy.file_identity(path)
-        hashed = identity["size"]
     if observed is not None and identity != observed:
         raise FileChangedError(f"file changed after validation read: {path}")
     structure = policy.inspect_structure(path)
-    if path.is_file() or path.is_symlink():
-        if path.resolve() == inputs.summary_path:
-            after_identity = policy.summary_identity(path)
-        elif path.resolve() in inputs.entry_paths:
-            after_identity = policy.entry_identity(path)
-        else:
-            after_identity = policy.file_identity(path)
-        if identity != after_identity:
-            raise FileChangedError(f"file changed during structure inspection: {path}")
-    return key, identity, structure, hashed
+    after_identity = (
+        policy.summary_identity(path) if summary else policy.entry_identity(path)
+    )
+    if identity != after_identity:
+        raise FileChangedError(f"file changed during structure inspection: {path}")
+    return key, identity, structure, identity["size"], False
+
+
+def _inspect_observed_artifact(
+    path: Path, inputs: IdentityInspectionInput, key: str
+) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int], bool]:
+    previous = inputs.prior_files.get(key)
+    observed = inputs.observed_identities.get(path.resolve())
+    session = ObservationSession()
+    observation, structure, inspection_reused = session.inspect(
+        path,
+        inputs.policy.inspect_structure,
+        previous if isinstance(previous, dict) else None,
+        (
+            inputs.prior_checks.get(key)
+            if observed is None or previous == observed
+            else None
+        ),
+    )
+    if observation.status == CHANGED_DURING_OBSERVATION:
+        raise FileChangedError(f"file changed during structure inspection: {path}")
+    if not observation.resolved or observation.identity is None:
+        raise ValidationToolError(
+            observation.detail or f"could not observe validation input: {path}"
+        )
+    identity = dict(observation.identity)
+    if structure is None:
+        raise ValidationToolError(f"could not inspect validation input: {path}")
+    if observed is not None and identity != observed:
+        raise FileChangedError(f"file changed after validation read: {path}")
+    hashed = (
+        identity["size"]
+        if observation.status in {CONTENT_UNCHANGED, CONTENT_CHANGED, NEW}
+        else None
+    )
+    return key, identity, cast(Dict[str, Any], structure), hashed, inspection_reused
+
+
+def _inspect_identity(
+    path: Path, inputs: IdentityInspectionInput
+) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int], bool]:
+    """Inspect one input, reusing a stable prior identity when possible."""
+
+    key = _inspection_key(path, inputs)
+    if path.resolve() == inputs.summary_path or path.resolve() in inputs.entry_paths:
+        return _inspect_projected_source(path, inputs, key)
+    return _inspect_observed_artifact(path, inputs, key)
 
 
 def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionResult:
@@ -579,7 +602,7 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
         for future in concurrent.futures.as_completed(futures):
             path = futures[future]
             try:
-                key, identity, structure, hashed = future.result()
+                key, identity, structure, hashed, inspection_reused = future.result()
             except FileChangedError:
                 raise
             except (OSError, ValidationToolError) as exc:
@@ -593,7 +616,7 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
                 files_hashed += 1
             elif path.is_file():
                 files_reused += 1
-                inspections_reused += 1
+                inspections_reused += int(inspection_reused)
     return IdentityInspectionResult(
         files,
         mechanics,

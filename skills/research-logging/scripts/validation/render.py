@@ -83,6 +83,7 @@ from .inventory import (
     directory_membership_identity,
 )
 from .lint import LintPolicy, lint_validation_records
+from .observations import CONTENT_CHANGED, ObservationSession
 from .publication import (
     ValidationPublicationTarget,
     publish_validation_bundle,
@@ -1412,6 +1413,15 @@ def _validate_render_summary_scope(
 
 
 def _assert_scanned_files_current(scan: ScanRecord) -> None:
+    projected_paths = {
+        scan.get("summary"),
+        *(
+            entry.get("path")
+            for entry in scan.get("entries", [])
+            if "error" not in entry
+        ),
+    }
+    observations = ObservationSession()
     for identity, expected in scan.get("files", {}).items():
         raw_path = scan.get("resolved_paths", {}).get(identity)
         if not isinstance(raw_path, str):
@@ -1419,12 +1429,20 @@ def _assert_scanned_files_current(scan: ScanRecord) -> None:
                 f"validation input no longer resolves after scan: {identity}"
             )
         try:
-            current = validation_file_identity(scan, identity, Path(raw_path))
+            if identity in projected_paths:
+                current = validation_file_identity(scan, identity, Path(raw_path))
+                changed = current != expected
+            else:
+                observation = observations.observe(Path(raw_path), expected)
+                changed = (
+                    not observation.resolved
+                    or observation.status == CONTENT_CHANGED
+                )
         except (OSError, ValidationToolError) as exc:
             raise FileChangedError(
                 f"validation input changed after scan: {identity}: {exc}"
             ) from exc
-        if current != expected:
+        if changed:
             raise FileChangedError(f"validation input changed after scan: {identity}")
 
 

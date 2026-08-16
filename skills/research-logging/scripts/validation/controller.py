@@ -711,6 +711,15 @@ def _continue_review(
     )
     _merge_review_judgments(record, review_judgments)
     if decided["review_queue"]:
+        decided = cast(
+            dict[str, Any],
+            _apply_reusable_judgments(
+                scan,
+                cast(AdjudicationRecord, decided),
+                record["judgments"],
+            ),
+        )
+    if decided["review_queue"]:
         context_levels = _requested_context_levels(decisions)
         result = _review_required(
             scan,

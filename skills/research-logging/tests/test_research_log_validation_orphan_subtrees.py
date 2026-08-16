@@ -144,6 +144,9 @@ class OrphanSubtreeTests(unittest.TestCase):
             template = EXCHANGE._candidate_reuse_template(
                 scan, adjudication, queue_item, candidate
             )
+            current_inputs = EXCHANGE.review_judgment_inputs(
+                scan, adjudication, queue_item, template, decision
+            )
             judgments.append(
                 {
                     "identity": template["id"],
@@ -157,12 +160,24 @@ class OrphanSubtreeTests(unittest.TestCase):
                         "identity": candidate["identity"],
                     },
                     "rule_dependencies": EXCHANGE.SEMANTIC_REVIEW_RULES,
-                    "input_dependencies": EXCHANGE.review_judgment_inputs(
-                        scan, adjudication, queue_item, template, decision
-                    ),
+                    "input_dependencies": [],
                     "rationale": f"Existing exact decision for {candidate['identity']}",
                     "rationale_provenance": "recorded",
                     "provenance": "native-reviewed",
+                }
+            )
+            judgments.append(
+                {
+                    "identity": f"legacy-{candidate['identity']}",
+                    "kind": "orphan-disposition",
+                    "result": "accepted" if decision == "connected" else "unresolved",
+                    "basis": "graph" if decision == "connected" else "-",
+                    "subject": {"entry": entry, "identity": candidate["identity"]},
+                    "input_dependencies": [
+                        dependency
+                        for dependency in current_inputs
+                        if dependency.get("kind") == "orphan-candidate"
+                    ],
                 }
             )
 

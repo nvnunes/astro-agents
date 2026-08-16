@@ -1335,7 +1335,8 @@ def _update_orphan_item(
     else:
         return
     if identity in rule_roots:
-        basis = subtree_basis(str(rule_roots[identity]), basis)
+        inherited = "unresolved" if decision == "unresolved" else basis
+        basis = subtree_basis(str(rule_roots[identity]), inherited)
     orphan_item.update({"decision": decision, "basis": basis})
 
 
@@ -1682,7 +1683,8 @@ def _desired_orphan_decisions(
         for identity, root in roots.items():
             current = desired.get(identity)
             if current is not None and isinstance(root, str):
-                desired[identity] = (current[0], subtree_basis(root, current[1]))
+                inherited = "unresolved" if current[0] == "unresolved" else current[1]
+                desired[identity] = (current[0], subtree_basis(root, inherited))
     return desired
 
 

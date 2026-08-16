@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from .compatibility import decode_input_dependencies
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
 from .orphan_rules import (
@@ -2513,9 +2514,99 @@ def _legacy_exact_decision(
 ) -> dict[str, str] | None:
     template = _candidate_reuse_template(scan, adjudication, queue_item, candidate)
     answer = reusable_review_answer(scan, adjudication, queue_item, template, judgments)
-    if answer is None or not isinstance(answer[0], str):
+    if answer is not None and isinstance(answer[0], str):
+        return {"decision": answer[0], "rationale": answer[1]}
+    return _migrated_exact_decision(
+        scan, adjudication, queue_item, template, judgments
+    )
+
+
+def _migrated_exact_decision(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    template: Mapping[str, Any],
+    judgments: Sequence[Mapping[str, Any]],
+) -> dict[str, str] | None:
+    """Project one exact v45 orphan decision through retained content proof."""
+
+    entry = str(template["entry"])
+    identity = str(template["identity"])
+    semantic_identity = f"orphan-candidate:{entry}:{identity}"
+    current_inputs = review_judgment_inputs(
+        scan, adjudication, queue_item, template
+    )
+    current = next(
+        (
+            item
+            for item in current_inputs
+            if item.get("semantic_identity") == semantic_identity
+        ),
+        None,
+    )
+    if current is None:
         return None
-    return {"decision": answer[0], "rationale": answer[1]}
+    compatible = [
+        judgment
+        for judgment in judgments
+        if judgment.get("kind") == "orphan-disposition"
+        and judgment.get("subject") == {"entry": entry, "identity": identity}
+        and _legacy_candidate_dependency(judgment, semantic_identity) == current
+    ]
+    if len(compatible) != 1:
+        return None
+    reviewed = [
+        judgment
+        for judgment in judgments
+        if judgment.get("kind") == "review-decision"
+        and judgment.get("subject")
+        == {"kind": "orphan_candidate", "entry": entry, "identity": identity}
+        and judgment.get("decision") in template.get("allowed_decisions", [])
+    ]
+    answers = {
+        str(judgment["decision"]): str(judgment.get("rationale", ""))
+        for judgment in reviewed
+    }
+    if len(answers) == 1:
+        decision, rationale = next(iter(answers.items()))
+        return {"decision": decision, "rationale": rationale}
+    projected = _legacy_disposition_answer(compatible[0])
+    if projected not in template.get("allowed_decisions", []):
+        return None
+    return {
+        "decision": str(projected),
+        "rationale": "Retained the exact compatible v45 orphan disposition.",
+    }
+
+
+def _legacy_candidate_dependency(
+    judgment: Mapping[str, Any], semantic_identity: str
+) -> dict[str, Any] | None:
+    try:
+        dependencies = decode_input_dependencies(
+            judgment.get("input_dependencies"),
+            "legacy orphan disposition inputs",
+            require_supported=False,
+        )
+    except ValidationToolError:
+        return None
+    matches = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("semantic_identity") == semantic_identity
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _legacy_disposition_answer(judgment: Mapping[str, Any]) -> str | None:
+    if judgment.get("result") == "unresolved":
+        return "unresolved"
+    basis = judgment.get("basis")
+    if isinstance(basis, str) and basis.startswith("validation-note:"):
+        return f"retain:{basis.removeprefix('validation-note:')}"
+    if basis in {"graph", "semantic-connection"}:
+        return "connected"
+    return None
 
 
 def _mark_legacy_subtree_coverage(
@@ -2569,9 +2660,13 @@ def _orphan_reuse_action(
         )
         if any(below(root, identity) for root in migration_roots):
             continue
-        exact = _candidate_reuse_template(scan, adjudication, queue_item, candidate)
-        answer = reusable_review_answer(
-            scan, adjudication, queue_item, exact, judgments
+        prior = _legacy_exact_decision(
+            scan, adjudication, queue_item, candidate, judgments
+        )
+        answer = (
+            (prior["decision"], prior["rationale"])
+            if prior is not None
+            else None
         )
         rule_root: str | None = None
         if answer is None:
@@ -2716,7 +2811,13 @@ def reusable_review_subjects(
                     "entry": queue_item["entry"],
                     "identity": identity_value,
                 }
-                candidates = [exact_subject]
+                candidates = [
+                    exact_subject,
+                    {
+                        "entry": queue_item["entry"],
+                        "identity": identity_value,
+                    },
+                ]
                 candidates.extend(
                     subtree_subject(str(queue_item["entry"]), material, root)
                     for material, root in ancestor_roots(identity_value)

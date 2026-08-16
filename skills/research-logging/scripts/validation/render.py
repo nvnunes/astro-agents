@@ -1517,13 +1517,13 @@ def _publication_lint(
     return lint_records(output_dir, policy, expected_entry_order)
 
 
-def render_records(
+def assemble_records(
     adjudication: AdjudicationRecord,
     scan: ScanRecord,
     output_dir: Path,
     policy: RenderLifecyclePolicy,
-) -> RenderCounts:
-    """Render and atomically publish authoritative validation records."""
+) -> RenderAssembly:
+    """Assemble validated deterministic records without publishing them."""
 
     scan = _validated_scan_record(scan, policy)
     adjudication = _validated_adjudication_record(adjudication, policy)
@@ -1621,6 +1621,19 @@ def render_records(
         failures=compact_failures,
         local_snapshot_identity=local_snapshot_identity(scan),
     )
+
+    return assembly
+
+
+def render_records(
+    adjudication: AdjudicationRecord,
+    scan: ScanRecord,
+    output_dir: Path,
+    policy: RenderLifecyclePolicy,
+) -> RenderCounts:
+    """Render and atomically publish authoritative validation records."""
+
+    assembly = assemble_records(adjudication, scan, output_dir, policy)
 
     project_root = Path(scan["project_root"])
     canonical_output = repository_identity_path(scan["log_root"], project_root)

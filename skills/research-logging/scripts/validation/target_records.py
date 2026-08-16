@@ -315,6 +315,47 @@ def write_record_and_cache(
         ) from exc
 
 
+def publish_target_bundle(
+    output_dir: Path,
+    report_text: str,
+    record: Mapping[str, Any],
+    cache: Mapping[str, Any],
+) -> None:
+    """Publish target files with the report as the final commit point.
+
+    Progressive durable state and disposable cache are written first.  Every
+    individual replacement is atomic, so a failure leaves the prior completed
+    report intact and retains every authoritative record write that succeeded.
+    """
+
+    valid_record = decode_record(record)
+    valid_cache = decode_cache(cache)
+    if not report_text.endswith("\n"):
+        raise TargetRecordError("validation report must end with a newline")
+    if output_dir.is_symlink():
+        raise RecordPublicationError(
+            "target validation output directory must not be a symlink"
+        )
+    for name in (CACHE_FILENAME, RECORD_FILENAME, "validation.md"):
+        if (output_dir / name).is_symlink():
+            raise RecordPublicationError(
+                f"target validation destination must not be a symlink: {name}"
+            )
+    try:
+        with validation_lock(output_dir):
+            _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
+            _atomic_write_bytes(
+                output_dir / RECORD_FILENAME, _json_bytes(valid_record)
+            )
+            _atomic_write_bytes(output_dir / "validation.md", report_text.encode())
+    except RecordPublicationError:
+        raise
+    except OSError as exc:
+        raise RecordPublicationError(
+            f"target validation bundle could not be written: {exc}"
+        ) from exc
+
+
 def _v45_document(path: Path, schema_version: int) -> dict[str, Any]:
     try:
         document = _mapping(_read_json(path), path.name)

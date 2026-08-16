@@ -9,6 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from research_log_validation_test_support import SCRIPT
+
+SCRIPTS = SCRIPT.parent
 TARGET = importlib.import_module("validation.target_records")
 FIXTURE = Path(__file__).parent / "fixtures" / "v45-hybrid"
 
@@ -168,6 +171,51 @@ class TargetRecordTests(unittest.TestCase):
                 ):
                     TARGET.write_record_and_cache(target, changed, cache)
             self.assertEqual((target / TARGET.RECORD_FILENAME).read_bytes(), before)
+
+    def test_failed_report_write_preserves_prior_completed_report_and_progress(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record, cache = self._import_fixture(root)
+            target = root / "target"
+            TARGET.publish_target_bundle(target, "prior report\n", record, cache)
+            before = (target / "validation.md").read_bytes()
+            changed = copy.deepcopy(record)
+            changed["result"]["date"] = "2026-08-16"
+            original = TARGET._atomic_write_bytes
+
+            def fail_report(path: Path, payload: bytes) -> None:
+                if path.name == "validation.md":
+                    raise OSError("simulated report failure")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_report
+            ):
+                with self.assertRaisesRegex(
+                    TARGET.RecordPublicationError, "bundle could not be written"
+                ):
+                    TARGET.publish_target_bundle(
+                        target, "new report\n", changed, cache
+                    )
+            self.assertEqual((target / "validation.md").read_bytes(), before)
+            self.assertEqual(
+                TARGET.load_record(target / TARGET.RECORD_FILENAME), changed
+            )
+
+    def test_target_publication_rejects_output_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record, cache = self._import_fixture(root)
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(
+                TARGET.RecordPublicationError, "must not be a symlink"
+            ):
+                TARGET.publish_target_bundle(alias, "report\n", record, cache)
 
 
 if __name__ == "__main__":

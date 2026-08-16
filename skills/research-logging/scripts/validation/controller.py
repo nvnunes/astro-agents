@@ -1,0 +1,276 @@
+"""CLI-owned progressive validation controller for one maintained summary."""
+
+from __future__ import annotations
+
+import copy
+import json
+import tempfile
+from datetime import date
+from pathlib import Path
+from typing import Any, Mapping
+
+from .adjudication import ReviewPacketRequest, make_review_packet
+from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
+from .graph_store import (
+    discover_repository_summaries,
+    replacement_repository_view,
+)
+from .inventory import find_project_root
+from .observations import (
+    ObservationSession,
+    observe_outcome_dependencies,
+    retain_compatible_outcomes,
+)
+from .render import assemble_records
+from .runtime import (
+    MATERIAL_INVENTORY_POLICY,
+    RULES_VERSION,
+    prepare_adjudication_record,
+    render_policy,
+    scan_log,
+)
+from .target_records import (
+    CACHE_FILENAME,
+    RECORD_FILENAME,
+    TargetRecordError,
+    empty_cache,
+    empty_record,
+    import_v45,
+    load_cache,
+    load_record,
+    publish_target_bundle,
+)
+
+
+def _load_target_state(
+    output_dir: Path, summary: str
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    record_path = output_dir / RECORD_FILENAME
+    cache_path = output_dir / CACHE_FILENAME
+    if record_path.is_file():
+        record = load_record(record_path)
+        cache, cache_status = load_cache(cache_path)
+        return record, cache, f"native:{cache_status}"
+    v45_names = (
+        "validation-decisions.json",
+        "validation-state.json",
+        "validation-index.json",
+    )
+    if any((output_dir / name).exists() for name in v45_names):
+        if not all((output_dir / name).is_file() for name in v45_names):
+            raise TargetRecordError(
+                "v45 migration requires validation-decisions.json, "
+                "validation-state.json, and validation-index.json together"
+            )
+        record, cache = import_v45(output_dir, summary)
+        return record, cache, "v45-imported"
+    return empty_record(summary, RULES_VERSION), empty_cache(), "new"
+
+
+def _cached_completion(
+    summary_path: Path,
+    output_dir: Path,
+    record: Mapping[str, Any],
+    cache: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    outcomes = list(record.get("outcomes", []))
+    if not outcomes or record.get("result") is None:
+        return None
+    if record.get("continuation") is not None or not (
+        output_dir / "validation.md"
+    ).is_file():
+        return None
+    session = ObservationSession()
+    observed = observe_outcome_dependencies(
+        session,
+        outcomes,
+        cache.get("files", {}),
+        find_project_root(summary_path),
+    )
+    retained, reopened = retain_compatible_outcomes(outcomes, observed)
+    if reopened or len(retained) != len(outcomes):
+        return None
+    return {
+        "status": "complete",
+        "summary": summary_path.as_posix(),
+        "record": (output_dir / RECORD_FILENAME).as_posix(),
+        "cache": (output_dir / CACHE_FILENAME).as_posix(),
+        "report": (output_dir / "validation.md").as_posix(),
+        "progress_retained": True,
+        "cached": True,
+        "diagnostics": session.diagnostics.as_dict(),
+    }
+
+
+def _target_record(
+    summary: str, bundle: Any, prior: Mapping[str, Any]
+) -> dict[str, Any]:
+    state = bundle.state
+    record = empty_record(summary, state["validation_rules_version"])
+    record["rule_dependencies"] = {
+        "components": copy.deepcopy(state["component_versions"]),
+        "input_projections": copy.deepcopy(state["input_projection_versions"]),
+    }
+    by_identity = {
+        judgment["identity"]: copy.deepcopy(judgment)
+        for judgment in [
+            *prior.get("judgments", []),
+            *bundle.decisions.get("judgments", []),
+        ]
+    }
+    record["judgments"] = list(by_identity.values())
+    record["outcomes"] = []
+    for stored in state["completed_checks"]:
+        outcome = copy.deepcopy(stored)
+        outcome.pop("graph_slice", None)
+        record["outcomes"].append(outcome)
+    record["result"] = copy.deepcopy(state["result"])
+    record["failures"] = copy.deepcopy(state["result"].get("failures", []))
+    return record
+
+
+def _target_cache(bundle: Any) -> dict[str, Any]:
+    state = bundle.state
+    files = copy.deepcopy(state.get("input_files", {}))
+    for path, identity in state.get("files", {}).items():
+        files.setdefault(path, copy.deepcopy(identity))
+    cache = empty_cache()
+    cache["files"] = files
+    cache["directories"] = copy.deepcopy(state.get("directory_memberships", {}))
+    cache["inspections"] = copy.deepcopy(state.get("mechanical_checks", {}))
+    return cache
+
+
+def _review_required(
+    scan: ScanRecord, adjudication: AdjudicationRecord
+) -> dict[str, Any]:
+    work_dir = Path(tempfile.mkdtemp(prefix="research-log-validation-review-"))
+    packet, counts = make_review_packet(
+        scan,
+        adjudication,
+        ReviewPacketRequest(batch_size=200),
+    )
+    packet_path = work_dir / "review-packet.md"
+    decision_path = work_dir / "review-decisions.json"
+    packet_path.write_text(packet, encoding="utf-8")
+    decision_path.write_text(
+        json.dumps(
+            {
+                "status": "template",
+                "items": [],
+                "note": "Phase 4 supplies the bounded decision contract.",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "status": "review_required",
+        "review_packet": packet_path.as_posix(),
+        "decision_file": decision_path.as_posix(),
+        "continuation": "pending-semantic-review",
+        "item_count": sum(counts.values()),
+        "byte_count": len(packet.encode("utf-8")),
+        "progress_retained": False,
+    }
+
+
+def validate(
+    summary_path: Path,
+    decision_file: Path | None = None,
+    result_date: str | None = None,
+    jobs: int = 8,
+    publish: bool = True,
+) -> dict[str, Any]:
+    """Validate one maintained summary through the public target operation."""
+
+    summary_path = summary_path.resolve()
+    output_dir = summary_path.with_suffix("")
+    summary = summary_path.as_posix()
+    report_path = output_dir / "validation.md"
+    prior_report = report_path.read_bytes() if report_path.is_file() else None
+    try:
+        record, cache, state_status = _load_target_state(output_dir, summary)
+        cached = _cached_completion(summary_path, output_dir, record, cache)
+        if cached is not None and decision_file is None:
+            cached["state_status"] = state_status
+            return cached
+        if decision_file is not None:
+            raise ValidationToolError(
+                "semantic decision continuation is introduced in Phase 4"
+            )
+        project_root = find_project_root(summary_path)
+        summaries = discover_repository_summaries(project_root)
+        repository = replacement_repository_view(
+            project_root,
+            summary_path,
+            RULES_VERSION,
+            MATERIAL_INVENTORY_POLICY,
+            summaries=summaries,
+        )
+        prior_state_path = output_dir / "validation-state.json"
+        prior_state = (
+            json.loads(prior_state_path.read_text(encoding="utf-8"))
+            if prior_state_path.is_file()
+            else None
+        )
+        decisions_path = output_dir / "validation-decisions.json"
+        prior_decisions = (
+            json.loads(decisions_path.read_text(encoding="utf-8"))
+            if decisions_path.is_file()
+            else None
+        )
+        scan, metrics = scan_log(
+            summary_path,
+            jobs=jobs,
+            prior_state=prior_state,
+            repository_index=repository,
+            prior_decisions=prior_decisions,
+        )
+        adjudication = prepare_adjudication_record(
+            scan, result_date or date.today().isoformat()
+        )
+        if adjudication["review_queue"]:
+            result = _review_required(scan, adjudication)
+            result.update({"summary": summary, "state_status": state_status})
+            return result
+        assembly = assemble_records(adjudication, scan, output_dir, render_policy())
+        bundle = assembly.bundle()
+        target_record = _target_record(summary, bundle, record)
+        target_cache = _target_cache(bundle)
+        if publish:
+            publish_target_bundle(
+                output_dir, bundle.report_text, target_record, target_cache
+            )
+        return {
+            "status": "complete",
+            "summary": summary,
+            "record": (output_dir / RECORD_FILENAME).as_posix(),
+            "cache": (output_dir / CACHE_FILENAME).as_posix(),
+            "report": (output_dir / "validation.md").as_posix(),
+            "progress_retained": bool(target_record["outcomes"]),
+            "published": publish,
+            "state_status": state_status,
+            "diagnostics": {
+                "metadata_checked": metrics.get("files_identified", 0),
+                "hashes_reused": metrics.get("files_reused", 0),
+                "files_hashed": metrics.get("files_hashed", 0),
+                "bytes_hashed": metrics.get("bytes_hashed", 0),
+                "content_changed": 0,
+            },
+            "counts": assembly.counts(),
+        }
+    except Exception as exc:
+        report_retained = (
+            prior_report is not None
+            and (output_dir / "validation.md").is_file()
+            and (output_dir / "validation.md").read_bytes() == prior_report
+        )
+        return {
+            "status": "error",
+            "summary": summary,
+            "error": str(exc),
+            "progress_retained": (output_dir / RECORD_FILENAME).is_file(),
+            "prior_report_retained": report_retained,
+        }

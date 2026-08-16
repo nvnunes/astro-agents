@@ -22,6 +22,7 @@ from .contracts import (
     decode_adjudication_record,
     decode_scan_record,
 )
+from .controller import validate
 from .decision_store import merge_native_orphan_batch_judgments
 from .decisions import apply_review_decisions
 from .discovery import MarkdownDiscoveryError
@@ -55,6 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Mechanical-first support for agent-led research-log validation."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate_parser = subparsers.add_parser(
+        "validate", help="validate one maintained summary through the target workflow"
+    )
+    validate_parser.add_argument("--summary", required=True, type=Path)
+    validate_parser.add_argument("--decisions", type=Path)
+    validate_parser.add_argument("--date")
+    validate_parser.add_argument(
+        "--jobs", type=int, default=min(32, (os.cpu_count() or 1) + 4)
+    )
+    validate_parser.add_argument(
+        "--no-publish", action="store_true", help=argparse.SUPPRESS
+    )
 
     scan = subparsers.add_parser(
         "scan", help="scan a research log without semantic adjudication"
@@ -273,6 +287,18 @@ def _run_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_validate(args: argparse.Namespace) -> int:
+    result = validate(
+        args.summary,
+        decision_file=args.decisions,
+        result_date=args.date,
+        jobs=args.jobs,
+        publish=not args.no_publish,
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 2 if result["status"] == "error" else 0
+
+
 def _run_prepare(args: argparse.Namespace) -> int:
     template = prepare_adjudication_record(
         load_scan_record(args.scan), args.date, args.mode
@@ -386,6 +412,7 @@ def _run_lint(args: argparse.Namespace) -> int:
 
 
 COMMAND_HANDLERS = {
+    "validate": _run_validate,
     "scan": _run_scan,
     "prepare": _run_prepare,
     "review": _run_review,

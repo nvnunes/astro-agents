@@ -70,6 +70,7 @@ from .scan import (
 from .scan import (
     scan_log as run_scan,
 )
+from .target_records import CACHE_FILENAME, RECORD_FILENAME
 
 SCAN_SCHEMA_VERSION = 18
 ADJUDICATION_SCHEMA_VERSION = 8
@@ -89,6 +90,8 @@ OWNED_INVENTORY_EXCLUDED_NAMES = frozenset(
         "evidence.csv",
         "refs.bib",
         ".research-log-validation.lock",
+        CACHE_FILENAME,
+        RECORD_FILENAME,
         *VALIDATION_RECORD_FILENAMES,
     }
 )

@@ -30,6 +30,7 @@ from .review_exchange import (
     resume_deferred_orphan_session,
     resume_ordinary_exchange,
     reusable_review_actions,
+    reusable_review_subjects,
 )
 from .runtime import (
     RULES_VERSION,
@@ -38,16 +39,23 @@ from .runtime import (
     scan_policy,
 )
 from .scan import ScanRequest, scan_log
+from .sharded_state import prepare_state
 from .target_records import (
     CACHE_FILENAME,
     RECORD_FILENAME,
+    append_judgment_batch,
     assert_no_retired_artifacts,
     empty_cache,
     empty_record,
+    hydrate_record_rows,
+    hydrate_record_shell,
+    is_sharded_shell,
     load_cache,
-    load_record_with_source,
+    load_judgments_for_subjects,
+    load_record_header_with_source,
     projection_for,
     publish_target_bundle,
+    record_row_count,
     write_record_and_cache,
 )
 
@@ -85,6 +93,7 @@ class ValidationRequest:
     jobs: int = 8
     publish: bool = True
     mode: str = "standard"
+    migrate_storage: bool = False
 
 
 @dataclass
@@ -112,6 +121,19 @@ class LoadedValidation:
             self.request.publish,
         )
 
+    def ensure_rows(self) -> None:
+        """Hydrate sharded histories only after continuation-first handling."""
+
+        if is_sharded_shell(self.record):
+            self.record = hydrate_record_shell(self.record, self.output_dir)
+
+
+def _record_has_progress(record: Mapping[str, Any]) -> bool:
+    return bool(
+        record_row_count(record, "outcomes")
+        or record_row_count(record, "judgments")
+    )
+
 
 def _project_root(summary_path: Path) -> Path:
     """Infer the on-disk project root without consulting source control."""
@@ -138,7 +160,7 @@ def _load_target_state(
     record_path = output_dir / RECORD_FILENAME
     cache_path = output_dir / CACHE_FILENAME
     if record_path.is_file():
-        record, source_version = load_record_with_source(
+        record, source_version = load_record_header_with_source(
             record_path,
             expected_summary=summary,
             project_root=project_root,
@@ -266,6 +288,11 @@ def _target_record(
     record["outcomes"] = list(outcomes.values())
     record["result"] = assembly.result()
     record["failures"] = copy.deepcopy(assembly.failures)
+    if is_sharded_shell(prior):
+        record["_sharded_manifest"] = copy.deepcopy(
+            prior["_sharded_manifest"]
+        )
+        record["_state_loaded"] = False
     return record
 
 
@@ -399,8 +426,6 @@ def _review_required(
         adjudication,
         {
             "summary": scan["summary"],
-            "record": progress.record,
-            "cache": progress.cache,
             "state_status": progress.state_status,
             "publish": progress.publish,
         },
@@ -423,7 +448,7 @@ def _review_required(
         output_dir = Path(scan["project_root"]) / scan["log_root"]
         write_record_and_cache(output_dir, progress.record, progress.cache)
     result["progress_retained"] = bool(
-        progress.record["outcomes"] or progress.record["judgments"]
+        _record_has_progress(progress.record)
     )
     return result
 
@@ -515,7 +540,7 @@ def _finish_deferred_acceptance(
         )
         decisions = recovered
     review_judgments = durable_review_judgments(
-        decisions, adjudication["date"]
+        decisions, adjudication["date"], scan, adjudication
     )
     _merge_review_judgments(progress.record, review_judgments)
     if decided["review_queue"]:
@@ -566,7 +591,7 @@ def _finish_deferred_acceptance(
         ).as_posix(),
         "cache": (summary_path.with_suffix("") / CACHE_FILENAME).as_posix(),
         "report": (summary_path.with_suffix("") / "validation.md").as_posix(),
-        "progress_retained": bool(target_record["outcomes"]),
+        "progress_retained": _record_has_progress(target_record),
         "published": progress.publish,
         "state_status": progress.state_status,
         "counts": assembly.counts(),
@@ -663,28 +688,50 @@ def _continue_review(
         raise ValidationToolError("review decisions are stale for the durable record")
     action_internal = internal
     if isinstance(deferred, Mapping):
-        accepted = accept_deferred_orphan_page(decisions, internal)
+        def publish_batch(
+            accepted_decisions: Mapping[str, Any],
+            base: Mapping[str, Any],
+        ) -> None:
+            nonlocal record
+            if not is_sharded_shell(record):
+                return
+            adjudication_date = str(base["adjudication"]["date"])
+            batch = durable_review_judgments(
+                accepted_decisions,
+                adjudication_date,
+                cast(ScanRecord, base["scan"]),
+                cast(AdjudicationRecord, base["adjudication"]),
+            )
+            record = append_judgment_batch(output_dir, record, batch)
+
+        accepted = accept_deferred_orphan_page(
+            decisions, internal, publish_batch
+        )
         if accepted["status"] == "review_required":
             accepted.update(
                 {
                     "summary": summary_path.as_posix(),
                     "state_status": state_status,
-                    "progress_retained": bool(
-                        record["outcomes"] or record["judgments"]
-                    ),
+                    "progress_retained": _record_has_progress(record),
                 }
             )
             return accepted
+        if is_sharded_shell(record):
+            record = hydrate_record_shell(record, output_dir)
         return _finish_deferred_acceptance(
             summary_path,
             accepted,
             ValidationProgress(record, cache, state_status, publish),
         )
+    if is_sharded_shell(record):
+        record = hydrate_record_shell(record, output_dir)
     assert scan is not None
     assert adjudication is not None
     actions = decisions_to_actions(decisions, action_internal)
     decided, _ = apply_review_decisions(scan, adjudication, actions)
-    review_judgments = durable_review_judgments(decisions, adjudication["date"])
+    review_judgments = durable_review_judgments(
+        decisions, adjudication["date"], scan, adjudication
+    )
     _merge_review_judgments(record, review_judgments)
     if decided["review_queue"]:
         context_levels = _requested_context_levels(decisions)
@@ -717,7 +764,7 @@ def _continue_review(
         "record": (output_dir / RECORD_FILENAME).as_posix(),
         "cache": (output_dir / CACHE_FILENAME).as_posix(),
         "report": (output_dir / "validation.md").as_posix(),
-        "progress_retained": bool(target_record["outcomes"]),
+        "progress_retained": _record_has_progress(target_record),
         "published": publish,
         "state_status": state_status,
         "counts": assembly.counts(),
@@ -740,21 +787,20 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             return _finish_deferred_acceptance(
                 context.summary_path, resumed, context.progress()
             )
-        recovery = empty_deferred_recovery_context(
-            context.project_root, continuation
-        )
-        restarted = _restart_empty_migration_session(context, recovery)
-        if restarted is not None:
-            return restarted
+        if not is_sharded_shell(context.record):
+            recovery = empty_deferred_recovery_context(
+                context.project_root, continuation
+            )
+            restarted = _restart_empty_migration_session(context, recovery)
+            if restarted is not None:
+                return restarted
     else:
         raise ValidationToolError("durable continuation kind is unsupported")
     resumed.update(
         {
             "summary": context.summary,
             "state_status": context.state_status,
-            "progress_retained": bool(
-                context.record["outcomes"] or context.record["judgments"]
-            ),
+            "progress_retained": _record_has_progress(context.record),
         }
     )
     return resumed
@@ -820,7 +866,7 @@ def _restart_empty_migration_session(
         "record": (context.output_dir / RECORD_FILENAME).as_posix(),
         "cache": (context.output_dir / CACHE_FILENAME).as_posix(),
         "report": (context.output_dir / "validation.md").as_posix(),
-        "progress_retained": bool(target_record["outcomes"]),
+        "progress_retained": _record_has_progress(target_record),
         "published": True,
         "state_status": context.state_status,
         "counts": assembly.counts(),
@@ -841,8 +887,47 @@ def _apply_reusable_judgments(
     return cast(AdjudicationRecord, decided)
 
 
+def _migrate_storage(context: LoadedValidation) -> dict[str, Any]:
+    """Project exact compatible state into shards without semantic work."""
+
+    if is_sharded_shell(context.record):
+        manifest = context.record["_sharded_manifest"]
+        return {
+            "status": "already_sharded",
+            "summary": context.summary,
+            "published": False,
+            "state_status": context.state_status,
+            "row_counts": copy.deepcopy(manifest["row_counts"]),
+            "shard_counts": {
+                kind: len(refs)
+                for kind, refs in manifest["shards"].items()
+            },
+            "continuation_preserved": context.record.get("continuation")
+            is not None,
+        }
+    prepared = prepare_state(context.record)
+    result = {
+        "status": "migrated" if context.request.publish else "migration_dry_run",
+        "summary": context.summary,
+        "published": context.request.publish,
+        "state_status": context.state_status,
+        "row_counts": copy.deepcopy(prepared.manifest["row_counts"]),
+        "shard_counts": {
+            kind: len(refs)
+            for kind, refs in prepared.manifest["shards"].items()
+        },
+        "subject_count": prepared.manifest["subject_index"]["subject_count"],
+        "continuation_preserved": context.record.get("continuation") is not None,
+    }
+    if context.request.publish:
+        write_record_and_cache(context.output_dir, context.record, context.cache)
+    return result
+
+
 def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     request = context.request
+    if request.migrate_storage:
+        return _migrate_storage(context)
     if request.decision_file is not None:
         return _continue_review(
             context.summary_path,
@@ -852,6 +937,13 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     resumed = _resume_active_review(context)
     if resumed is not None:
         return resumed
+    sharded = is_sharded_shell(context.record)
+    if sharded:
+        context.record = hydrate_record_rows(
+            context.record, context.output_dir, ("outcomes", "failures")
+        )
+    else:
+        context.ensure_rows()
     cached = (
         _cached_completion(
             context.summary_path,
@@ -884,6 +976,11 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         request.result_date or date.today().isoformat(),
         request.mode,
     )
+    if sharded:
+        subjects = reusable_review_subjects(scan, adjudication)
+        context.record["judgments"] = load_judgments_for_subjects(
+            context.output_dir, context.record, subjects
+        )
     adjudication = _apply_reusable_judgments(
         scan, adjudication, context.record["judgments"]
     )
@@ -910,7 +1007,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         "record": (context.output_dir / RECORD_FILENAME).as_posix(),
         "cache": (context.output_dir / CACHE_FILENAME).as_posix(),
         "report": (context.output_dir / "validation.md").as_posix(),
-        "progress_retained": bool(target_record["outcomes"]),
+        "progress_retained": _record_has_progress(target_record),
         "published": request.publish,
         "state_status": context.state_status,
         "diagnostics": _diagnostics(metrics),

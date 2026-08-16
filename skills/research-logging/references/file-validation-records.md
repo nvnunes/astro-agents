@@ -8,8 +8,10 @@ validation records.
 A validation agent may update only:
 
 - `<log>/validation.md`;
-- `<log>/validation-record.json`; and
-- `<log>/validation-cache.json`.
+- `<log>/validation-record.json`;
+- `<log>/validation-cache.json`; and
+- immutable files under `<log>/validation-state/` referenced by the current
+  `validation-record.json` manifest.
 
 It never edits a maintained summary, entry, script, retained evidence,
 scientific artifact, authored `Validation:` note, `data.csv`, or `evidence.csv`.
@@ -25,12 +27,15 @@ remediation for human readers. A later research change makes an affected
 observation historical; it does not corrupt or erase the last completed
 report.
 
-`validation-record.json` is CLI-owned durable machine state. It owns semantic
-judgments and concise rationales, completed outcomes, result dates, applicable
-rule dependencies, observed evidence identities, failures, and progressive
-continuation state. It may validly contain compatible completed work while
-other work is incomplete. Accepted judgments and outcomes have no competing
-machine-readable owner.
+`validation-record.json` is the small authoritative CLI-owned manifest. It owns
+the current continuation, publication identity, and exact immutable shards
+under `validation-state/` that comprise durable machine state. Those shards
+own semantic judgments and concise rationales, completed outcomes, result
+dates, applicable rule dependencies, observed evidence identities, and
+failures. The manifest may reference compatible completed work while other
+work is incomplete. Accepted judgments and outcomes have no competing
+machine-readable owner, and completion does not recombine their shards into a
+monolithic record.
 
 `validation-cache.json` is CLI-owned rebuildable acceleration data. It may
 store reusable file identities, hashes, inspections, directory membership, and
@@ -68,9 +73,11 @@ until a stable observation can be established. Unrelated research changes do
 not discard compatible completed work.
 
 Canonical writes take the stable per-log validation lock. The CLI validates
-and atomically replaces only the target artifacts. A publication failure keeps
-the prior completed `validation.md` available and retains any compatible newer
-progress already committed to `validation-record.json`. Temporary replacement
+and atomically replaces only the target artifacts. New immutable shards are
+published before the manifest; until the manifest is replaced, the prior
+manifest remains authoritative. A publication failure keeps the prior
+completed `validation.md` available and retains any compatible newer progress
+already committed through `validation-record.json`. Temporary replacement
 files and the lock are generated mechanisms, not research inputs; exclude them
 from discovery and orphan inventory.
 

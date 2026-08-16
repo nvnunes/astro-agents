@@ -991,6 +991,7 @@ def _validated_render_scope(
         "validation.md",
         "validation-record.json",
         "validation-cache.json",
+        "validation-state",
     )
     if partial and any((output_dir / name).exists() for name in record_names):
         raise ValidationToolError(

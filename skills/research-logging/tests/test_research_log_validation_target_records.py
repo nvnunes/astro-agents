@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 TARGET = importlib.import_module("validation.target_records")
+STORE = importlib.import_module("validation.sharded_state")
 
 
 def native_record() -> dict:
@@ -58,6 +60,26 @@ def native_record() -> dict:
     return record
 
 
+def review_judgment(number: int) -> dict:
+    return {
+        "identity": f"decision-{number}",
+        "kind": "review-decision",
+        "result": "pass",
+        "decision": "pass",
+        "decision_date": "2026-08-16",
+        "subject": {
+            "kind": "semantic_provenance",
+            "entry": "Summary",
+            "identity": f"claim-{number}",
+        },
+        "rule_dependencies": {"semantic_review": 1},
+        "input_dependencies": [],
+        "rationale": "Exact prior decision.",
+        "rationale_provenance": "recorded",
+        "provenance": "native-reviewed",
+    }
+
+
 class TargetRecordTests(unittest.TestCase):
     def test_v2_record_rejects_absolute_summary(self) -> None:
         record = native_record()
@@ -98,6 +120,7 @@ class TargetRecordTests(unittest.TestCase):
         paged["continuation"]["current"] = {"page": 2}
         with self.assertRaisesRegex(TARGET.TargetRecordError, "incorrect fields"):
             TARGET.decode_record(paged)
+
     def test_target_round_trip_preserves_durable_owned_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -107,6 +130,155 @@ class TargetRecordTests(unittest.TestCase):
             self.assertEqual(
                 TARGET.load_record(root / TARGET.RECORD_FILENAME), record
             )
+            manifest = json.loads(
+                (root / TARGET.RECORD_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["storage_layout"], "sharded-v1")
+            self.assertNotIn("outcomes", manifest)
+            self.assertNotIn("judgments", manifest)
+            self.assertEqual(manifest["row_counts"]["outcomes"], 1)
+            self.assertTrue((root / STORE.STATE_DIRECTORY).is_dir())
+
+    def test_subject_lookup_reads_only_the_mapped_judgment_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [review_judgment(number) for number in range(2)]
+            with mock.patch.object(STORE, "MAX_SHARD_ROWS", 1):
+                TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            manifest = json.loads(
+                (root / TARGET.RECORD_FILENAME).read_text(encoding="utf-8")
+            )
+            subject = record["judgments"][1]["subject"]
+            original = STORE._read_owned_bytes
+            with mock.patch.object(
+                STORE, "_read_owned_bytes", wraps=original
+            ) as reader:
+                rows = STORE.load_subject_rows(
+                    root, manifest, "judgments", [subject]
+                )
+            self.assertEqual(rows, [record["judgments"][1]])
+            read_paths = [call.args[1]["path"] for call in reader.call_args_list]
+            self.assertEqual(len(read_paths), 2)
+            self.assertIn(manifest["subject_index"]["path"], read_paths)
+
+    def test_accepted_batch_appends_one_shard_and_compact_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [review_judgment(1)]
+            cache = TARGET.empty_cache()
+            TARGET.write_record_and_cache(root, record, cache)
+            shell, _ = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME,
+                expected_summary="docs/mini.md",
+                project_root=root,
+            )
+            before = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in (root / STORE.STATE_DIRECTORY).rglob("*")
+                if path.is_file()
+            }
+            cache_before = (root / TARGET.CACHE_FILENAME).read_bytes()
+
+            updated = TARGET.append_judgment_batch(
+                root, shell, [review_judgment(2)]
+            )
+
+            after = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in (root / STORE.STATE_DIRECTORY).rglob("*")
+                if path.is_file()
+            }
+            self.assertTrue(
+                all(after[path] == payload for path, payload in before.items())
+            )
+            new_paths = set(after) - set(before)
+            self.assertEqual(
+                sum(
+                    path.startswith("validation-state/judgments/")
+                    for path in new_paths
+                ),
+                1,
+            )
+            self.assertEqual(
+                sum(path.startswith("validation-state/index/") for path in new_paths),
+                1,
+            )
+            self.assertEqual((root / TARGET.CACHE_FILENAME).read_bytes(), cache_before)
+            self.assertEqual(TARGET.record_row_count(updated, "judgments"), 2)
+            self.assertEqual(
+                TARGET.append_judgment_batch(root, updated, [review_judgment(2)]),
+                updated,
+            )
+
+    def test_interrupted_batch_manifest_publish_is_idempotently_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [review_judgment(1)]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            shell, _ = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME,
+                expected_summary="docs/mini.md",
+                project_root=root,
+            )
+            manifest_before = (root / TARGET.RECORD_FILENAME).read_bytes()
+            original = TARGET._atomic_write_bytes
+
+            def fail_manifest(path: Path, payload: bytes) -> None:
+                if path.name == TARGET.RECORD_FILENAME:
+                    raise OSError("simulated manifest interruption")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_manifest
+            ):
+                with self.assertRaises(TARGET.RecordPublicationError):
+                    TARGET.append_judgment_batch(
+                        root, shell, [review_judgment(2)]
+                    )
+            self.assertEqual(
+                (root / TARGET.RECORD_FILENAME).read_bytes(), manifest_before
+            )
+            repaired = TARGET.append_judgment_batch(
+                root, shell, [review_judgment(2)]
+            )
+            self.assertEqual(TARGET.record_row_count(repaired, "judgments"), 2)
+
+    def test_interrupted_batch_shard_publish_retains_prior_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [review_judgment(1)]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            shell, _ = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME,
+                expected_summary="docs/mini.md",
+                project_root=root,
+            )
+            manifest_before = (root / TARGET.RECORD_FILENAME).read_bytes()
+            original = TARGET._atomic_write_bytes
+
+            def fail_judgment_shard(path: Path, payload: bytes) -> None:
+                if path.parent.name == "judgments":
+                    raise OSError("simulated shard interruption")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_judgment_shard
+            ):
+                with self.assertRaises(TARGET.RecordPublicationError):
+                    TARGET.append_judgment_batch(
+                        root, shell, [review_judgment(2)]
+                    )
+            self.assertEqual(
+                (root / TARGET.RECORD_FILENAME).read_bytes(), manifest_before
+            )
+            repaired = TARGET.append_judgment_batch(
+                root, shell, [review_judgment(2)]
+            )
+            self.assertEqual(TARGET.record_row_count(repaired, "judgments"), 2)
 
     def test_malformed_durable_judgment_fails_actionably(self) -> None:
         record = native_record()
@@ -240,6 +412,21 @@ class TargetRecordTests(unittest.TestCase):
             ):
                 TARGET.publish_target_bundle(
                     alias, "report\n", native_record(), TARGET.empty_cache()
+                )
+
+    def test_target_publication_rejects_validation_state_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = root / "external"
+            external.mkdir()
+            (root / STORE.STATE_DIRECTORY).symlink_to(
+                external, target_is_directory=True
+            )
+            with self.assertRaisesRegex(
+                TARGET.RecordPublicationError, "must not be a symlink"
+            ):
+                TARGET.publish_target_bundle(
+                    root, "report\n", native_record(), TARGET.empty_cache()
                 )
 
 

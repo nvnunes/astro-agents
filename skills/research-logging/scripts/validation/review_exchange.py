@@ -7,13 +7,14 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
 from .migration_review_reuse import (
     SEMANTIC_REVIEW_RULES,
     migration_reusable_answer,
+    review_judgment_inputs,
 )
 from .review_batches import (
     OrphanBatchRequest,
@@ -1223,18 +1224,11 @@ def resume_deferred_orphan_session(
         or state.get("session") != continuation.get("session")
     ):
         raise ValidationToolError("deferred orphan session state has another owner")
-    base = _read_object(
-        session_dir / DEFERRED_BASE_FILENAME,
-        "deferred orphan session base",
-    )
     index = _read_object(
         session_dir / DEFERRED_INDEX_FILENAME,
         "deferred orphan session index",
     )
-    if (
-        base.get("session_identity") != state["session_identity"]
-        or index.get("session_identity") != state["session_identity"]
-    ):
+    if index.get("session_identity") != state["session_identity"]:
         raise ValidationToolError("deferred orphan session identity differs")
     _validate_session_fragments(session_dir, state)
     current = state.get("current")
@@ -1256,6 +1250,12 @@ def resume_deferred_orphan_session(
                 state["session_identity"],
             )
     if int(state["next_offset"]) >= int(state["total_items"]):
+        base = _read_object(
+            session_dir / DEFERRED_BASE_FILENAME,
+            "deferred orphan session base",
+        )
+        if base.get("session_identity") != state["session_identity"]:
+            raise ValidationToolError("deferred orphan session identity differs")
         _atomic_write(session_dir / SESSION_STATE_FILENAME, _json_bytes(state))
         return _ready_deferred_session(session_dir, state, base, index)
     return _deferred_page(session_dir, index, state)
@@ -1292,13 +1292,20 @@ def empty_deferred_recovery_context(
 
 
 def accept_deferred_orphan_page(
-    decisions: Mapping[str, Any], internal: Mapping[str, Any]
+    decisions: Mapping[str, Any],
+    internal: Mapping[str, Any],
+    publish_batch: Callable[
+        [Mapping[str, Any], Mapping[str, Any]], None
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     """Append one accepted page and return the next page or final state."""
 
     session_dir, state, base, index, session_identity = _load_deferred_session(
         decisions, internal
     )
+    if publish_batch is not None:
+        publish_batch(decisions, base)
     _record_deferred_fragment(session_dir, state, decisions, session_identity)
     if int(state["next_offset"]) < int(state["total_items"]):
         return _deferred_page(session_dir, index, state)
@@ -1796,7 +1803,10 @@ def decisions_to_actions(
 
 
 def durable_review_judgments(
-    decisions: Mapping[str, Any], decision_date: str
+    decisions: Mapping[str, Any],
+    decision_date: str,
+    scan: ScanRecord | None = None,
+    adjudication: AdjudicationRecord | None = None,
 ) -> list[dict[str, Any]]:
     """Return compact rationale-owning judgments for accepted template rows."""
 
@@ -1804,6 +1814,13 @@ def durable_review_judgments(
     for row in decisions["items"]:
         if row["decision"] == "needs_context":
             continue
+        inputs: list[dict[str, Any]] = []
+        if scan is not None and adjudication is not None:
+            queue_item = _judgment_queue_item(adjudication, row)
+            if queue_item is not None:
+                inputs = review_judgment_inputs(
+                    scan, adjudication, queue_item, row, row["decision"]
+                )
         judgments.append(
             {
                 "identity": row["id"],
@@ -1835,13 +1852,30 @@ def durable_review_judgments(
                     ),
                 },
                 "rule_dependencies": SEMANTIC_REVIEW_RULES,
-                "input_dependencies": [],
+                "input_dependencies": inputs,
                 "rationale": row["rationale"],
                 "rationale_provenance": "recorded",
                 "provenance": "native-reviewed",
             }
         )
     return judgments
+
+
+def _judgment_queue_item(
+    adjudication: AdjudicationRecord, row: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    for item in adjudication["review_queue"]:
+        if item.get("entry") != row.get("entry"):
+            continue
+        if item.get("identity") == row.get("identity"):
+            return item
+        if row.get("kind") == "orphan_candidate" and any(
+            candidate.get("identity") == row.get("identity")
+            for candidate in item.get("candidates", [])
+            if isinstance(candidate, Mapping)
+        ):
+            return item
+    return None
 
 
 def _exact_reusable_judgment(
@@ -1984,3 +2018,37 @@ def reusable_review_actions(
     )
     result["actions"] = [*legacy_actions, *result["actions"]]
     return result
+
+
+def reusable_review_subjects(
+    scan: ScanRecord, adjudication: AdjudicationRecord
+) -> list[dict[str, Any]]:
+    """Return exact durable subjects that can answer the current queue."""
+
+    subjects: dict[str, dict[str, Any]] = {}
+    for queue_item in adjudication["review_queue"]:
+        templates, _ = _reuse_templates(scan, adjudication, queue_item)
+        for template in templates:
+            review_subject = {
+                key: copy.deepcopy(template[key])
+                for key in ("kind", "entry", "identity", "material")
+                if key in template
+            }
+            candidates = [
+                review_subject,
+                {
+                    "check": "Provenance",
+                    "entry": template.get("entry"),
+                    "target": template.get("identity"),
+                },
+                {
+                    "entry": template.get("entry"),
+                    "identity": template.get("identity"),
+                },
+            ]
+            for subject in candidates:
+                identity = json.dumps(
+                    subject, sort_keys=True, separators=(",", ":")
+                )
+                subjects[identity] = subject
+    return list(subjects.values())

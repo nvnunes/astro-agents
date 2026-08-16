@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import sharded_state
 from .records import RecordPublicationError, _atomic_write_bytes, validation_lock
 
 RECORD_FILENAME = "validation-record.json"
@@ -401,6 +402,109 @@ def decode_record(value: Any) -> dict[str, Any]:
     return copy.deepcopy(dict(record))
 
 
+def decode_sharded_manifest(value: Any) -> dict[str, Any]:
+    """Validate one small authoritative manifest without opening row shards."""
+
+    manifest = sharded_state.validate_manifest(value)
+    expected_fields = {
+        "schema_version",
+        "storage_layout",
+        "summary",
+        "validation_rules_version",
+        "rule_dependencies",
+        "shards",
+        "row_counts",
+        "subject_index",
+        "result",
+        "continuation",
+        "completion_dependencies",
+        "projection",
+    }
+    if set(manifest) != expected_fields:
+        raise TargetRecordError("sharded durable manifest has incorrect fields")
+    _validate_record_header(manifest)
+    _validate_record_rule_dependencies(manifest)
+    result = manifest.get("result")
+    if result is not None:
+        _mapping(result, "result")
+    _validate_dependencies(
+        manifest.get("completion_dependencies"), "completion_dependencies"
+    )
+    _validate_projection(manifest.get("projection"))
+    _validate_continuation(manifest.get("continuation"))
+    return copy.deepcopy(manifest)
+
+
+def _manifest_shell(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    shell = {
+        key: copy.deepcopy(value)
+        for key, value in manifest.items()
+        if key not in {"storage_layout", "shards", "row_counts", "subject_index"}
+    }
+    shell.update(
+        {
+            "judgments": [],
+            "outcomes": [],
+            "failures": [],
+            "_sharded_manifest": copy.deepcopy(dict(manifest)),
+            "_state_loaded": False,
+        }
+    )
+    return shell
+
+
+def is_sharded_shell(record: Mapping[str, Any]) -> bool:
+    """Return whether an in-memory record is a lightweight sharded header."""
+
+    return record.get("_state_loaded") is False and isinstance(
+        record.get("_sharded_manifest"), Mapping
+    )
+
+
+def record_row_count(record: Mapping[str, Any], kind: str) -> int:
+    """Return a row count without forcing a sharded record to hydrate."""
+
+    if kind not in sharded_state.ROW_KINDS:
+        raise TargetRecordError(f"unsupported record row kind: {kind}")
+    manifest = record.get("_sharded_manifest")
+    if isinstance(manifest, Mapping):
+        return int(manifest.get("row_counts", {}).get(kind, 0))
+    rows = record.get(kind, [])
+    return len(rows) if isinstance(rows, list) else 0
+
+
+def hydrate_record_shell(record: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
+    """Load every referenced row only when scan, assembly, or completion needs it."""
+
+    if not is_sharded_shell(record):
+        return decode_record(record)
+    manifest = decode_sharded_manifest(record["_sharded_manifest"])
+    rows = sharded_state.hydrate_rows(output_dir, manifest)
+    logical = {
+        key: copy.deepcopy(value)
+        for key, value in manifest.items()
+        if key not in {"storage_layout", "shards", "row_counts", "subject_index"}
+    }
+    logical.update(rows)
+    return decode_record(logical)
+
+
+def hydrate_record_rows(
+    record: Mapping[str, Any], output_dir: Path, kinds: Sequence[str]
+) -> dict[str, Any]:
+    """Hydrate selected histories while retaining the lightweight manifest."""
+
+    if not is_sharded_shell(record):
+        return decode_record(record)
+    result = copy.deepcopy(dict(record))
+    result.update(
+        sharded_state.hydrate_selected_rows(
+            output_dir, record["_sharded_manifest"], kinds
+        )
+    )
+    return result
+
+
 def decode_cache(value: Any) -> dict[str, Any]:
     """Validate and copy rebuildable cache data."""
 
@@ -537,7 +641,15 @@ def load_record_with_source(
     raw = _mapping(value, "durable record")
     source_version = raw.get("schema_version")
     if source_version == RECORD_SCHEMA_VERSION:
-        record = decode_record(raw)
+        if raw.get("storage_layout") == sharded_state.STORAGE_LAYOUT:
+            manifest = decode_sharded_manifest(raw)
+            if expected_summary is not None and manifest["summary"] != expected_summary:
+                raise TargetRecordError(
+                    "durable validation record belongs to another summary"
+                )
+            record = hydrate_record_shell(_manifest_shell(manifest), path.parent)
+        else:
+            record = decode_record(raw)
         if expected_summary is not None and record["summary"] != expected_summary:
             raise TargetRecordError(
                 "durable validation record belongs to another summary"
@@ -555,6 +667,40 @@ def load_record_with_source(
     raise TargetRecordError(
         "unsupported validation-record schema; expected "
         f"{RECORD_SCHEMA_VERSION}, got {source_version!r}"
+    )
+
+
+def load_record_header_with_source(
+    path: Path,
+    *,
+    expected_summary: str | None = None,
+    project_root: Path | None = None,
+    allow_native_v1: bool = True,
+) -> tuple[dict[str, Any], int]:
+    """Load only a sharded manifest, while preserving monolithic compatibility."""
+
+    try:
+        value = _read_json(path)
+    except FileNotFoundError as exc:
+        raise TargetRecordError(
+            f"durable validation record is missing: {path}"
+        ) from exc
+    raw = _mapping(value, "durable record")
+    if (
+        raw.get("schema_version") == RECORD_SCHEMA_VERSION
+        and raw.get("storage_layout") == sharded_state.STORAGE_LAYOUT
+    ):
+        manifest = decode_sharded_manifest(raw)
+        if expected_summary is not None and manifest["summary"] != expected_summary:
+            raise TargetRecordError(
+                "durable validation record belongs to another summary"
+            )
+        return _manifest_shell(manifest), RECORD_SCHEMA_VERSION
+    return load_record_with_source(
+        path,
+        expected_summary=expected_summary,
+        project_root=project_root,
+        allow_native_v1=allow_native_v1,
     )
 
 
@@ -587,6 +733,65 @@ def load_cache(path: Path) -> tuple[dict[str, Any], str]:
         return empty_cache(), "malformed"
 
 
+def load_judgments_for_subjects(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    subjects: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load only judgment shards relevant to exact stable subjects."""
+
+    manifest = record.get("_sharded_manifest")
+    if not isinstance(manifest, Mapping):
+        judgments = record.get("judgments", [])
+        return list(judgments) if isinstance(judgments, list) else []
+    return sharded_state.load_subject_rows(
+        output_dir, manifest, "judgments", subjects
+    )
+
+
+def append_judgment_batch(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    judgments: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Publish one accepted judgment shard before advancing review state."""
+
+    for number, judgment in enumerate(judgments):
+        _validate_judgment(judgment, number)
+    manifest = record.get("_sharded_manifest")
+    if not isinstance(manifest, Mapping):
+        raise TargetRecordError("accepted-batch append requires sharded state")
+    current = decode_sharded_manifest(manifest)
+    prepared = sharded_state.prepare_judgment_append(
+        output_dir, current, judgments
+    )
+    if not prepared.files:
+        return _manifest_shell(current)
+    valid_manifest = decode_sharded_manifest(prepared.manifest)
+    try:
+        with validation_lock(output_dir):
+            disk = decode_sharded_manifest(
+                _read_json(output_dir / RECORD_FILENAME)
+            )
+            if disk != current:
+                raise RecordPublicationError(
+                    "durable validation manifest changed during batch acceptance"
+                )
+            sharded_state.publish_immutable_files(
+                output_dir, prepared.files, _atomic_write_bytes
+            )
+            _atomic_write_bytes(
+                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
+            )
+    except (RecordPublicationError, sharded_state.ShardedStateError):
+        raise
+    except OSError as exc:
+        raise RecordPublicationError(
+            f"accepted judgment batch could not be written: {exc}"
+        ) from exc
+    return _manifest_shell(valid_manifest)
+
+
 def assert_no_retired_artifacts(output_dir: Path) -> None:
     """Reject obsolete generated formats before current validation starts."""
 
@@ -610,6 +815,22 @@ def _json_bytes(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _prepare_record_state(
+    output_dir: Path, record: Mapping[str, Any]
+) -> sharded_state.PreparedState:
+    if is_sharded_shell(record):
+        logical = {
+            key: copy.deepcopy(value)
+            for key, value in record.items()
+            if key not in {"_sharded_manifest", "_state_loaded"}
+        }
+        valid_subset = decode_record(logical)
+        return sharded_state.prepare_progress_state(
+            output_dir, record["_sharded_manifest"], valid_subset
+        )
+    return sharded_state.prepare_state(decode_record(record))
+
+
 def write_record_and_cache(
     output_dir: Path, record: Mapping[str, Any], cache: Mapping[str, Any]
 ) -> None:
@@ -620,15 +841,19 @@ def write_record_and_cache(
     write leaves the prior valid durable record intact.
     """
 
-    valid_record = decode_record(record)
     valid_cache = decode_cache(cache)
+    prepared = _prepare_record_state(output_dir, record)
+    valid_manifest = decode_sharded_manifest(prepared.manifest)
     try:
         with validation_lock(output_dir):
+            sharded_state.publish_immutable_files(
+                output_dir, prepared.files, _atomic_write_bytes
+            )
             _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
             _atomic_write_bytes(
-                output_dir / RECORD_FILENAME, _json_bytes(valid_record)
+                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
             )
-    except RecordPublicationError:
+    except (RecordPublicationError, sharded_state.ShardedStateError):
         raise
     except OSError as exc:
         raise RecordPublicationError(
@@ -649,15 +874,21 @@ def publish_target_bundle(
     report intact and retains every authoritative record write that succeeded.
     """
 
-    valid_record = decode_record(record)
     valid_cache = decode_cache(cache)
+    prepared = _prepare_record_state(output_dir, record)
+    valid_manifest = decode_sharded_manifest(prepared.manifest)
     if not report_text.endswith("\n"):
         raise TargetRecordError("validation report must end with a newline")
     if output_dir.is_symlink():
         raise RecordPublicationError(
             "target validation output directory must not be a symlink"
         )
-    for name in (CACHE_FILENAME, RECORD_FILENAME, "validation.md"):
+    for name in (
+        CACHE_FILENAME,
+        RECORD_FILENAME,
+        "validation.md",
+        sharded_state.STATE_DIRECTORY,
+    ):
         if (output_dir / name).is_symlink():
             raise RecordPublicationError(
                 f"target validation destination must not be a symlink: {name}"
@@ -665,12 +896,15 @@ def publish_target_bundle(
     assert_no_retired_artifacts(output_dir)
     try:
         with validation_lock(output_dir):
+            sharded_state.publish_immutable_files(
+                output_dir, prepared.files, _atomic_write_bytes
+            )
             _atomic_write_bytes(output_dir / CACHE_FILENAME, _json_bytes(valid_cache))
             _atomic_write_bytes(
-                output_dir / RECORD_FILENAME, _json_bytes(valid_record)
+                output_dir / RECORD_FILENAME, _json_bytes(valid_manifest)
             )
             _atomic_write_bytes(output_dir / "validation.md", report_text.encode())
-    except RecordPublicationError:
+    except (RecordPublicationError, sharded_state.ShardedStateError):
         raise
     except OSError as exc:
         raise RecordPublicationError(

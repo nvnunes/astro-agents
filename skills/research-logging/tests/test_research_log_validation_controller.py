@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import shutil
@@ -13,6 +14,7 @@ from research_log_validation_test_support import CLI, make_log, write
 CONTROLLER = importlib.import_module("validation.controller")
 EXCHANGE = importlib.import_module("validation.review_exchange")
 TARGET = importlib.import_module("validation.target_records")
+STORE = importlib.import_module("validation.sharded_state")
 
 
 def run_validate(summary: Path, **kwargs):
@@ -56,6 +58,7 @@ class ValidationControllerTests(unittest.TestCase):
                     "validation.md",
                     TARGET.RECORD_FILENAME,
                     TARGET.CACHE_FILENAME,
+                    "validation-state",
                 },
             )
             stored = TARGET.load_record(output / TARGET.RECORD_FILENAME)
@@ -72,6 +75,76 @@ class ValidationControllerTests(unittest.TestCase):
             )
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
+
+    def test_storage_migration_shards_exact_state_without_scanning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            completed = run_validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            self.assertEqual(completed["status"], "complete")
+            output = summary.with_suffix("")
+            record_path = output / TARGET.RECORD_FILENAME
+            logical = TARGET.load_record(record_path)
+            record_path.write_bytes(TARGET._json_bytes(logical))
+            monolithic = record_path.read_bytes()
+            report = (output / "validation.md").read_bytes()
+
+            dry_run = run_validate(
+                summary, jobs=1, migrate_storage=True, publish=False
+            )
+            self.assertEqual(dry_run["status"], "migration_dry_run")
+            self.assertEqual(record_path.read_bytes(), monolithic)
+
+            with mock.patch.object(
+                CONTROLLER,
+                "scan_log",
+                side_effect=AssertionError("storage migration must not scan"),
+            ):
+                migrated = run_validate(
+                    summary, jobs=1, migrate_storage=True
+                )
+            self.assertEqual(migrated["status"], "migrated")
+            self.assertEqual(TARGET.load_record(record_path), logical)
+            self.assertEqual((output / "validation.md").read_bytes(), report)
+            manifest = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["storage_layout"], "sharded-v1")
+
+    def test_native_v1_storage_migration_preserves_exact_upgraded_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = make_no_semantic_log(root)
+            completed = run_validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            self.assertEqual(completed["status"], "complete")
+            output = summary.with_suffix("")
+            record_path = output / TARGET.RECORD_FILENAME
+            current = TARGET.load_record(record_path)
+            native_v1 = {
+                key: copy.deepcopy(value)
+                for key, value in current.items()
+                if key not in {"completion_dependencies", "projection"}
+            }
+            native_v1["schema_version"] = 1
+            native_v1["summary"] = summary.resolve().as_posix()
+            record_path.write_bytes(TARGET._json_bytes(native_v1))
+            expected = TARGET.upgrade_native_v1(
+                native_v1,
+                current["summary"],
+                root,
+            )
+
+            with mock.patch.object(
+                CONTROLLER,
+                "scan_log",
+                side_effect=AssertionError("storage migration must not scan"),
+            ):
+                migrated = run_validate(
+                    summary, jobs=1, migrate_storage=True
+                )
+            self.assertEqual(migrated["status"], "migrated")
+            self.assertEqual(TARGET.load_record(record_path), expected)
 
     def test_missing_cache_for_changed_zero_outcome_log_forces_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -439,7 +512,7 @@ class ValidationControllerTests(unittest.TestCase):
                 ],
             )
 
-    def test_large_orphan_review_does_not_rewrite_record_between_pages(self) -> None:
+    def test_large_review_appends_judgment_shards_between_pages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".git").mkdir()
@@ -477,6 +550,28 @@ class ValidationControllerTests(unittest.TestCase):
                 else None
             )
             record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
+            logical = TARGET.load_record(record_path)
+            continuation_before = copy.deepcopy(logical["continuation"])
+            record_path.write_bytes(TARGET._json_bytes(logical))
+            session_before = {
+                path.relative_to(session_dir).as_posix(): path.read_bytes()
+                for path in session_dir.rglob("*")
+                if path.is_file()
+            }
+            migrated = run_validate(summary, jobs=1, migrate_storage=True)
+            self.assertEqual(migrated["status"], "migrated")
+            self.assertEqual(
+                TARGET.load_record(record_path)["continuation"],
+                continuation_before,
+            )
+            self.assertEqual(
+                {
+                    path.relative_to(session_dir).as_posix(): path.read_bytes()
+                    for path in session_dir.rglob("*")
+                    if path.is_file()
+                },
+                session_before,
+            )
             record_before = record_path.read_bytes()
             decision_path = Path(first["decision_file"])
             template = json.loads(decision_path.read_text(encoding="utf-8"))
@@ -488,14 +583,41 @@ class ValidationControllerTests(unittest.TestCase):
             second = run_validate(summary, decision_file=decision_path, jobs=1)
 
             self.assertEqual(second["status"], "review_required")
-            self.assertEqual(record_path.read_bytes(), record_before)
+            record_after_first_batch = record_path.read_bytes()
+            self.assertNotEqual(record_after_first_batch, record_before)
             stored = TARGET.load_record(record_path)
+            self.assertEqual(len(stored["judgments"]), len(template["items"]))
             self.assertEqual(stored["continuation"]["kind"], "paged")
             self.assertNotIn("current", stored["continuation"])
-            resumed = run_validate(summary, jobs=1)
+            read_object = EXCHANGE._read_object
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "scan_log",
+                    side_effect=AssertionError("active resume must not scan"),
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "hydrate_record_shell",
+                    side_effect=AssertionError("active resume must not hydrate"),
+                ),
+                mock.patch.object(
+                    STORE,
+                    "_read_owned_bytes",
+                    side_effect=AssertionError("active resume must not read shards"),
+                ),
+                mock.patch.object(
+                    EXCHANGE, "_read_object", wraps=read_object
+                ) as session_reader,
+            ):
+                resumed = run_validate(summary, jobs=1)
             self.assertEqual(resumed["status"], "review_required")
             self.assertEqual(resumed["continuation"], second["continuation"])
-            self.assertEqual(record_path.read_bytes(), record_before)
+            self.assertEqual(record_path.read_bytes(), record_after_first_batch)
+            self.assertNotIn(
+                EXCHANGE.DEFERRED_BASE_FILENAME,
+                [call.args[0].name for call in session_reader.call_args_list],
+            )
             second_path = Path(second["decision_file"])
             second_template = json.loads(second_path.read_text(encoding="utf-8"))
             for item in second_template["items"]:

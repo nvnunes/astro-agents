@@ -92,8 +92,9 @@ higher complexity score, or growth in the total advisory finding count.
 Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
 retained evidence, scientific artifacts, and authored `Validation:` notes as
 research-owned. Canonical validation may write only `validation.md`,
-`validation-record.json`, and `validation-cache.json`. Research operations must
-leave every existing generated validation file byte-identical.
+`validation-record.json`, `validation-cache.json`, and immutable shards under
+`validation-state/`. Research operations must leave every existing generated
+validation file byte-identical.
 
 The research-log test gate must verify:
 
@@ -113,6 +114,11 @@ The research-log test gate must verify:
   shared content hash;
 - progressive completed work survives interruption, unrelated change, later
   operational failure, and semantic continuation;
+- accepted review batches publish one bounded immutable shard plus compact
+  manifest/index metadata, while interrupted shard or manifest publication
+  leaves the prior manifest authoritative;
+- active paged resume does not scan the research log or hydrate historical
+  shards, and exact stable-subject reuse opens only mapped judgment shards;
 - one log validates without maintained-summary discovery, repository-wide
   coordination, Git state, or another log's validation files;
 - an explicit cross-log path is observed as external evidence, while a local

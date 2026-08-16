@@ -56,6 +56,7 @@ from .scan import (
     ScanRequest,
 )
 from .scan import scan_log as run_scan
+from .sharded_state import STATE_DIRECTORY
 from .target_records import CACHE_FILENAME, RECORD_FILENAME
 
 SCAN_SCHEMA_VERSION = 18
@@ -75,6 +76,7 @@ OWNED_INVENTORY_EXCLUDED_NAMES = frozenset(
         ".research-log-validation.lock",
         CACHE_FILENAME,
         RECORD_FILENAME,
+        STATE_DIRECTORY,
         *VALIDATION_RECORD_FILENAMES,
     }
 )

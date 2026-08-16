@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-import tempfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
-from .adjudication import ReviewPacketRequest, make_review_packet
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
+from .decisions import apply_review_decisions
 from .graph_store import (
     discover_repository_summaries,
     replacement_repository_view,
@@ -22,6 +22,12 @@ from .observations import (
     retain_compatible_outcomes,
 )
 from .render import assemble_records
+from .review_exchange import (
+    create_exchange,
+    decisions_to_actions,
+    durable_review_judgments,
+    load_decisions,
+)
 from .runtime import (
     MATERIAL_INVENTORY_POLICY,
     RULES_VERSION,
@@ -39,7 +45,31 @@ from .target_records import (
     load_cache,
     load_record,
     publish_target_bundle,
+    write_record_and_cache,
 )
+
+
+@dataclass
+class ValidationProgress:
+    """Durable state and publication mode carried across semantic review."""
+
+    record: dict[str, Any]
+    cache: dict[str, Any]
+    state_status: str
+    publish: bool
+
+
+@dataclass(frozen=True)
+class CompletionRequest:
+    """Inputs needed to assemble and optionally publish one completed log."""
+
+    summary: str
+    output_dir: Path
+    scan: ScanRecord
+    adjudication: AdjudicationRecord
+    prior_record: Mapping[str, Any]
+    review_judgments: list[dict[str, Any]]
+    publish: bool
 
 
 def _load_target_state(
@@ -141,38 +171,117 @@ def _target_cache(bundle: Any) -> dict[str, Any]:
     return cache
 
 
+def _merge_review_judgments(
+    record: dict[str, Any], judgments: list[dict[str, Any]]
+) -> None:
+    by_identity = {
+        judgment["identity"]: copy.deepcopy(judgment)
+        for judgment in [*record["judgments"], *judgments]
+    }
+    record["judgments"] = list(by_identity.values())
+
+
 def _review_required(
-    scan: ScanRecord, adjudication: AdjudicationRecord
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    progress: ValidationProgress,
 ) -> dict[str, Any]:
-    work_dir = Path(tempfile.mkdtemp(prefix="research-log-validation-review-"))
-    packet, counts = make_review_packet(
+    result = create_exchange(
         scan,
         adjudication,
-        ReviewPacketRequest(batch_size=200),
+        {
+            "summary": scan["summary"],
+            "record": progress.record,
+            "cache": progress.cache,
+            "state_status": progress.state_status,
+            "publish": progress.publish,
+        },
     )
-    packet_path = work_dir / "review-packet.md"
-    decision_path = work_dir / "review-decisions.json"
-    packet_path.write_text(packet, encoding="utf-8")
-    decision_path.write_text(
-        json.dumps(
-            {
-                "status": "template",
-                "items": [],
-                "note": "Phase 4 supplies the bounded decision contract.",
-            },
-            indent=2,
+    progress.record["continuation"] = {
+        "identity": result["continuation"],
+        "item_count": result["item_count"],
+    }
+    if progress.publish:
+        output_dir = Path(scan["project_root"]) / scan["log_root"]
+        write_record_and_cache(output_dir, progress.record, progress.cache)
+    result["progress_retained"] = bool(
+        progress.record["outcomes"] or progress.record["judgments"]
+    )
+    return result
+
+
+def _complete_adjudication(
+    request: CompletionRequest,
+) -> tuple[dict[str, Any], Any]:
+    assembly = assemble_records(
+        request.adjudication,
+        request.scan,
+        request.output_dir,
+        render_policy(),
+    )
+    bundle = assembly.bundle()
+    target_record = _target_record(request.summary, bundle, request.prior_record)
+    _merge_review_judgments(target_record, request.review_judgments)
+    target_record["continuation"] = None
+    target_cache = _target_cache(bundle)
+    if request.publish:
+        publish_target_bundle(
+            request.output_dir, bundle.report_text, target_record, target_cache
         )
-        + "\n",
-        encoding="utf-8",
+    return target_record, assembly
+
+
+def _continue_review(
+    summary_path: Path, decision_file: Path, publish: bool
+) -> dict[str, Any]:
+    decisions, internal = load_decisions(decision_file)
+    scan = cast(ScanRecord, internal["scan"])
+    adjudication = cast(AdjudicationRecord, internal["adjudication"])
+    scanned_summary = Path(scan["project_root"]) / scan["summary"]
+    if scanned_summary.resolve() != summary_path:
+        raise ValidationToolError("review decisions belong to another summary")
+    output_dir = summary_path.with_suffix("")
+    record, cache, state_status = _load_target_state(
+        output_dir, summary_path.as_posix()
+    )
+    continuation = record.get("continuation") or {}
+    if continuation.get("identity") != decisions.get("continuation"):
+        raise ValidationToolError("review decisions are stale for the durable record")
+    actions = decisions_to_actions(decisions, internal)
+    decided, _ = apply_review_decisions(scan, adjudication, actions)
+    review_judgments = durable_review_judgments(decisions, adjudication["date"])
+    _merge_review_judgments(record, review_judgments)
+    if decided["review_queue"]:
+        result = _review_required(
+            scan,
+            cast(AdjudicationRecord, decided),
+            ValidationProgress(record, cache, state_status, publish),
+        )
+        result.update(
+            {"summary": summary_path.as_posix(), "state_status": state_status}
+        )
+        return result
+    target_record, assembly = _complete_adjudication(
+        CompletionRequest(
+            summary_path.as_posix(),
+            output_dir,
+            scan,
+            cast(AdjudicationRecord, decided),
+            record,
+            review_judgments,
+            publish,
+        )
     )
     return {
-        "status": "review_required",
-        "review_packet": packet_path.as_posix(),
-        "decision_file": decision_path.as_posix(),
-        "continuation": "pending-semantic-review",
-        "item_count": sum(counts.values()),
-        "byte_count": len(packet.encode("utf-8")),
-        "progress_retained": False,
+        "status": "complete",
+        "summary": summary_path.as_posix(),
+        "record": (output_dir / RECORD_FILENAME).as_posix(),
+        "cache": (output_dir / CACHE_FILENAME).as_posix(),
+        "report": (output_dir / "validation.md").as_posix(),
+        "progress_retained": bool(target_record["outcomes"]),
+        "published": publish,
+        "state_status": state_status,
+        "counts": assembly.counts(),
     }
 
 
@@ -192,14 +301,12 @@ def validate(
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
         record, cache, state_status = _load_target_state(output_dir, summary)
+        if decision_file is not None:
+            return _continue_review(summary_path, decision_file.resolve(), publish)
         cached = _cached_completion(summary_path, output_dir, record, cache)
-        if cached is not None and decision_file is None:
+        if cached is not None:
             cached["state_status"] = state_status
             return cached
-        if decision_file is not None:
-            raise ValidationToolError(
-                "semantic decision continuation is introduced in Phase 4"
-            )
         project_root = find_project_root(summary_path)
         summaries = discover_repository_summaries(project_root)
         repository = replacement_repository_view(
@@ -232,17 +339,18 @@ def validate(
             scan, result_date or date.today().isoformat()
         )
         if adjudication["review_queue"]:
-            result = _review_required(scan, adjudication)
+            result = _review_required(
+                scan,
+                adjudication,
+                ValidationProgress(record, cache, state_status, publish),
+            )
             result.update({"summary": summary, "state_status": state_status})
             return result
-        assembly = assemble_records(adjudication, scan, output_dir, render_policy())
-        bundle = assembly.bundle()
-        target_record = _target_record(summary, bundle, record)
-        target_cache = _target_cache(bundle)
-        if publish:
-            publish_target_bundle(
-                output_dir, bundle.report_text, target_record, target_cache
+        target_record, assembly = _complete_adjudication(
+            CompletionRequest(
+                summary, output_dir, scan, adjudication, record, [], publish
             )
+        )
         return {
             "status": "complete",
             "summary": summary,

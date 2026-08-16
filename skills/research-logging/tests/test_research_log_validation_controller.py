@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from research_log_validation_test_support import CLI, write
+from research_log_validation_test_support import CLI, make_log, write
 
 CONTROLLER = importlib.import_module("validation.controller")
 TARGET = importlib.import_module("validation.target_records")
@@ -128,6 +128,71 @@ class ValidationControllerTests(unittest.TestCase):
             TARGET.empty_record("docs/mini.md", "rules-v1"),
         )
         self.assertEqual(record["failures"], bundle.state["result"]["failures"])
+
+    def test_semantic_exchange_accepts_only_decisions_and_rationales(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = make_log(Path(directory))
+            first = CONTROLLER.validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            self.assertEqual(first["status"], "review_required")
+            decision_path = Path(first["decision_file"])
+            template = json.loads(decision_path.read_text(encoding="utf-8"))
+            self.assertEqual(first["item_count"], len(template["items"]))
+            self.assertGreater(first["byte_count"], 0)
+            for item in template["items"]:
+                item["decision"] = (
+                    "pass"
+                    if item["kind"] == "semantic_provenance"
+                    else "needs_context"
+                )
+                item["rationale"] = "Focused fixture decision."
+            decision_path.write_text(
+                json.dumps(template, indent=2) + "\n", encoding="utf-8"
+            )
+
+            continued = CONTROLLER.validate(
+                summary, decision_file=decision_path, jobs=1
+            )
+            self.assertEqual(continued["status"], "review_required")
+            self.assertLess(continued["item_count"], first["item_count"])
+            record = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            reviewed = [
+                judgment
+                for judgment in record["judgments"]
+                if judgment["kind"] == "review-decision"
+            ]
+            self.assertEqual(len(reviewed), 1)
+            self.assertEqual(reviewed[0]["rationale"], "Focused fixture decision.")
+
+    def test_stale_or_modified_semantic_template_cannot_mutate_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = make_log(Path(directory))
+            first = CONTROLLER.validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+            decision_path = Path(first["decision_file"])
+            record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
+            before = record_path.read_bytes()
+            template = json.loads(decision_path.read_text(encoding="utf-8"))
+            template["items"][0]["question"] = "broadened question"
+            template["items"][0]["decision"] = "fail"
+            template["items"][0]["rationale"] = "Not supported."
+            for item in template["items"][1:]:
+                item["decision"] = "needs_context"
+                item["rationale"] = "More focused context is required."
+            decision_path.write_text(
+                json.dumps(template, indent=2) + "\n", encoding="utf-8"
+            )
+
+            rejected = CONTROLLER.validate(
+                summary, decision_file=decision_path, jobs=1
+            )
+            self.assertEqual(rejected["status"], "error")
+            self.assertIn("modified CLI-owned fields", rejected["error"])
+            self.assertEqual(record_path.read_bytes(), before)
 
 
 if __name__ == "__main__":

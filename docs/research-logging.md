@@ -1078,27 +1078,30 @@ rebuilds the report.
 
 Validation also maintains machine-readable state:
 
-- `<log>/validation-record.json` is the small authoritative manifest. It owns
-  the project-relative summary identity, current stable continuation,
-  completed-report projection, and exact shard references.
-- `<log>/validation-cache.json` is rebuildable acceleration data for file
-  identities, hashes, inspections, and local indexes. It has no independent
-  correctness authority.
-- `<log>/validation-state/` contains immutable content-addressed shards for
-  semantic judgments and rationales, completed outcomes and dates, observed
-  dependencies, and failures. Completion never recombines these rows into a
+- `<log>/validation/manifest.json` is the small authoritative manifest. It
+  owns the project-relative summary identity, current stable continuation,
+  completed-report projection, and exact outcome, judgment, and failure shard
+  references.
+- `<log>/validation/{outcomes,judgments,failures}/` contains immutable
+  content-addressed row shards. Semantic judgments and rationales, completed
+  outcomes and dates, observed dependencies, and failures have no other
+  machine-readable owner. Completion never recombines these rows into a
   monolithic JSON record.
+- `<log>/validation/.cache/` contains rebuildable or transient local state:
+  the deterministic evidence cache, stable-subject index and batch deltas,
+  active review sessions, and validation lock. None has independent
+  correctness authority.
 
-Commit `validation.md`, `validation-record.json`, and the `validation-state/`
-files referenced by the manifest. Ignore `validation-cache.json`,
-`.astro-agents-validation-work/`, and `.research-log-validation.lock`; a
-missing cache only triggers recomputation.
+Commit `validation.md` and the complete durable `validation/` closure except
+`validation/.cache/`. Ignore `**/validation/.cache/`; a missing cache or index
+only triggers bounded reconstruction from the authoritative manifest and row
+shards.
 
 Research agents preserve these files exactly; validation agents create,
 update, or remove them through the validation tool. Only `validation.md` is
 intended for direct use as a validation record. Temporary semantic review
-packets and decision templates live under the ignored project-local
-`.astro-agents-validation-work/` root and are not canonical validation
+packets and decision templates live under the owning log's ignored
+`validation/.cache/work/` directory and are not canonical validation
 artifacts. A paged review can resume from the maintained-summary path alone;
 the manifest names the stable session while its small state file owns the
 current page and accepted batches.

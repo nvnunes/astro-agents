@@ -91,10 +91,10 @@ higher complexity score, or growth in the total advisory finding count.
 
 Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
 retained evidence, scientific artifacts, and authored `Validation:` notes as
-research-owned. Canonical validation may write only `validation.md`,
-`validation-record.json`, `validation-cache.json`, and immutable shards under
-`validation-state/`. Research operations must leave every existing generated
-validation file byte-identical.
+research-owned. Canonical validation may write only `validation.md`, durable
+machine state under `validation/` except its local cache subtree, and runtime
+state under `validation/.cache/`. Research operations must leave every
+existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
@@ -115,10 +115,12 @@ The research-log test gate must verify:
 - progressive completed work survives interruption, unrelated change, later
   operational failure, and semantic continuation;
 - accepted review batches publish one bounded immutable shard plus compact
-  manifest/index metadata, while interrupted shard or manifest publication
-  leaves the prior manifest authoritative;
+  manifest metadata and one ignored index delta, while interrupted shard or
+  manifest publication leaves the prior manifest authoritative and local
+  cache failure changes no durable state;
 - active paged resume does not scan the research log or hydrate historical
-  shards, and exact stable-subject reuse opens only mapped judgment shards;
+  shards, and exact stable-subject reuse through a validated ignored index
+  opens only mapped judgment shards;
 - one log validates without maintained-summary discovery, repository-wide
   coordination, Git state, or another log's validation files;
 - an explicit cross-log path is observed as external evidence, while a local
@@ -126,8 +128,9 @@ The research-log test gate must verify:
 - generated semantic packets are bounded and continuation-bound, expose only
   minimum-sufficient context, and allow the agent to edit only requested
   decision and rationale fields;
-- canonical publication rejects traversal, symlink, unexpected-filename, and
-  output-directory alias attempts;
+- canonical publication rejects traversal, symlink, unexpected-filename,
+  duplicate-identity, path/identity disagreement, and output-directory alias
+  attempts;
 - validation publication leaves research-owned bytes unchanged, while Record,
   Replace, Update Summary, Reorganize, and initialization leave generated
   validation bytes unchanged.
@@ -138,11 +141,19 @@ inspect its reuse and hashing diagnostics, then publish that log and confirm an
 unchanged follow-up hashes zero artifact bytes and requests no semantic review.
 Retired schemas must receive an actionable unsupported-format diagnostic.
 
-Durable validation-state shards are bounded at 200 rows and 8 MiB. The row
+Durable validation row shards are bounded at 200 rows and 8 MiB. The row
 limit aligns one normal 200-item semantic batch with one shard. The byte limit
 keeps ordinary shards bounded while admitting the largest valid deployed
 legacy row measured during migration (5,781,722 bytes); an individual row may
 therefore occupy a shard by itself.
+
+The durable manifest lives only at `validation/manifest.json`. Its shard paths
+are relative to `validation/` and name only
+`outcomes/<sha256>.jsonl`, `judgments/<sha256>.jsonl`, or
+`failures/<sha256>.jsonl`. The ignored stable-subject index records the exact
+manifest row-shard closure identity. A missing, malformed, or stale index must
+be rebuilt from those shards without scanning research evidence or requesting
+semantic review.
 
 Public semantic packets are bounded at 65,536 UTF-8 bytes and 200 questions,
 with pagination retaining whole questions. The count aligns a normal accepted

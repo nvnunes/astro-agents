@@ -1,0 +1,29 @@
+{
+  "component_versions": {"entry_provenance": 2, "material_identity": 1},
+  "input_projection_versions": {"exact-material": 1},
+  "judgments": [
+    {
+      "decision_date": "2026-08-15",
+      "identity": "judgment-1",
+      "input_dependencies": [
+        {
+          "content_identity": "content-1",
+          "kind": "exact-material",
+          "projection_version": 1,
+          "relationship": "outcome-subject",
+          "semantic_identity": "exact-material:docs/hybrid/data.csv"
+        }
+      ],
+      "kind": "completed-check",
+      "provenance": "legacy-attested",
+      "rationale_provenance": "unavailable-in-v43",
+      "result": "accepted",
+      "rule_dependencies": {"entry_provenance": 2},
+      "subject": {"check": "Provenance", "entry": "e001", "target": "1.0"},
+      "validation_rules_version": "research-log-validation-v45"
+    }
+  ],
+  "local_snapshot_identity": "obsolete-snapshot",
+  "schema_version": 2,
+  "validation_rules_version": "research-log-validation-v45"
+}

@@ -1650,7 +1650,10 @@ def finish_deferred_orphan_session(session_dir: Path) -> None:
 
 
 def resume_ordinary_exchange(
-    output_dir: Path, summary: str, continuation: Mapping[str, Any]
+    output_dir: Path,
+    summary: str,
+    continuation: Mapping[str, Any],
+    expected_rules_version: str | None = None,
 ) -> dict[str, Any]:
     """Return the current ordinary packet from its stable continuation."""
 
@@ -1667,6 +1670,12 @@ def resume_ordinary_exchange(
         or internal.get("scan", {}).get("summary") != summary
     ):
         raise ValidationToolError("ordinary review session has another owner")
+    if (
+        expected_rules_version is not None
+        and internal.get("scan", {}).get("validation_rules_version")
+        != expected_rules_version
+    ):
+        return {"status": "superseded_rules"}
     packet_path = session_dir / "review-packet.md"
     decision_path = session_dir / "review-decisions.json"
     if not packet_path.is_file() or not decision_path.is_file():

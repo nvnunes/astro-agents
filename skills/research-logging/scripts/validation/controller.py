@@ -641,11 +641,17 @@ def _requested_context_levels(
     return levels
 
 
+def _ensure_current_review_rules(scan: ScanRecord | None) -> None:
+    if scan is not None and scan.get("validation_rules_version") != RULES_VERSION:
+        raise ValidationToolError("review decisions use superseded validation rules")
+
+
 def _continue_review(
     summary_path: Path, decision_file: Path, publish: bool
 ) -> dict[str, Any]:
     decisions, internal = load_decisions(decision_file)
     deferred, scan, adjudication = _loaded_review_context(summary_path, internal)
+    _ensure_current_review_rules(scan)
     output_dir = summary_path.with_suffix("")
     project_root = _project_root(summary_path)
     summary = _relative_summary(summary_path, project_root)
@@ -764,8 +770,14 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         return None
     if continuation.get("kind") == "ordinary":
         resumed = resume_ordinary_exchange(
-            context.output_dir, context.record_summary, continuation
+            context.output_dir,
+            context.record_summary,
+            continuation,
+            RULES_VERSION,
         )
+        if resumed["status"] == "superseded_rules":
+            context.record["continuation"] = None
+            return None
     elif continuation.get("kind") == "paged":
         resumed = resume_deferred_orphan_session(
             context.output_dir, continuation

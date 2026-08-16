@@ -61,6 +61,33 @@ def fill_page(path: Path) -> None:
 
 
 class DeferredOrphanReviewTests(unittest.TestCase):
+    def test_ordinary_resume_rejects_a_superseded_rules_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scan, adjudication = deferred_fixture(root, count=2)
+            first = EXCHANGE.create_exchange(scan, adjudication, {})
+            continuation = {
+                "identity": first["continuation"],
+                "item_count": first["item_count"],
+                "kind": "ordinary",
+            }
+
+            current = EXCHANGE.resume_ordinary_exchange(
+                root / "docs" / "mini",
+                "docs/mini.md",
+                continuation,
+                "rules-v1",
+            )
+            superseded = EXCHANGE.resume_ordinary_exchange(
+                root / "docs" / "mini",
+                "docs/mini.md",
+                continuation,
+                "rules-v2",
+            )
+
+            self.assertEqual(current["status"], "review_required")
+            self.assertEqual(superseded, {"status": "superseded_rules"})
+
     def test_collection_context_expansion_lists_nested_members(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

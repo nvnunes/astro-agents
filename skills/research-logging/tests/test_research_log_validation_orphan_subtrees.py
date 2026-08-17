@@ -8,6 +8,7 @@ from pathlib import Path
 
 from research_log_validation_test_support import make_log, write
 
+BENCHMARK = importlib.import_module("benchmark_validation_review")
 CONTROLLER = importlib.import_module("validation.controller")
 ORPHANS = importlib.import_module("validation.orphan_rules")
 EXCHANGE = importlib.import_module("validation.review_exchange")
@@ -373,50 +374,41 @@ class OrphanSubtreeTests(unittest.TestCase):
     def test_training_sized_subtree_packet_is_bounded_and_constant_question_count(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            base = "docs/log/entries/e001/data/training"
-            candidates = [
-                _candidate(f"{base}/item-{index:05d}.bin") for index in range(12000)
-            ]
-            scan = {
-                "summary": "docs/log.md",
-                "log_root": "docs/log",
-                "project_root": root.as_posix(),
-                "validation_rules_version": "rules-v1",
-                "input_fingerprint": "scan-v1",
-                "schema_version": 1,
-                "entries": [
-                    {
-                        "id": "e001",
-                        "validation_notes": [],
-                        "orphan_inventory": candidates,
-                    }
-                ],
-            }
-            adjudication = {
-                "schema_version": 1,
-                "date": "2026-08-16",
-                "review_queue": [
-                    {
-                        "entry": "e001",
-                        "kind": "orphan_candidates",
-                        "identity": "Orphans",
-                        "candidates": candidates,
-                        "validation_notes": [],
-                    }
-                ],
-                "entries": [],
-            }
+        expected_root = (
+            "docs/training/entries/benchmark-e001/data/training"
+        )
+        for candidate_count in (
+            BENCHMARK.DEFAULT_ORPHANS,
+            BENCHMARK.DOUBLED_ORPHANS,
+        ):
+            with self.subTest(candidate_count=candidate_count):
+                with tempfile.TemporaryDirectory() as directory:
+                    scan, adjudication, _ = BENCHMARK.generated_workload(
+                        Path(directory), orphan_count=candidate_count
+                    )
+                    candidates = adjudication["review_queue"][0]["candidates"]
+                    questions, exact = ORPHANS.refined_questions(candidates, [])
 
-            result = EXCHANGE.create_exchange(scan, adjudication, {})
+                    self.assertEqual(len(questions), 1)
+                    self.assertEqual(questions[0]["root"], expected_root)
+                    self.assertEqual(len(questions[0]["candidates"]), candidate_count)
+                    self.assertEqual(exact, [])
 
-            self.assertEqual(result["item_count"], 1)
-            self.assertLessEqual(result["byte_count"], EXCHANGE.MAX_PACKET_BYTES)
-            template = json.loads(
-                Path(result["decision_file"]).read_text(encoding="utf-8")
-            )
-            self.assertEqual(template["items"][0]["kind"], "orphan_subtree")
+                    result = EXCHANGE.create_exchange(scan, adjudication, {})
+
+                    self.assertEqual(result["item_count"], 1)
+                    self.assertLessEqual(
+                        result["byte_count"], EXCHANGE.MAX_PACKET_BYTES
+                    )
+                    template = json.loads(
+                        Path(result["decision_file"]).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        template["items"][0]["kind"], "orphan_subtree"
+                    )
+                    self.assertEqual(
+                        template["items"][0]["identity"], expected_root
+                    )
 
 
 if __name__ == "__main__":

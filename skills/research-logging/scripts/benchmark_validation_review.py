@@ -29,19 +29,19 @@ from validation.review_exchange import (
     load_decisions,
 )
 
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 DEFAULT_ORPHANS = 12_000
 DOUBLED_ORPHANS = 24_000
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_COMMANDS = 16
 DEFAULT_EXPECTED_IDENTITY = (
-    "ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c"
+    "ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a"
 )
 
 
 def _candidate_identity(index: int) -> str:
     return (
-        "docs/training/entries/benchmark-e001/data/"
+        "docs/training/entries/benchmark-e001/data/training/"
         f"case-{index:05d}/result.csv"
     )
 

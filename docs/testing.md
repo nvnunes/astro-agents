@@ -164,7 +164,7 @@ semantic review.
 Public semantic packets are bounded at 65,536 UTF-8 bytes and 200 questions,
 with pagination retaining whole questions. The count aligns a normal accepted
 review batch with one judgment shard. The retained 12,000/24,000-orphan
-workload renders one 3,509-byte subtree question at either size; the focused
+workload renders one 3,707-byte subtree question at either size; the focused
 MASTSEL collection fixture renders two expanded questions and 52,430 bytes.
 The byte ceiling is
 roughly 16,000–20,000 tokens depending on JSON density and is a reviewed public
@@ -188,10 +188,12 @@ fresh-process benchmark:
 ```
 
 The canonical workload has generator identity
-`ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c`.
-It exercises the public subtree packet and accepted-decision path. Compare the
-retained workload sizes for approximately linear preparation and verify that
-the structural projection remains one bounded question as membership grows.
+`ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a`.
+It models nested case artifacts beneath one lifecycle-oriented training
+subtree and exercises the public subtree packet and accepted-decision path.
+Compare the retained workload sizes for approximately linear preparation and
+verify that the structural projection remains one bounded question as
+membership grows.
 
 Also require one static preparation per invocation, no more than one source
 read per unique producer script, and no repeated evaluation of the same

@@ -1,7 +1,7 @@
 {
   "recorded_date": "2026-08-16",
-  "generator_version": 2,
-  "generator_identity": "ca7a9f9eb94b60ad07b387250d287970298100293db42b811186296c4ebd9c4c",
+  "generator_version": 3,
+  "generator_identity": "ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a",
   "batch_size": 200,
   "machine": {
     "operating_system": "macOS-26.3.1-arm64-arm-64bit",
@@ -14,28 +14,28 @@
   "public_12000": {
     "warmups": 1,
     "samples_seconds": [
-      0.6955610001459718,
-      0.6161459591239691,
-      0.6498300000093877
+      0.6906673749908805,
+      0.6783357500098646,
+      0.6571011249907315
     ],
-    "median_seconds": 0.6498300000093877,
+    "median_seconds": 0.6783357500098646,
     "candidate_count": 12000,
     "question_count": 1,
-    "packet_bytes": 3509
+    "packet_bytes": 3707
   },
   "public_24000": {
     "warmups": 1,
     "samples_seconds": [
-      1.2736536250449717,
-      1.2910460829734802,
-      1.271605667192489
+      1.389705166919157,
+      1.3288857920560986,
+      1.308207959169522
     ],
-    "median_seconds": 1.2736536250449717,
+    "median_seconds": 1.3288857920560986,
     "candidate_count": 24000,
     "question_count": 1,
-    "packet_bytes": 3509
+    "packet_bytes": 3707
   },
-  "scaling_ratio_24000_over_12000": 1.9599797121601504,
+  "scaling_ratio_24000_over_12000": 1.959038414290819,
   "acceptance": {
     "approximately_linear_preparation": true,
     "one_bounded_subtree_question": true,

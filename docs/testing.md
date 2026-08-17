@@ -130,9 +130,10 @@ The research-log test gate must verify:
 - prospective orphan-subtree rules apply to new compatible descendants, while
   graph reachability, exact-path exceptions, and more-specific subtree rules
   retain their precedence;
-- terminal cleanup preserves exact exceptions and unrelated history, retains a
-  coherent completed result after interruption, and is read-only under
-  `--dry-run`;
+- terminal cleanup preserves exact exceptions and compatible unrelated
+  history, removes permanently rule-incompatible judgments only without an
+  active continuation, retains a coherent completed result after interruption,
+  and is read-only under `--dry-run`;
 - canonical publication rejects traversal, symlink, unexpected-filename,
   duplicate-identity, path/identity disagreement, and output-directory alias
   attempts;

@@ -44,7 +44,8 @@ dependencies still control reuse; graph reachability, an exact-path decision,
 or a more-specific subtree decision takes precedence.
 
 `validation/.cache/` is CLI-owned local state. `cache.json` may store reusable
-file identities, hashes, inspections, and directory membership.
+file identities, hashes, inspections, directory membership, and a terminal
+cleanup marker bound to the authoritative manifest closure.
 `subject-index.json` and `index-deltas/` map collision-checked stable subjects
 to manifest-referenced row shards. `work/` owns active paged review files, and
 `lock` serializes one log's writer. Missing, malformed, stale, or unwritable
@@ -121,12 +122,16 @@ committed through the manifest. Temporary replacement files and local runtime
 state are generated mechanisms, not research inputs; exclude them from
 discovery and orphan inventory.
 
-Terminal validation compacts exact orphan judgments only when current item
-dispositions prove that a compatible subtree rule supersedes them. It retains
-exact exceptions and unrelated rows, writes replacement shards before the
-manifest, verifies the new bundle, then deletes only shard files outside the
-manifest closure. An interrupted deletion leaves harmless unreachable files
-for the next validation to collect.
+Terminal validation compacts exact orphan judgments when current item
+dispositions prove that a compatible subtree rule supersedes them. It also
+removes judgments whose declared component or semantic-review rule dependencies
+are permanently incompatible with the current validator. Compatibility is
+evaluated by judgment family; current native review rules are not compared
+against the component-only registry. Cleanup runs only without an active
+continuation, retains compatible unrelated rows and exact exceptions, writes
+replacement shards before the manifest, verifies the new bundle, then deletes
+only shard files outside the manifest closure. An interrupted deletion leaves
+harmless unreachable files for the next validation to collect.
 
 The maintained summary contains only the fixed navigation line defined in
 `skills/research-logging/references/file-summary-validation.md`. That link is

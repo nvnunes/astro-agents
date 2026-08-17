@@ -46,7 +46,7 @@ from .target_records import (
     RECORD_FILENAME,
     append_judgment_batch,
     assert_no_retired_artifacts,
-    cleanup_unreachable_shards,
+    compact_cached_judgments,
     empty_cache,
     empty_record,
     hydrate_record_rows,
@@ -242,11 +242,8 @@ def _cached_completion(
     )
     if session is None:
         return None
-    manifest = record.get("_sharded_manifest")
-    cleanup = (
-        cleanup_unreachable_shards(output_dir, manifest, publish=request.publish)
-        if isinstance(manifest, Mapping)
-        else {}
+    cleanup = compact_cached_judgments(
+        output_dir, record, cache, publish=request.publish
     )
     return {
         "status": "complete",

@@ -90,6 +90,28 @@ def orphan_judgment(number: int) -> dict:
     return judgment
 
 
+def legacy_orphan_judgment(number: int, *, compatible: bool = True) -> dict:
+    return {
+        "identity": f"legacy-decision-{number}",
+        "kind": "orphan-disposition",
+        "result": "unresolved",
+        "decision_date": "2026-08-15",
+        "subject": {
+            "entry": "e001",
+            "identity": f"docs/mini/entries/e001/data/item-{number:04d}.csv",
+        },
+        "rule_dependencies": {
+            "integrity": 1,
+        }
+        if compatible
+        else {"orphan_graph": 1},
+        "input_dependencies": [],
+        "rationale": "Exact legacy decision.",
+        "rationale_provenance": "recorded",
+        "provenance": "native-reviewed",
+    }
+
+
 def subject_index_path(root: Path) -> Path:
     return (
         TARGET.validation_directory(root)
@@ -107,6 +129,96 @@ def index_delta_directory(root: Path) -> Path:
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_terminal_compaction_removes_legacy_alias_and_incompatible_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [
+                orphan_judgment(0),
+                legacy_orphan_judgment(0),
+                legacy_orphan_judgment(1, compatible=False),
+                orphan_judgment(2),
+            ]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            loaded = TARGET.load_record(root / TARGET.RECORD_FILENAME)
+
+            cleanup = TARGET.publish_target_bundle(
+                root,
+                "report\n",
+                loaded,
+                TARGET.empty_cache(),
+                [orphan_judgment(0)["subject"]],
+            )
+
+            remaining = TARGET.load_record(root / TARGET.RECORD_FILENAME)[
+                "judgments"
+            ]
+            self.assertEqual(
+                [row["identity"] for row in remaining], ["decision-2"]
+            )
+            self.assertEqual(cleanup["superseded_rows_removed"], 2)
+            self.assertEqual(cleanup["incompatible_rows_removed"], 1)
+            self.assertEqual(cleanup["rows_removed"], 3)
+
+    def test_active_continuation_prevents_terminal_judgment_compaction(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["continuation"] = {
+                "kind": "ordinary",
+                "identity": "a" * 64,
+                "item_count": 1,
+            }
+            record["judgments"] = [legacy_orphan_judgment(0, compatible=False)]
+
+            TARGET.publish_target_bundle(
+                root,
+                "report\n",
+                record,
+                TARGET.empty_cache(),
+                [orphan_judgment(0)["subject"]],
+            )
+
+            stored = TARGET.load_record(root / TARGET.RECORD_FILENAME)
+            self.assertEqual(len(stored["judgments"]), 1)
+
+    def test_cached_compaction_failure_before_manifest_keeps_prior_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [legacy_orphan_judgment(0, compatible=False)]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            shell = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME
+            )[0]
+            before = (root / TARGET.RECORD_FILENAME).read_bytes()
+            original = TARGET._atomic_write_bytes
+
+            def fail_manifest(path: Path, payload: bytes) -> None:
+                if path == TARGET.manifest_path(root):
+                    raise OSError("simulated manifest interruption")
+                original(path, payload)
+
+            with mock.patch.object(
+                TARGET, "_atomic_write_bytes", side_effect=fail_manifest
+            ):
+                with self.assertRaises(TARGET.RecordPublicationError):
+                    TARGET.compact_cached_judgments(
+                        root, shell, TARGET.empty_cache(), publish=True
+                    )
+
+            self.assertEqual((root / TARGET.RECORD_FILENAME).read_bytes(), before)
+            self.assertEqual(
+                len(TARGET.load_record(root / TARGET.RECORD_FILENAME)["judgments"]),
+                1,
+            )
+
     def test_terminal_compaction_replaces_only_affected_shards_and_collects_old_files(
         self,
     ) -> None:

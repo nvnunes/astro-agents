@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from .judgment_rules import compatible as judgment_rules_compatible
+
 STORAGE_LAYOUT = "sharded-v1"
 STATE_DIRECTORY = "validation"
 LOCAL_CACHE_DIRECTORY = ".cache"
@@ -947,16 +949,25 @@ def prepare_judgment_compaction(
     validation_dir: Path,
     prepared: PreparedState,
     superseded_subjects: Sequence[Mapping[str, Any]],
+    *,
+    prune_incompatible: bool = False,
 ) -> tuple[PreparedState, dict[str, int]]:
-    """Remove exact superseded judgments while retaining unaffected shards."""
+    """Remove superseded or permanently incompatible terminal judgments."""
 
     subjects = [dict(subject) for subject in superseded_subjects]
-    if not subjects:
-        return prepared, {"rows_removed": 0, "shards_replaced": 0}
+    empty_report = {
+        "rows_removed": 0,
+        "superseded_rows_removed": 0,
+        "incompatible_rows_removed": 0,
+        "shards_replaced": 0,
+    }
+    if not subjects and not prune_incompatible:
+        return prepared, empty_report
     valid = validate_manifest(prepared.manifest)
     retained_refs: list[dict[str, Any]] = []
     files = dict(prepared.files)
-    removed = 0
+    superseded = 0
+    incompatible = 0
     replaced = 0
     for ref in valid["shards"]["judgments"]:
         path = str(ref["path"])
@@ -964,13 +975,29 @@ def prepare_judgment_compaction(
         if payload is None:
             payload = _read_owned_bytes(validation_dir, ref)
         rows = _decode_jsonl(payload, ref)
-        retained = [
-            row for row in rows if _row_subject("judgments", row) not in subjects
-        ]
+        retained = []
+        for row in rows:
+            subject = _row_subject("judgments", row)
+            legacy_subject = (
+                {
+                    "kind": "orphan_candidate",
+                    "entry": subject.get("entry"),
+                    "identity": subject.get("identity"),
+                }
+                if row.get("kind") == "orphan-disposition"
+                and isinstance(subject, Mapping)
+                and set(subject) == {"entry", "identity"}
+                else None
+            )
+            if subject in subjects or legacy_subject in subjects:
+                superseded += 1
+            elif prune_incompatible and not judgment_rules_compatible(row):
+                incompatible += 1
+            else:
+                retained.append(row)
         if len(retained) == len(rows):
             retained_refs.append(ref)
             continue
-        removed += len(rows) - len(retained)
         replaced += 1
         files.pop(path, None)
         for batch, replacement_payload in _row_batches(retained):
@@ -984,7 +1011,12 @@ def prepare_judgment_compaction(
     )
     return (
         PreparedState(manifest, files),
-        {"rows_removed": removed, "shards_replaced": replaced},
+        {
+            "rows_removed": superseded + incompatible,
+            "superseded_rows_removed": superseded,
+            "incompatible_rows_removed": incompatible,
+            "shards_replaced": replaced,
+        },
     )
 
 

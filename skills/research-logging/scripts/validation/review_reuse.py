@@ -14,9 +14,8 @@ from .compatibility import (
     projection,
 )
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
+from .judgment_rules import SEMANTIC_REVIEW_RULES
 from .orphan_rules import SUBTREE_REVIEW_KIND, SUBTREE_RULE_DEPENDENCIES
-
-SEMANTIC_REVIEW_RULES = {"semantic_review": 1}
 
 
 def _subject_key(value: Mapping[str, Any]) -> tuple[Any, ...]:

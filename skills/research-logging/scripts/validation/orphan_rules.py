@@ -8,9 +8,13 @@ from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from .judgment_rules import (
+    SUBTREE_RULE_DEPENDENCIES as _SUBTREE_RULE_DEPENDENCIES,
+)
+
 MATERIAL_CLASSES = ("data", "images", "scripts")
 SUBTREE_REVIEW_KIND = "orphan_subtree"
-SUBTREE_RULE_DEPENDENCIES = {"semantic_review": 1, "orphan_subtree": 1}
+SUBTREE_RULE_DEPENDENCIES = _SUBTREE_RULE_DEPENDENCIES
 SUBTREE_BASIS_PREFIX = "orphan-subtree:"
 
 

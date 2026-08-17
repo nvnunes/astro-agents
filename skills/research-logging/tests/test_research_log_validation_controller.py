@@ -100,6 +100,92 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertTrue(second["cached"])
             self.assertFalse(index_path.exists())
 
+    def test_cached_completion_prunes_incompatible_judgments_without_scan(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            output = summary.with_suffix("")
+            report = output / "validation.md"
+            before_report = report.read_bytes()
+            shell = TARGET.load_record_header_with_source(
+                output / TARGET.RECORD_FILENAME
+            )[0]
+            TARGET.append_judgment_batch(
+                output,
+                shell,
+                [
+                    {
+                        "identity": "legacy-incompatible",
+                        "kind": "orphan-disposition",
+                        "result": "unresolved",
+                        "decision_date": "2026-08-15",
+                        "subject": {
+                            "entry": "e001",
+                            "identity": "docs/empty/legacy.csv",
+                        },
+                        "rule_dependencies": {"orphan_graph": 1},
+                        "input_dependencies": [],
+                        "rationale": "Historical incompatible decision.",
+                        "rationale_provenance": "recorded",
+                        "provenance": "native-reviewed",
+                    }
+                ],
+            )
+
+            opened: list[str] = []
+            original_read = STORE._read_owned_bytes
+
+            def read_judgment_only(validation_dir: Path, ref: dict) -> bytes:
+                opened.append(ref["kind"])
+                if ref["kind"] != "judgments":
+                    raise AssertionError("cached cleanup hydrated unrelated rows")
+                return original_read(validation_dir, ref)
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "scan_log",
+                    side_effect=AssertionError("cached cleanup must not scan"),
+                ),
+                mock.patch.object(
+                    STORE, "_read_owned_bytes", side_effect=read_judgment_only
+                ),
+            ):
+                second = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+
+            self.assertEqual(second["status"], "complete")
+            self.assertTrue(second["cached"])
+            self.assertEqual(second["cleanup"]["incompatible_rows_removed"], 1)
+            self.assertEqual(set(opened), {"judgments"})
+            self.assertEqual(report.read_bytes(), before_report)
+            stored = TARGET.load_record(output / TARGET.RECORD_FILENAME)
+            self.assertEqual(stored["judgments"], [])
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "scan_log",
+                    side_effect=AssertionError("cached completion must not scan"),
+                ),
+                mock.patch.object(
+                    STORE,
+                    "_read_owned_bytes",
+                    side_effect=AssertionError(
+                        "completed cleanup must not reopen judgment shards"
+                    ),
+                ),
+            ):
+                third = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+            self.assertEqual(third["status"], "complete")
+            self.assertTrue(third["cached"])
+
     def test_removed_semantic_evidence_invalidates_only_its_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = make_log(Path(directory))

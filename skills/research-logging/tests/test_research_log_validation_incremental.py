@@ -8,6 +8,7 @@ from unittest import mock
 
 INCREMENTAL = importlib.import_module("validation.incremental")
 COMPATIBILITY = importlib.import_module("validation.compatibility")
+JUDGMENT_RULES = importlib.import_module("validation.judgment_rules")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
@@ -104,6 +105,43 @@ class IncrementalComparisonTests(unittest.TestCase):
                 {"integrity": 1}, {"integrity": 2, "entry_provenance": 1}
             ),
             (False, ["integrity"]),
+        )
+
+    def test_judgment_rule_compatibility_uses_its_declared_family(self) -> None:
+        self.assertTrue(
+            JUDGMENT_RULES.compatible(
+                {
+                    "kind": "review-decision",
+                    "rule_dependencies": {"semantic_review": 1},
+                }
+            )
+        )
+        self.assertTrue(
+            JUDGMENT_RULES.compatible(
+                {
+                    "kind": "review-decision",
+                    "rule_dependencies": {
+                        "semantic_review": 1,
+                        "orphan_subtree": 1,
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            JUDGMENT_RULES.compatible(
+                {
+                    "kind": "review-decision",
+                    "rule_dependencies": {"semantic_review": 2},
+                }
+            )
+        )
+        self.assertFalse(
+            JUDGMENT_RULES.compatible(
+                {
+                    "kind": "orphan-disposition",
+                    "rule_dependencies": {"orphan_graph": 1},
+                }
+            )
         )
 
     def test_native_outcome_reuse_is_dependency_scoped(self) -> None:

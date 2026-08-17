@@ -15,6 +15,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import sharded_state
+from .judgment_rules import (
+    TERMINAL_CLEANUP_CACHE_KEY,
+    TERMINAL_CLEANUP_VERSION,
+)
 from .records import RecordPublicationError, _atomic_write_bytes, validation_lock
 
 RECORD_FILENAME = "validation/manifest.json"
@@ -799,8 +803,12 @@ def _prepare_compacted_state(
     superseded_subjects: Sequence[Mapping[str, Any]],
 ) -> tuple[sharded_state.PreparedState, dict[str, int]]:
     prepared = _prepare_record_state(output_dir, record)
+    terminal = record.get("continuation") is None
     return sharded_state.prepare_judgment_compaction(
-        validation_directory(output_dir), prepared, superseded_subjects
+        validation_directory(output_dir),
+        prepared,
+        superseded_subjects if terminal else (),
+        prune_incompatible=terminal,
     )
 
 
@@ -851,6 +859,90 @@ def inspect_target_cleanup(
     }
 
 
+def compact_cached_judgments(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    cache: Mapping[str, Any],
+    *,
+    publish: bool,
+) -> dict[str, int]:
+    """Compact one coherent terminal manifest without hydrating other rows."""
+
+    manifest = record.get("_sharded_manifest")
+    if not isinstance(manifest, Mapping):
+        return {}
+    current = decode_sharded_manifest(manifest)
+    if current.get("continuation") is not None:
+        raise TargetRecordError("cached judgment compaction requires terminal state")
+    marker = cache.get("local_indexes", {}).get(TERMINAL_CLEANUP_CACHE_KEY)
+    expected_marker = _terminal_cleanup_marker(current)
+    if marker == expected_marker:
+        return cleanup_unreachable_shards(
+            output_dir, current, publish=publish
+        )
+    prepared, report = sharded_state.prepare_judgment_compaction(
+        validation_directory(output_dir),
+        sharded_state.PreparedState(current, {}),
+        (),
+        prune_incompatible=True,
+    )
+    updated = decode_sharded_manifest(prepared.manifest)
+    if not publish:
+        return {
+            **report,
+            **cleanup_unreachable_shards(output_dir, updated, publish=False),
+        }
+    if updated != current:
+        _assert_output_destinations(output_dir)
+        assert_no_retired_artifacts(output_dir)
+        try:
+            with validation_lock(output_dir):
+                disk = decode_sharded_manifest(
+                    _read_json(manifest_path(output_dir))
+                )
+                if disk != current:
+                    raise RecordPublicationError(
+                        "durable validation manifest changed during terminal cleanup"
+                    )
+                sharded_state.publish_immutable_files(
+                    validation_directory(output_dir),
+                    prepared.files,
+                    _atomic_write_bytes,
+                )
+                _atomic_write_bytes(
+                    manifest_path(output_dir), _json_bytes(updated)
+                )
+        except (RecordPublicationError, sharded_state.ShardedStateError):
+            raise
+        except OSError as exc:
+            raise RecordPublicationError(
+                f"terminal judgment cleanup could not be written: {exc}"
+            ) from exc
+    _write_local_state(output_dir, cache, updated)
+    return {
+        **report,
+        **cleanup_unreachable_shards(output_dir, updated, publish=True),
+    }
+
+
+def _compact_local_subject_index(
+    output_dir: Path, manifest: Mapping[str, Any]
+) -> None:
+    try:
+        sharded_state.compact_subject_index(
+            validation_directory(output_dir), manifest, _atomic_write_bytes
+        )
+    except (OSError, sharded_state.ShardedStateError):
+        pass
+
+
+def _terminal_cleanup_marker(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "version": TERMINAL_CLEANUP_VERSION,
+        "manifest_closure": sharded_state.manifest_closure_identity(manifest),
+    }
+
+
 def _write_local_state(
     output_dir: Path,
     cache: Mapping[str, Any],
@@ -858,16 +950,19 @@ def _write_local_state(
 ) -> None:
     """Best-effort refresh ignored cache and compact subject index state."""
 
+    updated_cache = copy.deepcopy(dict(cache))
+    local_indexes = updated_cache.setdefault("local_indexes", {})
+    if manifest.get("result") is not None and manifest.get("continuation") is None:
+        local_indexes[TERMINAL_CLEANUP_CACHE_KEY] = _terminal_cleanup_marker(
+            manifest
+        )
+    else:
+        local_indexes.pop(TERMINAL_CLEANUP_CACHE_KEY, None)
     try:
-        _atomic_write_bytes(cache_path(output_dir), _json_bytes(cache))
+        _atomic_write_bytes(cache_path(output_dir), _json_bytes(updated_cache))
     except OSError:
         pass
-    try:
-        sharded_state.compact_subject_index(
-            validation_directory(output_dir), manifest, _atomic_write_bytes
-        )
-    except (OSError, sharded_state.ShardedStateError):
-        pass
+    _compact_local_subject_index(output_dir, manifest)
 
 
 def _assert_output_destinations(output_dir: Path) -> None:

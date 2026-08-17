@@ -7,16 +7,14 @@ import hashlib
 import json
 import shutil
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
-from .compatibility import decode_input_dependencies
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
 from .orphan_rules import (
     SUBTREE_REVIEW_KIND,
     SUBTREE_RULE_DEPENDENCIES,
     ancestor_roots,
-    below,
     candidates_below,
     disposition_choice,
     refined_questions,
@@ -783,20 +781,6 @@ def _packet_context(
                 "decision_constraint": (
                     "Classify only if every current and future compatible residual "
                     "descendant shares one lifecycle; otherwise split."
-                ),
-                **(
-                    {
-                        "migration_coverage": {
-                            "complete_compatible_exact_decisions": len(
-                                queue_item.get("legacy_subtree_coverage", {})
-                                .get(str(item.get("identity", "")), {})
-                                .get("decisions", {})
-                            )
-                        }
-                    }
-                    if str(item.get("identity", ""))
-                    in queue_item.get("legacy_subtree_coverage", {})
-                    else {}
                 ),
             }
         if item["kind"] == "orphan_candidate":
@@ -1993,7 +1977,7 @@ def _queue_sections(row: Mapping[str, Any], internal: Mapping[str, Any]) -> Any:
     )
 
 
-def _restore_legacy_producer_scope(
+def _restore_scoped_producer_dependencies(
     row: Mapping[str, Any],
     action: dict[str, Any] | None,
     internal: Mapping[str, Any],
@@ -2128,37 +2112,6 @@ def _orphan_row_effect(
     return identities, (*choice, root), None
 
 
-def _decoded_exact_orphan(decision: str) -> tuple[str, str, None]:
-    if decision == "unresolved":
-        return "unresolved", "-", None
-    if decision == "connected":
-        return "connected", "semantic-connection", None
-    return "retained", f"validation-note:{decision.removeprefix('retain:')}", None
-
-
-def _legacy_split_decisions(
-    queue_item: Mapping[str, Any], row: Mapping[str, Any]
-) -> dict[str, tuple[tuple[str, str, None], str]]:
-    if row.get("kind") != SUBTREE_REVIEW_KIND or not split_choice(row.get("decision")):
-        return {}
-    coverage = queue_item.get("legacy_subtree_coverage", {}).get(row.get("identity"))
-    if not isinstance(coverage, Mapping):
-        return {}
-    decisions = coverage.get("decisions")
-    if not isinstance(decisions, Mapping):
-        return {}
-    return {
-        str(identity): (
-            _decoded_exact_orphan(str(prior["decision"])),
-            str(prior["rationale"]),
-        )
-        for identity, prior in decisions.items()
-        if isinstance(prior, Mapping)
-        and isinstance(prior.get("decision"), str)
-        and isinstance(prior.get("rationale"), str)
-    }
-
-
 def _orphan_disposition_payload(
     dispositions: Mapping[str, tuple[str, str, str | None]],
     rationales: Mapping[str, str],
@@ -2216,13 +2169,6 @@ def _append_orphan_actions(
         splits = []
         stale_identities: set[str] = set()
         for row in selected:
-            legacy = _legacy_split_decisions(queue_item, row)
-            if legacy:
-                for identity, (legacy_decoded, rationale) in legacy.items():
-                    dispositions[identity] = legacy_decoded
-                    rationales[identity] = rationale
-                    stale_identities.add(identity)
-                continue
             identities, decoded, split = _orphan_row_effect(
                 row, current, fingerprints[entry]
             )
@@ -2272,7 +2218,7 @@ def decisions_to_actions(
             ).append(row)
         else:
             action = _ordinary_action(row)
-            _restore_legacy_producer_scope(row, action, internal)
+            _restore_scoped_producer_dependencies(row, action, internal)
             if action is not None and action not in actions:
                 actions.append(action)
     _append_upstream_actions(actions, upstream_rows)
@@ -2388,38 +2334,6 @@ def _exact_reusable_judgment(
     return next(iter(by_decision.values())) if len(by_decision) == 1 else None
 
 
-def _legacy_upstream_action(
-    queue_item: Mapping[str, Any],
-    reusable: Mapping[str, list[dict[str, Any]]],
-) -> dict[str, Any] | None:
-    legacy = _exact_reusable_judgment(reusable, _fingerprint(queue_item))
-    decision = legacy.get("decision") if legacy is not None else None
-    bindings = decision.get("bindings") if isinstance(decision, Mapping) else None
-    candidates = {
-        (candidate.get("material"), candidate.get("invocation"))
-        for candidate in queue_item.get("producer_candidates", [])
-    }
-    if not (
-        isinstance(bindings, list)
-        and bindings
-        and all(
-            isinstance(binding, Mapping)
-            and (binding.get("material"), binding.get("invocation")) in candidates
-            for binding in bindings
-        )
-    ):
-        return None
-    return {
-        "match": {
-            "kind": "upstream_producer",
-            "entry": queue_item["entry"],
-            "identity": queue_item["identity"],
-        },
-        "decision": "bind",
-        "producer_bindings": copy.deepcopy(bindings),
-    }
-
-
 def _reuse_templates(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -2519,152 +2433,6 @@ def _subtree_reuse_template(
     }
 
 
-def _legacy_exact_decision(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: Mapping[str, Any],
-    candidate: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> dict[str, str] | None:
-    template = _candidate_reuse_template(scan, adjudication, queue_item, candidate)
-    answer = reusable_review_answer(scan, adjudication, queue_item, template, judgments)
-    if answer is not None and isinstance(answer[0], str):
-        return {"decision": answer[0], "rationale": answer[1]}
-    return _migrated_exact_decision(
-        scan, adjudication, queue_item, template, judgments
-    )
-
-
-def _migrated_exact_decision(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: Mapping[str, Any],
-    template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> dict[str, str] | None:
-    """Project one exact v45 orphan decision through retained content proof."""
-
-    entry = str(template["entry"])
-    identity = str(template["identity"])
-    semantic_identity = f"orphan-candidate:{entry}:{identity}"
-    current_inputs = review_judgment_inputs(
-        scan, adjudication, queue_item, template
-    )
-    current = next(
-        (
-            item
-            for item in current_inputs
-            if item.get("semantic_identity") == semantic_identity
-        ),
-        None,
-    )
-    if current is None:
-        return None
-    compatible_rows = [
-        judgment
-        for judgment in judgments
-        if judgment.get("kind") == "orphan-disposition"
-        and judgment.get("subject") == {"entry": entry, "identity": identity}
-        and _legacy_candidate_dependency(judgment, semantic_identity) == current
-    ]
-    compatible = {
-        _fingerprint(
-            {
-                "subject": judgment.get("subject"),
-                "result": judgment.get("result"),
-                "basis": judgment.get("basis"),
-                "input_dependencies": judgment.get("input_dependencies"),
-            }
-        ): judgment
-        for judgment in compatible_rows
-    }
-    if len(compatible) != 1:
-        return None
-    reviewed = [
-        judgment
-        for judgment in judgments
-        if judgment.get("kind") == "review-decision"
-        and judgment.get("subject")
-        == {"kind": "orphan_candidate", "entry": entry, "identity": identity}
-        and judgment.get("decision") in template.get("allowed_decisions", [])
-    ]
-    answers = {
-        str(judgment["decision"]): str(judgment.get("rationale", ""))
-        for judgment in reviewed
-    }
-    if len(answers) == 1:
-        decision, rationale = next(iter(answers.items()))
-        return {"decision": decision, "rationale": rationale}
-    projected = _legacy_disposition_answer(next(iter(compatible.values())))
-    if projected not in template.get("allowed_decisions", []):
-        return None
-    return {
-        "decision": str(projected),
-        "rationale": "Retained the exact compatible v45 orphan disposition.",
-    }
-
-
-def _legacy_candidate_dependency(
-    judgment: Mapping[str, Any], semantic_identity: str
-) -> dict[str, Any] | None:
-    try:
-        dependencies = decode_input_dependencies(
-            judgment.get("input_dependencies"),
-            "legacy orphan disposition inputs",
-            require_supported=False,
-        )
-    except ValidationToolError:
-        return None
-    matches = [
-        dependency
-        for dependency in dependencies
-        if dependency.get("semantic_identity") == semantic_identity
-    ]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _legacy_disposition_answer(judgment: Mapping[str, Any]) -> str | None:
-    if judgment.get("result") == "unresolved":
-        return "unresolved"
-    basis = judgment.get("basis")
-    if isinstance(basis, str) and basis.startswith("validation-note:"):
-        return f"retain:{basis.removeprefix('validation-note:')}"
-    if basis in {"graph", "semantic-connection"}:
-        return "connected"
-    return None
-
-
-def _mark_legacy_subtree_coverage(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    queue_item: dict[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
-) -> None:
-    """Mark complete exact coverage for the one-time subtree migration prompt."""
-
-    questions, _ = refined_questions(
-        queue_item.get("candidates", []), queue_item.get("subtree_splits", [])
-    )
-    coverage: dict[str, Any] = {}
-    for question in questions:
-        decisions: dict[str, dict[str, str]] = {}
-        for candidate in question["candidates"]:
-            prior = _legacy_exact_decision(
-                scan, adjudication, queue_item, candidate, judgments
-            )
-            if prior is None:
-                decisions = {}
-                break
-            decisions[str(candidate["identity"])] = prior
-        if decisions:
-            coverage[str(question["root"])] = {
-                "material": question["material"],
-                "decisions": decisions,
-            }
-    if coverage:
-        queue_item["legacy_subtree_coverage"] = coverage
-
-
 def _orphan_reuse_action(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -2673,7 +2441,6 @@ def _orphan_reuse_action(
 ) -> dict[str, Any] | None:
     selected: dict[str, tuple[str, str, str | None, str]] = {}
     fingerprints: dict[str, str] = {}
-    migration_roots = tuple(queue_item.get("legacy_subtree_coverage", {}))
     for candidate in ordered_orphan_candidates(queue_item):
         identity = str(candidate["identity"])
         fingerprints[identity] = orphan_candidate_fingerprint(
@@ -2683,15 +2450,11 @@ def _orphan_reuse_action(
             candidate,
             DECISION_SCHEMA_VERSION,
         )
-        if any(below(root, identity) for root in migration_roots):
-            continue
-        prior = _legacy_exact_decision(
-            scan, adjudication, queue_item, candidate, judgments
+        template = _candidate_reuse_template(
+            scan, adjudication, queue_item, candidate
         )
-        answer = (
-            (prior["decision"], prior["rationale"])
-            if prior is not None
-            else None
+        answer = reusable_review_answer(
+            scan, adjudication, queue_item, template, judgments
         )
         rule_root: str | None = None
         if answer is None:
@@ -2785,20 +2548,14 @@ def reusable_review_actions(
             )
 
     rows: list[dict[str, Any]] = []
-    legacy_actions: list[dict[str, Any]] = []
+    direct_actions: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
     for queue_item in adjudication["review_queue"]:
         if queue_item["kind"] == "orphan_candidates":
-            _mark_legacy_subtree_coverage(scan, adjudication, queue_item, judgments)
             action = _orphan_reuse_action(scan, adjudication, queue_item, judgments)
             if action is not None:
-                legacy_actions.append(action)
+                direct_actions.append(action)
             continue
-        if queue_item["kind"] == "upstream_producer":
-            legacy = _legacy_upstream_action(queue_item, reusable)
-            if legacy is not None:
-                legacy_actions.append(legacy)
-                continue
         templates, fingerprints = _reuse_templates(scan, adjudication, queue_item)
         if fingerprints:
             orphan_fingerprints[str(queue_item["entry"])] = fingerprints
@@ -2817,7 +2574,7 @@ def reusable_review_actions(
         {"schema_version": EXCHANGE_SCHEMA_VERSION, "items": rows},
         {"adjudication": adjudication, "orphan_fingerprints": orphan_fingerprints},
     )
-    result["actions"] = [*legacy_actions, *result["actions"]]
+    result["actions"] = [*direct_actions, *result["actions"]]
     return result
 
 
@@ -2838,10 +2595,6 @@ def reusable_review_subjects(
                 }
                 candidates = [
                     exact_subject,
-                    {
-                        "entry": queue_item["entry"],
-                        "identity": identity_value,
-                    },
                 ]
                 candidates.extend(
                     subtree_subject(str(queue_item["entry"]), material, root)
@@ -2860,18 +2613,7 @@ def reusable_review_subjects(
                 for key in ("kind", "entry", "identity", "material")
                 if key in template
             }
-            candidates = [
-                review_subject,
-                {
-                    "check": "Provenance",
-                    "entry": template.get("entry"),
-                    "target": template.get("identity"),
-                },
-                {
-                    "entry": template.get("entry"),
-                    "identity": template.get("identity"),
-                },
-            ]
+            candidates = [review_subject]
             for subject in candidates:
                 identity = json.dumps(
                     subject, sort_keys=True, separators=(",", ":")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import importlib
 import json
 import tempfile
@@ -111,104 +110,6 @@ class OrphanSubtreeTests(unittest.TestCase):
             subjects,
             [{"kind": "orphan_candidate", "entry": "e001", "identity": inherited}],
         )
-
-    def test_complete_legacy_coverage_asks_only_for_the_subtree_unit(self) -> None:
-        entry = "e001"
-        root = "docs/log/entries/e001/data/batch"
-        candidates = [_candidate(f"{root}/a.csv"), _candidate(f"{root}/b.csv")]
-        queue_item = {
-            "entry": entry,
-            "kind": "orphan_candidates",
-            "identity": "Orphans",
-            "candidates": candidates,
-            "validation_notes": [],
-        }
-        scan = {
-            "schema_version": 1,
-            "validation_rules_version": "rules-v1",
-            "entries": [
-                {
-                    "id": entry,
-                    "orphan_inventory": candidates,
-                    "validation_notes": [],
-                }
-            ],
-        }
-        adjudication = {
-            "schema_version": 1,
-            "review_queue": [queue_item],
-        }
-        judgments = []
-        for candidate, decision in zip(
-            candidates, ("connected", "unresolved"), strict=True
-        ):
-            template = EXCHANGE._candidate_reuse_template(
-                scan, adjudication, queue_item, candidate
-            )
-            current_inputs = EXCHANGE.review_judgment_inputs(
-                scan, adjudication, queue_item, template, decision
-            )
-            judgments.append(
-                {
-                    "identity": template["id"],
-                    "kind": "review-decision",
-                    "result": decision,
-                    "decision": decision,
-                    "decision_date": "2026-08-16",
-                    "subject": {
-                        "kind": "orphan_candidate",
-                        "entry": entry,
-                        "identity": candidate["identity"],
-                    },
-                    "rule_dependencies": EXCHANGE.SEMANTIC_REVIEW_RULES,
-                    "input_dependencies": [],
-                    "rationale": f"Existing exact decision for {candidate['identity']}",
-                    "rationale_provenance": "recorded",
-                    "provenance": "native-reviewed",
-                }
-            )
-            judgments.append(
-                {
-                    "identity": f"legacy-{candidate['identity']}",
-                    "kind": "orphan-disposition",
-                    "result": "accepted" if decision == "connected" else "unresolved",
-                    "basis": "graph" if decision == "connected" else "-",
-                    "subject": {"entry": entry, "identity": candidate["identity"]},
-                    "input_dependencies": [
-                        dependency
-                        for dependency in current_inputs
-                        if dependency.get("kind") == "orphan-candidate"
-                    ],
-                }
-            )
-        judgments.append(copy.deepcopy(judgments[-1]))
-
-        reused = EXCHANGE.reusable_review_actions(scan, adjudication, judgments)
-
-        self.assertEqual(reused["actions"], [])
-        coverage = queue_item["legacy_subtree_coverage"][root]
-        self.assertEqual(
-            set(coverage["decisions"]), {row["identity"] for row in candidates}
-        )
-
-        templates, fingerprints = EXCHANGE._orphan_templates(
-            scan, adjudication, queue_item, 200
-        )
-        self.assertEqual(len(templates), 1)
-        templates[0]["decision"] = {"action": "split-subtree"}
-        templates[0]["rationale"] = "These files retain separate lifecycles."
-        actions = EXCHANGE.decisions_to_actions(
-            {"schema_version": 1, "items": templates},
-            {
-                "adjudication": adjudication,
-                "orphan_fingerprints": {entry: fingerprints},
-            },
-        )["actions"]
-
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["connected"], [f"{root}/a.csv"])
-        self.assertEqual(actions[0]["unresolved"], [f"{root}/b.csv"])
-        self.assertEqual(actions[0]["subtree_splits"], [])
 
     def test_material_root_starts_with_subfolders_and_exact_loose_files(
         self,

@@ -328,7 +328,6 @@ _REVIEW_ITEM_ALLOWED_KEYS = frozenset(
         "integrity_status",
         "kind",
         "line",
-        "legacy_subtree_coverage",
         "producer_candidates",
         "reason",
         "section",
@@ -1271,18 +1270,6 @@ def _validate_optional_review_fields(row: Mapping[str, Any], description: str) -
     _validate_producer_candidates(row.get("producer_candidates", []), description)
     if "workflow" in row:
         _mapping(row["workflow"], f"{description} field 'workflow'")
-    _validate_legacy_subtree_coverage(row, description)
-
-
-def _validate_legacy_subtree_coverage(
-    row: Mapping[str, Any], description: str
-) -> None:
-    if "legacy_subtree_coverage" not in row:
-        return
-    _mapping(
-        row["legacy_subtree_coverage"],
-        f"{description} field 'legacy_subtree_coverage'",
-    )
 
 
 def _validate_adjudication_review_rows(record: Mapping[str, Any]) -> None:

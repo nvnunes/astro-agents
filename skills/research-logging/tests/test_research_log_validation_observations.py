@@ -247,6 +247,42 @@ class ObservationTests(unittest.TestCase):
                 retained[0]["dependencies"][0]["identity"], observation.identity
             )
 
+    def test_published_missing_dependency_is_stable_until_file_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "missing.csv"
+            outcome = {
+                "compatibility_identity": "missing-outcome",
+                "dependencies": [
+                    {"path": "missing.csv", "identity": {"missing": True}}
+                ],
+            }
+
+            missing = OBSERVATIONS.observe_outcome_dependencies(
+                OBSERVATIONS.ObservationSession(), [outcome], {}, root
+            )
+            self.assertTrue(
+                OBSERVATIONS.outcomes_are_compatible([outcome], missing)
+            )
+            retained, reopened = OBSERVATIONS.retain_compatible_outcomes(
+                [outcome], missing
+            )
+            self.assertEqual(len(retained), 1)
+            self.assertFalse(reopened)
+
+            write(path, "now present\n")
+            present = OBSERVATIONS.observe_outcome_dependencies(
+                OBSERVATIONS.ObservationSession(), [outcome], {}, root
+            )
+            self.assertFalse(
+                OBSERVATIONS.outcomes_are_compatible([outcome], present)
+            )
+            retained, reopened = OBSERVATIONS.retain_compatible_outcomes(
+                [outcome], present
+            )
+            self.assertFalse(retained)
+            self.assertEqual(len(reopened), 1)
+
     def test_missing_inaccessible_ambiguous_and_mid_read_change_are_explicit(
         self,
     ) -> None:

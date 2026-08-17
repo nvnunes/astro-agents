@@ -431,8 +431,9 @@ def retain_compatible_outcomes(
     """Retain outcomes whose exact dependency content is still observed.
 
     Metadata-only changes update the dependency identity without reopening the
-    outcome.  Missing, inaccessible, ambiguous, changing, or content-changed
-    dependencies reopen only outcomes that name those paths.
+    outcome. A dependency already published as missing remains compatible
+    while it is still missing. Other missing, inaccessible, ambiguous,
+    changing, or content-changed dependencies reopen only dependent outcomes.
     """
 
     retained: list[dict[str, Any]] = []
@@ -444,7 +445,9 @@ def retain_compatible_outcomes(
             observation = observations.get(_dependency_observation_key(dependency))
             if observation is None:
                 continue
-            if not observation.resolved or observation.status == CONTENT_CHANGED:
+            if not _dependency_observation_is_compatible(
+                dependency, observation
+            ):
                 compatible = False
                 break
             if observation.identity is not None:
@@ -461,13 +464,22 @@ def outcomes_are_compatible(
 
     return all(
         observation is None
-        or (observation.resolved and observation.status != CONTENT_CHANGED)
+        or _dependency_observation_is_compatible(dependency, observation)
         for outcome in outcomes
         for dependency in outcome.get("dependencies", [])
         for observation in [
             observations.get(_dependency_observation_key(dependency))
         ]
     )
+
+
+def _dependency_observation_is_compatible(
+    dependency: Mapping[str, Any], observation: FileObservation
+) -> bool:
+    expected = dependency.get("identity")
+    if expected == {"missing": True}:
+        return observation.status == MISSING
+    return observation.resolved and observation.status != CONTENT_CHANGED
 
 
 def observe_outcome_dependencies(

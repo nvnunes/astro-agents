@@ -1,7 +1,7 @@
 # Validation Record Instructions
 
-Use this file for the ownership and lifecycle of generated research-log
-validation records.
+Use this file as the detailed source of truth for the ownership, layout, and
+lifecycle of generated research-log validation records.
 
 ## Ownership
 
@@ -57,7 +57,8 @@ Commit `validation.md` and the complete durable `validation/` closure except
 Generated semantic packets and decision templates are temporary task files
 under `validation/.cache/work/`. They are paired to one continuation and may
 be regenerated from the durable record and current evidence. The agent edits
-only the decision and rationale fields requested by the template.
+only the decision and rationale fields requested by the template. A public
+packet contains at most 200 whole questions and 65,536 UTF-8 bytes.
 
 ## Durable Layout Contract
 
@@ -72,6 +73,9 @@ Each shard reference contains only `kind`, `path`, `sha256`, `row_count`, and
 equal `<kind>/<sha256>.jsonl`. Reject absolute paths, traversal, backslashes,
 symlinks, aliases, unexpected file types, duplicate identities, and any
 path/content-identity disagreement.
+
+A row shard contains at most 200 rows and 8 MiB. An individual row may occupy
+a shard by itself but may not exceed the byte limit.
 
 The ignored stable-subject index contains its schema version, project-relative
 summary identity, exact manifest row-shard closure identity, and

@@ -51,7 +51,7 @@ linting, publication, and generated records.
 Interpret the structured result by `status`:
 
 - `complete`: report the completed scope, diagnostics, counts, failures, and
-  generated files, including the cleanup summary. No semantic step is needed.
+  generated files. No semantic step is needed.
 - `review_required`: continue with the generated packet and decision template
   as described below.
 - `error`: report the cause, whether compatible progress was retained, and
@@ -61,14 +61,11 @@ Interpret the structured result by `status`:
 An unchanged standard validation may complete from compatible saved outcomes.
 Its diagnostics must show that unchanged evidence content was neither opened
 nor hashed. Reproduction never uses the standard cached-completion return.
-Cached completion also requires a loaded cache, compatible completion
-dependencies, a matching manifest projection identity, and report bytes that
-match the manifest's expected report hash. Report existence alone is not
-currentness evidence.
+Treat only the CLI's `complete` result as currentness evidence; report
+existence alone is insufficient.
 
-With `--dry-run`, terminal validation also reports prospective superseded rows,
-replacement shards, and unreachable files without changing durable or local
-state. A published completion performs that cleanup automatically.
+With `--dry-run`, validation reports proposed generated-artifact changes
+without writing them.
 
 ## Semantic Decision
 
@@ -95,9 +92,9 @@ Edit only each template item's `decision` and `rationale` fields:
 - leave continuation identities, item identities, questions, allowed choices,
   evidence, and all other CLI-owned fields unchanged.
 
-Do not construct internal controller state, caches, review batches, or
-canonical validation files. Do not calculate a missing research result from
-other artifact values to make an association pass.
+Do not construct or hand-edit generated validation state. Do not calculate a
+missing research result from other artifact values to make an association
+pass.
 
 For a requested reproduction item, run only the packet-listed eligible
 invocation. Redirect every output to a temporary location and stop if retained
@@ -128,10 +125,8 @@ judgments remain durable between continuations and after later operational
 failure.
 
 For a paged review, rerunning the public operation with only `--summary` resumes
-the current page from the manifest's stable project-local session. Do not copy,
-reconstruct, or hand-edit session state. Each accepted page becomes durable in
-one immutable judgment shard before the session advances; completion removes
-the referenced work session only after the final manifest/report publication.
+the current page. Do not copy, reconstruct, or hand-edit continuation state.
+Accepted work remains durable as the review advances.
 
 ## Validation Meaning
 
@@ -154,5 +149,4 @@ the referenced work session only after the final manifest/report publication.
   shared hash confirms the content.
 
 Canonical validation never updates a maintained summary. Different logs may
-validate concurrently; writers to the same log serialize through the
-validation-owned publication mechanism.
+validate concurrently; the CLI coordinates validation writes to the same log.

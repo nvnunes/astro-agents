@@ -91,10 +91,10 @@ higher complexity score, or growth in the total advisory finding count.
 
 Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
 retained evidence, scientific artifacts, and authored `Validation:` notes as
-research-owned. Canonical validation may write only `validation.md`, durable
-machine state under `validation/` except its local cache subtree, and runtime
-state under `validation/.cache/`. Research operations must leave every
-existing generated validation file byte-identical.
+research-owned. Canonical validation may write only the generated artifacts
+defined in
+`skills/research-logging/references/file-validation-records.md`. Research
+operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
@@ -114,10 +114,9 @@ The research-log test gate must verify:
   shared content hash;
 - progressive completed work survives interruption, unrelated change, later
   operational failure, and semantic continuation;
-- accepted review batches publish one bounded immutable shard plus compact
-  manifest metadata and one ignored index delta, while interrupted shard or
-  manifest publication leaves the prior manifest authoritative and local
-  cache failure changes no durable state;
+- accepted semantic decisions become durable progressively, while interrupted
+  publication retains prior valid work and local derived-state failure changes
+  no durable result;
 - active paged resume does not scan the research log or hydrate historical
   shards, and exact stable-subject reuse through a validated ignored index
   opens only mapped judgment shards;
@@ -131,9 +130,9 @@ The research-log test gate must verify:
 - prospective orphan-subtree rules apply to new compatible descendants, while
   graph reachability, exact-path exceptions, and more-specific subtree rules
   retain their precedence;
-- terminal compaction removes only exact orphan judgments superseded by active
-  subtree rules, publishes the manifest before collecting unreachable shards,
-  and is read-only under `--dry-run`;
+- terminal cleanup preserves exact exceptions and unrelated history, retains a
+  coherent completed result after interruption, and is read-only under
+  `--dry-run`;
 - canonical publication rejects traversal, symlink, unexpected-filename,
   duplicate-identity, path/identity disagreement, and output-directory alias
   attempts;
@@ -147,28 +146,14 @@ inspect its reuse and hashing diagnostics, then publish that log and confirm an
 unchanged follow-up hashes zero artifact bytes and requests no semantic review.
 Retired schemas must receive an actionable unsupported-format diagnostic.
 
-Durable validation row shards are bounded at 200 rows and 8 MiB. The row
-limit aligns one normal 200-item semantic batch with one shard. The byte limit
-keeps ordinary shards bounded while admitting the largest valid deployed
-legacy row measured during migration (5,781,722 bytes); an individual row may
-therefore occupy a shard by itself.
+The research-log test gate enforces the artifact ownership, layout, lifecycle,
+and recovery contract defined in
+`skills/research-logging/references/file-validation-records.md`, including its
+durable-row and semantic-packet bounds.
 
-The durable manifest lives only at `validation/manifest.json`. Its shard paths
-are relative to `validation/` and name only
-`outcomes/<sha256>.jsonl`, `judgments/<sha256>.jsonl`, or
-`failures/<sha256>.jsonl`. The ignored stable-subject index records the exact
-manifest row-shard closure identity. A missing, malformed, or stale index must
-be rebuilt from those shards without scanning research evidence or requesting
-semantic review.
-
-Public semantic packets are bounded at 65,536 UTF-8 bytes and 200 questions,
-with pagination retaining whole questions. The count aligns a normal accepted
-review batch with one judgment shard. The retained 12,000/24,000-orphan
-workload renders one 3,707-byte subtree question at either size; the focused
-MASTSEL collection fixture renders two expanded questions and 52,430 bytes.
-The byte ceiling is
-roughly 16,000–20,000 tokens depending on JSON density and is a reviewed public
-contract, not an optimization target.
+The retained large-orphan workload must produce one bounded structural
+question at either size. Exact accepted measurements are recorded in
+`skills/research-logging/tests/validation-review-benchmark-baseline.json`.
 
 ### Validation Review Scaling Benchmark
 

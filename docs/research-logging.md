@@ -1085,41 +1085,13 @@ record. A research agent resolves or disputes a finding by changing
 research-owned evidence or instructions; the next completed validation alone
 rebuilds the report.
 
-Validation also maintains machine-readable state:
-
-- `<log>/validation/manifest.json` is the small authoritative manifest. It
-  owns the project-relative summary identity, current stable continuation,
-  completed-report projection, and exact outcome, judgment, and failure shard
-  references.
-- `<log>/validation/{outcomes,judgments,failures}/` contains immutable
-  content-addressed row shards. Semantic judgments and rationales, completed
-  outcomes and dates, observed dependencies, and failures have no other
-  machine-readable owner. Completion never recombines these rows into a
-  monolithic JSON record.
-- `<log>/validation/.cache/` contains rebuildable or transient local state:
-  the deterministic evidence cache, stable-subject index and batch deltas,
-  active review sessions, and validation lock. None has independent
-  correctness authority.
-
-At terminal completion, exact orphan judgments superseded by active compatible
-subtree rules are removed from the new manifest; exact exceptions and
-unrelated history remain. Replacement shards are written before the manifest,
-and old unreferenced shards are deleted only after the new manifest and report
-are coherent. `--dry-run` reports this cleanup without writing it.
-
-Commit `validation.md` and the complete durable `validation/` closure except
-`validation/.cache/`. Ignore `**/validation/.cache/`; a missing cache or index
-only triggers bounded reconstruction from the authoritative manifest and row
-shards.
-
-Research agents preserve these files exactly; validation agents create,
-update, or remove them through the validation tool. Only `validation.md` is
-intended for direct use as a validation record. Temporary semantic review
-packets and decision templates live under the owning log's ignored
-`validation/.cache/work/` directory and are not canonical validation
-artifacts. A paged review can resume from the maintained-summary path alone;
-the manifest names the stable session while its small state file owns the
-current page and accepted batches.
+The validator also manages machine-readable state for compatible reuse,
+recovery, and semantic continuation. This state is validation-owned and is not
+intended for direct use or hand editing. Research agents preserve generated
+validation artifacts exactly; validation agents create, update, or remove
+them through the validation tool. The detailed generated-artifact contract is
+owned by
+`skills/research-logging/references/file-validation-records.md`.
 
 Compatible reused outcomes keep their original result dates, so a current
 report can legitimately contain dates older than its report-update date.
@@ -1135,8 +1107,8 @@ Research changes and canonical validation are separate activities. Validation
 is observational: completed outcomes record the dependencies actually observed
 for those checks, while an input that changes during observation remains
 unresolved. Unrelated concurrent changes do not discard compatible completed
-work. Canonical writers serialize per log, so different logs may validate and
-publish concurrently while two writers to the same log cannot compete.
+work. Different logs may validate concurrently, while the validation tool
+safely coordinates writes to the same log.
 
 The validation agent may read maintained summaries, entries, scripts, saved
 evidence, `data.csv`, `evidence.csv`, and authored `Validation:` notes, but it
@@ -1152,6 +1124,6 @@ Research changes do not trigger validation, reproduction, broad checks, or a
 summary update. Perform only the production check needed to keep changed
 presentation consistent with its retained source. The next Validate request
 compares outcome dependencies with saved observations, reuses compatible work,
-and publishes only the validation report, durable record, and rebuildable
-cache. Missing or changing evidence affects only the outcomes that depend on
-it. Validation does not inspect or report version-control status.
+and updates only validation-owned artifacts. Missing or changing evidence
+affects only the outcomes that depend on it. Validation does not inspect or
+report version-control status.

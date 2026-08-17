@@ -182,8 +182,8 @@ When deciding where a rule belongs:
 This section defines the architectural invariants that constrain future
 research-log validation development. It does not describe the validation
 workflow or its implementation. Use `docs/research-logging.md` for the
-researcher-facing behavior and file contract, and use the `research-logging`
-skill for the operational procedure and implementation.
+researcher-facing behavior, and use the `research-logging` skill for the
+operational procedure and generated-artifact contract.
 
 Future validation changes must preserve these invariants:
 
@@ -199,37 +199,16 @@ Future validation changes must preserve these invariants:
 - **Progressive work:** Retain valid completed work as it is produced. Do not
   discard it merely because other validation work remains incomplete or later
   work fails.
-- **Sharded authority:** Keep `validation/manifest.json` as the compact
-  authoritative manifest. Publish immutable outcome, judgment, and failure
-  shards before replacing that manifest, and never rebuild a monolithic
-  durable record at completion. After the replacement manifest and report are
-  verified, collect only shards outside its closure.
-- **Local derived state:** Keep the deterministic cache, stable-subject index,
-  active review work, and lock under the owning log's ignored
-  `validation/.cache/` directory. None is manifest authority; missing or stale
-  derived state is rebuilt from the manifest-referenced row shards.
-- **Coherent completion:** Treat the manifest projection identity, expected
-  report hash, loaded cache, completion dependencies, and current
-  `validation.md` bytes as one cached-completion contract.
+- **Coherent results:** Report completion only when the human-facing result and
+  its supporting validation artifacts agree. Missing or stale derived state
+  must not make uncertain work appear complete.
 - **Bounded review:** Give every semantic question minimum-sufficient context,
-  bound packets by whole questions and UTF-8 bytes, and make requests for more
-  context a finite identity-changing transition.
-- **Transient continuation:** Store incomplete paged review work under the
-  owning log's ignored `validation/.cache/work/` directory. The manifest owns
-  only the stable session locator; small session state owns the current page
-  and accepted-batch sequence.
+  keep review requests bounded, and resolve requests for more context through
+  a finite continuation.
 - **Maximum reuse:** Reuse compatible past work to minimize validation effort.
   Use inexpensive metadata to detect possible changes, hash content when that
   metadata changes, and revalidate only when the content or applicable rules
   changed.
-- **Prospective orphan rules:** Classify residual orphan material with an
-  entry-local subtree rule when one reviewed lifecycle covers the subtree.
-  Treat `data/`, `images/`, and `scripts/` as containers rather than rule
-  subjects; subtree rules begin at their child folders and loose files remain
-  exact-path subjects.
-  Deterministic graph reachability takes precedence; exact-path and
-  more-specific subtree decisions override a broader rule. Membership changes
-  alone do not invalidate the rule.
 - **Proportional cost:** Validation time should grow approximately linearly
   with the evidence examined wherever possible.
 - **On-disk state:** Validation is source-control agnostic and validates the

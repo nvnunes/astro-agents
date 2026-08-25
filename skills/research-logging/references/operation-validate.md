@@ -124,9 +124,11 @@ reported packet and template. Compatible completed outcomes and accepted
 judgments remain durable between continuations and after later operational
 failure.
 
-For a paged review, rerunning the public operation with only `--summary` resumes
-the current page. Do not copy, reconstruct, or hand-edit continuation state.
-Accepted work remains durable as the review advances.
+For an active review session, rerunning the public operation with only
+`--summary` resumes the current page. A small review is a one-page session;
+larger reviews continue through additional bounded pages. Do not copy,
+reconstruct, or hand-edit continuation state. Accepted work remains durable as
+the review advances.
 
 ## Validation Meaning
 

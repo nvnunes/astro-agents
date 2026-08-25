@@ -42,10 +42,10 @@ INTERNAL_FILENAME = ".continuation.json"
 MAX_PACKET_ITEMS = 200
 MAX_PACKET_BYTES = 65_536
 MAX_EXPANDED_CONTEXT_BYTES = MAX_PACKET_BYTES // 2
-DEFERRED_SESSION_SCHEMA_VERSION = 1
+REVIEW_SESSION_SCHEMA_VERSION = 1
 CONTEXT_PROJECTION_VERSION = 2
-DEFERRED_BASE_FILENAME = "base.json"
-DEFERRED_INDEX_FILENAME = "index.json"
+SESSION_BASE_FILENAME = "base.json"
+SESSION_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
 VALIDATION_WORK_ROOT = "work"
 VALIDATION_DIRECTORY = "validation"
@@ -958,91 +958,6 @@ def _render_contexts(
     )
 
 
-def _render_packet(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    items: list[dict[str, Any]],
-    continuation: str,
-) -> str:
-    return _render_packet_with_contexts(
-        str(scan["summary"]),
-        items,
-        continuation,
-        [_packet_context(scan, adjudication, item) for item in items],
-    )
-
-
-def _continuation_identity(
-    scan: ScanRecord, adjudication: AdjudicationRecord, items: list[dict[str, Any]]
-) -> str:
-    return _fingerprint(
-        {
-            "summary": scan["summary"],
-            "rules": scan["validation_rules_version"],
-            "scan": scan["input_fingerprint"],
-            "date": adjudication["date"],
-            "items": [
-                {
-                    key: value
-                    for key, value in item.items()
-                    if key not in {"decision", "rationale"}
-                }
-                for item in items
-            ],
-        }
-    )
-
-
-def _item_group_ends(items: list[dict[str, Any]]) -> list[int]:
-    ends: list[int] = []
-    start = 0
-    while start < len(items):
-        item = items[start]
-        if item["kind"] == "upstream_producer":
-            key = (item.get("entry"), item.get("identity"))
-            end = start + 1
-            while end < len(items) and (
-                items[end]["kind"] == "upstream_producer"
-                and (items[end].get("entry"), items[end].get("identity")) == key
-            ):
-                end += 1
-        else:
-            end = start + 1
-        ends.append(end)
-        start = end
-    return ends
-
-
-def _bounded_ordinary_packet(
-    scan: ScanRecord,
-    adjudication: AdjudicationRecord,
-    items: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], str, str]:
-    """Return the largest whole-question-group packet within the byte bound."""
-
-    group_ends = _item_group_ends(items)
-    if not group_ends:
-        raise ValidationToolError("semantic review produced no answerable questions")
-    low = 0
-    high = len(group_ends) - 1
-    accepted: tuple[list[dict[str, Any]], str, str] | None = None
-    while low <= high:
-        middle = (low + high) // 2
-        selected = items[: group_ends[middle]]
-        continuation = _continuation_identity(scan, adjudication, selected)
-        packet = _render_packet(scan, adjudication, selected, continuation)
-        if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES:
-            accepted = (selected, continuation, packet)
-            low = middle + 1
-        else:
-            high = middle - 1
-    if accepted is None:
-        raise ValidationToolError(
-            "one minimum-sufficient review question exceeds the packet byte bound"
-        )
-    return accepted
-
-
 def _deferred_orphan_index(
     scan: ScanRecord, adjudication: AdjudicationRecord
 ) -> dict[str, Any] | None:
@@ -1128,7 +1043,7 @@ def _deferred_orphan_index(
         }
     )
     return {
-        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "context_projection_version": CONTEXT_PROJECTION_VERSION,
         "session_identity": session_identity,
         "summary": scan["summary"],
@@ -1137,7 +1052,7 @@ def _deferred_orphan_index(
     }
 
 
-def _deferred_bounded_index(
+def _bounded_session_index(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     items: list[dict[str, Any]],
@@ -1176,16 +1091,17 @@ def _deferred_bounded_index(
         }
     )
     return {
-        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "context_projection_version": CONTEXT_PROJECTION_VERSION,
         "session_identity": session_identity,
         "summary": scan["summary"],
         "review_kind": "bounded_review",
         "items": indexed_items,
+        "orphan_fingerprints": copy.deepcopy(dict(orphan_fingerprints)),
     }
 
 
-def _deferred_page(
+def _session_page(
     session_dir: Path,
     index: Mapping[str, Any],
     state: dict[str, Any],
@@ -1196,7 +1112,7 @@ def _deferred_page(
     page_number = int(state["next_page_number"])
     candidates = list(index["items"])[offset : offset + MAX_PACKET_ITEMS]
     if not candidates:
-        raise ValidationToolError("deferred orphan session has no next page")
+        raise ValidationToolError("review session has no next page")
     low = 1
     high = len(candidates)
     bounded: tuple[list[dict[str, Any]], str, str] | None = None
@@ -1229,7 +1145,7 @@ def _deferred_page(
             high = count - 1
     if bounded is None:
         raise ValidationToolError(
-            "one minimum-sufficient orphan question exceeds the packet byte bound"
+            "one minimum-sufficient review question exceeds the packet byte bound"
         )
     items, continuation, packet = bounded
     page_dir = session_dir / f"page-{page_number:06d}"
@@ -1243,7 +1159,7 @@ def _deferred_page(
         "schema_version": EXCHANGE_SCHEMA_VERSION,
         "continuation": continuation,
         "template": copy.deepcopy(template),
-        "deferred_orphan": {
+        "review_session": {
             "output_dir": state["output_dir"],
             "session": state["session"],
             "session_identity": state["session_identity"],
@@ -1290,31 +1206,47 @@ def _deferred_page(
     }
 
 
-def _create_deferred_orphan_exchange(
+def _create_review_session(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     controller_state: Mapping[str, Any],
     index: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create one project-local durable session for a large orphan review."""
+    """Create one project-local durable session for bounded review work."""
 
     project_root = Path(scan["project_root"]).resolve()
     log_root = str(scan.get("log_root") or Path(scan["summary"]).with_suffix(""))
     output_dir = (project_root / log_root).resolve()
     locator = _session_locator(index["session_identity"])
     session_dir = _session_path(output_dir, locator)
-    session_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        session_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        recovered = resume_review_session(
+            output_dir,
+            {
+                "kind": "paged",
+                "session": locator,
+                "session_identity": index["session_identity"],
+                "review_kind": index["review_kind"],
+            },
+        )
+        if recovered.get("status") != "review_required":
+            raise ValidationToolError(
+                "unreferenced review session contains completed work"
+            )
+        return recovered
     base = {
-        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "session_identity": index["session_identity"],
         "scan": scan,
         "adjudication": adjudication,
         "controller": copy.deepcopy(dict(controller_state)),
     }
-    _atomic_write(session_dir / DEFERRED_BASE_FILENAME, _json_bytes(base))
-    _atomic_write(session_dir / DEFERRED_INDEX_FILENAME, _json_bytes(index))
+    _atomic_write(session_dir / SESSION_BASE_FILENAME, _json_bytes(base))
+    _atomic_write(session_dir / SESSION_INDEX_FILENAME, _json_bytes(index))
     state = {
-        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "session_identity": index["session_identity"],
         "session": locator,
         "summary": scan["summary"],
@@ -1330,50 +1262,64 @@ def _create_deferred_orphan_exchange(
         "accepted_batches": [],
         "current": None,
     }
-    return _deferred_page(session_dir, index, state)
+    return _session_page(session_dir, index, state)
 
 
-def _load_deferred_session(
+def review_session_reference(
+    internal: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Return the canonical or pre-Pass-3 paged-session reference."""
+
+    current = internal.get("review_session")
+    legacy = internal.get("deferred_orphan")
+    if isinstance(current, Mapping) and isinstance(legacy, Mapping):
+        raise ValidationToolError("review packet has conflicting session references")
+    if isinstance(current, Mapping):
+        return current
+    return legacy if isinstance(legacy, Mapping) else None
+
+
+def _load_review_session(
     decisions: Mapping[str, Any], internal: Mapping[str, Any]
 ) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], Any]:
-    deferred = internal.get("deferred_orphan")
-    if not isinstance(deferred, Mapping):
-        raise ValidationToolError("review packet is not a deferred orphan page")
-    output_dir = Path(str(deferred.get("output_dir", ""))).resolve()
-    session_dir = _session_path(output_dir, str(deferred.get("session", "")))
+    session = review_session_reference(internal)
+    if not isinstance(session, Mapping):
+        raise ValidationToolError("review packet is not a review-session page")
+    output_dir = Path(str(session.get("output_dir", ""))).resolve()
+    session_dir = _session_path(output_dir, str(session.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
-        "deferred orphan session state",
+        "review session state",
     )
-    session_identity = deferred.get("session_identity")
+    session_identity = session.get("session_identity")
     current = state.get("current")
     if (
-        state.get("schema_version") != DEFERRED_SESSION_SCHEMA_VERSION
+        state.get("schema_version") != REVIEW_SESSION_SCHEMA_VERSION
         or state.get("session_identity") != session_identity
-        or state.get("session") != deferred.get("session")
+        or state.get("session") != session.get("session")
         or not isinstance(current, dict)
         or current.get("continuation") != decisions.get("continuation")
-        or current.get("page_number") != deferred.get("page_number")
-        or current.get("offset") != deferred.get("offset")
+        or current.get("page_number") != session.get("page_number")
+        or current.get("offset") != session.get("offset")
     ):
-        raise ValidationToolError("deferred orphan review page is stale")
+        raise ValidationToolError("review-session page is stale")
     base = _read_object(
-        session_dir / DEFERRED_BASE_FILENAME,
-        "deferred orphan session base",
+        session_dir / SESSION_BASE_FILENAME,
+        "review session base",
     )
     index = _read_object(
-        session_dir / DEFERRED_INDEX_FILENAME,
-        "deferred orphan session index",
+        session_dir / SESSION_INDEX_FILENAME,
+        "review session index",
     )
     if (
         base.get("session_identity") != session_identity
         or index.get("session_identity") != session_identity
     ):
-        raise ValidationToolError("deferred orphan session identity differs")
+        raise ValidationToolError("review session identity differs")
     return session_dir, state, base, index, session_identity
 
 
-def _record_deferred_fragment(
+def _record_session_fragment(
     session_dir: Path,
     state: dict[str, Any],
     decisions: Mapping[str, Any],
@@ -1382,7 +1328,7 @@ def _record_deferred_fragment(
     current = state["current"]
     page_number = int(current["page_number"])
     fragment = {
-        "schema_version": DEFERRED_SESSION_SCHEMA_VERSION,
+        "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "session_identity": session_identity,
         "page_number": page_number,
         "continuation": decisions["continuation"],
@@ -1395,7 +1341,7 @@ def _record_deferred_fragment(
     if fragment_path.exists():
         if fragment_path.read_bytes() != fragment_bytes:
             raise ValidationToolError(
-                "deferred orphan page conflicts with its accepted fragment"
+                "review page conflicts with its accepted fragment"
             )
     else:
         _atomic_write(fragment_path, fragment_bytes)
@@ -1414,7 +1360,7 @@ def _record_deferred_fragment(
     return fragments
 
 
-def _merged_deferred_rows(
+def _merged_session_rows(
     session_dir: Path,
     fragments: list[dict[str, Any]],
     session_identity: Any,
@@ -1423,16 +1369,16 @@ def _merged_deferred_rows(
     for retained in fragments:
         payload = _read_object(
             session_dir / str(retained["file"]),
-            "accepted orphan fragment",
+            "accepted review fragment",
         )
         if (
             payload.get("session_identity") != session_identity
             or payload.get("batch_identity") != retained.get("batch_identity")
         ):
-            raise ValidationToolError("accepted orphan fragment has another session")
+            raise ValidationToolError("accepted review fragment has another session")
         fragment_rows = payload.get("decisions", {}).get("items", [])
         if not isinstance(fragment_rows, list):
-            raise ValidationToolError("accepted orphan fragment has invalid items")
+            raise ValidationToolError("accepted review fragment has invalid items")
         rows.extend(copy.deepcopy(fragment_rows))
     return rows
 
@@ -1451,18 +1397,18 @@ def _deferred_orphan_fingerprints(
     return fingerprints
 
 
-def _ready_deferred_session(
+def _ready_review_session(
     session_dir: Path,
     state: Mapping[str, Any],
     base: Mapping[str, Any],
     index: Mapping[str, Any],
 ) -> dict[str, Any]:
     fragments = list(state.get("accepted_batches", []))
-    rows = _merged_deferred_rows(
+    rows = _merged_session_rows(
         session_dir, fragments, state["session_identity"]
     )
     if len(rows) != int(state["total_items"]):
-        raise ValidationToolError("deferred orphan session is missing accepted items")
+        raise ValidationToolError("review session is missing accepted items")
     return {
         "status": "ready",
         "session_dir": session_dir.as_posix(),
@@ -1474,7 +1420,10 @@ def _ready_deferred_session(
             "continuation": state["session_identity"],
             "items": rows,
         },
-        "orphan_fingerprints": _deferred_orphan_fingerprints(index),
+        "orphan_fingerprints": copy.deepcopy(
+            index.get("orphan_fingerprints")
+            or _deferred_orphan_fingerprints(index)
+        ),
     }
 
 
@@ -1485,7 +1434,7 @@ def _validate_session_fragments(session_dir: Path, state: Mapping[str, Any]) -> 
         path = session_dir / str(item.get("file"))
         if not path.is_file():
             raise ValidationToolError(
-                f"deferred orphan session state names a missing fragment: {path}"
+                f"review session state names a missing fragment: {path}"
             )
     current = state.get("current")
     pending = None
@@ -1495,33 +1444,33 @@ def _validate_session_fragments(session_dir: Path, state: Mapping[str, Any]) -> 
     unexpected = present - expected - ({pending} if pending else set())
     if unexpected:
         raise ValidationToolError(
-            "deferred orphan session contains an unowned fragment: "
+            "review session contains an unowned fragment: "
             + ", ".join(sorted(unexpected))
         )
 
 
-def resume_deferred_orphan_session(
+def resume_review_session(
     output_dir: Path, continuation: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Resume the current paged review from its durable record reference."""
+    """Resume the current review session from its durable record reference."""
 
     session_dir = _session_path(output_dir, str(continuation.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
-        "deferred orphan session state",
+        "review session state",
     )
     if (
-        state.get("schema_version") != DEFERRED_SESSION_SCHEMA_VERSION
+        state.get("schema_version") != REVIEW_SESSION_SCHEMA_VERSION
         or state.get("session_identity") != continuation.get("session_identity")
         or state.get("session") != continuation.get("session")
     ):
-        raise ValidationToolError("deferred orphan session state has another owner")
+        raise ValidationToolError("review session state has another owner")
     index = _read_object(
-        session_dir / DEFERRED_INDEX_FILENAME,
-        "deferred orphan session index",
+        session_dir / SESSION_INDEX_FILENAME,
+        "review session index",
     )
     if index.get("session_identity") != state["session_identity"]:
-        raise ValidationToolError("deferred orphan session identity differs")
+        raise ValidationToolError("review session identity differs")
     _validate_session_fragments(session_dir, state)
     current = state.get("current")
     if isinstance(current, Mapping):
@@ -1529,13 +1478,13 @@ def resume_deferred_orphan_session(
             f"accepted-{current.get('batch_identity')}.json"
         )
         if fragment_path.is_file():
-            fragment = _read_object(fragment_path, "accepted orphan fragment")
+            fragment = _read_object(fragment_path, "accepted review fragment")
             decisions = fragment.get("decisions")
             if not isinstance(decisions, Mapping):
                 raise ValidationToolError(
-                    "accepted orphan fragment has invalid decisions"
+                    "accepted review fragment has invalid decisions"
                 )
-            _record_deferred_fragment(
+            _record_session_fragment(
                 session_dir,
                 state,
                 decisions,
@@ -1543,17 +1492,17 @@ def resume_deferred_orphan_session(
             )
     if int(state["next_offset"]) >= int(state["total_items"]):
         base = _read_object(
-            session_dir / DEFERRED_BASE_FILENAME,
-            "deferred orphan session base",
+            session_dir / SESSION_BASE_FILENAME,
+            "review session base",
         )
         if base.get("session_identity") != state["session_identity"]:
-            raise ValidationToolError("deferred orphan session identity differs")
+            raise ValidationToolError("review session identity differs")
         _atomic_write(session_dir / SESSION_STATE_FILENAME, _json_bytes(state))
-        return _ready_deferred_session(session_dir, state, base, index)
-    return _deferred_page(session_dir, index, state)
+        return _ready_review_session(session_dir, state, base, index)
+    return _session_page(session_dir, index, state)
 
 
-def empty_deferred_refresh_context(
+def empty_review_session_refresh_context(
     output_dir: Path, continuation: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     """Return a validated empty session base for context-projection refresh."""
@@ -1561,7 +1510,7 @@ def empty_deferred_refresh_context(
     session_dir = _session_path(output_dir, str(continuation.get("session", "")))
     state = _read_object(
         session_dir / SESSION_STATE_FILENAME,
-        "deferred orphan session state",
+        "review session state",
     )
     if (
         state.get("session_identity") != continuation.get("session_identity")
@@ -1571,14 +1520,14 @@ def empty_deferred_refresh_context(
     ):
         return None
     base = _read_object(
-        session_dir / DEFERRED_BASE_FILENAME,
-        "deferred orphan session base",
+        session_dir / SESSION_BASE_FILENAME,
+        "review session base",
     )
     if base.get("session_identity") != state["session_identity"]:
-        raise ValidationToolError("deferred orphan session identity differs")
+        raise ValidationToolError("review session identity differs")
     index = _read_object(
-        session_dir / DEFERRED_INDEX_FILENAME,
-        "deferred orphan session index",
+        session_dir / SESSION_INDEX_FILENAME,
+        "review session index",
     )
     context_levels = {
         context_request_key(template): int(template.get("context_level", 0))
@@ -1595,7 +1544,7 @@ def empty_deferred_refresh_context(
     }
 
 
-def accept_deferred_orphan_page(
+def accept_review_page(
     decisions: Mapping[str, Any],
     internal: Mapping[str, Any],
     publish_batch: Callable[
@@ -1605,21 +1554,21 @@ def accept_deferred_orphan_page(
 ) -> dict[str, Any]:
     """Append one accepted page and return the next page or final state."""
 
-    session_dir, state, base, index, session_identity = _load_deferred_session(
+    session_dir, state, base, index, session_identity = _load_review_session(
         decisions, internal
     )
     if publish_batch is not None:
         publish_batch(decisions, base)
-    _record_deferred_fragment(session_dir, state, decisions, session_identity)
+    _record_session_fragment(session_dir, state, decisions, session_identity)
     if int(state["next_offset"]) < int(state["total_items"]):
-        return _deferred_page(session_dir, index, state)
+        return _session_page(session_dir, index, state)
     _atomic_write(
         session_dir / SESSION_STATE_FILENAME, _json_bytes(state)
     )
-    return _ready_deferred_session(session_dir, state, base, index)
+    return _ready_review_session(session_dir, state, base, index)
 
 
-def finish_deferred_orphan_session(session_dir: Path) -> None:
+def finish_review_session(session_dir: Path) -> None:
     """Remove one completed project-local session after canonical publication."""
 
     resolved = session_dir.resolve()
@@ -1633,13 +1582,13 @@ def finish_deferred_orphan_session(session_dir: Path) -> None:
         shutil.rmtree(resolved)
 
 
-def resume_ordinary_exchange(
+def resume_legacy_ordinary_exchange(
     output_dir: Path,
     summary: str,
     continuation: Mapping[str, Any],
     expected_rules_version: str | None = None,
 ) -> dict[str, Any]:
-    """Return the current ordinary packet from its stable continuation."""
+    """Return one pre-Pass-3 ordinary packet from its stable continuation."""
 
     identity = str(continuation.get("identity", ""))
     locator = _session_locator(identity)
@@ -1674,8 +1623,8 @@ def resume_ordinary_exchange(
     }
 
 
-def finish_review_session(internal: Mapping[str, Any]) -> None:
-    """Remove one accepted ordinary review session."""
+def finish_legacy_ordinary_session(internal: Mapping[str, Any]) -> None:
+    """Remove one accepted pre-Pass-3 ordinary review session."""
 
     ordinary = internal.get("ordinary_session")
     if not isinstance(ordinary, Mapping):
@@ -1692,89 +1641,24 @@ def create_exchange(
     controller_state: Mapping[str, Any],
     context_levels: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Write one paired packet/template and private continuation state."""
+    """Create one durable review session and return its first bounded page."""
 
     deferred_index = _deferred_orphan_index(scan, adjudication)
     if deferred_index is not None:
-        return _create_deferred_orphan_exchange(
+        return _create_review_session(
             scan, adjudication, controller_state, deferred_index
         )
     items, orphan_fingerprints = _all_template_items(
         scan, adjudication, context_levels
     )
-    contains_subtree = any(item.get("kind") == SUBTREE_REVIEW_KIND for item in items)
-    if len(items) > MAX_PACKET_ITEMS and not contains_subtree:
-        return _create_deferred_orphan_exchange(
-            scan,
-            adjudication,
-            controller_state,
-            _deferred_bounded_index(
-                scan, adjudication, items, orphan_fingerprints
-            ),
-        )
-    if len(items) > MAX_PACKET_ITEMS:
-        items, orphan_fingerprints = _template_items(scan, adjudication, context_levels)
-    bounded_items, continuation, packet = _bounded_ordinary_packet(
-        scan, adjudication, items
+    return _create_review_session(
+        scan,
+        adjudication,
+        controller_state,
+        _bounded_session_index(
+            scan, adjudication, items, orphan_fingerprints
+        ),
     )
-    if len(bounded_items) < len(items) and not contains_subtree:
-        return _create_deferred_orphan_exchange(
-            scan,
-            adjudication,
-            controller_state,
-            _deferred_bounded_index(
-                scan, adjudication, items, orphan_fingerprints
-            ),
-        )
-    items = bounded_items
-    project_root = Path(scan["project_root"]).resolve()
-    log_root = str(scan.get("log_root") or Path(scan["summary"]).with_suffix(""))
-    output_dir = (project_root / log_root).resolve()
-    locator = _session_locator(continuation)
-    work_dir = _session_path(output_dir, locator)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    template = {
-        "schema_version": EXCHANGE_SCHEMA_VERSION,
-        "continuation": continuation,
-        "items": items,
-    }
-    internal = {
-        "schema_version": EXCHANGE_SCHEMA_VERSION,
-        "continuation": continuation,
-        "template": copy.deepcopy(template),
-        "scan": scan,
-        "adjudication": adjudication,
-        "orphan_fingerprints": orphan_fingerprints,
-        "controller": copy.deepcopy(dict(controller_state)),
-        "ordinary_session": {
-            "output_dir": output_dir.as_posix(),
-            "session": locator,
-        },
-    }
-    packet_path = work_dir / "review-packet.md"
-    decision_path = work_dir / "review-decisions.json"
-    _atomic_write(packet_path, packet.encode("utf-8"))
-    _atomic_write(
-        decision_path,
-        (
-            json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)
-            + "\n"
-        ).encode("utf-8"),
-    )
-    _atomic_write(
-        work_dir / INTERNAL_FILENAME,
-        (
-            json.dumps(internal, sort_keys=True, ensure_ascii=False) + "\n"
-        ).encode("utf-8"),
-    )
-    return {
-        "status": "review_required",
-        "review_packet": packet_path.as_posix(),
-        "decision_file": decision_path.as_posix(),
-        "continuation": continuation,
-        "item_count": len(items),
-        "byte_count": len(packet.encode("utf-8")),
-    }
 
 
 def _read_object(path: Path, description: str) -> dict[str, Any]:

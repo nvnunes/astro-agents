@@ -20,19 +20,20 @@ from .orphan_rules import inherited_basis
 from .render import assemble_records
 from .review_exchange import (
     CONTEXT_PROJECTION_VERSION,
-    accept_deferred_orphan_page,
+    accept_review_page,
     context_request_key,
     create_exchange,
     decisions_to_actions,
     durable_review_judgments,
-    empty_deferred_refresh_context,
-    finish_deferred_orphan_session,
+    empty_review_session_refresh_context,
+    finish_legacy_ordinary_session,
     finish_review_session,
     load_decisions,
-    resume_deferred_orphan_session,
-    resume_ordinary_exchange,
+    resume_legacy_ordinary_exchange,
+    resume_review_session,
     reusable_review_actions,
     reusable_review_subjects,
+    review_session_reference,
 )
 from .runtime import (
     RULES_VERSION,
@@ -439,19 +440,12 @@ def _review_required(
         },
         context_levels,
     )
-    if "session_identity" in result:
-        progress.record["continuation"] = {
-            "kind": "paged",
-            "session": result["session"],
-            "session_identity": result["session_identity"],
-            "review_kind": result["review_kind"],
-        }
-    else:
-        progress.record["continuation"] = {
-            "kind": "ordinary",
-            "identity": result["continuation"],
-            "item_count": result["item_count"],
-        }
+    progress.record["continuation"] = {
+        "kind": "paged",
+        "session": result["session"],
+        "session_identity": result["session_identity"],
+        "review_kind": result["review_kind"],
+    }
     if progress.publish:
         output_dir = Path(scan["project_root"]) / scan["log_root"]
         write_record_and_cache(output_dir, progress.record, progress.cache)
@@ -531,11 +525,11 @@ def _superseded_orphan_subjects(
 def _loaded_review_context(
     summary_path: Path, internal: Mapping[str, Any]
 ) -> tuple[Mapping[str, Any] | None, ScanRecord | None, AdjudicationRecord | None]:
-    deferred = internal.get("deferred_orphan")
-    if isinstance(deferred, Mapping):
-        if Path(str(deferred.get("summary", ""))).resolve() != summary_path:
+    session = review_session_reference(internal)
+    if isinstance(session, Mapping):
+        if Path(str(session.get("summary", ""))).resolve() != summary_path:
             raise ValidationToolError("review decisions belong to another summary")
-        return deferred, None, None
+        return session, None, None
     scan = cast(ScanRecord, internal["scan"])
     adjudication = cast(AdjudicationRecord, internal["adjudication"])
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
@@ -544,12 +538,12 @@ def _loaded_review_context(
     return None, scan, adjudication
 
 
-def _finish_deferred_acceptance(
+def _finish_review_acceptance(
     summary_path: Path,
     accepted: Mapping[str, Any],
     progress: ValidationProgress,
 ) -> dict[str, Any]:
-    """Apply one complete paged session and publish its canonical result."""
+    """Apply one complete review session and publish its canonical result."""
 
     scan = cast(ScanRecord, accepted["scan"])
     adjudication = cast(AdjudicationRecord, accepted["adjudication"])
@@ -584,7 +578,7 @@ def _finish_deferred_acceptance(
             progress,
             _requested_context_levels(decisions),
         )
-        finish_deferred_orphan_session(Path(str(accepted["session_dir"])))
+        finish_review_session(Path(str(accepted["session_dir"])))
         result.update(
             {
                 "summary": summary_path.as_posix(),
@@ -605,7 +599,7 @@ def _finish_deferred_acceptance(
             progress.publish,
         )
     )
-    finish_deferred_orphan_session(Path(str(accepted["session_dir"])))
+    finish_review_session(Path(str(accepted["session_dir"])))
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -647,7 +641,7 @@ def _continue_review(
     summary_path: Path, decision_file: Path, publish: bool
 ) -> dict[str, Any]:
     decisions, internal = load_decisions(decision_file)
-    deferred, scan, adjudication = _loaded_review_context(summary_path, internal)
+    session, scan, adjudication = _loaded_review_context(summary_path, internal)
     _ensure_current_review_rules(scan)
     output_dir = summary_path.with_suffix("")
     project_root = _project_root(summary_path)
@@ -655,8 +649,8 @@ def _continue_review(
     record, cache, state_status = _load_target_state(output_dir, summary)
     continuation = record.get("continuation") or {}
     expected_continuation = (
-        deferred.get("session_identity")
-        if isinstance(deferred, Mapping)
+        session.get("session_identity")
+        if isinstance(session, Mapping)
         else decisions.get("continuation")
     )
     durable_identity = (
@@ -667,7 +661,7 @@ def _continue_review(
     if durable_identity != expected_continuation:
         raise ValidationToolError("review decisions are stale for the durable record")
     action_internal = internal
-    if isinstance(deferred, Mapping):
+    if isinstance(session, Mapping):
         def publish_batch(
             accepted_decisions: Mapping[str, Any],
             base: Mapping[str, Any],
@@ -684,7 +678,7 @@ def _continue_review(
             )
             record = append_judgment_batch(output_dir, record, batch)
 
-        accepted = accept_deferred_orphan_page(
+        accepted = accept_review_page(
             decisions, internal, publish_batch
         )
         if accepted["status"] == "review_required":
@@ -698,7 +692,7 @@ def _continue_review(
             return accepted
         if is_sharded_shell(record):
             record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
-        return _finish_deferred_acceptance(
+        return _finish_review_acceptance(
             summary_path,
             accepted,
             ValidationProgress(record, cache, state_status, publish),
@@ -733,7 +727,7 @@ def _continue_review(
         result.update(
             {"summary": summary_path.as_posix(), "state_status": state_status}
         )
-        finish_review_session(internal)
+        finish_legacy_ordinary_session(internal)
         return result
     target_record, assembly, cleanup = _complete_adjudication(
         CompletionRequest(
@@ -746,7 +740,7 @@ def _continue_review(
             publish,
         )
     )
-    finish_review_session(internal)
+    finish_legacy_ordinary_session(internal)
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
@@ -766,7 +760,7 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
     if not isinstance(continuation, Mapping):
         return None
     if continuation.get("kind") == "ordinary":
-        resumed = resume_ordinary_exchange(
+        resumed = resume_legacy_ordinary_exchange(
             context.output_dir,
             context.record_summary,
             continuation,
@@ -776,14 +770,14 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             context.record["continuation"] = None
             return None
     elif continuation.get("kind") == "paged":
-        resumed = resume_deferred_orphan_session(
+        resumed = resume_review_session(
             context.output_dir, continuation
         )
         if resumed["status"] == "ready":
-            return _finish_deferred_acceptance(
+            return _finish_review_acceptance(
                 context.summary_path, resumed, context.progress()
             )
-        recovery = empty_deferred_refresh_context(
+        recovery = empty_review_session_refresh_context(
             context.output_dir, continuation
         )
         if (
@@ -829,7 +823,7 @@ def _refresh_empty_context_session(
     if result.get("session_identity") == old_session.name:
         return None
     write_record_and_cache(context.output_dir, progress.record, progress.cache)
-    finish_deferred_orphan_session(old_session)
+    finish_review_session(old_session)
     result.update(
         {
             "summary": context.summary,

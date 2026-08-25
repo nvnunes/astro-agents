@@ -344,8 +344,12 @@ def _validate_continuation(value: Any) -> None:
     continuation = _mapping(value, "continuation")
     kind = continuation.get("kind")
     if kind == "ordinary":
+        # Read-only compatibility for a packet issued before the unified
+        # review-session lifecycle. New continuations always use ``paged``.
         if set(continuation) != {"kind", "identity", "item_count"}:
-            raise TargetRecordError("ordinary continuation has incorrect fields")
+            raise TargetRecordError(
+                "legacy ordinary continuation has incorrect fields"
+            )
         _validate_sha256(continuation.get("identity"), "continuation.identity")
         item_count = continuation.get("item_count")
         if (

@@ -22,9 +22,8 @@ from validation.contracts import AdjudicationRecord, ScanRecord
 from validation.producer_bindings import identity_for_path, resolved_identity_cache
 from validation.review_exchange import (
     MAX_PACKET_BYTES,
-    accept_deferred_orphan_page,
+    accept_review_page,
     create_exchange,
-    finish_deferred_orphan_session,
     finish_review_session,
     load_decisions,
 )
@@ -435,12 +434,8 @@ def _single_run(mode: str, orphan_count: int) -> dict[str, Any]:
                 encoding="utf-8",
             )
             decisions, internal = load_decisions(decision_path)
-            if "session_identity" in exchange:
-                following = accept_deferred_orphan_page(decisions, internal)
-                finish_deferred_orphan_session(decision_path.parent.parent)
-            else:
-                following = {}
-                finish_review_session(internal)
+            following = accept_review_page(decisions, internal)
+            finish_review_session(decision_path.parent.parent)
             metrics = {
                 "candidates_indexed": orphan_count,
                 "first_packet_items": exchange["item_count"],
@@ -511,12 +506,7 @@ def _single_fanout(materials: int, candidates_per_material: int) -> dict[str, An
         exchange = create_exchange(scan, adjudication, {})
         elapsed = time.monotonic() - started
         decision_path = Path(exchange["decision_file"])
-        internal = json.loads(
-            (decision_path.parent / ".continuation.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        finish_review_session(internal)
+        finish_review_session(decision_path.parent.parent)
         return {
             "kind": "upstream_fanout",
             "materials": materials,

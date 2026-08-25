@@ -68,11 +68,27 @@ class ValidationControllerTests(unittest.TestCase):
             first = run_validate(
                 summary, result_date="2026-08-15", jobs=1
             )
-            second = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
+            before = record_path.read_bytes()
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "scan_log",
+                    side_effect=AssertionError("cached result must not rebuild"),
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "create_exchange",
+                    side_effect=AssertionError("cached result must not create review"),
+                ),
+            ):
+                second = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
+            self.assertTrue(second["cached"])
+            self.assertEqual(record_path.read_bytes(), before)
 
     def test_cached_completion_does_not_depend_on_subject_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -558,7 +574,11 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertGreater(len(partial["outcomes"]), 0)
             self.assertGreater(len(partial["failures"]), 0)
             self.assertIsNotNone(partial["continuation"])
-            self.assertEqual(partial["continuation"]["kind"], "ordinary")
+            self.assertEqual(partial["continuation"]["kind"], "paged")
+            self.assertEqual(
+                partial["continuation"]["session_identity"],
+                first["session_identity"],
+            )
             resumed = run_validate(summary, jobs=1)
             self.assertEqual(resumed["status"], "review_required")
             self.assertEqual(resumed["continuation"], first["continuation"])
@@ -628,6 +648,154 @@ class ValidationControllerTests(unittest.TestCase):
             ]
             self.assertEqual(len(reviewed), 1)
             self.assertEqual(reviewed[0]["rationale"], "Focused fixture decision.")
+
+    def test_pre_pass_3_ordinary_packet_continues_without_rebuilding_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = make_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "review_required")
+            current_decision = Path(first["decision_file"])
+            current_session = current_decision.parent.parent
+            output_dir = summary.with_suffix("")
+            base = json.loads(
+                (current_session / EXCHANGE.SESSION_BASE_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            index = json.loads(
+                (current_session / EXCHANGE.SESSION_INDEX_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            template = json.loads(current_decision.read_text(encoding="utf-8"))
+            identity = str(template["continuation"])
+            locator = EXCHANGE._session_locator(identity)
+            legacy_session = EXCHANGE._session_path(output_dir, locator)
+            legacy_session.mkdir(parents=True)
+            legacy_internal = {
+                "schema_version": EXCHANGE.EXCHANGE_SCHEMA_VERSION,
+                "continuation": identity,
+                "template": copy.deepcopy(template),
+                "scan": base["scan"],
+                "adjudication": base["adjudication"],
+                "orphan_fingerprints": index.get("orphan_fingerprints", {}),
+                "controller": base["controller"],
+                "ordinary_session": {
+                    "output_dir": output_dir.as_posix(),
+                    "session": locator,
+                },
+            }
+            legacy_decision = legacy_session / "review-decisions.json"
+            shutil.copyfile(current_decision, legacy_decision)
+            shutil.copyfile(
+                Path(first["review_packet"]), legacy_session / "review-packet.md"
+            )
+            write(
+                legacy_session / EXCHANGE.INTERNAL_FILENAME,
+                json.dumps(legacy_internal) + "\n",
+            )
+
+            record_path = output_dir / TARGET.RECORD_FILENAME
+            shell, _ = TARGET.load_record_header_with_source(record_path)
+            shell = TARGET.hydrate_record_rows(
+                shell, output_dir, ("outcomes", "failures")
+            )
+            cache, _ = TARGET.load_cache(output_dir / TARGET.CACHE_FILENAME)
+            shard_closure = copy.deepcopy(shell["_sharded_manifest"]["shards"])
+            shell["continuation"] = {
+                "kind": "ordinary",
+                "identity": identity,
+                "item_count": len(template["items"]),
+            }
+            TARGET.write_record_and_cache(output_dir, shell, cache)
+            rewritten, _ = TARGET.load_record_header_with_source(record_path)
+            self.assertEqual(rewritten["_sharded_manifest"]["shards"], shard_closure)
+            EXCHANGE.finish_review_session(current_session)
+
+            for item in template["items"]:
+                item["decision"] = (
+                    "pass"
+                    if item["kind"] == "semantic_provenance"
+                    else (
+                        {
+                            "action": "classify-subtree",
+                            "disposition": "unresolved",
+                        }
+                        if item["kind"] == "orphan_subtree"
+                        else (
+                            "unresolved"
+                            if item["kind"] == "orphan_candidate"
+                            else "needs_context"
+                        )
+                    )
+                )
+                item["rationale"] = "Compatible legacy packet decision."
+            write(legacy_decision, json.dumps(template, indent=2) + "\n")
+
+            continued = run_validate(
+                summary, decision_file=legacy_decision, jobs=1
+            )
+
+            self.assertEqual(continued["status"], "review_required")
+            self.assertFalse(legacy_session.exists())
+            stored = TARGET.load_record(record_path)
+            self.assertEqual(stored["continuation"]["kind"], "paged")
+
+    def test_session_publish_retry_reuses_the_created_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = make_log(Path(directory))
+            original = CONTROLLER.write_record_and_cache
+
+            def interrupt_continuation(output_dir, record, cache):
+                if record.get("continuation") is not None:
+                    raise OSError("interrupted continuation publication")
+                original(output_dir, record, cache)
+
+            with mock.patch.object(
+                CONTROLLER,
+                "write_record_and_cache",
+                side_effect=interrupt_continuation,
+            ):
+                interrupted = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
+
+            self.assertEqual(interrupted["status"], "error")
+            work_root = (
+                summary.with_suffix("")
+                / "validation"
+                / ".cache"
+                / EXCHANGE.VALIDATION_WORK_ROOT
+            )
+            sessions = [path for path in work_root.iterdir() if path.is_dir()]
+            self.assertEqual(len(sessions), 1)
+            session_dir = sessions[0]
+            before = {
+                path.relative_to(session_dir).as_posix(): path.read_bytes()
+                for path in session_dir.rglob("*")
+                if path.is_file()
+            }
+
+            recovered = run_validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
+
+            self.assertEqual(recovered["status"], "review_required")
+            self.assertEqual(recovered["session_identity"], session_dir.name)
+            self.assertEqual(
+                {
+                    path.relative_to(session_dir).as_posix(): path.read_bytes()
+                    for path in session_dir.rglob("*")
+                    if path.is_file()
+                },
+                before,
+            )
+            stored = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertEqual(stored["continuation"]["kind"], "paged")
 
     def test_collection_scope_exchange_accepts_exact_member_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -734,7 +902,7 @@ class ValidationControllerTests(unittest.TestCase):
                 )
             )
             self.addCleanup(
-                lambda: EXCHANGE.finish_deferred_orphan_session(session_dir)
+                lambda: EXCHANGE.finish_review_session(session_dir)
                 if session_dir.exists()
                 else None
             )
@@ -801,7 +969,7 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(resumed["continuation"], second["continuation"])
             self.assertEqual(record_path.read_bytes(), record_after_first_batch)
             self.assertNotIn(
-                EXCHANGE.DEFERRED_BASE_FILENAME,
+                EXCHANGE.SESSION_BASE_FILENAME,
                 [call.args[0].name for call in session_reader.call_args_list],
             )
             second_path = Path(second["decision_file"])
@@ -813,7 +981,7 @@ class ValidationControllerTests(unittest.TestCase):
 
             with mock.patch.object(
                 CONTROLLER,
-                "_finish_deferred_acceptance",
+                "_finish_review_acceptance",
                 side_effect=RuntimeError("interrupted before final combine"),
             ):
                 interrupted = run_validate(
@@ -1002,9 +1170,9 @@ class ValidationControllerTests(unittest.TestCase):
                     "_complete_adjudication",
                     return_value=({"outcomes": []}, assembly, {}),
                 ),
-                mock.patch.object(CONTROLLER, "finish_deferred_orphan_session"),
+                mock.patch.object(CONTROLLER, "finish_review_session"),
             ):
-                CONTROLLER._finish_deferred_acceptance(
+                CONTROLLER._finish_review_acceptance(
                     summary, accepted, progress
                 )
 
@@ -1109,9 +1277,9 @@ class ValidationControllerTests(unittest.TestCase):
                 mock.patch.object(
                     CONTROLLER, "_review_required", return_value=next_result
                 ) as review,
-                mock.patch.object(CONTROLLER, "finish_deferred_orphan_session"),
+                mock.patch.object(CONTROLLER, "finish_review_session"),
             ):
-                result = CONTROLLER._finish_deferred_acceptance(
+                result = CONTROLLER._finish_review_acceptance(
                     summary, accepted, progress
                 )
 
@@ -1156,7 +1324,7 @@ class ValidationControllerTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     CONTROLLER,
-                    "finish_deferred_orphan_session",
+                    "finish_review_session",
                     side_effect=lambda *args: events.append("cleanup"),
                 ),
             ):
@@ -1201,7 +1369,7 @@ class ValidationControllerTests(unittest.TestCase):
                     side_effect=OSError("interrupted"),
                 ),
                 mock.patch.object(
-                    CONTROLLER, "finish_deferred_orphan_session"
+                    CONTROLLER, "finish_review_session"
                 ) as cleanup,
             ):
                 with self.assertRaisesRegex(OSError, "interrupted"):

@@ -47,10 +47,11 @@ or a more-specific subtree decision takes precedence.
 file identities, hashes, inspections, directory membership, and a terminal
 cleanup marker bound to the authoritative manifest closure.
 `subject-index.json` and `index-deltas/` map collision-checked stable subjects
-to manifest-referenced row shards. `work/` owns active paged review files, and
-`lock` serializes one log's writer. Missing, malformed, stale, or unwritable
-local state changes no durable validation result and cannot make an uncertain
-result succeed.
+to manifest-referenced row shards. `work/` owns active review-session files;
+a small review is one page of the same session lifecycle used by a multi-page
+review. `lock` serializes one log's writer. Missing, malformed, stale, or
+unwritable local state changes no durable validation result and cannot make an
+uncertain result succeed.
 
 Commit `validation.md` and the complete durable `validation/` closure except
 `validation/.cache/`. Ignore `**/validation/.cache/`.

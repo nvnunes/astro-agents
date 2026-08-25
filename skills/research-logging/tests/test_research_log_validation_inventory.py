@@ -9,8 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from validation.inventory import (  # noqa: E402
     collection_identity,
     file_identity,
+    infer_project_root,
     inventory_owned_material,
 )
+from validation.runtime import scan_log  # noqa: E402
 
 SCRIPT_SUFFIXES = {".jl", ".m", ".py", ".r", ".sh"}
 EXCLUDED_NAMES = {
@@ -28,6 +30,46 @@ def write(path: Path, text: str = "value\n") -> None:
 
 
 class OwnedMaterialInventoryTests(unittest.TestCase):
+    def test_project_root_uses_nearest_docs_or_summary_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            self.assertEqual(
+                infer_project_root(
+                    root / "docs" / "archive" / "docs" / "nested.md"
+                ),
+                (root / "docs" / "archive").resolve(),
+            )
+            self.assertEqual(
+                infer_project_root(root / "notes" / "standalone.md"),
+                (root / "notes").resolve(),
+            )
+
+    def test_project_root_and_scan_identities_do_not_depend_on_git(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            summary = root / "docs" / "empty.md"
+            (summary.with_suffix("") / "entries").mkdir(parents=True)
+            write(summary, "# Empty Log\n\n## Summary\n\nNo claims.\n\n## Entries\n")
+
+            without_git, _ = scan_log(summary, jobs=1)
+            self.assertEqual(infer_project_root(summary), root.resolve())
+
+            (root / ".git").mkdir()
+            with_git, _ = scan_log(summary, jobs=1)
+
+            identity_fields = (
+                "summary",
+                "log_root",
+                "project_root",
+                "resolved_paths",
+            )
+            self.assertEqual(
+                {field: without_git[field] for field in identity_fields},
+                {field: with_git[field] for field in identity_fields},
+            )
+            self.assertEqual(with_git["summary"], "docs/empty.md")
+
     def test_file_and_collection_identities_cover_selected_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

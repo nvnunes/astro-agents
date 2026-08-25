@@ -61,7 +61,7 @@ from .inventory import (
     directory_membership_identity,
     display_path,
     file_identity,
-    find_project_root,
+    infer_project_root,
     logical_display_path,
     owned_entry_folders,
     owned_inventory,
@@ -1515,7 +1515,7 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     if not summary_path.is_file():
         raise ValidationToolError(f"summary does not exist: {summary_path}")
     log_root = summary_path.with_suffix("")
-    project_root = request.project_root or find_project_root(summary_path)
+    project_root = request.project_root or infer_project_root(summary_path)
     prior_cache = request.prior_cache or {}
     prior = {
         "input_files": prior_cache.get("files", {}),

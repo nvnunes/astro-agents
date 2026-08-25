@@ -1116,14 +1116,14 @@ class ValidationControllerTests(unittest.TestCase):
             write(other, "# Other\n\n## Entries\n")
             write(other.with_suffix("") / TARGET.RECORD_FILENAME, "{broken")
 
-            with mock.patch(
-                "validation.inventory.find_project_root",
-                side_effect=AssertionError("Git-root lookup"),
-            ):
-                result = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+            result = run_validate(
+                summary, result_date="2026-08-15", jobs=1
+            )
             self.assertEqual(result["status"], "complete")
+            record = TARGET.load_record(
+                summary.with_suffix("") / TARGET.RECORD_FILENAME
+            )
+            self.assertEqual(record["summary"], "docs/empty.md")
 
     def test_other_log_use_does_not_exempt_a_local_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

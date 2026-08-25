@@ -214,16 +214,18 @@ def display_path(path: Path, project_root: Path) -> str:
         return resolved.as_posix()
 
 
-def find_project_root(path: Path) -> Path:
-    """Return the nearest ancestor containing a Git worktree marker."""
+def infer_project_root(summary_path: Path) -> Path:
+    """Return the source-control-independent root for a maintained summary.
 
-    current = path.resolve()
-    if current.is_file():
-        current = current.parent
-    for candidate in (current, *current.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    raise ValidationToolError(f"could not locate project root from {path}")
+    A summary beneath ``docs`` belongs to the directory containing its nearest
+    ``docs`` ancestor. Other summaries belong to their containing directory.
+    """
+
+    summary_path = summary_path.resolve()
+    for parent in summary_path.parents:
+        if parent.name == "docs":
+            return parent.parent
+    return summary_path.parent
 
 
 def directory_membership_identity(

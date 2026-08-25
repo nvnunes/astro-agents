@@ -11,6 +11,7 @@ from typing import Any, Mapping, cast
 from .adjudication import ORPHAN_TARGET
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions
+from .inventory import infer_project_root
 from .observations import (
     ObservationSession,
     observe_outcome_dependencies,
@@ -131,15 +132,6 @@ def _record_has_progress(record: Mapping[str, Any]) -> bool:
     )
 
 
-def _project_root(summary_path: Path) -> Path:
-    """Infer the on-disk project root without consulting source control."""
-
-    for parent in summary_path.parents:
-        if parent.name == "docs":
-            return parent.parent
-    return summary_path.parent
-
-
 def _relative_summary(summary_path: Path, project_root: Path) -> str:
     try:
         return summary_path.relative_to(project_root).as_posix()
@@ -185,7 +177,7 @@ def _compatible_cached_dependencies(
     cache: Mapping[str, Any],
 ) -> ObservationSession | None:
     session = ObservationSession()
-    project_root = _project_root(summary_path)
+    project_root = infer_project_root(summary_path)
     completion_dependencies = list(record.get("completion_dependencies", []))
     if not completion_dependencies:
         return None
@@ -586,7 +578,7 @@ def _finish_review_acceptance(
             }
         )
         return result
-    project_root = _project_root(summary_path)
+    project_root = infer_project_root(summary_path)
     summary = _relative_summary(summary_path, project_root)
     target_record, assembly, cleanup = _complete_adjudication(
         CompletionRequest(
@@ -644,7 +636,7 @@ def _continue_review(
     session, scan, adjudication = _loaded_review_context(summary_path, internal)
     _ensure_current_review_rules(scan)
     output_dir = summary_path.with_suffix("")
-    project_root = _project_root(summary_path)
+    project_root = infer_project_root(summary_path)
     summary = _relative_summary(summary_path, project_root)
     record, cache, state_status = _load_target_state(output_dir, summary)
     continuation = record.get("continuation") or {}
@@ -932,7 +924,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
 
     summary_path = request.summary_path.resolve()
     output_dir = summary_path.with_suffix("")
-    project_root = _project_root(summary_path)
+    project_root = infer_project_root(summary_path)
     record_summary = _relative_summary(summary_path, project_root)
     report_path = output_dir / "validation.md"
     prior_report = report_path.read_bytes() if report_path.is_file() else None

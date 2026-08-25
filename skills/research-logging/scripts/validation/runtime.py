@@ -45,6 +45,7 @@ from .inventory import (
     display_path,
     file_identity,
     hash_file,
+    infer_project_root,
 )
 from .render import (
     RenderLifecyclePolicy,
@@ -137,6 +138,7 @@ def scan_log(
             RULES_VERSION,
             mode,
             scan_policy(),
+            infer_project_root(summary_path),
         )
     )
 

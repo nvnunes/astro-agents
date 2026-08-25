@@ -85,6 +85,31 @@ def review_decision(
 
 
 class ReviewReuseTests(unittest.TestCase):
+    def test_indexed_reuse_does_not_rescan_unrelated_judgments(self) -> None:
+        class TrackingJudgment(dict):
+            get_calls = 0
+
+            def get(self, key: object, default: object = None) -> object:
+                self.get_calls += 1
+                return super().get(key, default)
+
+        scan, adjudication, queue, template = target_fixture()
+        judgment = review_decision(
+            scan, adjudication, queue, template, "invocation-1"
+        )
+        unrelated_value = copy.deepcopy(judgment)
+        unrelated_value["subject"]["identity"] = "docs/mini/unrelated.csv"
+        unrelated = TrackingJudgment(unrelated_value)
+        indexed = REUSE.index_review_judgments([judgment, unrelated])
+        unrelated.get_calls = 0
+
+        reused = REUSE.reusable_review_answer(
+            scan, adjudication, queue, template, indexed
+        )
+
+        self.assertEqual(reused[0], "invocation-1")
+        self.assertEqual(unrelated.get_calls, 0)
+
     def test_reuses_subject_decision_across_layout_only(self) -> None:
         scan, adjudication, queue, template = target_fixture()
         judgment = review_decision(

@@ -92,6 +92,9 @@ class ValidationActivityLogTests(unittest.TestCase):
             self.assertIn('phase="scan.discover-entries"', text)
             self.assertIn('operation="scan-entry"', text)
             self.assertIn('operation="inspect-identity"', text)
+            self.assertIn('operation="resolve-reusable-subjects"', text)
+            self.assertIn('operation="load-reusable-judgments"', text)
+            self.assertIn('operation="apply-reusable-judgments"', text)
             self.assertIn(
                 f'event="run-finish" status="{result["status"]}"', text
             )

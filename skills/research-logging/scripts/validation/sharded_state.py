@@ -777,12 +777,17 @@ def _load_mapped_rows(
     refs = {str(ref["path"]): ref for ref in manifest["shards"][kind]}
     if not paths <= set(refs):
         raise ShardedStateError("subject index names an unowned shard")
+    requested_subjects = {_canonical_json(subject) for subject in subjects}
     rows: list[dict[str, Any]] = []
     for ref in manifest["shards"][kind]:
         if ref["path"] not in paths:
             continue
         for row in _decode_jsonl(_read_owned_bytes(validation_dir, ref), ref):
-            if _row_subject(kind, row) in subjects:
+            subject = _row_subject(kind, row)
+            if (
+                subject is not None
+                and _canonical_json(subject) in requested_subjects
+            ):
                 rows.append(row)
     return rows
 

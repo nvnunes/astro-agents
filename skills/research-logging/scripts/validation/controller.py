@@ -929,12 +929,38 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         "adjudication.reuse-judgments",
         review_items=len(adjudication["review_queue"]),
     )
-    subjects = reusable_review_subjects(scan, adjudication)
-    context.record["judgments"] = load_judgments_for_subjects(
-        context.output_dir, context.record, subjects
+    review_items_before = len(adjudication["review_queue"])
+    with log_operation(
+        activity, "resolve-reusable-subjects", subject=context.summary
+    ):
+        subjects = reusable_review_subjects(scan, adjudication)
+    log_checkpoint(
+        activity,
+        "reusable-subjects-resolved",
+        subjects=len(subjects),
     )
-    adjudication = _apply_reusable_judgments(
-        scan, adjudication, context.record["judgments"]
+    with log_operation(
+        activity, "load-reusable-judgments", subject=context.summary
+    ):
+        context.record["judgments"] = load_judgments_for_subjects(
+            context.output_dir, context.record, subjects
+        )
+    log_checkpoint(
+        activity,
+        "reusable-judgments-loaded",
+        judgments=len(context.record["judgments"]),
+    )
+    with log_operation(
+        activity, "apply-reusable-judgments", subject=context.summary
+    ):
+        adjudication = _apply_reusable_judgments(
+            scan, adjudication, context.record["judgments"]
+        )
+    log_checkpoint(
+        activity,
+        "reusable-judgments-applied",
+        review_items_before=review_items_before,
+        review_items_after=len(adjudication["review_queue"]),
     )
     if adjudication["review_queue"]:
         log_phase(

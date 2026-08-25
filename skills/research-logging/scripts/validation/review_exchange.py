@@ -33,6 +33,8 @@ from .review_batches import (
 from .review_index import ReviewContextIndex, ReviewQuerySession
 from .review_reuse import (
     SEMANTIC_REVIEW_RULES,
+    ReviewJudgmentIndex,
+    index_review_judgments,
     reusable_review_answer,
     review_judgment_inputs,
 )
@@ -2239,10 +2241,10 @@ def _projected_reuse_rows(
     queue_item: Mapping[str, Any],
     templates: list[dict[str, Any]],
     reuse_sources: tuple[
-        list[dict[str, Any]], Mapping[str, list[dict[str, Any]]]
+        Mapping[str, list[dict[str, Any]]], ReviewJudgmentIndex
     ],
 ) -> list[dict[str, Any]]:
-    judgments, reusable = reuse_sources
+    reusable, judgments_by_subject = reuse_sources
     rows = []
     for template in templates:
         judgment = _exact_reusable_judgment(reusable, template["id"])
@@ -2254,7 +2256,11 @@ def _projected_reuse_rows(
             )
         else:
             answer = reusable_review_answer(
-                scan, adjudication, queue_item, template, judgments
+                scan,
+                adjudication,
+                queue_item,
+                template,
+                judgments_by_subject,
             )
         if answer is None:
             continue
@@ -2321,7 +2327,7 @@ def _orphan_reuse_action(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
-    judgments: list[dict[str, Any]],
+    judgments_by_subject: ReviewJudgmentIndex,
 ) -> dict[str, Any] | None:
     selected: dict[str, tuple[str, str, str | None, str]] = {}
     fingerprints: dict[str, str] = {}
@@ -2338,14 +2344,22 @@ def _orphan_reuse_action(
             scan, adjudication, queue_item, candidate
         )
         answer = reusable_review_answer(
-            scan, adjudication, queue_item, template, judgments
+            scan,
+            adjudication,
+            queue_item,
+            template,
+            judgments_by_subject,
         )
         rule_root: str | None = None
         if answer is None:
             for material, root in reversed(ancestor_roots(identity)):
                 template = _subtree_reuse_template(queue_item, material, root)
                 answer = reusable_review_answer(
-                    scan, adjudication, queue_item, template, judgments
+                    scan,
+                    adjudication,
+                    queue_item,
+                    template,
+                    judgments_by_subject,
                 )
                 if answer is not None:
                     rule_root = root
@@ -2421,6 +2435,7 @@ def reusable_review_actions(
     """Return actions for exact current questions with durable native answers."""
 
     reusable: dict[str, list[dict[str, Any]]] = {}
+    judgments_by_subject = index_review_judgments(judgments)
     for judgment in judgments:
         if (
             judgment.get("kind") == "review-decision"
@@ -2436,7 +2451,12 @@ def reusable_review_actions(
     orphan_fingerprints: dict[str, dict[str, str]] = {}
     for queue_item in adjudication["review_queue"]:
         if queue_item["kind"] == "orphan_candidates":
-            action = _orphan_reuse_action(scan, adjudication, queue_item, judgments)
+            action = _orphan_reuse_action(
+                scan,
+                adjudication,
+                queue_item,
+                judgments_by_subject,
+            )
             if action is not None:
                 direct_actions.append(action)
             continue
@@ -2448,7 +2468,7 @@ def reusable_review_actions(
             adjudication,
             queue_item,
             templates,
-            (judgments, reusable),
+            (reusable, judgments_by_subject),
         )
         if queue_item["kind"] != "upstream_producer" or len(projected_rows) == len(
             templates

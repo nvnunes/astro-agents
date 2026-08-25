@@ -534,6 +534,35 @@ class TargetRecordTests(unittest.TestCase):
             read_paths = [call.args[1]["path"] for call in reader.call_args_list]
             self.assertEqual(read_paths, [manifest["shards"]["judgments"][1]["path"]])
 
+    def test_mapped_row_filter_uses_one_canonical_key_per_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / STORE.STATE_DIRECTORY
+            record = native_record()
+            record["judgments"] = [review_judgment(0)]
+            prepared = STORE.prepare_state(record)
+            ref = prepared.manifest["shards"]["judgments"][0]
+            path = root / ref["path"]
+            path.parent.mkdir(parents=True)
+            path.write_bytes(prepared.files[ref["path"]])
+            subjects = [
+                review_judgment(number)["subject"] for number in range(500)
+            ]
+
+            original = STORE._canonical_json
+            with mock.patch.object(
+                STORE, "_canonical_json", wraps=original
+            ) as canonical:
+                rows = STORE._load_mapped_rows(
+                    root,
+                    prepared.manifest,
+                    "judgments",
+                    subjects,
+                    {ref["path"]},
+                )
+
+            self.assertEqual(rows, record["judgments"])
+            self.assertEqual(canonical.call_count, len(subjects) + 1)
+
     def test_missing_malformed_or_stale_index_rebuilds_from_durable_rows(
         self,
     ) -> None:

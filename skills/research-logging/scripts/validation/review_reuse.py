@@ -17,6 +17,12 @@ from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .judgment_rules import SEMANTIC_REVIEW_RULES
 from .orphan_rules import SUBTREE_REVIEW_KIND, SUBTREE_RULE_DEPENDENCIES
 
+ReviewSubjectKey = tuple[Any, ...]
+ReviewJudgmentIndex = Mapping[
+    ReviewSubjectKey, Sequence[Mapping[str, Any]]
+]
+ReviewJudgmentSource = Sequence[Mapping[str, Any]] | ReviewJudgmentIndex
+
 
 def _subject_key(value: Mapping[str, Any]) -> tuple[Any, ...]:
     return (
@@ -29,6 +35,20 @@ def _subject_key(value: Mapping[str, Any]) -> tuple[Any, ...]:
 
 def _template_subject(template: Mapping[str, Any]) -> tuple[Any, ...]:
     return _subject_key(template)
+
+
+def index_review_judgments(
+    judgments: Sequence[Mapping[str, Any]],
+) -> dict[ReviewSubjectKey, list[Mapping[str, Any]]]:
+    """Index durable judgments by the stable subject used for reuse lookup."""
+
+    indexed: dict[ReviewSubjectKey, list[Mapping[str, Any]]] = {}
+    for judgment in judgments:
+        subject = judgment.get("subject")
+        if not isinstance(subject, Mapping):
+            continue
+        indexed.setdefault(_subject_key(subject), []).append(judgment)
+    return indexed
 
 
 def _scope_map(items: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], Any]:
@@ -293,7 +313,7 @@ def _review_decision_answers(
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
     template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
+    judgments: ReviewJudgmentSource,
 ) -> list[Any]:
     answers = []
     subject = _template_subject(template)
@@ -302,7 +322,12 @@ def _review_decision_answers(
         if template.get("kind") == SUBTREE_REVIEW_KIND
         else SEMANTIC_REVIEW_RULES
     )
-    for judgment in judgments:
+    candidates = (
+        judgments.get(subject, ())
+        if isinstance(judgments, Mapping)
+        else judgments
+    )
+    for judgment in candidates:
         stored_subject = judgment.get("subject")
         if (
             judgment.get("kind") != "review-decision"
@@ -443,7 +468,7 @@ def reusable_review_answer(
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
     template: Mapping[str, Any],
-    judgments: Sequence[Mapping[str, Any]],
+    judgments: ReviewJudgmentSource,
 ) -> tuple[Any, str] | None:
     """Return one unambiguous compatible prior review decision."""
 

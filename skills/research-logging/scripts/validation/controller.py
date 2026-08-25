@@ -50,10 +50,10 @@ from .target_records import (
     compact_cached_judgments,
     empty_cache,
     empty_record,
+    empty_record_shell,
     hydrate_record_rows,
     hydrate_record_shell,
     inspect_target_cleanup,
-    is_sharded_shell,
     load_cache,
     load_judgments_for_subjects,
     load_record_header_with_source,
@@ -124,15 +124,6 @@ class LoadedValidation:
             self.request.publish,
         )
 
-    def ensure_rows(self) -> None:
-        """Hydrate sharded histories only after continuation-first handling."""
-
-        if is_sharded_shell(self.record):
-            self.record = hydrate_record_shell(
-                self.record, self.output_dir, preserve_manifest=True
-            )
-
-
 def _record_has_progress(record: Mapping[str, Any]) -> bool:
     return bool(
         record_row_count(record, "outcomes")
@@ -171,7 +162,7 @@ def _load_target_state(
         )
         cache, cache_status = load_cache(cache_path)
         return record, cache, f"native-v{source_version}:{cache_status}"
-    return empty_record(summary, RULES_VERSION), empty_cache(), "new"
+    return empty_record_shell(summary, RULES_VERSION), empty_cache(), "new"
 
 
 def _coherent_report_projection(
@@ -297,11 +288,10 @@ def _target_record(
     record["outcomes"] = list(outcomes.values())
     record["result"] = assembly.result()
     record["failures"] = copy.deepcopy(assembly.failures)
-    if is_sharded_shell(prior):
-        record["_sharded_manifest"] = copy.deepcopy(
-            prior["_sharded_manifest"]
-        )
-        record["_state_loaded"] = False
+    manifest = prior.get("_sharded_manifest")
+    if not isinstance(manifest, Mapping):
+        raise ValidationToolError("canonical validation state lacks a manifest")
+    record["_sharded_manifest"] = copy.deepcopy(manifest)
     return record
 
 
@@ -448,7 +438,9 @@ def _review_required(
     }
     if progress.publish:
         output_dir = Path(scan["project_root"]) / scan["log_root"]
-        write_record_and_cache(output_dir, progress.record, progress.cache)
+        progress.record = write_record_and_cache(
+            output_dir, progress.record, progress.cache
+        )
     result["progress_retained"] = bool(
         _record_has_progress(progress.record)
     )
@@ -563,6 +555,14 @@ def _finish_review_acceptance(
     )
     _merge_review_judgments(progress.record, review_judgments)
     if decided["review_queue"]:
+        progress.record["judgments"] = load_judgments_for_subjects(
+            summary_path.with_suffix(""),
+            progress.record,
+            reusable_review_subjects(
+                scan, cast(AdjudicationRecord, decided)
+            ),
+        )
+        _merge_review_judgments(progress.record, review_judgments)
         decided = cast(
             dict[str, Any],
             _apply_reusable_judgments(
@@ -667,8 +667,6 @@ def _continue_review(
             base: Mapping[str, Any],
         ) -> None:
             nonlocal record
-            if not is_sharded_shell(record):
-                return
             adjudication_date = str(base["adjudication"]["date"])
             batch = durable_review_judgments(
                 accepted_decisions,
@@ -690,15 +688,12 @@ def _continue_review(
                 }
             )
             return accepted
-        if is_sharded_shell(record):
-            record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
         return _finish_review_acceptance(
             summary_path,
             accepted,
             ValidationProgress(record, cache, state_status, publish),
         )
-    if is_sharded_shell(record):
-        record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
+    record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
     assert scan is not None
     assert adjudication is not None
     actions = decisions_to_actions(decisions, action_internal)
@@ -858,13 +853,9 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     resumed = _resume_active_review(context)
     if resumed is not None:
         return resumed
-    sharded = is_sharded_shell(context.record)
-    if sharded:
-        context.record = hydrate_record_rows(
-            context.record, context.output_dir, ("outcomes", "failures")
-        )
-    else:
-        context.ensure_rows()
+    context.record = hydrate_record_rows(
+        context.record, context.output_dir, ("outcomes", "failures")
+    )
     cached = (
         _cached_completion(
             request,
@@ -897,11 +888,10 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         request.result_date or date.today().isoformat(),
         request.mode,
     )
-    if sharded:
-        subjects = reusable_review_subjects(scan, adjudication)
-        context.record["judgments"] = load_judgments_for_subjects(
-            context.output_dir, context.record, subjects
-        )
+    subjects = reusable_review_subjects(scan, adjudication)
+    context.record["judgments"] = load_judgments_for_subjects(
+        context.output_dir, context.record, subjects
+    )
     adjudication = _apply_reusable_judgments(
         scan, adjudication, context.record["judgments"]
     )

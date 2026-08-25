@@ -850,6 +850,8 @@ def prepare_judgment_append(
     """Prepare one idempotent accepted-judgment batch and one local delta."""
 
     valid = validate_manifest(manifest)
+    if not rows:
+        return PreparedState(copy.deepcopy(valid), {})
     subjects = [
         subject
         for row in rows
@@ -925,7 +927,7 @@ def prepare_progress_state(
     next_manifest = {
         key: copy.deepcopy(value)
         for key, value in record.items()
-        if key not in {*ROW_KINDS, "_sharded_manifest", "_state_loaded"}
+        if key not in {*ROW_KINDS, "_sharded_manifest"}
     }
     next_manifest.update(
         {

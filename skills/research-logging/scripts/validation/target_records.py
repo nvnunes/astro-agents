@@ -485,10 +485,18 @@ def _manifest_shell(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "outcomes": [],
             "failures": [],
             "_sharded_manifest": copy.deepcopy(dict(manifest)),
-            "_state_loaded": False,
         }
     )
     return shell
+
+
+def empty_record_shell(summary: str, rules_version: str) -> dict[str, Any]:
+    """Return canonical empty state without publishing files or a manifest."""
+
+    prepared = sharded_state.prepare_state(empty_record(summary, rules_version))
+    if prepared.files:
+        raise TargetRecordError("empty validation state unexpectedly produced shards")
+    return _manifest_shell(decode_sharded_manifest(prepared.manifest))
 
 
 def is_sharded_shell(record: Mapping[str, Any]) -> bool:
@@ -515,7 +523,7 @@ def hydrate_record_shell(
     *,
     preserve_manifest: bool = False,
 ) -> dict[str, Any]:
-    """Load every referenced row only when scan, assembly, or completion needs it."""
+    """Load every referenced row for diagnostics or legacy compatibility."""
 
     if not is_sharded_shell(record):
         return decode_record(record)
@@ -530,7 +538,6 @@ def hydrate_record_shell(
     decoded = decode_record(logical)
     if preserve_manifest:
         decoded["_sharded_manifest"] = copy.deepcopy(manifest)
-        decoded["_state_loaded"] = True
     return decoded
 
 
@@ -690,6 +697,8 @@ def load_judgments_for_subjects(
 ) -> list[dict[str, Any]]:
     """Load only judgment shards relevant to exact stable subjects."""
 
+    if not subjects:
+        return []
     manifest = record.get("_sharded_manifest")
     if not isinstance(manifest, Mapping):
         judgments = record.get("judgments", [])
@@ -789,7 +798,7 @@ def _prepare_record_state(
         logical = {
             key: copy.deepcopy(value)
             for key, value in record.items()
-            if key not in {"_sharded_manifest", "_state_loaded"}
+            if key != "_sharded_manifest"
         }
         valid_subset = decode_record(logical)
         return sharded_state.prepare_progress_state(
@@ -993,11 +1002,12 @@ def _assert_output_destinations(output_dir: Path) -> None:
 
 def write_record_and_cache(
     output_dir: Path, record: Mapping[str, Any], cache: Mapping[str, Any]
-) -> None:
+) -> dict[str, Any]:
     """Atomically write target state under the per-log validation lock.
 
     New row shards are published before the manifest commit point. Ignored
     local state is refreshed afterward and cannot invalidate durable work.
+    The return value is a fresh lightweight shell for the published manifest.
     """
 
     valid_cache = decode_cache(cache)
@@ -1022,6 +1032,7 @@ def write_record_and_cache(
             f"target validation state could not be written: {exc}"
         ) from exc
     _write_local_state(output_dir, valid_cache, valid_manifest)
+    return _manifest_shell(valid_manifest)
 
 
 def publish_target_bundle(

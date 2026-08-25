@@ -117,9 +117,10 @@ The research-log test gate must verify:
 - accepted semantic decisions become durable progressively, while interrupted
   publication retains prior valid work and local derived-state failure changes
   no durable result;
-- active review-session resume does not scan the research log or hydrate historical
-  shards, and exact stable-subject reuse through a validated ignored index
-  opens only mapped judgment shards;
+- validation of new state, review-session resume, semantic reuse, and
+  completion do not fully hydrate historical judgments, and exact stable-
+  subject reuse through a validated ignored index opens only mapped judgment
+  shards;
 - one log validates without maintained-summary discovery, repository-wide
   coordination, Git state, or another log's validation files;
 - an explicit cross-log path is observed as external evidence, while a local

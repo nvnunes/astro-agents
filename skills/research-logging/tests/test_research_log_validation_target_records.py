@@ -129,6 +129,19 @@ def index_delta_directory(root: Path) -> Path:
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_empty_record_shell_is_canonical_unpublished_state(self) -> None:
+        shell = TARGET.empty_record_shell("docs/mini.md", "rules-v1")
+
+        self.assertTrue(TARGET.is_sharded_shell(shell))
+        self.assertNotIn("_state_loaded", shell)
+        self.assertEqual(shell["outcomes"], [])
+        self.assertEqual(shell["judgments"], [])
+        self.assertEqual(shell["failures"], [])
+        self.assertEqual(
+            shell["_sharded_manifest"]["row_counts"],
+            {"outcomes": 0, "judgments": 0, "failures": 0},
+        )
+
     def test_terminal_compaction_removes_legacy_alias_and_incompatible_rows(
         self,
     ) -> None:

@@ -40,9 +40,14 @@ class ValidationControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
             before = summary.read_bytes()
-            result = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            with mock.patch.object(
+                CONTROLLER,
+                "hydrate_record_shell",
+                side_effect=AssertionError("new validation must not fully hydrate"),
+            ):
+                result = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
 
             self.assertEqual(result["status"], "complete")
             self.assertEqual(summary.read_bytes(), before)
@@ -61,6 +66,24 @@ class ValidationControllerTests(unittest.TestCase):
             )
             stored = TARGET.load_record(output / TARGET.RECORD_FILENAME)
             self.assertEqual(stored["failures"], [])
+
+    def test_new_dry_run_writes_no_durable_validation_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            output = summary.with_suffix("")
+
+            result = run_validate(
+                summary,
+                result_date="2026-08-15",
+                jobs=1,
+                publish=False,
+            )
+
+            self.assertEqual(result["status"], "complete")
+            self.assertFalse(result["published"])
+            self.assertFalse((output / TARGET.RECORD_FILENAME).exists())
+            self.assertFalse((output / TARGET.CACHE_FILENAME).exists())
+            self.assertFalse((output / "validation.md").exists())
 
     def test_repeat_no_semantic_validation_needs_no_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -285,9 +308,18 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertTrue(unaffected_outcomes)
 
             (entry.parent / "data" / "output.csv").unlink()
-            with mock.patch.object(
-                CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
-            ) as scanned:
+            with (
+                mock.patch.object(
+                    CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+                ) as scanned,
+                mock.patch.object(
+                    CONTROLLER,
+                    "hydrate_record_shell",
+                    side_effect=AssertionError(
+                        "semantic reuse must not fully hydrate history"
+                    ),
+                ),
+            ):
                 rerun = run_validate(
                     summary, result_date="2026-08-16", jobs=1
                 )
@@ -547,16 +579,21 @@ class ValidationControllerTests(unittest.TestCase):
         record = CONTROLLER._target_record(
             "docs/mini.md",
             assembly,
-            TARGET.empty_record("docs/mini.md", "rules-v1"),
+            TARGET.empty_record_shell("docs/mini.md", "rules-v1"),
         )
         self.assertEqual(record["failures"], assembly.failures)
 
     def test_semantic_exchange_accepts_only_decisions_and_rationales(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))
-            first = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            with mock.patch.object(
+                CONTROLLER,
+                "hydrate_record_shell",
+                side_effect=AssertionError("new review must not fully hydrate"),
+            ):
+                first = run_validate(
+                    summary, result_date="2026-08-15", jobs=1
+                )
             self.assertEqual(first["status"], "review_required")
             decision_path = Path(first["decision_file"])
             template = json.loads(decision_path.read_text(encoding="utf-8"))
@@ -990,7 +1027,14 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(interrupted["status"], "error")
             self.assertTrue(session_dir.exists())
 
-            completed = run_validate(summary, jobs=1)
+            with mock.patch.object(
+                CONTROLLER,
+                "hydrate_record_shell",
+                side_effect=AssertionError(
+                    "review completion must not fully hydrate history"
+                ),
+            ):
+                completed = run_validate(summary, jobs=1)
 
             self.assertEqual(completed["status"], "complete")
             self.assertFalse(session_dir.exists())

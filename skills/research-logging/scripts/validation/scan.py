@@ -22,6 +22,12 @@ from typing import (
     cast,
 )
 
+from .activity import (
+    ValidationActivityLog,
+    log_checkpoint,
+    log_operation,
+    log_phase,
+)
 from .contracts import (
     FileChangedError,
     LifecycleRecordContractError,
@@ -56,6 +62,7 @@ from .incremental import (
 )
 from .inventory import (
     MaterialInventoryPolicy,
+    OwnedInventory,
     OwnedMaterial,
     content_identity,
     directory_membership_identity,
@@ -442,6 +449,7 @@ class IdentityInspectionInput(NamedTuple):
     observed_identities: Mapping[Path, Mapping[str, Any]]
     jobs: int
     policy: IdentityInspectionPolicy
+    activity: ValidationActivityLog | None = None
 
 
 class IdentityInspectionResult(NamedTuple):
@@ -518,7 +526,7 @@ def _inspect_observed_artifact(
     return key, identity, cast(Dict[str, Any], structure), hashed, inspection_reused
 
 
-def _inspect_identity(
+def _inspect_identity_result(
     path: Path, inputs: IdentityInspectionInput
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int], bool]:
     """Inspect one input, reusing a stable prior identity when possible."""
@@ -527,6 +535,18 @@ def _inspect_identity(
     if path.resolve() == inputs.summary_path or path.resolve() in inputs.entry_paths:
         return _inspect_projected_source(path, inputs, key)
     return _inspect_observed_artifact(path, inputs, key)
+
+
+def _inspect_identity(
+    path: Path, inputs: IdentityInspectionInput
+) -> Tuple[str, Dict[str, Any], Dict[str, Any], Optional[int], bool]:
+    activity = inputs.activity
+    subject = inputs.logical_identities.get(
+        Path(os.path.abspath(str(path))),
+        inputs.policy.display_identity(path, inputs.project_root),
+    )
+    with log_operation(activity, "inspect-identity", subject=subject):
+        return _inspect_identity_result(path, inputs)
 
 
 def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionResult:
@@ -538,6 +558,12 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
     bytes_hashed = 0
     files_reused = 0
     inspections_reused = 0
+    log_checkpoint(
+        inputs.activity,
+        "identity-inspection-start",
+        paths=len(inputs.paths),
+        jobs=inputs.jobs,
+    )
     with concurrent.futures.ThreadPoolExecutor(max_workers=inputs.jobs) as executor:
         futures = {
             executor.submit(_inspect_identity, path, inputs): path
@@ -561,6 +587,15 @@ def inspect_identities(inputs: IdentityInspectionInput) -> IdentityInspectionRes
             elif path.is_file():
                 files_reused += 1
                 inspections_reused += int(inspection_reused)
+    log_checkpoint(
+        inputs.activity,
+        "identity-inspection-complete",
+        paths=len(inputs.paths),
+        files_hashed=files_hashed,
+        bytes_hashed=bytes_hashed,
+        files_reused=files_reused,
+        inspections_reused=inspections_reused,
+    )
     return IdentityInspectionResult(
         files,
         mechanics,
@@ -1282,6 +1317,7 @@ class ScanRequest(NamedTuple):
     mode: str
     policy: ScanLifecyclePolicy
     project_root: Optional[Path] = None
+    activity: ValidationActivityLog | None = None
 
 
 @dataclass(frozen=True)
@@ -1322,6 +1358,7 @@ class _ScanFinalizationPolicy:
     jobs: int
     policy: ScanLifecyclePolicy
     valid_prior: Mapping[str, Any]
+    activity: ValidationActivityLog | None
 
 
 class _FinalizedScanFacts(NamedTuple):
@@ -1342,11 +1379,18 @@ def _finalize_scan_facts(
 ) -> _FinalizedScanFacts:
     discovery = documents_input.discovery
     project_root = material_input.project_root
+    activity = finalization.activity
     entry_paths = {
         Path(entry["path"]).resolve()
         for entry in discovery["listed"]
         if Path(entry["path"]).is_file()
     }
+    log_phase(
+        activity,
+        "scan.inspect-identities",
+        paths=len(material_input.identity_paths),
+        jobs=finalization.jobs,
+    )
     inspected = inspect_identities(
         IdentityInspectionInput(
             set(material_input.identity_paths),
@@ -1359,35 +1403,59 @@ def _finalize_scan_facts(
             material_input.observed_identities,
             finalization.jobs,
             finalization.policy.identity_inspection,
+            activity,
         )
     )
     files = {**material_input.files, **inspected.files}
     mechanics = {**material_input.mechanics, **inspected.mechanics}
     entries = copy.deepcopy(list(documents_input.entries))
-    real_entries = finalize_entry_candidates(
-        entries, documents_input.bibliography, mechanics
-    )
+    log_phase(activity, "scan.finalize-entry-candidates", entries=len(entries))
+    with log_operation(
+        activity,
+        "finalize-entry-candidates",
+        subject=documents_input.summary_path.name,
+    ):
+        real_entries = finalize_entry_candidates(
+            entries, documents_input.bibliography, mechanics
+        )
     entries_by_folder: Dict[Path, list[Dict[str, Any]]] = {}
     for entry in real_entries:
         entries_by_folder.setdefault(
             Path(material_input.resolved_paths[entry["path"]]).parent, []
         ).append(entry)
-    scope_material, scope_metadata, script_inventory = material_scopes(
-        MaterialScopeInput(
-            material_input.owned_by_folder,
-            list(material_input.log_material),
-            entries_by_folder,
-            material_input.log_root,
-            project_root,
-            real_entries,
+    log_phase(activity, "scan.material-scopes", entries=len(real_entries))
+    with log_operation(
+        activity, "material-scopes", subject=material_input.log_root.as_posix()
+    ):
+        scope_material, scope_metadata, script_inventory = material_scopes(
+            MaterialScopeInput(
+                material_input.owned_by_folder,
+                list(material_input.log_material),
+                entries_by_folder,
+                material_input.log_root,
+                project_root,
+                real_entries,
+            )
         )
-    )
     orphan_entries = orphan_scope_entries(
         OrphanScopeInput(scope_material, scope_metadata, real_entries, project_root)
     )
     entries.extend(orphan_entries)
     add_reference_inventory(entries)
-    script_graph = finalization.policy.script_dependency_graph(script_inventory)
+    log_phase(
+        activity, "scan.script-dependency-graph", scripts=len(script_inventory)
+    )
+    with log_operation(
+        activity,
+        "script-dependency-graph",
+        subject=material_input.log_root.as_posix(),
+    ):
+        script_graph = finalization.policy.script_dependency_graph(script_inventory)
+    log_phase(
+        activity,
+        "scan.directory-memberships",
+        resolved_paths=len(material_input.resolved_paths),
+    )
     memberships = directory_memberships(
         material_input.resolved_paths,
         material_input.log_root,
@@ -1471,12 +1539,20 @@ def _scan_discovered_entries(
     discovery: Mapping[str, Any],
     workspace: EntryScanWorkspace,
     observed_identities: Dict[Path, Dict[str, Any]],
+    activity: ValidationActivityLog | None = None,
 ) -> tuple[list[Dict[str, Any]], Dict[str, set[str]], Dict[str, Dict[str, list[str]]]]:
+    log_phase(activity, "scan.entries", entries=len(discovery["listed"]))
     entries = []
     entry_sections: Dict[str, set[str]] = {}
     entry_section_types: Dict[str, Dict[str, list[str]]] = {}
     for listed in discovery["listed"]:
-        scanned = scan_listed_entry(listed, workspace)
+        with log_operation(
+            activity,
+            "scan-entry",
+            subject=str(listed["path"]),
+            entry=str(listed["id"]),
+        ):
+            scanned = scan_listed_entry(listed, workspace)
         entries.append(scanned.entry)
         if "error" in scanned.entry:
             continue
@@ -1485,6 +1561,70 @@ def _scan_discovered_entries(
         entry_sections[listed["id"]] = scanned.sections
         entry_section_types[listed["id"]] = scanned.section_types
     return entries, entry_sections, entry_section_types
+
+
+def _discover_entries_for_scan(
+    request: ScanRequest,
+    summary_path: Path,
+    log_root: Path,
+    summary_identity: str,
+    jobs: int,
+) -> Dict[str, Any]:
+    """Discover summary entry links with activity detail."""
+
+    log_phase(
+        request.activity,
+        "scan.discover-entries",
+        summary=summary_identity,
+        jobs=jobs,
+    )
+    discovery = discover_entries(
+        summary_path,
+        log_root,
+        request.policy.entry_scan.markdown_parser,
+    )
+    log_checkpoint(
+        request.activity,
+        "entry-discovery-complete",
+        listed=len(discovery["listed"]),
+        missing=len(discovery["missing"]),
+        unlisted=len(discovery["unlisted"]),
+    )
+    return discovery
+
+
+def _owned_inventory_for_scan(
+    request: ScanRequest,
+    log_root: Path,
+    project_root: Path,
+    folder_entry_ids: Mapping[Path, set[str]],
+) -> OwnedInventory:
+    """Inventory log-owned material with activity detail."""
+
+    entry_folders = owned_entry_folders(log_root, folder_entry_ids)
+    log_phase(
+        request.activity,
+        "scan.inventory-materials",
+        entry_folders=len(entry_folders),
+    )
+    owned = owned_inventory(
+        log_root,
+        entry_folders,
+        project_root,
+        request.policy.material_inventory,
+        membership_ignored_paths=(
+            log_root / name
+            for name in (*request.policy.validation_record_names, LOCK_FILENAME)
+        ),
+    )
+    log_checkpoint(
+        request.activity,
+        "material-inventory-complete",
+        owned_paths=len(owned.paths),
+        owned_folders=len(owned.by_folder),
+        log_material=len(owned.log_material),
+    )
+    return owned
 
 
 def _apply_scan_reuse(
@@ -1511,6 +1651,7 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     if request.mode not in {"standard", "reproduction"}:
         raise ValidationToolError("validation mode must be standard or reproduction")
     started = time.monotonic()
+    activity = request.activity
     summary_path = request.summary_path.resolve()
     if not summary_path.is_file():
         raise ValidationToolError(f"summary does not exist: {summary_path}")
@@ -1522,10 +1663,8 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         "mechanical_checks": prior_cache.get("inspections", {}),
     }
     summary_identity = display_path(summary_path, project_root)
-    discovery = discover_entries(
-        summary_path,
-        log_root,
-        policy.entry_scan.markdown_parser,
+    discovery = _discover_entries_for_scan(
+        request, summary_path, log_root, summary_identity, jobs
     )
     refs_path = log_root / "refs.bib"
     bibliography = bibtex_keys(refs_path)
@@ -1550,16 +1689,8 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         folder_entry_ids.setdefault(Path(listed["path"]).parent, set()).add(
             listed["id"]
         )
-    entry_folders = owned_entry_folders(log_root, folder_entry_ids)
-    owned = owned_inventory(
-        log_root,
-        entry_folders,
-        project_root,
-        policy.material_inventory,
-        membership_ignored_paths=(
-            log_root / name
-            for name in (*policy.validation_record_names, LOCK_FILENAME)
-        ),
+    owned = _owned_inventory_for_scan(
+        request, log_root, project_root, folder_entry_ids
     )
 
     files: Dict[str, Dict[str, Any]] = {}
@@ -1598,9 +1729,14 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         policy.entry_scan,
     )
     entries, entry_sections, entry_section_types = _scan_discovered_entries(
-        discovery, workspace, observed_identities
+        discovery, workspace, observed_identities, activity
     )
 
+    log_phase(
+        activity,
+        "scan.validate-evidence-records",
+        entry_records=len(evidence_records),
+    )
     validate_entry_evidence_records(
         evidence_records,
         folder_entry_ids,
@@ -1641,6 +1777,7 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
             jobs=jobs,
             policy=policy,
             valid_prior=prior or {},
+            activity=activity,
         ),
     )
     raw_scan = ScanAssembly(
@@ -1655,8 +1792,18 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
         component_versions=policy.component_versions,
         input_projection_versions=policy.input_projection_versions,
     ).record()
-    classify_local_orphan_inventory(raw_scan)
+    log_phase(
+        activity,
+        "scan.provenance-graph",
+        entries=len(raw_scan["entries"]),
+        scripts=len(raw_scan["script_inventory"]),
+    )
+    with log_operation(
+        activity, "build-provenance-graph", subject=summary_identity
+    ):
+        classify_local_orphan_inventory(raw_scan)
     raw_scan["input_fingerprint"] = input_fingerprint(raw_scan)
+    log_phase(activity, "scan.incremental-comparison")
     _apply_scan_reuse(raw_scan, request, policy)
     metrics = scan_metrics(
         ScanMetricsInput(
@@ -1672,6 +1819,15 @@ def scan_log(request: ScanRequest) -> tuple[ScanRecord, ValidationMetrics]:
     )
     if "incremental" in raw_scan:
         add_incremental_metrics(metrics, raw_scan)
+    log_checkpoint(
+        activity,
+        "scan-complete",
+        elapsed_seconds=metrics["elapsed_seconds"],
+        entries=metrics["entries"],
+        files_identified=metrics["files_identified"],
+        files_hashed=metrics["files_hashed"],
+        bytes_hashed=metrics["bytes_hashed"],
+    )
     return _decode_scan(raw_scan, policy.scan_schema_version), metrics
 
 

@@ -67,6 +67,39 @@ existence alone is insufficient.
 With `--dry-run`, validation reports proposed generated-artifact changes
 without writing them.
 
+## Monitor A Running Validation
+
+The public CLI replaces and appends to
+`<log>/validation/.cache/validation.log` during each invocation. This transient
+activity log records lifecycle phases, detailed operations and subjects,
+elapsed durations, and periodic heartbeats. It is monitoring state, not
+research evidence or a validation result.
+
+When the CLI remains active without returning its structured result, inspect a
+bounded tail rather than reading the log in full:
+
+```bash
+tail -n 30 <log>/validation/.cache/validation.log
+```
+
+Wait for another heartbeat interval before tailing again. Report only a
+meaningful phase change, advancing counters, a new oldest active operation, or
+a terminal status; do not paste routine log traffic into progress updates.
+Increase the bounded tail only when the current lines omit context needed to
+diagnose an apparent stall.
+
+Use successive timestamps, phase names, operation subjects, and elapsed times
+to distinguish slow work from a stalled process. Do not call a run stalled
+from one unchanged tail. Treat it as potentially stalled only when multiple
+tails spanning heartbeat intervals show no new line or no advancement and the
+log has no terminal `run-finish` event. The last heartbeat identifies the
+current phase and the oldest active operation and subject when one exists.
+
+Never edit, delete, interpret as evidence, or cite the activity log. Its
+absence, truncation, or stale content cannot change a validation outcome. The
+CLI's structured `complete`, `review_required`, or `error` result remains the
+only operation status.
+
 ## Semantic Decision
 
 For `review_required`, use only the reported `review_packet` and

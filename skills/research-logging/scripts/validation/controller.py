@@ -8,6 +8,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, cast
 
+from .activity import (
+    ValidationActivityLog,
+    log_checkpoint,
+    log_operation,
+    log_phase,
+)
 from .adjudication import ORPHAN_TARGET
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions
@@ -86,6 +92,7 @@ class CompletionRequest:
     prior_record: Mapping[str, Any]
     review_judgments: list[dict[str, Any]]
     publish: bool
+    activity: ValidationActivityLog | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,7 @@ class ValidationRequest:
     jobs: int = 8
     publish: bool = True
     mode: str = "standard"
+    activity: ValidationActivityLog | None = None
 
 
 @dataclass
@@ -442,12 +450,15 @@ def _review_required(
 def _complete_adjudication(
     request: CompletionRequest,
 ) -> tuple[dict[str, Any], Any, dict[str, int]]:
-    assembly = assemble_records(
-        request.adjudication,
-        request.scan,
-        request.output_dir,
-        render_policy(),
-    )
+    activity = request.activity
+    log_phase(activity, "complete.assemble-records")
+    with log_operation(activity, "assemble-records", subject=request.summary):
+        assembly = assemble_records(
+            request.adjudication,
+            request.scan,
+            request.output_dir,
+            render_policy(),
+        )
     target_record = _target_record(
         request.summary, assembly, request.prior_record
     )
@@ -471,14 +482,25 @@ def _complete_adjudication(
     )
     superseded_subjects = _superseded_orphan_subjects(request.adjudication)
     if request.publish:
-        cleanup = publish_target_bundle(
-            request.output_dir,
-            assembly.report_text,
-            target_record,
-            target_cache,
-            superseded_subjects,
+        log_phase(
+            activity,
+            "complete.publish-records",
+            failures=len(target_record["failures"]),
         )
+        with log_operation(
+            activity,
+            "publish-target-bundle",
+            subject=request.output_dir.as_posix(),
+        ):
+            cleanup = publish_target_bundle(
+                request.output_dir,
+                assembly.report_text,
+                target_record,
+                target_cache,
+                superseded_subjects,
+            )
     else:
+        log_phase(activity, "complete.inspect-dry-run-cleanup")
         cleanup = inspect_target_cleanup(
             request.output_dir, target_record, superseded_subjects
         )
@@ -836,18 +858,33 @@ def _apply_reusable_judgments(
 
 def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     request = context.request
+    activity = request.activity
     if request.decision_file is not None:
-        return _continue_review(
-            context.summary_path,
-            request.decision_file.resolve(),
-            request.publish,
+        log_phase(
+            activity,
+            "review.continue",
+            decision_file=request.decision_file.as_posix(),
         )
+        with log_operation(activity, "continue-review", subject=context.summary):
+            return _continue_review(
+                context.summary_path,
+                request.decision_file.resolve(),
+                request.publish,
+            )
+    log_phase(activity, "review.resume-check")
     resumed = _resume_active_review(context)
     if resumed is not None:
+        log_checkpoint(
+            activity,
+            "review-resumed",
+            status=str(resumed.get("status", "unknown")),
+        )
         return resumed
+    log_phase(activity, "state.hydrate-outcomes")
     context.record = hydrate_record_rows(
         context.record, context.output_dir, ("outcomes", "failures")
     )
+    log_phase(activity, "state.cached-completion-check")
     cached = (
         _cached_completion(
             request,
@@ -862,7 +899,9 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
     )
     if cached is not None:
         cached["state_status"] = context.state_status
+        log_checkpoint(activity, "cached-completion", reused=True)
         return cached
+    log_phase(activity, "scan.start", state_status=context.state_status)
     scan, metrics = scan_log(
         ScanRequest(
             context.summary_path,
@@ -873,12 +912,22 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             request.mode,
             scan_policy(),
             context.project_root,
+            activity,
         )
     )
-    adjudication = prepare_adjudication_record(
-        scan,
-        request.result_date or date.today().isoformat(),
-        request.mode,
+    log_phase(activity, "adjudication.prepare", entries=len(scan["entries"]))
+    with log_operation(
+        activity, "prepare-adjudication", subject=context.summary
+    ):
+        adjudication = prepare_adjudication_record(
+            scan,
+            request.result_date or date.today().isoformat(),
+            request.mode,
+        )
+    log_phase(
+        activity,
+        "adjudication.reuse-judgments",
+        review_items=len(adjudication["review_queue"]),
     )
     subjects = reusable_review_subjects(scan, adjudication)
     context.record["judgments"] = load_judgments_for_subjects(
@@ -888,7 +937,15 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         scan, adjudication, context.record["judgments"]
     )
     if adjudication["review_queue"]:
-        result = _review_required(scan, adjudication, context.progress())
+        log_phase(
+            activity,
+            "review.create-packet",
+            review_items=len(adjudication["review_queue"]),
+        )
+        with log_operation(
+            activity, "create-review-packet", subject=context.summary
+        ):
+            result = _review_required(scan, adjudication, context.progress())
         result.update(
             {"summary": context.summary, "state_status": context.state_status}
         )
@@ -902,6 +959,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             context.record,
             [],
             request.publish,
+            activity,
         )
     )
     return {
@@ -922,6 +980,8 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
 def validate(request: ValidationRequest) -> dict[str, Any]:
     """Validate one maintained summary through the public target operation."""
 
+    activity = request.activity
+    log_phase(activity, "validation.resolve-input")
     summary_path = request.summary_path.resolve()
     output_dir = summary_path.with_suffix("")
     project_root = infer_project_root(summary_path)
@@ -929,8 +989,13 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     report_path = output_dir / "validation.md"
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
-        record, cache, state_status = _load_target_state(
-            output_dir, record_summary
+        log_phase(activity, "validation.load-state", summary=record_summary)
+        with log_operation(activity, "load-target-state", subject=record_summary):
+            record, cache, state_status = _load_target_state(
+                output_dir, record_summary
+            )
+        log_checkpoint(
+            activity, "target-state-loaded", state_status=state_status
         )
         return _run_loaded_validation(
             LoadedValidation(
@@ -945,6 +1010,12 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             )
         )
     except Exception as exc:
+        log_checkpoint(
+            activity,
+            "validation-error",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         report_retained = (
             prior_report is not None
             and report_path.is_file()

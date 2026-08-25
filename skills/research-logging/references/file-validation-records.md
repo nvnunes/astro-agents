@@ -49,7 +49,13 @@ cleanup marker bound to the authoritative manifest closure.
 `subject-index.json` and `index-deltas/` map collision-checked stable subjects
 to manifest-referenced row shards. `work/` owns active review-session files;
 a small review is one page of the same session lifecycle used by a multi-page
-review. `lock` serializes one log's writer. Missing, malformed, stale, or
+review. `lock` serializes one log's writer.
+`validation.log` is the current CLI invocation's transient activity log. The
+CLI replaces it at invocation start, flushes lifecycle, operation, subject,
+duration, and heartbeat lines while work proceeds, and writes a terminal line
+when it exits normally. A process interruption may leave the final line absent.
+Agents inspect only a bounded tail for monitoring and never treat the file as
+evidence or a result. Missing, malformed, stale, truncated, interleaved, or
 unwritable local state changes no durable validation result and cannot make an
 uncertain result succeed.
 

@@ -626,6 +626,61 @@ class DecisionApplicationTests(unittest.TestCase):
 
 
 class PreparationTests(unittest.TestCase):
+    def test_blanket_retention_note_fails_without_semantic_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry_path = make_log(Path(directory))
+            entry_path.write_text(
+                entry_path.read_text(encoding="utf-8").replace(
+                    "- Retain `data/disconnected` for validator contract tests.",
+                    "- Retain `data` as all retained data.\n"
+                    "- Retain\n"
+                    "  `images/invalid.png` as the exact diagnostic artifact.\n"
+                    "- Reproduction may use a newer supported dependency.",
+                ),
+                encoding="utf-8",
+            )
+
+            scan, metrics = RUNTIME.scan_log(summary, jobs=1)
+            entry = next(item for item in scan["entries"] if item["id"] == "e001")
+            prepared = RUNTIME.prepare_adjudication_record(
+                scan, "2026-08-07"
+            )
+            prepared_entry = next(
+                item for item in prepared["entries"] if item["id"] == "e001"
+            )
+
+            self.assertEqual(metrics["validation_note_errors"], 1)
+            self.assertEqual(
+                [item["retention_scope"] for item in entry["validation_note_errors"]],
+                ["data"],
+            )
+            self.assertEqual(
+                [item.get("retention_scope") for item in entry["validation_notes"]],
+                ["images/invalid.png", None],
+            )
+            invalid_targets = [
+                target
+                for target in prepared_entry["targets"]
+                if target["target"].startswith("Invalid Validation note")
+            ]
+            self.assertEqual(len(invalid_targets), 1)
+            self.assertEqual(invalid_targets[0]["integrity"], "FAIL")
+            self.assertFalse(
+                any(
+                    item["identity"].startswith("Invalid Validation note")
+                    for item in prepared["review_queue"]
+                )
+            )
+            orphan_review = next(
+                item
+                for item in prepared["review_queue"]
+                if item["kind"] == "orphan_candidates" and item["entry"] == "e001"
+            )
+            self.assertEqual(
+                [note["retention_scope"] for note in orphan_review["validation_notes"]],
+                ["images/invalid.png"],
+            )
+
     def test_orphan_preparation_preserves_complete_item_dispositions(self) -> None:
         prepared = ADJUDICATION.prepare_orphan_items(
             {

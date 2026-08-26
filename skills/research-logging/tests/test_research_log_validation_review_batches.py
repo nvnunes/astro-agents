@@ -38,8 +38,14 @@ class OrphanBatchTests(unittest.TestCase):
                     "commands": [{"command": "python run.py", "line": 12}],
                     "data_index": {"input": {"sha256": "a" * 64}},
                     "validation_notes": [
-                        {"sha256": "c" * 64},
-                        {"sha256": "b" * 64},
+                        {
+                            "sha256": "c" * 64,
+                            "retention_scope": "images/set",
+                        },
+                        {
+                            "sha256": "b" * 64,
+                            "retention_scope": "data/set",
+                        },
                     ],
                 }
             ],

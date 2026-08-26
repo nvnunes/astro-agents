@@ -46,6 +46,7 @@ from .producer_bindings import (
     producer_binding_invocation_cache,
     verify_producer_binding,
 )
+from .validation_notes import orphan_retention_notes
 
 
 def _fingerprint(value: Any) -> str:
@@ -1146,7 +1147,7 @@ def _reviewed_retention_candidates(
     adjudication: Mapping[str, Any],
 ) -> List[Tuple[str, str, NodeKey, Optional[Dict[str, Any]]]]:
     notes_by_entry = {
-        entry["id"]: entry.get("validation_notes", [])
+        entry["id"]: orphan_retention_notes(entry.get("validation_notes", []))
         for entry in state.scan.get("entries", [])
     }
     pending: List[Tuple[str, str, NodeKey, Optional[Dict[str, Any]]]] = []
@@ -1218,7 +1219,7 @@ def _cached_orphan_acceptances(
     """Resolve reusable semantic orphan acceptances to graph nodes."""
 
     notes_by_entry = {
-        entry["id"]: entry.get("validation_notes", [])
+        entry["id"]: orphan_retention_notes(entry.get("validation_notes", []))
         for entry in scan.get("entries", [])
     }
     accepted = []
@@ -1239,7 +1240,7 @@ def _cached_orphan_acceptances(
                 ]
                 if len(notes) != 1:
                     continue
-                note = notes[0]
+                note = dict(notes[0])
             elif basis != "semantic-connection":
                 continue
             token_match = re.fullmatch(r"<([^>]+)>", identity)

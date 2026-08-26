@@ -97,6 +97,7 @@ class ValidationMetrics(TypedDict, total=False):
     evidence_rows: int
     evidence_errors: int
     section_errors: int
+    validation_note_errors: int
     experimental_sections: int
     synthesis_sections: int
     prose_sections: int
@@ -174,6 +175,7 @@ _SCAN_ENTRY_REQUIRED_KEYS = frozenset(
         "tables",
         "title",
         "validation_notes",
+        "validation_note_errors",
     }
 )
 _SCAN_ENTRY_OPTIONAL_KEYS = frozenset(
@@ -223,7 +225,10 @@ _FENCE_KEYS = frozenset(
 _NUMERIC_KEYS = frozenset({"line", "section", "section_type", "text", "values"})
 _CITATION_KEYS = frozenset({"key", "line", "section", "section_type"})
 _VALIDATION_NOTE_REQUIRED_KEYS = frozenset({"line", "section", "sha256", "text"})
-_VALIDATION_NOTE_OPTIONAL_KEYS = frozenset({"entry"})
+_VALIDATION_NOTE_OPTIONAL_KEYS = frozenset({"entry", "retention_scope"})
+_VALIDATION_NOTE_ERROR_REQUIRED_KEYS = (
+    _VALIDATION_NOTE_REQUIRED_KEYS | {"error", "retention_scope"}
+)
 _COMMAND_REQUIRED_KEYS = frozenset(
     {
         "command",
@@ -742,6 +747,28 @@ def _validate_validation_notes(value: Any, description: str) -> None:
             raise LifecycleRecordContractError(
                 f"{row_description} entry must be a string"
             )
+        if "retention_scope" in row and not isinstance(
+            row["retention_scope"], str
+        ):
+            raise LifecycleRecordContractError(
+                f"{row_description} retention_scope must be a string"
+            )
+
+
+def _validate_validation_note_errors(value: Any, description: str) -> None:
+    for index, row in enumerate(_mapping_list(value, description)):
+        row_description = f"{description} item {index}"
+        _exact_fields(row, row_description, _VALIDATION_NOTE_ERROR_REQUIRED_KEYS)
+        _validate_integer(row["line"], f"{row_description} line")
+        _validate_string_fields(
+            row,
+            row_description,
+            ("error", "retention_scope", "section", "sha256", "text"),
+        )
+        if _HEX_IDENTITY.fullmatch(row["sha256"]) is None:
+            raise LifecycleRecordContractError(
+                f"{row_description} sha256 must be a SHA-256 identity"
+            )
 
 
 def _validate_presented_rows(value: Any, description: str) -> None:
@@ -1057,6 +1084,10 @@ def _validate_scan_entries(record: Mapping[str, Any]) -> None:
         )
         _validate_validation_notes(
             entry["validation_notes"], f"{description} validation_notes"
+        )
+        _validate_validation_note_errors(
+            entry["validation_note_errors"],
+            f"{description} validation_note_errors",
         )
         _validate_citation_rows(entry["citations"], f"{description} citations")
         _validate_command_rows(entry["commands"], f"{description} commands")

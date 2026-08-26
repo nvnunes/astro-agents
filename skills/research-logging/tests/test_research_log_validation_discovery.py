@@ -9,9 +9,61 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 DISCOVERY = importlib.import_module("validation.discovery")
+VALIDATION_NOTES = importlib.import_module("validation.validation_notes")
 
 
 class MarkdownDiscoveryTests(unittest.TestCase):
+    def test_retention_scope_aliases_normalize_to_entry_relative_posix(self) -> None:
+        entry = "docs/log/entries/fixture/e001.md"
+
+        self.assertEqual(
+            VALIDATION_NOTES.normalized_retention_scope("./data/../data/", entry),
+            "data",
+        )
+        self.assertEqual(
+            VALIDATION_NOTES.normalized_retention_scope(
+                "docs/log/entries/fixture/images/", entry
+            ),
+            "images",
+        )
+        self.assertEqual(
+            VALIDATION_NOTES.normalized_retention_scope("<reference_grid>", entry),
+            "<reference_grid>",
+        )
+        self.assertIsNone(
+            VALIDATION_NOTES.retention_scope(
+                "- Reproduce `data/result.csv` with the stated tolerance."
+            )
+        )
+
+    def test_validation_bullets_are_independent_and_preserve_continuations(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "e001.md"
+            entry.write_text(
+                "# Fixture\n\n## Trial\n\n`Steps:`\n\n- Run.\n\n"
+                "`Results:`\n\nThe result is `1.0`.\n\n"
+                "`Validation:`\n\n"
+                "- Retain `data/run-a` because it is one experiment.\n"
+                "- Retain\n"
+                "  `images/run-a` because it presents that experiment.\n"
+                "- Reproduction may use a newer supported dependency.\n",
+                encoding="utf-8",
+            )
+
+            notes = DISCOVERY.parse_markdown(entry)["validation_notes"]
+
+            self.assertEqual(len(notes), 3)
+            self.assertEqual(
+                [note.get("retention_scope") for note in notes],
+                ["data/run-a", "images/run-a", None],
+            )
+            self.assertEqual(
+                notes[1]["text"],
+                "- Retain `images/run-a` because it presents that experiment.",
+            )
+
     def test_invalid_utf8_is_a_discovery_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "e001.md"

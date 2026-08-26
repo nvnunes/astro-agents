@@ -22,6 +22,7 @@ from research_log_data_index import (
 
 from .evidence import NUMBER_RE
 from .inventory import display_path
+from .validation_notes import retention_scope
 
 
 class MarkdownDiscoveryError(ValueError):
@@ -505,21 +506,32 @@ def _validation_notes(
 
     notes: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
+
+    def finish() -> None:
+        nonlocal current
+        if current is None:
+            return
+        current["text"] = " ".join(current.pop("parts"))
+        current["sha256"] = hashlib.sha256(
+            current["text"].encode("utf-8")
+        ).hexdigest()
+        scope = retention_scope(current["text"])
+        if scope is not None:
+            current["retention_scope"] = scope
+        notes.append(current)
+        current = None
+
     for number, (line, section) in enumerate(zip(lines, sections), 1):
         if section.get("block_label") != "Validation":
-            if current is not None:
-                current["text"] = " ".join(current.pop("parts"))
-                current["sha256"] = hashlib.sha256(
-                    current["text"].encode("utf-8")
-                ).hexdigest()
-                notes.append(current)
-                current = None
+            finish()
             continue
         if BLOCK_LABEL_RE.match(line):
             continue
         text = line.strip()
         if not text:
             continue
+        if re.match(r"^-\s+", text):
+            finish()
         if current is None:
             current = {
                 "section": section["section"],
@@ -527,10 +539,7 @@ def _validation_notes(
                 "parts": [],
             }
         current["parts"].append(text)
-    if current is not None:
-        current["text"] = " ".join(current.pop("parts"))
-        current["sha256"] = hashlib.sha256(current["text"].encode("utf-8")).hexdigest()
-        notes.append(current)
+    finish()
     return notes
 
 

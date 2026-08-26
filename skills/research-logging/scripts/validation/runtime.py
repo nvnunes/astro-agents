@@ -59,9 +59,9 @@ from .scan import (
 from .scan import scan_log as run_scan
 from .sharded_state import STATE_DIRECTORY
 
-SCAN_SCHEMA_VERSION = 18
+SCAN_SCHEMA_VERSION = 19
 ADJUDICATION_SCHEMA_VERSION = 8
-RULES_VERSION = "research-log-validation-v48"
+RULES_VERSION = "research-log-validation-v49"
 ORPHAN_INVENTORY_VERSION = 7
 VALIDATION_RECORD_FILENAMES = (
     "validation.md",

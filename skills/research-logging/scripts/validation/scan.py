@@ -81,6 +81,11 @@ from .observations import (
     ObservationSession,
 )
 from .records import LOCK_FILENAME
+from .validation_notes import (
+    blanket_retention_error,
+    normalized_retention_scope,
+    orphan_retention_notes,
+)
 
 
 def validated_jobs(jobs: object) -> int:
@@ -931,10 +936,25 @@ def scan_listed_entry(
     def experimental(item: Mapping[str, Any]) -> bool:
         return item.get("section_type") == "experimental"
 
+    entry_identity = display_path(entry_path, workspace.project_root)
+    validation_notes: list[dict[str, Any]] = []
+    validation_note_errors: list[dict[str, Any]] = []
+    for authored_note in parsed["validation_notes"]:
+        note = dict(authored_note)
+        scope = note.get("retention_scope")
+        if isinstance(scope, str):
+            normalized_scope = normalized_retention_scope(scope, entry_identity)
+            note["retention_scope"] = normalized_scope
+            error = blanket_retention_error(normalized_scope)
+            if error is not None:
+                validation_note_errors.append({**note, "error": error})
+                continue
+        validation_notes.append(note)
+
     entry = {
         "id": listed["id"],
         "title": parsed["title"],
-        "path": display_path(entry_path, workspace.project_root),
+        "path": entry_identity,
         "headings": parsed["headings"],
         "sections": parsed["sections"],
         "section_errors": [
@@ -949,7 +969,8 @@ def scan_listed_entry(
             item for item in parsed["numeric_evidence"] if experimental(item)
         ],
         "presented_items": parsed["presented_items"],
-        "validation_notes": parsed["validation_notes"],
+        "validation_notes": validation_notes,
+        "validation_note_errors": validation_note_errors,
         "citations": [item for item in parsed["citations"] if experimental(item)],
         "commands": commands,
         "data_index": index,
@@ -1043,7 +1064,9 @@ def material_scopes(
                 "validation_notes": [
                     {**note, "entry": entry["id"]}
                     for entry in folder_entries
-                    for note in entry.get("validation_notes", [])
+                    for note in orphan_retention_notes(
+                        entry.get("validation_notes", [])
+                    )
                 ],
             }
             if shared_index:
@@ -1081,7 +1104,7 @@ def material_scopes(
             "validation_notes": [
                 {**note, "entry": entry["id"]}
                 for entry in inputs.real_entries
-                for note in entry.get("validation_notes", [])
+                for note in orphan_retention_notes(entry.get("validation_notes", []))
             ],
         }
     return scoped, metadata, scripts
@@ -1114,6 +1137,7 @@ def orphan_scope_entries(inputs: OrphanScopeInput) -> list[Dict[str, Any]]:
                 "headings": [],
                 "sections": [],
                 "section_errors": [],
+                "validation_note_errors": [],
                 "links": [],
                 "tables": [],
                 "fenced_blocks": [],
@@ -1882,6 +1906,9 @@ def scan_metrics(inputs: ScanMetricsInput) -> ValidationMetrics:
             + sum(len(record["errors"]) for record in entry_evidence_records),
             "section_errors": sum(
                 len(entry.get("section_errors", [])) for entry in entries
+            ),
+            "validation_note_errors": sum(
+                len(entry.get("validation_note_errors", [])) for entry in entries
             ),
             "experimental_sections": _section_count(entries, "experimental"),
             "synthesis_sections": _section_count(entries, "synthesis"),

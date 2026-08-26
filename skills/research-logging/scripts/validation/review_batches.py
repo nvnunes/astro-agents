@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .contracts import ValidationToolError
+from .validation_notes import orphan_retention_notes
 
 DEFAULT_ORPHAN_BATCH_SIZE = 200
 
@@ -58,7 +59,7 @@ def orphan_fingerprint_context(
     )
     notes = sorted(
         str(note.get("sha256"))
-        for note in entry.get("validation_notes", [])
+        for note in orphan_retention_notes(entry.get("validation_notes", []))
         if isinstance(note.get("sha256"), str)
     )
     prefix = (

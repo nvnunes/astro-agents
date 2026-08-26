@@ -286,9 +286,14 @@ class OrphanSubtreeTests(unittest.TestCase):
             "line": 10,
             "section": "Results",
             "sha256": "a" * 64,
-            "text": "Retain the data subtree.",
+            "text": "- Retain `data/set` as one experiment subtree.",
+            "retention_scope": "data/set",
         }
-        new_note = {**old_note, "sha256": "b" * 64, "text": "Changed rule."}
+        new_note = {
+            **old_note,
+            "sha256": "b" * 64,
+            "text": "- Retain `data/set` as the revised experiment subtree.",
+        }
 
         def scan(note: dict[str, object]) -> dict:
             return {

@@ -26,6 +26,7 @@ from .inventory import (
     directory_membership_identity,
     display_path,
 )
+from .validation_notes import orphan_retention_notes
 
 IdentityCache = Mapping[str, str]
 DependencySnapshot = Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, Any]]
@@ -162,7 +163,9 @@ def orphan_item_fingerprints(
                     token_material.get(token_name, []) if token_name is not None else []
                 ),
                 "command_scripts": command_scripts,
-                "validation_notes": entry.get("validation_notes", []),
+                "validation_notes": orphan_retention_notes(
+                    entry.get("validation_notes", [])
+                ),
             }
         )
     return result

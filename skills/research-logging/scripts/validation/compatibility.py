@@ -15,6 +15,7 @@ from .collection_scopes import (
     directory_selection,
 )
 from .contracts import ScanRecord, ValidationToolError
+from .validation_notes import orphan_retention_notes
 
 COMPONENT_VERSIONS: dict[str, int] = {
     "material_identity": 1,
@@ -28,7 +29,7 @@ COMPONENT_VERSIONS: dict[str, int] = {
     "reproducibility": 1,
     "orphan_inventory": 1,
     "orphan_graph": 2,
-    "orphan_semantic_adjudication": 1,
+    "orphan_semantic_adjudication": 2,
 }
 INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "entry": 1,
@@ -40,7 +41,7 @@ INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "presented-item": 1,
     "evidence-association": 1,
     "recorded-invocation": 1,
-    "validation-note": 1,
+    "validation-note": 2,
     "orphan-candidate": 1,
     "orphan-disposition": 1,
 }
@@ -598,7 +599,7 @@ def orphan_input_dependencies(
                 "line": note.get("line"),
             },
         )
-        for note in entry.get("validation_notes", [])
+        for note in orphan_retention_notes(entry.get("validation_notes", []))
     )
     unique = {
         (item["kind"], item["semantic_identity"], item["relationship"]): item

@@ -140,7 +140,7 @@ def make_log(root: Path) -> tuple[Path, Path]:
         "```\n\n"
         "External context uses @missing-source.\n\n"
         "`Validation:`\n\n"
-        "Retain disconnected fixture material for validator contract tests.\n",
+        "- Retain `data/disconnected` for validator contract tests.\n",
     )
     write(entry.parent / "data" / "output.csv", "name,value\nresult,1.0\n")
     write(

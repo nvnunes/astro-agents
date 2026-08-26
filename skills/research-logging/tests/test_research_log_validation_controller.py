@@ -33,6 +33,27 @@ def make_no_semantic_log(root: Path) -> Path:
 
 
 class ValidationControllerTests(unittest.TestCase):
+    def test_v48_review_continuation_is_rejected_by_v49_rules(self) -> None:
+        with self.assertRaisesRegex(
+            CONTROLLER.ValidationToolError, "superseded validation rules"
+        ):
+            CONTROLLER._ensure_current_review_rules(
+                {"validation_rules_version": "research-log-validation-v48"}
+            )
+
+    def test_old_validation_note_registry_bypasses_cached_completion(self) -> None:
+        record = {
+            "rule_dependencies": {
+                "components": dict(CONTROLLER.COMPONENT_VERSIONS),
+                "input_projections": {
+                    **CONTROLLER.INPUT_PROJECTION_VERSIONS,
+                    "validation-note": 1,
+                },
+            }
+        }
+
+        self.assertFalse(CONTROLLER._cached_contract_is_current(record))
+
     def test_changed_review_inputs_restart_without_deleting_active_session(
         self,
     ) -> None:

@@ -113,11 +113,30 @@ incomplete.
 
 Use ordinary bullets. A reproduction exception identifies the exact artifact
 and affected part, comparison rule or tolerance, required match, and technical
-reason. An orphan-retention note identifies one exact file, directory, or
-script path, or one exact `<name>` token consumed by a recorded command, and
-explains why it is intentionally retained without supporting presented
-evidence. A directory note covers its contents. A wholly unused `data.csv` row
-is a review issue rather than an exception candidate.
+reason.
+
+Begin an orphan-retention note with `Retain`, then give one code-formatted
+scope: an exact file, script, retained artifact, homogeneous directory, or
+exact `<name>` token consumed by a recorded command. Keep the note in the
+experimental section that produced or used the material, and explain why the
+material remains part of that experiment's evidence. A homogeneous directory
+belongs to one experiment and one retained lifecycle or purpose; a shared file
+extension alone does not make a directory homogeneous. A valid directory note
+covers that directory's contents.
+
+For example:
+
+- valid: ``- Retain `images/pass7/` because these diagnostics document the
+  pass-7 control scan.``
+- valid: ``- Retain `<reference_grid>` because the recorded command consumes
+  this indexed input.``
+- invalid: ``- Retain `data` because it contains retained results.``
+- invalid: ``- Retain `images` because the plots may be useful.``
+
+Do not use `data`, `images`, or another heterogeneous artifact root to
+authorize unrelated retained material. Use exact-file notes or
+experiment-local homogeneous subdirectories instead. A wholly unused
+`data.csv` row is a review issue rather than an exception candidate.
 
 ### `Follow-up:`
 

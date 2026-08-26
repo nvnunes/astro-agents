@@ -41,6 +41,7 @@ from .review_batches import (
     select_orphan_batch,
 )
 from .review_index import PreparedInvocation, ReviewContextIndex, ReviewQuerySession
+from .validation_notes import orphan_retention_notes
 
 COMPLETE_SCOPE_DESCRIPTION = "complete standard scope"
 ORPHAN_TARGET = "Orphaned artifacts, scripts, and references"
@@ -284,7 +285,9 @@ def prepare_orphan_items(
                 "kind": "orphan_candidates",
                 "identity": ORPHAN_TARGET,
                 "candidates": pending,
-                "validation_notes": entry.get("validation_notes", []),
+                "validation_notes": orphan_retention_notes(
+                    entry.get("validation_notes", [])
+                ),
                 "reason": (
                     "classify each residual candidate as unresolved or retain "
                     "it through one exact pre-existing Validation note"
@@ -591,6 +594,41 @@ def section_error_items(entry: Mapping[str, Any]) -> PreparedEntryItems:
             }
         )
     return PreparedEntryItems(targets, review_items)
+
+
+def validation_note_error_items(entry: Mapping[str, Any]) -> PreparedEntryItems:
+    """Convert invalid orphan-retention notes into deterministic failures."""
+
+    targets: list[dict[str, Any]] = []
+    for issue in entry.get("validation_note_errors", []):
+        target = (
+            f"Invalid Validation note {issue['sha256'][:12]} "
+            f"(line {issue['line']})"
+        )
+        targets.append(
+            {
+                "target": target,
+                "sections": [issue["section"]],
+                "integrity": "FAIL",
+                "provenance": "FAIL",
+                "reproducibility": "N/A",
+                "notes": "-",
+                "dependencies": [{"path": entry["path"], "role": "entry"}],
+                "findings": [
+                    {
+                        "check": "Integrity",
+                        "finding": f"Invalid Validation note: {issue['error']}.",
+                    },
+                    {
+                        "check": "Provenance",
+                        "finding": (
+                            "The invalid note cannot authorize orphan retention."
+                        ),
+                    },
+                ],
+            }
+        )
+    return PreparedEntryItems(targets, [])
 
 
 def group_entry_targets(entry: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1037,8 +1075,13 @@ def prepare_entry_row(
     """Prepare every target and unresolved review item for one entry."""
 
     section_errors = section_error_items(entry)
+    validation_note_errors = validation_note_error_items(entry)
     unprovenanced = unprovenanced_items(entry)
-    targets = [*section_errors.targets, *unprovenanced.targets]
+    targets = [
+        *section_errors.targets,
+        *validation_note_errors.targets,
+        *unprovenanced.targets,
+    ]
     review_items = [*section_errors.review_items, *unprovenanced.review_items]
     for target, grouped in group_entry_targets(entry).items():
         prepared_target = prepare_evidence_target(entry, target, grouped, context)

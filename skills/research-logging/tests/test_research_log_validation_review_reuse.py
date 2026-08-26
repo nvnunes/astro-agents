@@ -70,11 +70,7 @@ def review_decision(
             "kind": template["kind"],
             "entry": template["entry"],
             "identity": template["identity"],
-            **(
-                {"material": template["material"]}
-                if "material" in template
-                else {}
-            ),
+            **({"material": template["material"]} if "material" in template else {}),
         },
         "decision": decision,
         "rule_dependencies": REUSE.SEMANTIC_REVIEW_RULES,
@@ -94,9 +90,7 @@ class ReviewReuseTests(unittest.TestCase):
                 return super().get(key, default)
 
         scan, adjudication, queue, template = target_fixture()
-        judgment = review_decision(
-            scan, adjudication, queue, template, "invocation-1"
-        )
+        judgment = review_decision(scan, adjudication, queue, template, "invocation-1")
         unrelated_value = copy.deepcopy(judgment)
         unrelated_value["subject"]["identity"] = "docs/mini/unrelated.csv"
         unrelated = TrackingJudgment(unrelated_value)
@@ -112,9 +106,7 @@ class ReviewReuseTests(unittest.TestCase):
 
     def test_reuses_subject_decision_across_layout_only(self) -> None:
         scan, adjudication, queue, template = target_fixture()
-        judgment = review_decision(
-            scan, adjudication, queue, template, "invocation-1"
-        )
+        judgment = review_decision(scan, adjudication, queue, template, "invocation-1")
 
         reused = REUSE.reusable_review_answer(
             scan, adjudication, queue, template, [judgment]
@@ -165,9 +157,7 @@ class ReviewReuseTests(unittest.TestCase):
             {"members": {collection: ["<relative/member>"]}},
             "fail",
         ]
-        judgment = review_decision(
-            scan, adjudication, queue, template, decision
-        )
+        judgment = review_decision(scan, adjudication, queue, template, decision)
 
         self.assertEqual(
             REUSE.reusable_review_answer(
@@ -182,6 +172,64 @@ class ReviewReuseTests(unittest.TestCase):
             REUSE.reusable_review_answer(
                 changed, adjudication, queue, template, [judgment]
             )
+        )
+
+    def test_reuse_misses_have_stable_diagnostic_reasons(self) -> None:
+        scan, adjudication, queue, template = target_fixture()
+        judgment = review_decision(scan, adjudication, queue, template, "invocation-1")
+
+        cases = []
+        cases.append(([], "subject_not_found"))
+        changed_rules = {
+            **judgment,
+            "rule_dependencies": {"semantic-review": "old"},
+        }
+        cases.append(([changed_rules], "rule_dependency_changed"))
+        incomplete = {**judgment, "input_dependencies": []}
+        cases.append(([incomplete], "incomplete_legacy_input_dependencies"))
+        disallowed = {**judgment, "decision": "removed-choice"}
+        cases.append(([disallowed], "candidate_or_allowed_answer_changed"))
+        changed_content = copy.deepcopy(judgment)
+        changed_content["input_dependencies"][0]["content_identity"] = "9" * 64
+        cases.append(([changed_content], "relevant_input_content_changed"))
+        moved_source = copy.deepcopy(judgment)
+        for dependency in moved_source["input_dependencies"]:
+            dependency["semantic_identity"] += ":old-locator"
+        cases.append(([moved_source], "source_locator_changed"))
+
+        for judgments, expected in cases:
+            with self.subTest(reason=expected):
+                diagnostics = {}
+                reused = REUSE.reusable_review_answer_diagnostics(
+                    REUSE.ReuseAnswerRequest(
+                        scan,
+                        adjudication,
+                        queue,
+                        template,
+                        judgments,
+                    ),
+                    diagnostics,
+                )
+                self.assertIsNone(reused)
+                self.assertEqual(diagnostics["misses_by_reason"], {expected: 1})
+
+        conflict = {**judgment, "decision": "fail:workflow"}
+        diagnostics = {}
+        self.assertIsNone(
+            REUSE.reusable_review_answer_diagnostics(
+                REUSE.ReuseAnswerRequest(
+                    scan,
+                    adjudication,
+                    queue,
+                    template,
+                    [judgment, conflict],
+                ),
+                diagnostics,
+            )
+        )
+        self.assertEqual(
+            diagnostics["misses_by_reason"],
+            {"conflicting_compatible_answers": 1},
         )
 
 

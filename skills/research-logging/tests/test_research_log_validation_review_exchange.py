@@ -96,9 +96,11 @@ class ReviewSessionTests(unittest.TestCase):
                 first = EXCHANGE.create_exchange(scan, adjudication, {})
             session_dir = Path(first["decision_file"]).parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             state = json.loads(
                 (session_dir / EXCHANGE.SESSION_STATE_FILENAME).read_text(
@@ -206,12 +208,16 @@ class ReviewSessionTests(unittest.TestCase):
             root = Path(directory)
             scan, adjudication = review_fixture(root, count=2)
 
-            first = EXCHANGE.create_exchange(scan, adjudication, {})
+            first = EXCHANGE.create_exchange(
+                scan, adjudication, {}, review_diagnostics=True
+            )
             session_dir = Path(first["decision_file"]).parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             state = json.loads(
                 (session_dir / EXCHANGE.SESSION_STATE_FILENAME).read_text(
@@ -220,8 +226,7 @@ class ReviewSessionTests(unittest.TestCase):
             )
             internal = json.loads(
                 (
-                    Path(first["decision_file"]).parent
-                    / EXCHANGE.INTERNAL_FILENAME
+                    Path(first["decision_file"]).parent / EXCHANGE.INTERNAL_FILENAME
                 ).read_text(encoding="utf-8")
             )
 
@@ -229,7 +234,17 @@ class ReviewSessionTests(unittest.TestCase):
             self.assertEqual(first["session_identity"], state["session_identity"])
             self.assertEqual(state["total_items"], 2)
             self.assertEqual(state["current"]["count"], 2)
+            self.assertIn("issued_at_epoch_seconds", state["current"])
             self.assertEqual(state["accepted_batches"], [])
+            self.assertEqual(first["page_diagnostics"]["item_count"], 2)
+            self.assertLessEqual(
+                first["page_diagnostics"]["packet_bytes"],
+                EXCHANGE.MAX_PACKET_BYTES,
+            )
+            self.assertIn(
+                "orphan_candidate",
+                first["page_diagnostics"]["context_bytes_by_projection_family"],
+            )
             self.assertIn("review_session", internal)
             self.assertNotIn("ordinary_session", internal)
             self.assertNotIn("deferred_orphan", internal)
@@ -242,10 +257,20 @@ class ReviewSessionTests(unittest.TestCase):
             decision_path = Path(first["decision_file"])
             session_dir = decision_path.parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
+
+            state = json.loads(
+                (session_dir / EXCHANGE.SESSION_STATE_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertNotIn("page_diagnostics", first)
+            self.assertNotIn("issued_at_epoch_seconds", state["current"])
             internal_path = decision_path.parent / EXCHANGE.INTERNAL_FILENAME
             internal = json.loads(internal_path.read_text(encoding="utf-8"))
             internal["deferred_orphan"] = internal.pop("review_session")
@@ -371,8 +396,7 @@ class ReviewSessionTests(unittest.TestCase):
                         "path": "output/collection",
                         "role": "input",
                         "members": [
-                            f"member-{number:04d}.pkl"
-                            for number in range(1000)
+                            f"member-{number:04d}.pkl" for number in range(1000)
                         ],
                     }
                 ],
@@ -381,8 +405,7 @@ class ReviewSessionTests(unittest.TestCase):
             "focused_expansion": {
                 "recursive_member_inventory": {
                     "output/collection": [
-                        f"member-{number:04d}-{'x' * 48}.pkl"
-                        for number in range(1000)
+                        f"member-{number:04d}-{'x' * 48}.pkl" for number in range(1000)
                     ]
                 },
                 "truncated_recursive_inventories": ["output/collection"],
@@ -393,9 +416,7 @@ class ReviewSessionTests(unittest.TestCase):
             "docs/mini.md", [item], "continuation", [context]
         )
 
-        self.assertLessEqual(
-            len(packet.encode("utf-8")), EXCHANGE.MAX_PACKET_BYTES
-        )
+        self.assertLessEqual(len(packet.encode("utf-8")), EXCHANGE.MAX_PACKET_BYTES)
         self.assertEqual(
             projected[0]["context_projection"],
             "bounded-terminal-collection",
@@ -448,9 +469,11 @@ class ReviewSessionTests(unittest.TestCase):
             first = EXCHANGE.create_exchange(scan, adjudication, {})
             session_dir = Path(first["decision_file"]).parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             state = json.loads(
                 (session_dir / EXCHANGE.SESSION_STATE_FILENAME).read_text(
@@ -496,28 +519,28 @@ class ReviewSessionTests(unittest.TestCase):
 
             self.assertEqual(len(items), 10)
             self.assertEqual(
-                sum(
-                    len(item["allowed_decisions"])
-                    for item in items
-                ),
+                sum(len(item["allowed_decisions"]) for item in items),
                 120,
             )
-            self.assertTrue(
-                all(item["material"].endswith(".csv") for item in items)
-            )
+            self.assertTrue(all(item["material"].endswith(".csv") for item in items))
 
     def test_pages_append_fragments_and_merge_once_at_completion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scan, adjudication = review_fixture(root)
             first = EXCHANGE.create_exchange(
-                scan, adjudication, {"record": {}, "cache": {}}
+                scan,
+                adjudication,
+                {"record": {}, "cache": {}},
+                review_diagnostics=True,
             )
             session_dir = Path(first["decision_file"]).parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             base_path = session_dir / EXCHANGE.SESSION_BASE_FILENAME
             base_before = base_path.read_bytes()
@@ -534,35 +557,44 @@ class ReviewSessionTests(unittest.TestCase):
             self.assertLessEqual(first["byte_count"], EXCHANGE.MAX_PACKET_BYTES)
 
             fill_page(Path(first["decision_file"]))
-            decisions, internal = EXCHANGE.load_decisions(
-                Path(first["decision_file"])
-            )
+            decisions, internal = EXCHANGE.load_decisions(Path(first["decision_file"]))
             second = EXCHANGE.accept_review_page(
-                decisions, internal, lambda *_: ["a" * 64]
+                decisions,
+                internal,
+                lambda *_: ["a" * 64],
+                review_diagnostics=True,
             )
             self.assertEqual(second["status"], "review_required")
+            self.assertGreaterEqual(
+                second["accepted_page_diagnostics"]["review_wait_seconds"],
+                0,
+            )
+            self.assertEqual(
+                second["accepted_page_diagnostics"]["items_by_kind"],
+                {"orphan_candidate": first_count},
+            )
             second_count = second["item_count"]
             self.assertLessEqual(second_count, 200)
             self.assertEqual(base_path.read_bytes(), base_before)
 
             fill_page(Path(second["decision_file"]))
-            decisions, internal = EXCHANGE.load_decisions(
-                Path(second["decision_file"])
-            )
+            decisions, internal = EXCHANGE.load_decisions(Path(second["decision_file"]))
             third = EXCHANGE.accept_review_page(
-                decisions, internal, lambda *_: ["b" * 64]
+                decisions,
+                internal,
+                lambda *_: ["b" * 64],
+                review_diagnostics=True,
             )
             self.assertEqual(third["status"], "review_required")
-            self.assertEqual(
-                third["item_count"], 401 - first_count - second_count
-            )
+            self.assertEqual(third["item_count"], 401 - first_count - second_count)
 
             fill_page(Path(third["decision_file"]))
-            decisions, internal = EXCHANGE.load_decisions(
-                Path(third["decision_file"])
-            )
+            decisions, internal = EXCHANGE.load_decisions(Path(third["decision_file"]))
             ready = EXCHANGE.accept_review_page(
-                decisions, internal, lambda *_: ["c" * 64]
+                decisions,
+                internal,
+                lambda *_: ["c" * 64],
+                review_diagnostics=True,
             )
 
             self.assertEqual(ready["status"], "ready")
@@ -572,9 +604,7 @@ class ReviewSessionTests(unittest.TestCase):
                 ["a" * 64, "b" * 64, "c" * 64],
             )
             self.assertEqual(base_path.read_bytes(), base_before)
-            self.assertEqual(
-                len(list(session_dir.glob("accepted-*.json"))), 3
-            )
+            self.assertEqual(len(list(session_dir.glob("accepted-*.json"))), 3)
             self.assertLess(
                 (session_dir / EXCHANGE.SESSION_STATE_FILENAME).stat().st_size,
                 4096,
@@ -589,9 +619,11 @@ class ReviewSessionTests(unittest.TestCase):
             first = EXCHANGE.create_exchange(scan, adjudication, {})
             session_dir = Path(first["decision_file"]).parent.parent
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             decision_path = Path(first["decision_file"])
             fill_page(decision_path)

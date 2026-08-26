@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, MutableMapping, NamedTuple, Sequence
 
 from .compatibility import (
     decode_input_dependencies,
@@ -18,10 +18,18 @@ from .judgment_rules import SEMANTIC_REVIEW_RULES
 from .orphan_rules import SUBTREE_REVIEW_KIND, SUBTREE_RULE_DEPENDENCIES
 
 ReviewSubjectKey = tuple[Any, ...]
-ReviewJudgmentIndex = Mapping[
-    ReviewSubjectKey, Sequence[Mapping[str, Any]]
-]
+ReviewJudgmentIndex = Mapping[ReviewSubjectKey, Sequence[Mapping[str, Any]]]
 ReviewJudgmentSource = Sequence[Mapping[str, Any]] | ReviewJudgmentIndex
+
+
+class ReuseAnswerRequest(NamedTuple):
+    """Current semantic question and saved judgments used for reuse."""
+
+    scan: ScanRecord
+    adjudication: AdjudicationRecord
+    queue_item: Mapping[str, Any]
+    template: Mapping[str, Any]
+    judgments: ReviewJudgmentSource
 
 
 def _subject_key(value: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -87,21 +95,13 @@ def _target_row(
             None,
         )
     owner = next(
-        (
-            row
-            for row in adjudication.get("entries", [])
-            if row.get("id") == entry
-        ),
+        (row for row in adjudication.get("entries", []) if row.get("id") == entry),
         None,
     )
     if owner is None:
         return None
     return next(
-        (
-            row
-            for row in owner.get("targets", [])
-            if row.get("target") == identity
-        ),
+        (row for row in owner.get("targets", []) if row.get("target") == identity),
         None,
     )
 
@@ -156,9 +156,7 @@ def _current_check_inputs(
                 return None
             section = candidates[0].get("section")
             entries = [
-                name
-                for name, name_section in declared
-                if name_section == section
+                name for name, name_section in declared if name_section == section
             ]
             if len(entries) != 1:
                 return None
@@ -185,9 +183,9 @@ def _collection_paths(queue_item: Mapping[str, Any]) -> set[str]:
 def _without_unscoped_collections(
     inputs: Sequence[Mapping[str, Any]], collections: set[str]
 ) -> list[dict[str, Any]]:
-    prefixes = {
-        f"exact-material:{path}" for path in collections
-    } | {f"collection-membership:{path}" for path in collections}
+    prefixes = {f"exact-material:{path}" for path in collections} | {
+        f"collection-membership:{path}" for path in collections
+    }
     return [
         dict(item)
         for item in inputs
@@ -219,9 +217,7 @@ def _answer_allowed(
 ) -> bool:
     if answer in template.get("allowed_decisions", []):
         return True
-    if template.get("kind") != "collection_scope" or not isinstance(
-        answer, Mapping
-    ):
+    if template.get("kind") != "collection_scope" or not isinstance(answer, Mapping):
         return False
     members = answer.get("members")
     return (
@@ -252,9 +248,7 @@ def _selected_collection_identity(
         identities.append((member, identity))
     digest = hashlib.sha256()
     for member, identity in identities:
-        digest.update(
-            f"{member}\0{identity['size']}\0{identity['sha256']}\n".encode()
-        )
+        digest.update(f"{member}\0{identity['size']}\0{identity['sha256']}\n".encode())
     return {
         "size": sum(int(identity["size"]) for _, identity in identities),
         "mtime_ns": max(int(identity.get("mtime_ns", 0)) for _, identity in identities),
@@ -308,6 +302,38 @@ def _scan_entry(scan: ScanRecord, entry: str) -> Mapping[str, Any] | None:
     )
 
 
+def _content_signature(
+    items: Sequence[Mapping[str, Any]],
+) -> list[tuple[Any, ...]]:
+    """Return dependency content without source-locator identities."""
+
+    return sorted(
+        (
+            item.get("kind"),
+            item.get("projection_version"),
+            item.get("relationship"),
+            item.get("content_identity"),
+        )
+        for item in items
+    )
+
+
+def _reuse_miss_reason(reasons: set[str]) -> str:
+    """Choose one stable explanation for a question that was not reused."""
+
+    for reason in (
+        "candidate_or_allowed_answer_changed",
+        "relevant_input_content_changed",
+        "source_locator_changed",
+        "incomplete_legacy_input_dependencies",
+        "rule_dependency_changed",
+        "subject_not_found",
+    ):
+        if reason in reasons:
+            return reason
+    return "subject_not_found"
+
+
 def _review_decision_answers(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -323,9 +349,7 @@ def _review_decision_answers(
         else SEMANTIC_REVIEW_RULES
     )
     candidates = (
-        judgments.get(subject, ())
-        if isinstance(judgments, Mapping)
-        else judgments
+        judgments.get(subject, ()) if isinstance(judgments, Mapping) else judgments
     )
     for judgment in candidates:
         stored_subject = judgment.get("subject")
@@ -349,6 +373,64 @@ def _review_decision_answers(
         if compatible:
             answers.append(decision)
     return answers
+
+
+def _review_decision_answers_diagnostics(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    template: Mapping[str, Any],
+    judgments: ReviewJudgmentSource,
+) -> tuple[list[Any], set[str]]:
+    answers = []
+    miss_reasons: set[str] = set()
+    subject = _template_subject(template)
+    expected_rules = (
+        SUBTREE_RULE_DEPENDENCIES
+        if template.get("kind") == SUBTREE_REVIEW_KIND
+        else SEMANTIC_REVIEW_RULES
+    )
+    candidates = (
+        judgments.get(subject, ()) if isinstance(judgments, Mapping) else judgments
+    )
+    subject_found = False
+    for judgment in candidates:
+        stored_subject = judgment.get("subject")
+        if (
+            judgment.get("kind") != "review-decision"
+            or not isinstance(stored_subject, Mapping)
+            or _subject_key(stored_subject) != subject
+        ):
+            continue
+        subject_found = True
+        if judgment.get("rule_dependencies") != expected_rules:
+            miss_reasons.add("rule_dependency_changed")
+            continue
+        decision = judgment.get("decision")
+        if not _answer_allowed(queue_item, template, decision):
+            miss_reasons.add("candidate_or_allowed_answer_changed")
+            continue
+        current = review_judgment_inputs(
+            scan, adjudication, queue_item, template, decision
+        )
+        stored = _decoded_inputs(judgment)
+        if stored is None or (
+            not stored and template.get("kind") != SUBTREE_REVIEW_KIND
+        ):
+            miss_reasons.add("incomplete_legacy_input_dependencies")
+            continue
+        compatible = _contains_current_inputs(judgment, current)
+        if template.get("kind") == SUBTREE_REVIEW_KIND:
+            compatible = _scope_map(stored) == _scope_map(current)
+        if compatible:
+            answers.append(decision)
+        elif current and _content_signature(stored) == _content_signature(current):
+            miss_reasons.add("source_locator_changed")
+        else:
+            miss_reasons.add("relevant_input_content_changed")
+    if not subject_found:
+        miss_reasons.add("subject_not_found")
+    return answers, miss_reasons
 
 
 def review_judgment_inputs(
@@ -377,12 +459,8 @@ def _ordinary_review_inputs(
     current = _current_check_inputs(scan, adjudication, queue_item)
     if current is None:
         return []
-    result = _without_unscoped_collections(
-        current, _collection_paths(queue_item)
-    )
-    if template.get("kind") != "collection_scope" or not isinstance(
-        decision, Mapping
-    ):
+    result = _without_unscoped_collections(current, _collection_paths(queue_item))
+    if template.get("kind") != "collection_scope" or not isinstance(decision, Mapping):
         return result
     selected = _review_collection_selection(queue_item, decision)
     if selected is None:
@@ -476,9 +554,7 @@ def reusable_review_answer(
         scan, adjudication, queue_item, template, judgments
     )
     allowed = [
-        answer
-        for answer in candidates
-        if _answer_allowed(queue_item, template, answer)
+        answer for answer in candidates if _answer_allowed(queue_item, template, answer)
     ]
     unique = {
         json.dumps(answer, sort_keys=True, separators=(",", ":")): answer
@@ -486,6 +562,53 @@ def reusable_review_answer(
     }
     if len(unique) != 1:
         return None
+    return (
+        next(iter(unique.values())),
+        "Reused from an exact compatible stable-subject review decision.",
+    )
+
+
+def reusable_review_answer_diagnostics(
+    request: ReuseAnswerRequest,
+    diagnostics: MutableMapping[str, Any] | None,
+) -> tuple[Any, str] | None:
+    """Return a reusable answer and optionally classify a reuse miss."""
+
+    if diagnostics is None:
+        return reusable_review_answer(*request)
+    candidates, miss_reasons = _review_decision_answers_diagnostics(
+        request.scan,
+        request.adjudication,
+        request.queue_item,
+        request.template,
+        request.judgments,
+    )
+    allowed = [
+        answer
+        for answer in candidates
+        if _answer_allowed(request.queue_item, request.template, answer)
+    ]
+    unique = {
+        json.dumps(answer, sort_keys=True, separators=(",", ":")): answer
+        for answer in allowed
+    }
+    if diagnostics is not None:
+        diagnostics["questions_considered"] = (
+            int(diagnostics.get("questions_considered", 0)) + 1
+        )
+    if len(unique) != 1:
+        reason = (
+            "conflicting_compatible_answers"
+            if len(unique) > 1
+            else _reuse_miss_reason(miss_reasons)
+        )
+        if diagnostics is not None:
+            misses = diagnostics.setdefault("misses_by_reason", {})
+            if isinstance(misses, MutableMapping):
+                misses[reason] = int(misses.get(reason, 0)) + 1
+        return None
+    if diagnostics is not None:
+        diagnostics["answers_found"] = int(diagnostics.get("answers_found", 0)) + 1
     return (
         next(iter(unique.values())),
         "Reused from an exact compatible stable-subject review decision.",

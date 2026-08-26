@@ -73,9 +73,7 @@ class ValidationActivityLogTests(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
 
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
-                stderr
-            ):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 exit_status = CLI.main(
                     [
                         "validate",
@@ -84,20 +82,26 @@ class ValidationActivityLogTests(unittest.TestCase):
                         "--jobs",
                         "1",
                         "--dry-run",
+                        "--review-diagnostics",
                     ]
                 )
 
             self.assertEqual(exit_status, 0)
             self.assertEqual(stderr.getvalue(), "")
             result = json.loads(stdout.getvalue())
+            review_diagnostics = result["review_diagnostics"]
+            self.assertGreaterEqual(review_diagnostics["execution_seconds"], 0)
+            self.assertTrue(review_diagnostics["lifecycle"])
+            initial = review_diagnostics["lifecycle"][0]
+            self.assertEqual(
+                review_diagnostics["reuse"]["questions_considered"],
+                initial["item_count"],
+            )
             activity_path = Path(result["activity_log"])
             self.assertEqual(
                 activity_path,
                 (
-                    summary.with_suffix("")
-                    / "validation"
-                    / ".cache"
-                    / "validation.log"
+                    summary.with_suffix("") / "validation" / ".cache" / "validation.log"
                 ).resolve(),
             )
             text = activity_path.read_text(encoding="utf-8")
@@ -107,9 +111,8 @@ class ValidationActivityLogTests(unittest.TestCase):
             self.assertIn('operation="resolve-reusable-subjects"', text)
             self.assertIn('operation="load-reusable-judgments"', text)
             self.assertIn('operation="apply-reusable-judgments"', text)
-            self.assertIn(
-                f'event="run-finish" status="{result["status"]}"', text
-            )
+            self.assertIn(f'event="run-finish" status="{result["status"]}"', text)
+            self.assertIn("review_diagnostics=", text)
 
     def test_unavailable_activity_log_does_not_change_cli_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -127,9 +130,7 @@ class ValidationActivityLogTests(unittest.TestCase):
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(stderr),
             ):
-                exit_status = CLI.main(
-                    ["validate", "--summary", summary.as_posix()]
-                )
+                exit_status = CLI.main(["validate", "--summary", summary.as_posix()])
 
             self.assertEqual(exit_status, 0)
             self.assertEqual(stderr.getvalue(), "")

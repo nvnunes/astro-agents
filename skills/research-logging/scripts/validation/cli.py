@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from .activity import ValidationActivityLog, ValidationActivityRequest
 from .contracts import ValidationToolError
@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="run validation and report the result without publishing artifacts",
+    )
+    validate_parser.add_argument(
+        "--review-diagnostics",
+        action="store_true",
+        help="collect detailed transient review-lifecycle diagnostics",
     )
     return parser
 
@@ -73,19 +78,20 @@ def _run_validate(args: argparse.Namespace) -> int:
                 publish=not args.dry_run,
                 mode=args.mode,
                 activity=activity,
+                review_diagnostics=args.review_diagnostics,
             )
         )
     except BaseException as exc:
         if activity is not None:
-            activity.finish(
-                "error", error_type=type(exc).__name__, error=str(exc)
-            )
+            activity.finish("error", error_type=type(exc).__name__, error=str(exc))
         raise
     if activity is not None:
-        activity.finish(
-            str(result.get("status", "error")),
-            progress_retained=bool(result.get("progress_retained", False)),
-        )
+        terminal_fields: dict[str, Any] = {
+            "progress_retained": bool(result.get("progress_retained", False))
+        }
+        if "review_diagnostics" in result:
+            terminal_fields["review_diagnostics"] = result["review_diagnostics"]
+        activity.finish(str(result.get("status", "error")), **terminal_fields)
         result["activity_log"] = activity.path.as_posix()
     print(json.dumps(result, sort_keys=True))
     return 2 if result["status"] == "error" else 0

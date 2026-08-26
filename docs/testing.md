@@ -232,6 +232,16 @@ checkpoint sequences with logging disabled and enabled. Use per-event overhead
 to judge the retained logger; do not substitute results from a busy host for
 the production review-scaling baseline.
 
+### Opt-in Review Diagnostics
+
+For a maintainer investigation of semantic review demand, add
+`--review-diagnostics` to the public `validate` command. This opt-in mode adds
+transient lifecycle counts, reuse-miss categories, conservative shadow-policy
+matches, page/context measurements, and reviewer-wait timing to the structured
+result and terminal activity event. It may write an issue timestamp only to an
+active review session's transient cache state. Do not use it for routine
+validation or make validation results depend on its measurements.
+
 Performance changes must continue to load existing monolithic session indexes,
 accepted fragments, manifests, caches, and immutable row shards without
 migration or regeneration. New sessions may use optional hash-verified item

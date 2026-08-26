@@ -27,10 +27,7 @@ def make_no_semantic_log(root: Path) -> Path:
     (summary.with_suffix("") / "entries").mkdir(parents=True)
     write(
         summary,
-        "# Empty Log\n\n"
-        "## Summary\n\n"
-        "No quantitative claims.\n\n"
-        "## Entries\n",
+        "# Empty Log\n\n## Summary\n\nNo quantitative claims.\n\n## Entries\n",
     )
     return summary
 
@@ -107,9 +104,7 @@ class ValidationControllerTests(unittest.TestCase):
             )
 
         assert result is not None
-        self.assertEqual(
-            [judgment["identity"] for judgment in result], identities
-        )
+        self.assertEqual([judgment["identity"] for judgment in result], identities)
         self.assertEqual(
             load.call_args.args[2],
             [
@@ -120,6 +115,7 @@ class ValidationControllerTests(unittest.TestCase):
                 }
             ],
         )
+
     def test_no_semantic_log_completes_and_publishes_only_target_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
@@ -129,11 +125,10 @@ class ValidationControllerTests(unittest.TestCase):
                 "hydrate_record_shell",
                 side_effect=AssertionError("new validation must not fully hydrate"),
             ):
-                result = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                result = run_validate(summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(result["status"], "complete")
+            self.assertNotIn("review_diagnostics", result)
             self.assertEqual(summary.read_bytes(), before)
             output = summary.with_suffix("")
             generated = {
@@ -172,9 +167,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_repeat_no_semantic_validation_needs_no_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
-            first = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
             record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
             before = record_path.read_bytes()
             with (
@@ -190,7 +183,10 @@ class ValidationControllerTests(unittest.TestCase):
                 ),
             ):
                 second = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
+                    summary,
+                    result_date="2026-08-15",
+                    jobs=1,
+                    review_diagnostics=True,
                 )
             self.assertEqual(first["status"], "complete")
             self.assertEqual(second["status"], "complete")
@@ -203,10 +199,7 @@ class ValidationControllerTests(unittest.TestCase):
             first = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(first["status"], "complete")
             index_path = (
-                summary.with_suffix("")
-                / "validation"
-                / ".cache"
-                / STORE.INDEX_FILENAME
+                summary.with_suffix("") / "validation" / ".cache" / STORE.INDEX_FILENAME
             )
             index_path.unlink()
 
@@ -216,12 +209,29 @@ class ValidationControllerTests(unittest.TestCase):
                 side_effect=AssertionError("cached completion must not scan"),
             ):
                 second = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
+                    summary,
+                    result_date="2026-08-15",
+                    jobs=1,
+                    review_diagnostics=True,
                 )
 
             self.assertEqual(second["status"], "complete")
             self.assertTrue(second["cached"])
             self.assertFalse(index_path.exists())
+            self.assertEqual(second["diagnostics"]["files_hashed"], 0)
+            self.assertEqual(second["diagnostics"]["bytes_hashed"], 0)
+            self.assertEqual(second["review_diagnostics"]["pages"], [])
+            self.assertEqual(
+                second["review_diagnostics"]["lifecycle"],
+                [
+                    {
+                        "stage": "terminal_completion",
+                        "item_count": 0,
+                        "items_by_kind": {},
+                        "proposed_exact_producer_matches": 0,
+                    }
+                ],
+            )
 
     def test_cached_completion_prunes_incompatible_judgments_without_scan(
         self,
@@ -277,9 +287,7 @@ class ValidationControllerTests(unittest.TestCase):
                     STORE, "_read_owned_bytes", side_effect=read_judgment_only
                 ),
             ):
-                second = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                second = run_validate(summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(second["status"], "complete")
             self.assertTrue(second["cached"])
@@ -303,9 +311,7 @@ class ValidationControllerTests(unittest.TestCase):
                     ),
                 ),
             ):
-                third = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                third = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(third["status"], "complete")
             self.assertTrue(third["cached"])
 
@@ -315,9 +321,7 @@ class ValidationControllerTests(unittest.TestCase):
             result = run_validate(summary, result_date="2026-08-16", jobs=1)
             while result["status"] == "review_required":
                 decision_path = Path(result["decision_file"])
-                template = json.loads(
-                    decision_path.read_text(encoding="utf-8")
-                )
+                template = json.loads(decision_path.read_text(encoding="utf-8"))
                 for item in template["items"]:
                     allowed = item["allowed_decisions"]
                     decision: object
@@ -354,9 +358,7 @@ class ValidationControllerTests(unittest.TestCase):
                             if isinstance(value, dict)
                         )
                         decision = {
-                            "members": {
-                                path: ["a.txt"] for path in collections
-                            }
+                            "members": {path: ["a.txt"] for path in collections}
                         }
                     else:
                         decision = "needs_context"
@@ -366,9 +368,7 @@ class ValidationControllerTests(unittest.TestCase):
                     json.dumps(template, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                result = run_validate(
-                    summary, decision_file=decision_path, jobs=1
-                )
+                result = run_validate(summary, decision_file=decision_path, jobs=1)
 
             self.assertEqual(result["status"], "complete")
             output = summary.with_suffix("")
@@ -376,9 +376,9 @@ class ValidationControllerTests(unittest.TestCase):
             affected_judgments = [
                 judgment
                 for judgment in before["judgments"]
-                if judgment.get("subject", {}).get("identity", "").endswith(
-                    "data/output.csv"
-                )
+                if judgment.get("subject", {})
+                .get("identity", "")
+                .endswith("data/output.csv")
             ]
             self.assertTrue(affected_judgments)
             unaffected_outcomes = {
@@ -404,9 +404,7 @@ class ValidationControllerTests(unittest.TestCase):
                     ),
                 ),
             ):
-                rerun = run_validate(
-                    summary, result_date="2026-08-16", jobs=1
-                )
+                rerun = run_validate(summary, result_date="2026-08-16", jobs=1)
 
             self.assertEqual(rerun["status"], "review_required")
             self.assertNotEqual(rerun.get("cached"), True)
@@ -440,8 +438,7 @@ class ValidationControllerTests(unittest.TestCase):
                 )
             )
             current_outcomes = {
-                outcome["compatibility_identity"]
-                for outcome in current["outcomes"]
+                outcome["compatibility_identity"] for outcome in current["outcomes"]
             }
             self.assertTrue(unaffected_outcomes <= current_outcomes)
             self.assertTrue(
@@ -465,9 +462,7 @@ class ValidationControllerTests(unittest.TestCase):
             with mock.patch.object(
                 CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
             ) as scanned:
-                second = run_validate(
-                    summary, result_date="2026-08-16", jobs=1
-                )
+                second = run_validate(summary, result_date="2026-08-16", jobs=1)
 
             self.assertEqual(second["status"], "complete")
             self.assertNotEqual(second.get("cached"), True)
@@ -484,9 +479,7 @@ class ValidationControllerTests(unittest.TestCase):
             with mock.patch.object(
                 CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
             ) as scanned:
-                repaired = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                repaired = run_validate(summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(repaired["status"], "complete")
             self.assertNotEqual(repaired.get("cached"), True)
@@ -514,9 +507,7 @@ class ValidationControllerTests(unittest.TestCase):
             with mock.patch.object(
                 TARGET, "_atomic_write_bytes", side_effect=fail_report
             ):
-                failed = run_validate(
-                    summary, result_date="2026-08-16", jobs=1
-                )
+                failed = run_validate(summary, result_date="2026-08-16", jobs=1)
 
             self.assertEqual(failed["status"], "error")
             self.assertEqual(report.read_bytes(), prior_report)
@@ -535,25 +526,20 @@ class ValidationControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             first_summary = make_no_semantic_log(root)
-            completed = run_validate(
-                first_summary, result_date="2026-08-15", jobs=1
-            )
+            completed = run_validate(first_summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(completed["status"], "complete")
             second_summary = root / "docs" / "other.md"
             (second_summary.with_suffix("") / "entries").mkdir(parents=True)
             write(second_summary, "# Other\n\n## Entries\n")
-            (
-                second_summary.with_suffix("")
-                / TARGET.RECORD_FILENAME
-            ).parent.mkdir(parents=True)
+            (second_summary.with_suffix("") / TARGET.RECORD_FILENAME).parent.mkdir(
+                parents=True
+            )
             shutil.copy2(
                 first_summary.with_suffix("") / TARGET.RECORD_FILENAME,
                 second_summary.with_suffix("") / TARGET.RECORD_FILENAME,
             )
 
-            rejected = run_validate(
-                second_summary, result_date="2026-08-15", jobs=1
-            )
+            rejected = run_validate(second_summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(rejected["status"], "error")
             self.assertIn("belongs to", rejected["error"])
@@ -570,9 +556,7 @@ class ValidationControllerTests(unittest.TestCase):
             shutil.copytree(first_root, second_root, copy_function=shutil.copy2)
             relocated = second_root / "docs" / "empty.md"
 
-            result = run_validate(
-                relocated, result_date="2026-08-15", jobs=1
-            )
+            result = run_validate(relocated, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(result["status"], "complete")
             stored = TARGET.load_record(
@@ -583,9 +567,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_operational_failure_retains_prior_completed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
-            completed = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            completed = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(completed["status"], "complete")
             report = summary.with_suffix("") / "validation.md"
             before = report.read_bytes()
@@ -626,9 +608,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_reproduction_mode_does_not_use_standard_cached_completion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))
-            first = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(first["status"], "complete")
 
             with mock.patch.object(
@@ -675,9 +655,7 @@ class ValidationControllerTests(unittest.TestCase):
                 "hydrate_record_shell",
                 side_effect=AssertionError("new review must not fully hydrate"),
             ):
-                first = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                first = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(first["status"], "review_required")
             decision_path = Path(first["decision_file"])
             template = json.loads(decision_path.read_text(encoding="utf-8"))
@@ -726,9 +704,7 @@ class ValidationControllerTests(unittest.TestCase):
                 json.dumps(template, indent=2) + "\n", encoding="utf-8"
             )
 
-            continued = run_validate(
-                summary, decision_file=decision_path, jobs=1
-            )
+            continued = run_validate(summary, decision_file=decision_path, jobs=1)
             self.assertEqual(continued["status"], "review_required")
 
             self.assertLess(continued["item_count"], first["item_count"])
@@ -753,9 +729,7 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertTrue(
                 all(
                     item["context_identity"]
-                    != first_contexts[
-                        (item["kind"], item["entry"], item["identity"])
-                    ]
+                    != first_contexts[(item["kind"], item["entry"], item["identity"])]
                     for item in expanded["items"]
                 )
             )
@@ -898,9 +872,7 @@ class ValidationControllerTests(unittest.TestCase):
                 item["rationale"] = "Compatible legacy packet decision."
             write(legacy_decision, json.dumps(template, indent=2) + "\n")
 
-            continued = run_validate(
-                summary, decision_file=legacy_decision, jobs=1
-            )
+            continued = run_validate(summary, decision_file=legacy_decision, jobs=1)
 
             self.assertEqual(continued["status"], "review_required")
             self.assertFalse(legacy_session.exists())
@@ -922,9 +894,7 @@ class ValidationControllerTests(unittest.TestCase):
                 "write_record_and_cache",
                 side_effect=interrupt_continuation,
             ):
-                interrupted = run_validate(
-                    summary, result_date="2026-08-15", jobs=1
-                )
+                interrupted = run_validate(summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(interrupted["status"], "error")
             work_root = (
@@ -942,9 +912,7 @@ class ValidationControllerTests(unittest.TestCase):
                 if path.is_file()
             }
 
-            recovered = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            recovered = run_validate(summary, result_date="2026-08-15", jobs=1)
 
             self.assertEqual(recovered["status"], "review_required")
             self.assertEqual(recovered["session_identity"], session_dir.name)
@@ -973,9 +941,7 @@ class ValidationControllerTests(unittest.TestCase):
             }
             template_item = EXCHANGE._ordinary_template(item)
             template_item["decision"] = {
-                "members": {
-                    "docs/mini/models": ["run-1/training-history.csv"]
-                }
+                "members": {"docs/mini/models": ["run-1/training-history.csv"]}
             }
             template_item["rationale"] = "The producer reads this retained history."
             template = {
@@ -1019,11 +985,7 @@ class ValidationControllerTests(unittest.TestCase):
                             "identity": "docs/mini/result.csv",
                         },
                         "decision": "pass",
-                        "members": {
-                            "docs/mini/models": [
-                                "run-1/training-history.csv"
-                            ]
-                        },
+                        "members": {"docs/mini/models": ["run-1/training-history.csv"]},
                     }
                 ],
             )
@@ -1066,9 +1028,11 @@ class ValidationControllerTests(unittest.TestCase):
                 )
             )
             self.addCleanup(
-                lambda: EXCHANGE.finish_review_session(session_dir)
-                if session_dir.exists()
-                else None
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
             )
             record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
             logical = TARGET.load_record(record_path)
@@ -1133,10 +1097,9 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(resumed["continuation"], second["continuation"])
             self.assertEqual(record_path.read_bytes(), record_after_first_batch)
             self.assertEqual(
-                [
-                    call.args[0].name
-                    for call in session_reader.call_args_list
-                ].count(EXCHANGE.SESSION_BASE_FILENAME),
+                [call.args[0].name for call in session_reader.call_args_list].count(
+                    EXCHANGE.SESSION_BASE_FILENAME
+                ),
                 1,
             )
             second_path = Path(second["decision_file"])
@@ -1151,9 +1114,7 @@ class ValidationControllerTests(unittest.TestCase):
                 "_finish_review_acceptance",
                 side_effect=RuntimeError("interrupted before final combine"),
             ):
-                interrupted = run_validate(
-                    summary, decision_file=second_path, jobs=1
-                )
+                interrupted = run_validate(summary, decision_file=second_path, jobs=1)
             self.assertEqual(interrupted["status"], "error")
             self.assertTrue(session_dir.exists())
 
@@ -1208,9 +1169,7 @@ class ValidationControllerTests(unittest.TestCase):
     def test_stale_or_modified_semantic_template_cannot_mutate_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))
-            first = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
             decision_path = Path(first["decision_file"])
             record_path = summary.with_suffix("") / TARGET.RECORD_FILENAME
             before = record_path.read_bytes()
@@ -1225,9 +1184,7 @@ class ValidationControllerTests(unittest.TestCase):
                 json.dumps(template, indent=2) + "\n", encoding="utf-8"
             )
 
-            rejected = run_validate(
-                summary, decision_file=decision_path, jobs=1
-            )
+            rejected = run_validate(summary, decision_file=decision_path, jobs=1)
             self.assertEqual(rejected["status"], "error")
             self.assertIn("modified CLI-owned fields", rejected["error"])
             self.assertEqual(record_path.read_bytes(), before)
@@ -1246,9 +1203,7 @@ class ValidationControllerTests(unittest.TestCase):
             write(other, "# Other\n\n## Entries\n")
             write(other.with_suffix("") / TARGET.RECORD_FILENAME, "{broken")
 
-            result = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            result = run_validate(summary, result_date="2026-08-15", jobs=1)
             self.assertEqual(result["status"], "complete")
             record = TARGET.load_record(
                 summary.with_suffix("") / TARGET.RECORD_FILENAME
@@ -1262,10 +1217,7 @@ class ValidationControllerTests(unittest.TestCase):
             orphan = entry.parent / "data" / "direct.csv"
             other = root / "docs" / "other.md"
             other_entry = (
-                other.with_suffix("")
-                / "entries"
-                / "2026-08-15-e001-other"
-                / "e001.md"
+                other.with_suffix("") / "entries" / "2026-08-15-e001-other" / "e001.md"
             )
             write(
                 other,
@@ -1278,9 +1230,7 @@ class ValidationControllerTests(unittest.TestCase):
                 f"[Cross-log use]({orphan.as_posix()})\n",
             )
 
-            result = run_validate(
-                summary, result_date="2026-08-15", jobs=1
-            )
+            result = run_validate(summary, result_date="2026-08-15", jobs=1)
             template = json.loads(
                 Path(result["decision_file"]).read_text(encoding="utf-8")
             )
@@ -1346,9 +1296,7 @@ class ValidationControllerTests(unittest.TestCase):
                 ),
                 mock.patch.object(CONTROLLER, "finish_review_session"),
             ):
-                CONTROLLER._finish_review_acceptance(
-                    summary, accepted, progress
-                )
+                CONTROLLER._finish_review_acceptance(summary, accepted, progress)
 
             internal = convert.call_args.args[1]
             self.assertIs(internal["scan"], scan)
@@ -1458,9 +1406,12 @@ class ValidationControllerTests(unittest.TestCase):
                 )
 
             self.assertIs(result, next_result)
-            self.assertEqual(review.call_args.args[3], json.loads(json.dumps({
-                EXCHANGE.context_request_key(decisions["items"][0]): 1
-            })))
+            self.assertEqual(
+                review.call_args.args[3],
+                json.loads(
+                    json.dumps({EXCHANGE.context_request_key(decisions["items"][0]): 1})
+                ),
+            )
 
     def test_context_upgrade_publishes_before_old_session_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1502,9 +1453,7 @@ class ValidationControllerTests(unittest.TestCase):
                     side_effect=lambda *args: events.append("cleanup"),
                 ),
             ):
-                result = CONTROLLER._refresh_empty_context_session(
-                    context, recovery
-                )
+                result = CONTROLLER._refresh_empty_context_session(context, recovery)
 
             self.assertEqual(events, ["manifest", "cleanup"])
             self.assertEqual(result["session_identity"], "new-session")
@@ -1542,14 +1491,13 @@ class ValidationControllerTests(unittest.TestCase):
                     "write_record_and_cache",
                     side_effect=OSError("interrupted"),
                 ),
-                mock.patch.object(
-                    CONTROLLER, "finish_review_session"
-                ) as cleanup,
+                mock.patch.object(CONTROLLER, "finish_review_session") as cleanup,
             ):
                 with self.assertRaisesRegex(OSError, "interrupted"):
                     CONTROLLER._refresh_empty_context_session(context, recovery)
 
             cleanup.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

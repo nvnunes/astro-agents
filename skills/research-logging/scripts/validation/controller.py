@@ -17,6 +17,7 @@ from .activity import (
 from .adjudication import ORPHAN_TARGET
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions, canonical_review_decisions
+from .diagnostics import ValidationDiagnostics
 from .inventory import infer_project_root
 from .observations import (
     ObservationSession,
@@ -80,6 +81,7 @@ class ValidationProgress:
     state_status: str
     publish: bool
     activity: ValidationActivityLog | None = None
+    diagnostics: ValidationDiagnostics | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,7 @@ class ValidationRequest:
     publish: bool = True
     mode: str = "standard"
     activity: ValidationActivityLog | None = None
+    review_diagnostics: bool = False
 
 
 @dataclass
@@ -121,6 +124,7 @@ class LoadedValidation:
     record: dict[str, Any]
     cache: dict[str, Any]
     state_status: str
+    diagnostics: ValidationDiagnostics | None = None
     retired_review_session: Path | None = None
 
     @property
@@ -134,12 +138,13 @@ class LoadedValidation:
             self.state_status,
             self.request.publish,
             self.request.activity,
+            self.diagnostics,
         )
+
 
 def _record_has_progress(record: Mapping[str, Any]) -> bool:
     return bool(
-        record_row_count(record, "outcomes")
-        or record_row_count(record, "judgments")
+        record_row_count(record, "outcomes") or record_row_count(record, "judgments")
     )
 
 
@@ -168,9 +173,7 @@ def _load_target_state(
     return empty_record_shell(summary, RULES_VERSION), empty_cache(), "new"
 
 
-def _coherent_report_projection(
-    output_dir: Path, record: Mapping[str, Any]
-) -> bool:
+def _coherent_report_projection(output_dir: Path, record: Mapping[str, Any]) -> bool:
     projection = record.get("projection")
     if not isinstance(projection, Mapping):
         return False
@@ -231,9 +234,7 @@ def _cached_completion(
         and _coherent_report_projection(output_dir, record)
     )
     session = (
-        _compatible_cached_dependencies(summary_path, record, cache)
-        if ready
-        else None
+        _compatible_cached_dependencies(summary_path, record, cache) if ready else None
     )
     if session is None:
         return None
@@ -370,9 +371,7 @@ def _partial_adjudication(
     return partial
 
 
-def _merge_outcomes(
-    record: dict[str, Any], outcomes: list[dict[str, Any]]
-) -> None:
+def _merge_outcomes(record: dict[str, Any], outcomes: list[dict[str, Any]]) -> None:
     by_identity = {
         (
             row["entry"],
@@ -432,6 +431,7 @@ def _review_required(
             "publish": progress.publish,
         },
         context_levels,
+        review_diagnostics=progress.diagnostics is not None,
     )
     progress.record["continuation"] = {
         "kind": "paged",
@@ -444,10 +444,51 @@ def _review_required(
         progress.record = write_record_and_cache(
             output_dir, progress.record, progress.cache
         )
-    result["progress_retained"] = bool(
-        _record_has_progress(progress.record)
-    )
+    result["progress_retained"] = bool(_record_has_progress(progress.record))
+    if progress.diagnostics is not None:
+        progress.diagnostics.record_page(result)
     return result
+
+
+def _record_reuse_pass(
+    diagnostics: ValidationDiagnostics | None,
+    metrics: Mapping[str, Any],
+    items_before: int,
+    adjudication: AdjudicationRecord,
+    stage: str,
+) -> None:
+    """Record one reuse pass without expanding controller lifecycle paths."""
+
+    if diagnostics is None:
+        return
+    diagnostics.record_reuse(
+        metrics,
+        items_before=items_before,
+        items_after=len(adjudication["review_queue"]),
+    )
+    _record_queue(diagnostics, stage, adjudication["review_queue"])
+
+
+def _record_queue(
+    diagnostics: ValidationDiagnostics | None,
+    stage: str,
+    items: list[dict[str, Any]],
+) -> None:
+    """Record a queue snapshot only for an opted-in invocation."""
+
+    if diagnostics is not None:
+        diagnostics.record_queue(stage, items)
+
+
+def _record_page_transition(
+    diagnostics: ValidationDiagnostics | None, result: Mapping[str, Any]
+) -> None:
+    """Record one accepted page and any next packet returned with it."""
+
+    if diagnostics is None:
+        return
+    diagnostics.record_page_acceptance(result)
+    diagnostics.record_page(result)
 
 
 def _complete_adjudication(
@@ -462,9 +503,7 @@ def _complete_adjudication(
             request.output_dir,
             render_policy(),
         )
-    target_record = _target_record(
-        request.summary, assembly, request.prior_record
-    )
+    target_record = _target_record(request.summary, assembly, request.prior_record)
     _merge_review_judgments(target_record, request.review_judgments)
     target_record["continuation"] = None
     target_cache = _target_cache(assembly, request.scan)
@@ -480,9 +519,7 @@ def _complete_adjudication(
             "identity": copy.deepcopy(summary_identity),
         }
     ]
-    target_record["projection"] = projection_for(
-        target_record, assembly.report_text
-    )
+    target_record["projection"] = projection_for(target_record, assembly.report_text)
     superseded_subjects = _superseded_orphan_subjects(request.adjudication)
     if request.publish:
         log_phase(
@@ -555,6 +592,7 @@ def _finish_review_acceptance(
     """Apply one complete review session and publish its canonical result."""
 
     activity = progress.activity
+    diagnostics = progress.diagnostics
     scan = cast(ScanRecord, accepted["scan"])
     adjudication = cast(AdjudicationRecord, accepted["adjudication"])
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
@@ -599,11 +637,11 @@ def _finish_review_acceptance(
                 accepted["orphan_fingerprints"],
             ),
         )
+    if diagnostics is not None:
+        diagnostics.record_queue("residual_adjudication", decided["review_queue"])
     output_dir = summary_path.with_suffix("")
     retained_identities = (
-        accepted.get("judgment_identities")
-        if decisions == accepted_decisions
-        else None
+        accepted.get("judgment_identities") if decisions == accepted_decisions else None
     )
     log_phase(activity, "review.finalize.load-accepted-judgments")
     with log_operation(
@@ -611,9 +649,7 @@ def _finish_review_acceptance(
         "load-accepted-judgments",
         subject=scan["summary"],
         expected=(
-            len(retained_identities)
-            if isinstance(retained_identities, list)
-            else 0
+            len(retained_identities) if isinstance(retained_identities, list) else 0
         ),
     ):
         review_judgments = _accepted_review_judgments(
@@ -671,10 +707,12 @@ def _finish_review_acceptance(
         ):
             decided = cast(
                 dict[str, Any],
-                _apply_reusable_judgments(
+                _apply_reusable_with_diagnostics(
                     scan,
                     cast(AdjudicationRecord, decided),
                     progress.record["judgments"],
+                    diagnostics,
+                    "residual_judgment_reuse",
                 ),
             )
     if decided["review_queue"]:
@@ -716,13 +754,13 @@ def _finish_review_acceptance(
             activity,
         )
     )
+    if diagnostics is not None:
+        diagnostics.record_queue("terminal_completion", [])
     finish_review_session(Path(str(accepted["session_dir"])))
     return {
         "status": "complete",
         "summary": summary_path.as_posix(),
-        "record": (
-            summary_path.with_suffix("") / RECORD_FILENAME
-        ).as_posix(),
+        "record": (summary_path.with_suffix("") / RECORD_FILENAME).as_posix(),
         "cache": (summary_path.with_suffix("") / CACHE_FILENAME).as_posix(),
         "report": (summary_path.with_suffix("") / "validation.md").as_posix(),
         "progress_retained": _record_has_progress(target_record),
@@ -871,8 +909,12 @@ def _continue_review(
             decisions=len(decisions.get("items", [])),
         ):
             accepted = accept_review_page(
-                decisions, internal, publish_batch
+                decisions,
+                internal,
+                publish_batch,
+                review_diagnostics=context.diagnostics is not None,
             )
+        _record_page_transition(context.diagnostics, accepted)
         if accepted["status"] == "review_required":
             accepted.update(
                 {
@@ -886,7 +928,12 @@ def _continue_review(
             summary_path,
             accepted,
             ValidationProgress(
-                record, cache, state_status, publish, activity
+                record,
+                cache,
+                state_status,
+                publish,
+                activity,
+                context.diagnostics,
             ),
         )
     record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
@@ -895,6 +942,11 @@ def _continue_review(
     decisions = canonical_review_decisions(scan, decisions)
     actions = decisions_to_actions(decisions, action_internal)
     decided, _ = apply_review_decisions(scan, adjudication, actions)
+    _record_queue(
+        context.diagnostics,
+        "residual_adjudication",
+        decided["review_queue"],
+    )
     review_judgments = durable_review_judgments(
         decisions, adjudication["date"], scan, adjudication
     )
@@ -902,10 +954,12 @@ def _continue_review(
     if decided["review_queue"]:
         decided = cast(
             dict[str, Any],
-            _apply_reusable_judgments(
+            _apply_reusable_with_diagnostics(
                 scan,
                 cast(AdjudicationRecord, decided),
                 record["judgments"],
+                context.diagnostics,
+                "residual_judgment_reuse",
             ),
         )
     if decided["review_queue"]:
@@ -913,7 +967,14 @@ def _continue_review(
         result = _review_required(
             scan,
             cast(AdjudicationRecord, decided),
-            ValidationProgress(record, cache, state_status, publish),
+            ValidationProgress(
+                record,
+                cache,
+                state_status,
+                publish,
+                activity,
+                context.diagnostics,
+            ),
             context_levels,
         )
         result.update(
@@ -932,6 +993,7 @@ def _continue_review(
             publish,
         )
     )
+    _record_queue(context.diagnostics, "terminal_completion", [])
     finish_legacy_ordinary_session(internal)
     return {
         "status": "complete",
@@ -966,7 +1028,9 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         if recovery is None:
             return None
         resumed = resume_review_session(
-            context.output_dir, continuation
+            context.output_dir,
+            continuation,
+            review_diagnostics=context.diagnostics is not None,
         )
         if resumed["status"] == "ready":
             return _finish_review_acceptance(
@@ -975,14 +1039,15 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         if (
             not recovery.get("accepted_batches")
             and int(recovery.get("next_offset", -1)) == 0
-            and recovery.get("context_projection_version")
-            != CONTEXT_PROJECTION_VERSION
+            and recovery.get("context_projection_version") != CONTEXT_PROJECTION_VERSION
         ):
             refreshed = _refresh_empty_context_session(context, recovery)
             if refreshed is not None:
                 return refreshed
     else:
         raise ValidationToolError("durable continuation kind is unsupported")
+    if context.diagnostics is not None:
+        context.diagnostics.record_page(resumed)
     resumed.update(
         {
             "summary": context.summary,
@@ -1013,6 +1078,8 @@ def _refresh_empty_context_session(
         copy.deepcopy(context.cache),
         context.state_status,
         False,
+        context.request.activity,
+        context.diagnostics,
     )
     result = _review_required(
         cast(ScanRecord, recovery["scan"]),
@@ -1038,14 +1105,37 @@ def _apply_reusable_judgments(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     judgments: list[dict[str, Any]],
+    diagnostics: dict[str, Any] | None = None,
 ) -> AdjudicationRecord:
-    if not adjudication["review_queue"] or not judgments:
+    if not adjudication["review_queue"]:
         return adjudication
-    actions = reusable_review_actions(scan, adjudication, judgments)
+    if not judgments:
+        if diagnostics is not None:
+            count = len(adjudication["review_queue"])
+            diagnostics["questions_considered"] = count
+            diagnostics["misses_by_reason"] = {"subject_not_found": count}
+        return adjudication
+    actions = reusable_review_actions(scan, adjudication, judgments, diagnostics)
     if not actions["actions"]:
         return adjudication
     decided, _ = apply_review_decisions(scan, adjudication, actions)
     return cast(AdjudicationRecord, decided)
+
+
+def _apply_reusable_with_diagnostics(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    judgments: list[dict[str, Any]],
+    diagnostics: ValidationDiagnostics | None,
+    stage: str,
+) -> AdjudicationRecord:
+    """Apply one reuse pass and retain its noncanonical measurements."""
+
+    items_before = len(adjudication["review_queue"])
+    metrics: dict[str, Any] | None = {} if diagnostics is not None else None
+    decided = _apply_reusable_judgments(scan, adjudication, judgments, metrics)
+    _record_reuse_pass(diagnostics, metrics or {}, items_before, decided, stage)
+    return decided
 
 
 def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
@@ -1088,12 +1178,13 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             context.cache,
             context.state_status.rsplit(":", 1)[-1],
         )
-        if request.mode == "standard"
-        and context.state_status.startswith("native-v2:")
+        if request.mode == "standard" and context.state_status.startswith("native-v2:")
         else None
     )
     if cached is not None:
         cached["state_status"] = context.state_status
+        if context.diagnostics is not None:
+            context.diagnostics.record_queue("terminal_completion", [])
         log_checkpoint(activity, "cached-completion", reused=True)
         return cached
     log_phase(activity, "scan.start", state_status=context.state_status)
@@ -1111,13 +1202,15 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         )
     )
     log_phase(activity, "adjudication.prepare", entries=len(scan["entries"]))
-    with log_operation(
-        activity, "prepare-adjudication", subject=context.summary
-    ):
+    with log_operation(activity, "prepare-adjudication", subject=context.summary):
         adjudication = prepare_adjudication_record(
             scan,
             request.result_date or date.today().isoformat(),
             request.mode,
+        )
+    if context.diagnostics is not None:
+        context.diagnostics.record_queue(
+            "initial_adjudication", adjudication["review_queue"]
         )
     log_phase(
         activity,
@@ -1125,18 +1218,14 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         review_items=len(adjudication["review_queue"]),
     )
     review_items_before = len(adjudication["review_queue"])
-    with log_operation(
-        activity, "resolve-reusable-subjects", subject=context.summary
-    ):
+    with log_operation(activity, "resolve-reusable-subjects", subject=context.summary):
         subjects = reusable_review_subjects(scan, adjudication)
     log_checkpoint(
         activity,
         "reusable-subjects-resolved",
         subjects=len(subjects),
     )
-    with log_operation(
-        activity, "load-reusable-judgments", subject=context.summary
-    ):
+    with log_operation(activity, "load-reusable-judgments", subject=context.summary):
         context.record["judgments"] = load_judgments_for_subjects(
             context.output_dir, context.record, subjects
         )
@@ -1145,11 +1234,13 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
         "reusable-judgments-loaded",
         judgments=len(context.record["judgments"]),
     )
-    with log_operation(
-        activity, "apply-reusable-judgments", subject=context.summary
-    ):
-        adjudication = _apply_reusable_judgments(
-            scan, adjudication, context.record["judgments"]
+    with log_operation(activity, "apply-reusable-judgments", subject=context.summary):
+        adjudication = _apply_reusable_with_diagnostics(
+            scan,
+            adjudication,
+            context.record["judgments"],
+            context.diagnostics,
+            "durable_judgment_reuse",
         )
     log_checkpoint(
         activity,
@@ -1163,9 +1254,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             "review.create-packet",
             review_items=len(adjudication["review_queue"]),
         )
-        with log_operation(
-            activity, "create-review-packet", subject=context.summary
-        ):
+        with log_operation(activity, "create-review-packet", subject=context.summary):
             result = _review_required(scan, adjudication, context.progress())
         _finish_retired_review_session(context)
         result.update(
@@ -1184,6 +1273,8 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             activity,
         )
     )
+    if context.diagnostics is not None:
+        context.diagnostics.record_queue("terminal_completion", [])
     _finish_retired_review_session(context)
     return {
         "status": "complete",
@@ -1210,17 +1301,14 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     project_root = infer_project_root(summary_path)
     record_summary = _relative_summary(summary_path, project_root)
     report_path = output_dir / "validation.md"
+    diagnostics = ValidationDiagnostics() if request.review_diagnostics else None
     prior_report = report_path.read_bytes() if report_path.is_file() else None
     try:
         log_phase(activity, "validation.load-state", summary=record_summary)
         with log_operation(activity, "load-target-state", subject=record_summary):
-            record, cache, state_status = _load_target_state(
-                output_dir, record_summary
-            )
-        log_checkpoint(
-            activity, "target-state-loaded", state_status=state_status
-        )
-        return _run_loaded_validation(
+            record, cache, state_status = _load_target_state(output_dir, record_summary)
+        log_checkpoint(activity, "target-state-loaded", state_status=state_status)
+        result = _run_loaded_validation(
             LoadedValidation(
                 request,
                 summary_path,
@@ -1230,6 +1318,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 record,
                 cache,
                 state_status,
+                diagnostics,
             )
         )
     except Exception as exc:
@@ -1244,10 +1333,13 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             and report_path.is_file()
             and report_path.read_bytes() == prior_report
         )
-        return {
+        result = {
             "status": "error",
             "summary": summary_path.as_posix(),
             "error": str(exc),
             "progress_retained": (output_dir / RECORD_FILENAME).is_file(),
             "prior_report_retained": report_retained,
         }
+    if diagnostics is not None:
+        result["review_diagnostics"] = diagnostics.as_dict()
+    return result

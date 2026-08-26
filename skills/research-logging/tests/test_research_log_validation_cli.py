@@ -38,6 +38,7 @@ class ValidationCliTests(unittest.TestCase):
                 "--jobs",
                 "3",
                 "--dry-run",
+                "--review-diagnostics",
             ]
         )
 
@@ -46,6 +47,14 @@ class ValidationCliTests(unittest.TestCase):
         self.assertEqual(args.date, "2026-08-16")
         self.assertEqual(args.jobs, 3)
         self.assertTrue(args.dry_run)
+        self.assertTrue(args.review_diagnostics)
+
+    def test_review_diagnostics_are_disabled_by_default(self) -> None:
+        args = CLI.build_parser().parse_args(
+            ["validate", "--summary", "mini.md"]
+        )
+
+        self.assertFalse(args.review_diagnostics)
 
 
 if __name__ == "__main__":

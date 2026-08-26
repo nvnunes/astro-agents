@@ -73,6 +73,13 @@ class ProducerEligibility(NamedTuple):
     reason: str
 
 
+class MechanicalProducerResolution(NamedTuple):
+    """One exact producer proven without semantic direction or scope choices."""
+
+    invocation_identity: str
+    dependencies: list[dict[str, str]]
+
+
 def resolved_identity_cache(scan: ScanRecord) -> Dict[str, str]:
     """Return one resolved-path lookup for a bounded validation operation."""
 
@@ -306,6 +313,71 @@ def producer_eligibility(
                 "containing output collection requires reviewed member scope",
             )
     return result
+
+
+def exact_mechanical_producer(
+    scan: ScanRecord,
+    target: str,
+    candidates: Sequence[tuple[str, Mapping[str, Any]]],
+    identity_cache: Optional[Mapping[str, str]] = None,
+) -> MechanicalProducerResolution | None:
+    """Resolve one exact producer only when its full workflow is mechanical.
+
+    The target must have exactly one eligible invocation with an explicit
+    output role, complete known path arguments, no command uncertainty, no
+    duplicate recorded invocation, and a resolved dependency closure. Scoped
+    collections and reviewed output direction remain semantic decisions.
+    """
+
+    if len(candidates) != 1:
+        return None
+    invocation_identity, command = candidates[0]
+    identities = (
+        identity_cache
+        if identity_cache is not None
+        else resolved_identity_cache(scan)
+    )
+    eligibility = producer_eligibility(scan, command, target, identities)
+    if (
+        not eligibility.eligible
+        or eligibility.kind != "exact-target"
+        or eligibility.coverage_identity != target
+        or eligibility.direction_evidence != "mechanical-output-role"
+        or eligibility.target_member is not None
+        or eligibility.review_required
+    ):
+        return None
+    arguments = command.get("path_arguments", [])
+    if (
+        not isinstance(arguments, list)
+        or not arguments
+        or any(
+            not isinstance(argument, Mapping)
+            or argument.get("exists") is not True
+            or argument.get("role_hint") not in {"input", "output"}
+            for argument in arguments
+        )
+    ):
+        return None
+    checked = check_workflow_command(command, scan, identities)
+    if checked.failures or checked.uncertainties:
+        return None
+    dependencies = [
+        dict(dependency)
+        for dependency in {
+            (item["path"], item["role"]): item for item in checked.dependencies
+        }.values()
+    ]
+    binding = verify_producer_binding(
+        scan,
+        target,
+        invocation_identity,
+        dependencies,
+        ProducerBindingOptions("mechanical", identities),
+    )
+    if binding["duplicate_count"] != 1:
+        return None
+    return MechanicalProducerResolution(invocation_identity, dependencies)
 
 
 def _invocation_lookup(

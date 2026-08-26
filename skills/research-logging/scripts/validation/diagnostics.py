@@ -27,58 +27,6 @@ def review_item_counts(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def proposed_exact_producer_match(item: Mapping[str, Any]) -> bool:
-    """Return whether one item satisfies the Phase 2 shadow predicate.
-
-    This predicate is diagnostic only. It deliberately requires stronger
-    evidence than the current semantic fallback needs and never changes an
-    adjudication, decision, judgment, or outcome.
-    """
-
-    if (
-        item.get("kind") != "semantic_fallback"
-        or item.get("hard_failures")
-        or item.get("integrity_status") != "pass"
-    ):
-        return False
-    workflow = item.get("workflow")
-    evidence = item.get("evidence", [])
-    candidates = item.get("producer_candidates", [])
-    if (
-        not isinstance(workflow, Mapping)
-        or workflow.get("status") != "unresolved"
-        or not isinstance(evidence, list)
-        or any(
-            not isinstance(row, Mapping)
-            or not isinstance(row.get("result"), Mapping)
-            or row["result"].get("status") != "pass"
-            for row in evidence
-        )
-        or not isinstance(candidates, list)
-        or len(candidates) != 1
-        or not isinstance(candidates[0], Mapping)
-    ):
-        return False
-    candidate = candidates[0]
-    arguments = candidate.get("path_arguments", [])
-    return bool(
-        candidate.get("invocation")
-        and candidate.get("normalized_command")
-        and candidate.get("coverage_kind") == "exact-target"
-        and candidate.get("coverage_identity") == item.get("identity")
-        and candidate.get("target_member") is None
-        and isinstance(arguments, list)
-        and arguments
-        and all(
-            isinstance(argument, Mapping)
-            and argument.get("exists") is True
-            and argument.get("role_hint") in {"input", "output"}
-            for argument in arguments
-        )
-        and any(argument.get("role_hint") == "output" for argument in arguments)
-    )
-
-
 @dataclass
 class ValidationDiagnostics:
     """Collect noncanonical review measurements for one public invocation."""
@@ -100,9 +48,6 @@ class ValidationDiagnostics:
                 "stage": stage,
                 "item_count": len(items),
                 "items_by_kind": review_item_counts(items),
-                "proposed_exact_producer_matches": sum(
-                    proposed_exact_producer_match(item) for item in items
-                ),
             }
         )
 

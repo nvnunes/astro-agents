@@ -37,23 +37,6 @@ def exact_producer_item() -> dict:
 
 
 class ValidationDiagnosticsTests(unittest.TestCase):
-    def test_exact_producer_shadow_predicate_is_conservative(self) -> None:
-        item = exact_producer_item()
-
-        self.assertTrue(DIAGNOSTICS.proposed_exact_producer_match(item))
-
-        changed = {**item, "integrity_status": "unresolved"}
-        self.assertFalse(DIAGNOSTICS.proposed_exact_producer_match(changed))
-
-        competing = {
-            **item,
-            "producer_candidates": [
-                *item["producer_candidates"],
-                dict(item["producer_candidates"][0]),
-            ],
-        }
-        self.assertFalse(DIAGNOSTICS.proposed_exact_producer_match(competing))
-
     def test_structured_summary_combines_lifecycle_reuse_and_pages(self) -> None:
         diagnostics = DIAGNOSTICS.ValidationDiagnostics()
         diagnostics.record_queue(
@@ -96,7 +79,6 @@ class ValidationDiagnosticsTests(unittest.TestCase):
             result["lifecycle"][0]["items_by_kind"],
             {"collection_scope": 1, "semantic_fallback": 1},
         )
-        self.assertEqual(result["lifecycle"][0]["proposed_exact_producer_matches"], 1)
         self.assertEqual(result["reuse"]["items_removed"], 1)
         self.assertEqual(result["reuse"]["misses_by_reason"]["subject_not_found"], 1)
         self.assertEqual(result["pages"][0]["packet_bytes"], 512)

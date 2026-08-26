@@ -228,7 +228,6 @@ class ValidationControllerTests(unittest.TestCase):
                         "stage": "terminal_completion",
                         "item_count": 0,
                         "items_by_kind": {},
-                        "proposed_exact_producer_matches": 0,
                     }
                 ],
             )

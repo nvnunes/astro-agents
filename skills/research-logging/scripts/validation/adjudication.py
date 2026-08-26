@@ -30,6 +30,7 @@ from .contracts import (
 from .evidence import NUMBER_RE, numeric_value_equivalent
 from .orphan_rules import inherited_basis
 from .producer_bindings import (
+    exact_mechanical_producer,
     resolved_identity_cache,
     workflow_check,
 )
@@ -89,6 +90,17 @@ class TargetAssessment:
     prior_provenance: Optional[Dict[str, Any]]
     prior_reproduction: Optional[Dict[str, Any]]
     mode: str
+
+
+class ExactProducerRequest(NamedTuple):
+    """Current target facts required by the exact-producer application rule."""
+
+    target: str
+    workflow: Mapping[str, Any]
+    integrity: Optional[str]
+    support_results: Sequence[Mapping[str, Any]]
+    invocations: Sequence[PreparedInvocation]
+    enabled: bool
 
 
 @dataclass(frozen=True)
@@ -815,6 +827,39 @@ def _target_hard_failures(
     return tuple(dict.fromkeys(failures))
 
 
+def _exact_mechanical_workflow(
+    context: TargetPreparationContext,
+    request: ExactProducerRequest,
+) -> tuple[dict[str, Any], Sequence[dict[str, str]]]:
+    """Apply the exact-producer rule when no other semantic issue remains."""
+
+    if (
+        not request.enabled
+        or request.workflow.get("status") != "unresolved"
+        or not is_success_date(request.integrity)
+        or not request.support_results
+        or any(result.get("status") != "pass" for result in request.support_results)
+    ):
+        return dict(request.workflow), []
+    producer = exact_mechanical_producer(
+        cast(ScanRecord, context.scan),
+        request.target,
+        [(invocation.key, invocation.command) for invocation in request.invocations],
+        context.identity_cache,
+    )
+    if producer is None:
+        return dict(request.workflow), []
+    return (
+        {
+            "status": "pass",
+            "detail": "matched one exact mechanical producer",
+            "matched_commands": 1,
+            "producer_invocation": producer.invocation_identity,
+        },
+        producer.dependencies,
+    )
+
+
 def _target_reproducibility(
     entry: Mapping[str, Any],
     target: str,
@@ -885,12 +930,6 @@ def prepare_evidence_target(
     prior_provenance = context.reusable.get((entry["id"], target, "Provenance"))
     if prior_provenance is None:
         dependencies.extend(workflow_dependencies)
-    dependencies = [
-        dict(value)
-        for value in {
-            (item["path"], item["role"]): item for item in dependencies
-        }.values()
-    ]
     prior_integrity = context.reusable.get((entry["id"], target, "Integrity"))
     integrity, integrity_detail = target_integrity(
         context.scan, source, target, prior_integrity, context.date
@@ -899,6 +938,24 @@ def prepare_evidence_target(
     support_results = [
         context.mechanical_support(item["row"], item["source"])
         for item in grouped["associations"]
+    ]
+    workflow, mechanical_dependencies = _exact_mechanical_workflow(
+        context,
+        ExactProducerRequest(
+            target,
+            workflow,
+            integrity,
+            support_results,
+            eligible_producers,
+            prior_provenance is None,
+        ),
+    )
+    dependencies.extend(mechanical_dependencies)
+    dependencies = [
+        dict(value)
+        for value in {
+            (item["path"], item["role"]): item for item in dependencies
+        }.values()
     ]
     if provenance is None:
         statuses = {result["status"] for result in support_results}

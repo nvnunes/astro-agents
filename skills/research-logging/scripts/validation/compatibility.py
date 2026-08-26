@@ -17,7 +17,7 @@ COMPONENT_VERSIONS: dict[str, int] = {
     "integrity": 1,
     "summary_provenance": 1,
     "entry_provenance": 2,
-    "mechanical_producer": 2,
+    "mechanical_producer": 3,
     "reviewed_producer": 2,
     "upstream_reviewed_producer": 2,
     "reproducibility": 1,

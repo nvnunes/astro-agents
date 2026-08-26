@@ -64,6 +64,41 @@ class MarkdownDiscoveryTests(unittest.TestCase):
                 "- Retain `images/run-a` because it presents that experiment.",
             )
 
+    def test_validation_note_text_is_not_part_of_section_content_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "e001.md"
+            prefix = (
+                "# Fixture\n\n## Trial\n\n`Steps:`\n\n- Run.\n\n"
+                "`Results:`\n\nThe result is `1.0`.\n\n`Validation:`\n\n"
+            )
+            entry.write_text(
+                prefix + "- Retain `data/run-a` because it is one experiment.\n",
+                encoding="utf-8",
+            )
+            original = DISCOVERY.parse_markdown(entry)["sections"][1][
+                "content_identity"
+            ]
+            entry.write_text(
+                prefix + "- Retain `data/run-b` because it is another experiment.\n",
+                encoding="utf-8",
+            )
+            note_changed = DISCOVERY.parse_markdown(entry)["sections"][1][
+                "content_identity"
+            ]
+            entry.write_text(
+                prefix.replace("The result is `1.0`.", "The result is `2.0`.")
+                + "- Retain `data/run-b` because it is another experiment.\n",
+                encoding="utf-8",
+            )
+            result_changed = DISCOVERY.parse_markdown(entry)["sections"][1][
+                "content_identity"
+            ]
+
+            self.assertEqual(note_changed, original)
+            self.assertNotEqual(result_changed, original)
+
     def test_invalid_utf8_is_a_discovery_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "e001.md"

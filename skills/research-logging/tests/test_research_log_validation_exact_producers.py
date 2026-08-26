@@ -137,22 +137,6 @@ class ExactMechanicalProducerTests(unittest.TestCase):
                 [(invocation, copied_target)],
             )
 
-            output_directory = Path(directory) / "entries" / "run" / "data"
-            container_command = copy.deepcopy(command)
-            container_command["path_arguments"][-1]["path"] = str(output_directory)
-            container_scan = copy.deepcopy(scan)
-            container_scan["resolved_paths"]["docs/log/entries/run/data"] = str(
-                output_directory
-            )
-            container_scan["mechanical_checks"]["docs/log/entries/run/data"] = {
-                "status": "ok",
-                "type": "directory",
-            }
-            cases["container-only output"] = (
-                container_scan,
-                [(invocation, container_command)],
-            )
-
             second_command = copy.deepcopy(command)
             second_command["command"] += " --variant second"
             second_invocation = PRODUCER_BINDINGS.invocation_identities(
@@ -177,6 +161,44 @@ class ExactMechanicalProducerTests(unittest.TestCase):
                             candidate_scan, target, candidates
                         )
                     )
+
+    def test_unique_output_directory_resolves_one_exact_member_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan, command, target = exact_fixture(Path(directory))
+            output_directory = Path(directory) / "entries" / "run" / "data"
+            command["path_arguments"][-1]["path"] = str(output_directory)
+            collection = "docs/log/entries/run/data"
+            scan["resolved_paths"][collection] = str(output_directory)
+            scan["mechanical_checks"][collection] = {
+                "status": "ok",
+                "type": "directory",
+            }
+            invocation = PRODUCER_BINDINGS.invocation_identities(
+                "producer", [command]
+            )[0]
+
+            self.assertIsNone(
+                PRODUCER_BINDINGS.exact_mechanical_producer(
+                    scan, target, [(invocation, command)]
+                )
+            )
+            resolution = PRODUCER_BINDINGS.exact_mechanical_producer(
+                scan,
+                target,
+                [(invocation, command)],
+                allow_scoped_collection=True,
+            )
+
+            self.assertIsNotNone(resolution)
+            assert resolution is not None
+            self.assertEqual(
+                resolution.dependencies[-1],
+                {
+                    "path": collection,
+                    "role": "producer",
+                    "members": ["result.csv"],
+                },
+            )
 
 
 class ExactProducerAdjudicationTests(unittest.TestCase):
@@ -244,6 +266,59 @@ class ExactProducerAdjudicationTests(unittest.TestCase):
             self.assertIsNone(prepared.targets[0]["provenance"])
             self.assertEqual(len(prepared.review_items), 1)
             self.assertEqual(prepared.review_items[0]["kind"], "semantic_fallback")
+
+    def test_presented_output_directory_member_needs_no_evidence_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scan, command, target = exact_fixture(root)
+            output_directory = root / "entries" / "run" / "data"
+            command["path_arguments"][-1]["path"] = str(output_directory)
+            collection = "docs/log/entries/run/data"
+            scan["resolved_paths"][collection] = str(output_directory)
+            scan["mechanical_checks"][collection] = {
+                "status": "ok",
+                "type": "directory",
+            }
+            consumer = {
+                "id": "consumer",
+                "path": "docs/log/entries/report/e002.md",
+                "commands": [],
+                "evidence_record": {"identity": "", "rows": []},
+            }
+            scan["entries"].append(consumer)
+            grouped = {
+                "source": {
+                    "identity": target,
+                    "path": scan["resolved_paths"][target],
+                    "status": "resolved",
+                    "source": target,
+                    "locator": "",
+                },
+                "associations": [],
+                "sections": ["Results"],
+            }
+            context = ADJUDICATION.TargetPreparationContext(
+                scan,
+                {},
+                "2026-08-26",
+                "standard",
+                lambda _row, _source: {"status": "unresolved"},
+            )
+
+            prepared = ADJUDICATION.prepare_evidence_target(
+                consumer, target, grouped, context
+            )
+
+            self.assertEqual(prepared.review_items, [])
+            self.assertEqual(prepared.targets[0]["provenance"], "2026-08-26")
+            self.assertEqual(
+                prepared.targets[0]["dependencies"][-1],
+                {
+                    "path": collection,
+                    "role": "producer",
+                    "members": ["result.csv"],
+                },
+            )
 
 
 if __name__ == "__main__":

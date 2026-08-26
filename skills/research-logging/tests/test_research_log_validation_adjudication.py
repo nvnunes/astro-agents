@@ -992,6 +992,41 @@ class PreparationTests(unittest.TestCase):
 
         self.assertEqual(item["kind"], "semantic_fallback")
 
+    def test_passing_workflow_does_not_offer_producer_selection(self) -> None:
+        assessment = ADJUDICATION.TargetAssessment(
+            integrity="2026-08-16",
+            provenance=None,
+            integrity_detail="passed",
+            workflow={"status": "pass", "producer_invocation": "i1"},
+            support_results=[{"status": "unresolved"}],
+            prior_integrity=None,
+            prior_provenance=None,
+            prior_reproduction=None,
+            mode="standard",
+        )
+
+        item = ADJUDICATION._target_review_item(
+            {"id": "e001"},
+            "result.csv",
+            {
+                "sections": [],
+                "associations": [
+                    {
+                        "row": {
+                            "kind": "statistic",
+                            "evidence": "`1`",
+                            "transformation": "",
+                        },
+                        "source": {"locator": "field=value"},
+                    }
+                ],
+            },
+            assessment,
+            {"hard_failures": (), "producer_candidates": [{"invocation": "i1"}]},
+        )
+
+        self.assertEqual(item["producer_candidates"], [])
+
 
 class ReviewPacketTests(unittest.TestCase):
     def test_owner_filters_and_renders_review_items(self) -> None:

@@ -458,7 +458,11 @@ def _session_path(output_dir: Path, locator: str) -> Path:
 
 def _question(item: Mapping[str, Any]) -> str:
     kind = item["kind"]
-    if kind == "semantic_fallback" and item.get("producer_candidates"):
+    if (
+        kind == "semantic_fallback"
+        and item.get("workflow", {}).get("status") == "unresolved"
+        and item.get("producer_candidates")
+    ):
         return "Which exact recorded invocation establishes provenance?"
     questions = {
         "mechanical_failure": "Retain the reported deterministic failure?",
@@ -470,10 +474,14 @@ def _question(item: Mapping[str, Any]) -> str:
 
 
 def _semantic_fallback_choices(item: Mapping[str, Any]) -> list[str]:
-    candidates = [
-        str(candidate["invocation"])
-        for candidate in item.get("producer_candidates", [])
-    ]
+    candidates = (
+        [
+            str(candidate["invocation"])
+            for candidate in item.get("producer_candidates", [])
+        ]
+        if item.get("workflow", {}).get("status") == "unresolved"
+        else []
+    )
     if candidates:
         return [*candidates, "fail:workflow"]
     choices = ["pass"]

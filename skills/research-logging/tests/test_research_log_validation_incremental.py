@@ -15,6 +15,55 @@ PRODUCER_BINDINGS = importlib.import_module("validation.producer_bindings")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
+    def test_presented_candidate_uses_its_section_instead_of_the_whole_entry(
+        self,
+    ) -> None:
+        target = "docs/log/entries/e001/images/result.png"
+        scan = {
+            "entries": [
+                {
+                    "id": "e001",
+                    "path": "docs/log/entries/e001/e001.md",
+                    "sections": [
+                        {
+                            "section": "Results",
+                            "semantic_identity": "a" * 64,
+                            "content_identity": "b" * 64,
+                            "line": 10,
+                            "end_line": 20,
+                        }
+                    ],
+                    "evidence_record": {"rows": []},
+                    "candidate_targets": [
+                        {
+                            "identity": target,
+                            "kind": "figure",
+                            "presented": True,
+                            "sections": ["Results"],
+                            "occurrences": [{"line": 15, "label": "Result"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        check = {
+            "entry": "e001",
+            "target": target,
+            "check": "Provenance",
+            "dependencies": [
+                {"path": "docs/log/entries/e001/e001.md", "role": "entry"},
+                {"path": target, "role": "target"},
+            ],
+        }
+
+        dependencies = COMPATIBILITY.input_dependencies_for_check(scan, check)
+
+        self.assertNotIn("entry", {item["kind"] for item in dependencies})
+        self.assertEqual(
+            {item["relationship"] for item in dependencies},
+            {"owning-section", "presented-target", "target"},
+        )
+
     def test_invocation_identity_ignores_lines_and_unrelated_commands(self) -> None:
         command = {
             "section": "Results",

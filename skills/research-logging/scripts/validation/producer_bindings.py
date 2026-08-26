@@ -87,7 +87,7 @@ class MechanicalProducerResolution(NamedTuple):
     """One exact producer proven without semantic direction or scope choices."""
 
     invocation_identity: str
-    dependencies: list[dict[str, str]]
+    dependencies: list[dict[str, Any]]
 
 
 def resolved_identity_cache(scan: ScanRecord) -> Dict[str, str]:
@@ -298,14 +298,19 @@ def producer_eligibility(
         input_collection = _containing_identity(
             target, [identity for identity, role in arguments if role == "input"]
         )
-        collection = _containing_identity(
+        output_collection = _containing_identity(
             target,
             [
                 identity
                 for identity, role in arguments
-                if role in {"output", "unknown"}
+                if role == "output"
             ],
         )
+        unknown_collection = _containing_identity(
+            target,
+            [identity for identity, role in arguments if role == "unknown"],
+        )
+        collection = output_collection or unknown_collection
         if input_collection is not None:
             result = ProducerEligibility(
                 False,
@@ -342,14 +347,23 @@ def producer_eligibility(
             )
         else:
             member = target[len(collection.rstrip("/") + "/") :]
+            mechanical_direction = output_collection is not None
             result = ProducerEligibility(
                 True,
                 "scoped-collection",
                 collection,
-                "reviewed-output-direction",
+                (
+                    "mechanical-output-role"
+                    if mechanical_direction
+                    else "reviewed-output-direction"
+                ),
                 member,
                 True,
-                "containing output collection requires reviewed member scope",
+                (
+                    "containing output collection requires exact member scope"
+                    if mechanical_direction
+                    else "containing command path requires reviewed output direction"
+                ),
             )
     return result
 
@@ -359,13 +373,16 @@ def exact_mechanical_producer(
     target: str,
     candidates: Sequence[tuple[str, Mapping[str, Any]]],
     identity_cache: Optional[Mapping[str, str]] = None,
+    *,
+    allow_scoped_collection: bool = False,
 ) -> MechanicalProducerResolution | None:
-    """Resolve one exact producer only when its full workflow is mechanical.
+    """Resolve one producer only when its full workflow and scope are mechanical.
 
     The target must have exactly one eligible invocation with an explicit
     output role, complete known path arguments, no command uncertainty, no
-    duplicate recorded invocation, and a resolved dependency closure. Scoped
-    collections and reviewed output direction remain semantic decisions.
+    duplicate recorded invocation, and a resolved dependency closure. A
+    containing output directory contributes the exact observed target member;
+    unknown output direction remains a semantic decision.
     """
 
     if len(candidates) != 1:
@@ -379,11 +396,30 @@ def exact_mechanical_producer(
     eligibility = producer_eligibility(scan, command, target, identities)
     if (
         not eligibility.eligible
-        or eligibility.kind != "exact-target"
-        or eligibility.coverage_identity != target
         or eligibility.direction_evidence != "mechanical-output-role"
-        or eligibility.target_member is not None
-        or eligibility.review_required
+        or (
+            eligibility.review_required
+            and not (
+                allow_scoped_collection
+                and eligibility.kind == "scoped-collection"
+                and eligibility.direction_evidence == "mechanical-output-role"
+            )
+        )
+        or (
+            eligibility.kind == "exact-target"
+            and (
+                eligibility.coverage_identity != target
+                or eligibility.target_member is not None
+            )
+        )
+        or (
+            eligibility.kind == "scoped-collection"
+            and (
+                not eligibility.coverage_identity
+                or not eligibility.target_member
+            )
+        )
+        or eligibility.kind not in {"exact-target", "scoped-collection"}
     ):
         return None
     arguments = command.get("path_arguments", [])
@@ -401,12 +437,21 @@ def exact_mechanical_producer(
     checked = check_workflow_command(command, scan, identities)
     if checked.failures or checked.uncertainties:
         return None
-    dependencies = [
+    dependencies: list[dict[str, Any]] = [
         dict(dependency)
         for dependency in {
             (item["path"], item["role"]): item for item in checked.dependencies
         }.values()
     ]
+    if eligibility.kind == "scoped-collection":
+        assert eligibility.target_member is not None
+        dependencies.append(
+            {
+                "path": eligibility.coverage_identity,
+                "role": "producer",
+                "members": [eligibility.target_member],
+            }
+        )
     binding = verify_producer_binding(
         scan,
         target,
@@ -509,6 +554,7 @@ def verify_producer_binding(
     basis = options.producer_basis or (
         "mechanical"
         if eligibility.direction_evidence == "mechanical-output-role"
+        and not eligibility.review_required
         else "reviewed"
     )
     if basis not in {"mechanical", "reviewed", "upstream-reviewed"}:

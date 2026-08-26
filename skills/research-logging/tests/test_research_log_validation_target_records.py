@@ -705,6 +705,32 @@ class TargetRecordTests(unittest.TestCase):
                 STORE.manifest_closure_identity(updated["_sharded_manifest"]),
             )
 
+    def test_progress_republication_keeps_exact_orphan_subject_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            judgment = orphan_judgment(1)
+            judgment["result"] = "unresolved"
+            judgment["decision"] = "unresolved"
+            record["judgments"] = [judgment]
+            shell = TARGET.write_record_and_cache(
+                root, record, TARGET.empty_cache()
+            )
+            shell["outcomes"] = []
+            shell["failures"] = []
+            shell["result"] = None
+            shell["projection"] = None
+            shell["completion_dependencies"] = []
+
+            republished = TARGET.write_record_and_cache(
+                root, shell, TARGET.empty_cache()
+            )
+            loaded = TARGET.load_judgments_for_subjects(
+                root, republished, [judgment["subject"]]
+            )
+
+            self.assertEqual(loaded, [judgment])
+
     def test_local_cache_write_failure_does_not_invalidate_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

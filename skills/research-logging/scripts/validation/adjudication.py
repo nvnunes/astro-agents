@@ -802,8 +802,10 @@ def _target_review_item(
             else "unresolved"
         ),
         "workflow": assessment.workflow,
-        "producer_candidates": copy.deepcopy(
-            review_details["producer_candidates"]
+        "producer_candidates": (
+            copy.deepcopy(review_details["producer_candidates"])
+            if assessment.workflow.get("status") == "unresolved"
+            else []
         ),
         "evidence": [
             {
@@ -875,7 +877,6 @@ def _exact_mechanical_workflow(
         not request.enabled
         or request.workflow.get("status") != "unresolved"
         or not is_success_date(request.integrity)
-        or not request.support_results
         or any(result.get("status") != "pass" for result in request.support_results)
     ):
         return dict(request.workflow), []
@@ -884,6 +885,7 @@ def _exact_mechanical_workflow(
         request.target,
         [(invocation.key, invocation.command) for invocation in request.invocations],
         context.identity_cache,
+        allow_scoped_collection=not request.support_results,
     )
     if producer is None:
         return dict(request.workflow), []

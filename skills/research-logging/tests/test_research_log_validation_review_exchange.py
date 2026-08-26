@@ -62,6 +62,24 @@ def fill_page(path: Path) -> None:
 
 
 class ReviewSessionTests(unittest.TestCase):
+    def test_passing_workflow_routes_review_to_unresolved_evidence(self) -> None:
+        item = {
+            "kind": "semantic_fallback",
+            "workflow": {"status": "pass"},
+            "producer_candidates": [{"invocation": "invocation-1"}],
+            "evidence": [{"result": {"status": "unresolved"}}],
+            "integrity_status": "pass",
+        }
+
+        self.assertEqual(
+            EXCHANGE._question(item),
+            "Does the supplied evidence satisfy the stated contract?",
+        )
+        self.assertEqual(
+            EXCHANGE._semantic_fallback_choices(item),
+            ["pass", "fail:evidence"],
+        )
+
     @staticmethod
     def indexed_item(
         number: int,

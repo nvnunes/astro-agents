@@ -23,7 +23,7 @@ COMPONENT_VERSIONS: dict[str, int] = {
     "integrity": 1,
     "summary_provenance": 1,
     "entry_provenance": 2,
-    "mechanical_producer": 3,
+    "mechanical_producer": 4,
     "reviewed_producer": 2,
     "upstream_reviewed_producer": 2,
     "reproducibility": 1,
@@ -37,7 +37,7 @@ INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "collection-member": 1,
     "collection-membership": 1,
     "collection-directory-membership": 1,
-    "experimental-section": 1,
+    "experimental-section": 2,
     "presented-item": 1,
     "evidence-association": 1,
     "recorded-invocation": 1,
@@ -444,7 +444,17 @@ def _entry_section_projections(
             for source in row.get("resolved_sources", [])
         )
     ]
+    candidate = next(
+        (
+            item
+            for item in entry.get("candidate_targets", [])
+            if item.get("identity") == target and item.get("presented") is True
+        ),
+        None,
+    )
     section_names = {str(row.get("section", "")) for row in associations}
+    if candidate is not None:
+        section_names.update(str(name) for name in candidate.get("sections", []))
     result = [
         projection(
             "experimental-section",
@@ -496,6 +506,30 @@ def _entry_section_projections(
                     },
                 )
             )
+    if candidate is not None:
+        occurrences = candidate.get("occurrences", [])
+        result.append(
+            projection(
+                "presented-item",
+                f"presented-target:{entry_id}:{target}",
+                {
+                    "identity": candidate.get("identity"),
+                    "kind": candidate.get("kind"),
+                    "presented": True,
+                    "sections": candidate.get("sections", []),
+                    "occurrences": occurrences,
+                },
+                "presented-target",
+                source_locator={
+                    "path": entry.get("path", ""),
+                    "line": (
+                        occurrences[0].get("line")
+                        if occurrences and isinstance(occurrences[0], Mapping)
+                        else None
+                    ),
+                },
+            )
+        )
     return result
 
 

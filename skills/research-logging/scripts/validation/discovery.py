@@ -290,7 +290,11 @@ def section_definitions(
         )
         start = definition["line"] - 1
         end = definition["end_line"]
-        content_lines = list(lines[start:end])
+        content_lines = [
+            line
+            for line, scope in zip(lines[start:end], sections[start:end])
+            if scope.get("block_label") != "Validation"
+        ]
         while content_lines and not content_lines[-1].strip():
             content_lines.pop()
         content = "\n".join(content_lines).encode("utf-8")

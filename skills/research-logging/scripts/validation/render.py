@@ -58,6 +58,10 @@ from .inventory import (
     directory_membership_identity,
 )
 from .observations import CONTENT_CHANGED, ObservationSession, file_metadata_matches
+from .producer_bindings import (
+    producer_binding_invocation_cache,
+    resolved_identity_cache,
+)
 from .records import LOCK_FILENAME
 from .report import install_status_summary
 
@@ -781,7 +785,7 @@ def _validated_adjudication_record(
 
 
 def _materialize_identities(
-    scan: Mapping[str, Any], completed_checks: Sequence[dict[str, Any]]
+    scan: ScanRecord, completed_checks: Sequence[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     dependency_specs = _dependency_specs(completed_checks)
     identities = _dependency_identities(scan, dependency_specs)
@@ -853,9 +857,11 @@ def _dependency_identities(
 
 
 def _stored_checks(
-    scan: Mapping[str, Any], completed_checks: Sequence[dict[str, Any]]
+    scan: ScanRecord, completed_checks: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     snapshot_cache: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    identity_cache = resolved_identity_cache(scan)
+    invocation_cache = producer_binding_invocation_cache(scan)
     stored_checks = []
     for check in completed_checks:
         stored_dependencies = []
@@ -889,7 +895,9 @@ def _stored_checks(
         inputs = input_dependencies_for_check(
             scan, {**check, "dependencies": stored_dependencies}
         )
-        bindings = producer_bindings_for_check(scan, check)
+        bindings = producer_bindings_for_check(
+            scan, check, identity_cache, invocation_cache
+        )
         stored_checks.append(
             {
                 **check,

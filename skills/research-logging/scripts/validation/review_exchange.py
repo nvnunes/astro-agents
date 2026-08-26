@@ -53,10 +53,11 @@ from .review_reuse import (
 EXCHANGE_SCHEMA_VERSION = 1
 INTERNAL_FILENAME = ".continuation.json"
 MAX_PACKET_ITEMS = 200
-MAX_PACKET_BYTES = 65_536
-MAX_EXPANDED_CONTEXT_BYTES = MAX_PACKET_BYTES // 2
+TARGET_PACKET_BYTES = 65_536
+MAX_PACKET_BYTES = 73_728
+MAX_EXPANDED_CONTEXT_BYTES = TARGET_PACKET_BYTES // 2
 REVIEW_SESSION_SCHEMA_VERSION = 1
-CONTEXT_PROJECTION_VERSION = 3
+CONTEXT_PROJECTION_VERSION = 4
 SESSION_BASE_FILENAME = "base.json"
 SESSION_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
@@ -65,6 +66,13 @@ SESSION_ITEM_SHARD_SIZE = MAX_PACKET_ITEMS
 VALIDATION_WORK_ROOT = "work"
 VALIDATION_DIRECTORY = "validation"
 LOCAL_CACHE_DIRECTORY = ".cache"
+COLLECTION_SHARED_CONTEXT_KEYS = (
+    "reason",
+    "selection_contract",
+    "collections",
+    "collection_structure",
+    "recorded_invocations",
+)
 
 
 class _ReviewExchangeProjection:
@@ -1129,12 +1137,67 @@ def _packet_context(
     )
 
 
+def _shareable_context_projection(
+    item: Mapping[str, Any], context: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Return exact reusable page context while retaining target-specific facts."""
+
+    if item.get("kind") != "collection_scope":
+        return context
+    shared = {
+        key: context[key] for key in COLLECTION_SHARED_CONTEXT_KEYS if key in context
+    }
+    return shared if shared else context
+
+
+def _target_specific_context(
+    item: Mapping[str, Any], context: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Return question-local facts omitted from its shareable projection."""
+
+    if item.get("kind") != "collection_scope":
+        return {}
+    return {
+        key: value
+        for key, value in context.items()
+        if key not in COLLECTION_SHARED_CONTEXT_KEYS
+    }
+
+
 def _render_packet_with_contexts(
     summary: str,
     items: list[dict[str, Any]],
     continuation: str,
     contexts: list[Mapping[str, Any]],
 ) -> str:
+    shareable_contexts = [
+        _shareable_context_projection(item, context)
+        for item, context in zip(items, contexts, strict=True)
+    ]
+    target_contexts = [
+        _target_specific_context(item, context)
+        for item, context in zip(items, contexts, strict=True)
+    ]
+    rendered_context_bytes = [
+        _json_bytes(context) for context in shareable_contexts
+    ]
+    rendered_identities = [_sha256(encoded) for encoded in rendered_context_bytes]
+    identity_counts = Counter(rendered_identities)
+    shared_identities = {
+        identity for identity, count in identity_counts.items() if count > 1
+    }
+    shared_labels: dict[str, str] = {}
+    shared_bytes: dict[str, bytes] = {}
+    for identity, encoded in zip(
+        rendered_identities, rendered_context_bytes, strict=True
+    ):
+        if identity not in shared_identities:
+            continue
+        previous = shared_bytes.setdefault(identity, encoded)
+        if previous != encoded:
+            raise ValidationToolError("shared review context identity collides")
+        if identity not in shared_labels:
+            shared_labels[identity] = f"C{len(shared_labels) + 1:03d}"
     lines = [
         "# Validation Review Packet",
         "",
@@ -1143,7 +1206,31 @@ def _render_packet_with_contexts(
         f"- Questions: {len(items)}",
         "- Edit only the paired template's decision and rationale fields.",
     ]
-    for number, (item, context) in enumerate(zip(items, contexts, strict=True), 1):
+    rendered_shared: set[str] = set()
+    for identity, context in zip(
+        rendered_identities, shareable_contexts, strict=True
+    ):
+        if identity not in shared_identities or identity in rendered_shared:
+            continue
+        rendered_shared.add(identity)
+        lines.extend(
+            [
+                "",
+                f"## Shared Context {shared_labels[identity]} — `{identity}`",
+                "",
+                "```json",
+                json.dumps(
+                    context,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "```",
+            ]
+        )
+    for number, (item, context, target_context, context_identity) in enumerate(
+        zip(items, contexts, target_contexts, rendered_identities, strict=True), 1
+    ):
         lines.extend(
             [
                 "",
@@ -1156,18 +1243,44 @@ def _render_packet_with_contexts(
                     f"`{json.dumps(value, sort_keys=True)}`"
                     for value in item["allowed_decisions"]
                 ),
-                "- Context:",
-                "",
-                "```json",
-                json.dumps(
-                    context,
-                    sort_keys=True,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                "```",
             ]
         )
+        if context_identity in shared_identities:
+            lines.append(
+                "- Shared context: "
+                f"shared context {shared_labels[context_identity]} "
+                f"(`{context_identity}`)"
+            )
+            if target_context:
+                lines.extend(
+                    [
+                        "- Target-specific context:",
+                        "",
+                        "```json",
+                        json.dumps(
+                            target_context,
+                            sort_keys=True,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        "```",
+                    ]
+                )
+        else:
+            lines.extend(
+                [
+                    "- Context:",
+                    "",
+                    "```json",
+                    json.dumps(
+                        context,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    "```",
+                ]
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -1404,6 +1517,11 @@ def _bounded_session_index(
                 "fingerprint": fingerprint,
             }
         )
+    for indexed in indexed_items:
+        locality = _review_locality(indexed["template"], indexed["context"])
+        indexed["locality"] = locality
+        indexed["locality_identity"] = _fingerprint(locality)
+    indexed_items.sort(key=_indexed_locality_sort_key)
     session_identity = _fingerprint(
         {
             "context_projection_version": CONTEXT_PROJECTION_VERSION,
@@ -1429,6 +1547,115 @@ def _bounded_session_index(
         "items": indexed_items,
         "orphan_fingerprints": copy.deepcopy(dict(orphan_fingerprints)),
     }
+
+
+def _locality_strings(value: Any, field: str | None = None) -> tuple[str, ...]:
+    """Return stable non-empty strings from one locality-bearing value."""
+
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, Mapping):
+        if field is not None:
+            return _locality_strings(value.get(field))
+        return tuple(
+            sorted(
+                {
+                    text
+                    for key in sorted(value)
+                    for text in _locality_strings(value[key])
+                }
+            )
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return tuple(
+            sorted(
+                {
+                    text
+                    for member in value
+                    for text in _locality_strings(member, field)
+                }
+            )
+        )
+    return ()
+
+
+def _review_locality(
+    item: Mapping[str, Any], context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the deterministic page-locality facts for one review question."""
+
+    minimum = context.get("minimum", context)
+    if not isinstance(minimum, Mapping):
+        minimum = {}
+    focused = context.get("focused_expansion", {})
+    if not isinstance(focused, Mapping):
+        focused = {}
+    summary = minimum.get("summary", {})
+    if not isinstance(summary, Mapping):
+        summary = {}
+    sections = tuple(
+        sorted(
+            {
+                *(_locality_strings(minimum.get("section"))),
+                *(_locality_strings(minimum.get("sections"), "section")),
+                *(_locality_strings(summary.get("section"))),
+                *(_locality_strings(focused.get("sections"), "section")),
+            }
+        )
+    )
+    candidates = minimum.get("candidates", context.get("candidates", []))
+    relationships = {
+        *(_locality_strings(item.get("material"))),
+        *(_locality_strings(candidates, "invocation")),
+        *(_locality_strings(candidates, "material")),
+    }
+    if item.get("kind") == "collection_scope":
+        relationships.add(
+            _fingerprint(_shareable_context_projection(item, context))
+        )
+    collections = {
+        *(_locality_strings(minimum.get("collections"))),
+        *(_locality_strings(context.get("collections"))),
+    }
+    return {
+        "entry": str(item.get("entry", "")),
+        "sections": list(sections),
+        "producer_relationship": sorted(relationships),
+        "kind": str(item.get("kind", "")),
+        "collection_roots": sorted(collections),
+    }
+
+
+def _indexed_locality_identity(indexed: Mapping[str, Any]) -> str:
+    identity = indexed.get("locality_identity")
+    if isinstance(identity, str) and identity:
+        return identity
+    template = indexed.get("template", {})
+    context = indexed.get("context", {})
+    if not isinstance(template, Mapping) or not isinstance(context, Mapping):
+        return ""
+    return _fingerprint(_review_locality(template, context))
+
+
+def _indexed_locality_sort_key(indexed: Mapping[str, Any]) -> tuple[str, ...]:
+    """Order locality facts first and use question identity as a stable tie-break."""
+
+    locality = indexed.get("locality", {})
+    if not isinstance(locality, Mapping):
+        locality = {}
+    template = indexed.get("template", {})
+    if not isinstance(template, Mapping):
+        template = {}
+    return (
+        str(locality.get("entry", "")),
+        json.dumps(locality.get("sections", []), ensure_ascii=False),
+        json.dumps(locality.get("producer_relationship", []), ensure_ascii=False),
+        str(locality.get("kind", "")),
+        json.dumps(locality.get("collection_roots", []), ensure_ascii=False),
+        str(template.get("identity", "")),
+        str(template.get("material", "")),
+        str(template.get("id", "")),
+    )
 
 
 def _current_page_state(
@@ -1467,17 +1694,20 @@ def _current_page_state(
 
 
 def _page_diagnostics(
-    items: Sequence[Mapping[str, Any]],
     selected: Sequence[Mapping[str, Any]],
     rendered_contexts: Sequence[Mapping[str, Any]],
     packet_bytes: int,
     page_number: int,
+    next_item: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return opt-in packet and context composition measurements."""
 
     context_sizes: Counter[str] = Counter()
     context_identities: Counter[str] = Counter()
     unique_context_bytes: dict[str, int] = {}
+    shared_projection_identities: Counter[str] = Counter()
+    unique_shared_projection_bytes: dict[str, int] = {}
+    shared_projection_bytes = 0
     for indexed, context in zip(selected, rendered_contexts, strict=True):
         template_item = indexed["template"]
         family = str(template_item.get("kind", "unknown"))
@@ -1487,13 +1717,46 @@ def _page_diagnostics(
         if identity:
             context_identities[identity] += 1
             unique_context_bytes.setdefault(identity, context_bytes)
+        shared_projection = _shareable_context_projection(template_item, context)
+        shared_projection_bytes += len(_json_bytes(shared_projection))
+        shared_identity = _fingerprint(shared_projection)
+        shared_projection_identities[shared_identity] += 1
+        unique_shared_projection_bytes.setdefault(
+            shared_identity, len(_json_bytes(shared_projection))
+        )
+    locality_identities = [_indexed_locality_identity(item) for item in selected]
+    locality_clusters = sum(
+        identity != previous
+        for identity, previous in zip(
+            locality_identities,
+            [None, *locality_identities[:-1]],
+            strict=True,
+        )
+    )
+    split_locality_cluster = bool(
+        selected
+        and next_item is not None
+        and _indexed_locality_identity(selected[-1])
+        == _indexed_locality_identity(next_item)
+    )
     return {
         "page_number": page_number,
-        "item_count": len(items),
+        "item_count": len(selected),
         "items_by_kind": dict(
-            sorted(Counter(str(item.get("kind", "unknown")) for item in items).items())
+            sorted(
+                Counter(
+                    str(item["template"].get("kind", "unknown"))
+                    for item in selected
+                ).items()
+            )
         ),
         "packet_bytes": packet_bytes,
+        "normal_packet_target_bytes": TARGET_PACKET_BYTES,
+        "hard_packet_ceiling_bytes": MAX_PACKET_BYTES,
+        "locality_overflow_used": packet_bytes > TARGET_PACKET_BYTES,
+        "locality_overflow_bytes": max(0, packet_bytes - TARGET_PACKET_BYTES),
+        "locality_cluster_count": locality_clusters,
+        "split_locality_cluster": split_locality_cluster,
         "context_bytes": sum(context_sizes.values()),
         "unique_context_bytes": sum(unique_context_bytes.values()),
         "context_bytes_by_projection_family": dict(sorted(context_sizes.items())),
@@ -1501,7 +1764,105 @@ def _page_diagnostics(
         "repeated_shared_context_identities": sum(
             count - 1 for count in context_identities.values() if count > 1
         ),
+        "shared_projection_identities": len(shared_projection_identities),
+        "shared_projection_bytes": shared_projection_bytes,
+        "repeated_shared_projection_identities": sum(
+            count - 1
+            for count in shared_projection_identities.values()
+            if count > 1
+        ),
+        "unique_shared_projection_bytes": sum(
+            unique_shared_projection_bytes.values()
+        ),
     }
+
+
+def _render_session_page_candidate(
+    index: Mapping[str, Any],
+    state: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    count: int,
+) -> tuple[list[dict[str, Any]], str, str, list[Mapping[str, Any]]]:
+    """Render one prefix with continuation identity bound to its exact order."""
+
+    selected = candidates[:count]
+    offset = int(state["next_offset"])
+    page_number = int(state["next_page_number"])
+    items = [copy.deepcopy(item["template"]) for item in selected]
+    shared_context_identities = [
+        _fingerprint(
+            _shareable_context_projection(item["template"], item["context"])
+        )
+        for item in selected
+    ]
+    continuation = _fingerprint(
+        {
+            "session": state["session_identity"],
+            "page": page_number,
+            "offset": offset,
+            "items": [item["id"] for item in items],
+            "shared_contexts": shared_context_identities,
+        }
+    )
+    packet, rendered_contexts = _render_contexts(
+        str(index["summary"]),
+        items,
+        continuation,
+        [item["context"] for item in selected],
+    )
+    return items, continuation, packet, rendered_contexts
+
+
+def _bounded_session_page(
+    index: Mapping[str, Any],
+    state: Mapping[str, Any],
+    page_candidates: Sequence[Mapping[str, Any]],
+) -> tuple[
+    tuple[list[dict[str, Any]], str, str, list[Mapping[str, Any]]],
+    Sequence[Mapping[str, Any]],
+]:
+    """Select one target-bounded page with locality-preserving soft overflow."""
+
+    candidates = page_candidates[:MAX_PACKET_ITEMS]
+    low = 1
+    high = len(candidates)
+    bounded = None
+    while low <= high:
+        count = (low + high) // 2
+        rendered = _render_session_page_candidate(index, state, candidates, count)
+        if len(rendered[2].encode("utf-8")) <= TARGET_PACKET_BYTES:
+            bounded = rendered
+            low = count + 1
+        else:
+            high = count - 1
+    if bounded is None:
+        minimum = _render_session_page_candidate(index, state, candidates, 1)
+        if len(minimum[2].encode("utf-8")) > MAX_PACKET_BYTES:
+            raise ValidationToolError(
+                "one minimum-sufficient review question exceeds the hard packet ceiling"
+            )
+        bounded = minimum
+    target_count = len(bounded[0])
+    target_cluster = _indexed_locality_identity(candidates[target_count - 1])
+    cluster_end = target_count
+    while (
+        cluster_end < len(candidates)
+        and _indexed_locality_identity(candidates[cluster_end]) == target_cluster
+    ):
+        cluster_end += 1
+    cluster_is_complete = not (
+        cluster_end == len(candidates)
+        and len(page_candidates) > len(candidates)
+        and _indexed_locality_identity(page_candidates[len(candidates)])
+        == target_cluster
+    )
+    if cluster_end > target_count and cluster_is_complete:
+        extended = _render_session_page_candidate(
+            index, state, candidates, cluster_end
+        )
+        if len(extended[2].encode("utf-8")) <= MAX_PACKET_BYTES:
+            bounded = extended
+    return bounded, candidates
 
 
 def _session_page(
@@ -1514,54 +1875,17 @@ def _session_page(
 
     offset = int(state["next_offset"])
     page_number = int(state["next_page_number"])
-    candidates = _session_items(session_dir, index, offset, MAX_PACKET_ITEMS)
-    if not candidates:
+    page_candidates = _session_items(
+        session_dir, index, offset, MAX_PACKET_ITEMS + 1
+    )
+    if not page_candidates:
         raise ValidationToolError("review session has no next page")
-    low = 1
-    high = len(candidates)
-    bounded: (
-        tuple[
-            list[dict[str, Any]],
-            str,
-            str,
-            list[Mapping[str, Any]],
-        ]
-        | None
-    ) = None
-    while low <= high:
-        count = (low + high) // 2
-        selected = candidates[:count]
-        items = [copy.deepcopy(item["template"]) for item in selected]
-        continuation = _fingerprint(
-            {
-                "session": state["session_identity"],
-                "page": page_number,
-                "offset": offset,
-                "items": [item["id"] for item in items],
-            }
-        )
-        packet, rendered_contexts = _render_contexts(
-            str(index["summary"]),
-            items,
-            continuation,
-            [item["context"] for item in selected],
-        )
-        if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES:
-            bounded = (
-                items,
-                continuation,
-                packet,
-                rendered_contexts,
-            )
-            low = count + 1
-        else:
-            high = count - 1
-    if bounded is None:
-        raise ValidationToolError(
-            "one minimum-sufficient review question exceeds the packet byte bound"
-        )
+    bounded, candidates = _bounded_session_page(index, state, page_candidates)
     items, continuation, packet, rendered_contexts = bounded
     selected = candidates[: len(items)]
+    next_item = (
+        page_candidates[len(items)] if len(page_candidates) > len(items) else None
+    )
     page_dir = session_dir / f"page-{page_number:06d}"
     page_dir.mkdir(exist_ok=True)
     template = {
@@ -1613,11 +1937,11 @@ def _session_page(
     }
     if review_diagnostics:
         result["page_diagnostics"] = _page_diagnostics(
-            items,
             selected,
             rendered_contexts,
             packet_bytes,
             page_number,
+            next_item,
         )
     return result
 

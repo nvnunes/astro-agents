@@ -72,7 +72,10 @@ Generated semantic packets and decision templates are temporary task files
 under `validation/.cache/work/`. They are paired to one continuation and may
 be regenerated from the durable record and current evidence. The agent edits
 only the decision and rationale fields requested by the template. A public
-packet contains at most 200 whole questions and 65,536 UTF-8 bytes.
+packet contains at most 200 whole questions. Its normal target is 65,536 UTF-8
+bytes. It may cross that target only to retain one complete locality cluster or
+one indivisible minimum-sufficient question after final rendering, and it never
+exceeds the 73,728-byte hard ceiling.
 
 ## Durable Layout Contract
 

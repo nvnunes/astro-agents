@@ -32,6 +32,7 @@ from validation.judgment_rules import SEMANTIC_REVIEW_RULES
 from validation.producer_bindings import identity_for_path, resolved_identity_cache
 from validation.review_exchange import (
     MAX_PACKET_BYTES,
+    TARGET_PACKET_BYTES,
     _ordinary_template,
     accept_review_page,
     create_exchange,
@@ -800,6 +801,7 @@ def _public_run(
         "first_packet_items": exchange["item_count"],
         "accepted_items": len(decisions["items"]),
         "next_packet_items": following.get("item_count", 0),
+        "packet_byte_target": TARGET_PACKET_BYTES,
         "packet_byte_bound": MAX_PACKET_BYTES,
     }
 
@@ -900,6 +902,7 @@ def _session_run(
         "page_acceptance_seconds": acceptance_seconds,
         "action_translation_seconds": translation_seconds,
         "action_application_seconds": application_seconds,
+        "packet_byte_target": TARGET_PACKET_BYTES,
         "packet_byte_bound": MAX_PACKET_BYTES,
     }
 
@@ -997,6 +1000,7 @@ def _single_fanout(materials: int, candidates_per_material: int) -> dict[str, An
             "candidate_relationships": len(candidates),
             "question_count": exchange["item_count"],
             "packet_bytes": exchange["byte_count"],
+            "packet_byte_target": TARGET_PACKET_BYTES,
             "packet_byte_bound": MAX_PACKET_BYTES,
             "elapsed_seconds": elapsed,
             "peak_memory_bytes": _peak_memory_bytes(),

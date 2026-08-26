@@ -62,6 +62,31 @@ def fill_page(path: Path) -> None:
 
 
 class ReviewSessionTests(unittest.TestCase):
+    @staticmethod
+    def indexed_item(
+        number: int,
+        *,
+        context: dict[str, object] | None = None,
+        locality: str = "shared-locality",
+    ) -> dict[str, object]:
+        return {
+            "template": {
+                "id": f"question-{number}",
+                "kind": "semantic_fallback",
+                "entry": "e001",
+                "identity": f"docs/mini/result-{number}.csv",
+                "question": "Does the evidence satisfy the contract?",
+                "allowed_decisions": ["pass", "fail"],
+                "context_level": 0,
+                "context_identity": f"context-{number}",
+                "decision": None,
+                "rationale": None,
+            },
+            "context": context or {"payload": f"context-{number}"},
+            "fingerprint": f"fingerprint-{number}",
+            "locality_identity": locality,
+        }
+
     def test_exchange_builds_one_query_index_and_projects_each_context_once(
         self,
     ) -> None:
@@ -248,6 +273,198 @@ class ReviewSessionTests(unittest.TestCase):
             self.assertIn("review_session", internal)
             self.assertNotIn("ordinary_session", internal)
             self.assertNotIn("deferred_orphan", internal)
+
+    def test_repeated_exact_context_is_rendered_once_and_referenced_per_item(
+        self,
+    ) -> None:
+        context = {"shared": "same projection"}
+        indexed = [
+            self.indexed_item(number, context=context) for number in range(2)
+        ]
+        items = [item["template"] for item in indexed]
+
+        packet = EXCHANGE._render_packet_with_contexts(
+            "docs/mini.md", items, "continuation", [context, context]
+        )
+
+        self.assertEqual(packet.count('"shared": "same projection"'), 1)
+        self.assertEqual(packet.count("Shared context: shared context C001"), 2)
+        self.assertEqual(packet.count("## Shared Context C001"), 1)
+
+    def test_collection_projection_shares_structure_but_keeps_target_context(
+        self,
+    ) -> None:
+        items = []
+        contexts = []
+        for number in range(2):
+            indexed = self.indexed_item(number)
+            indexed["template"]["kind"] = "collection_scope"
+            items.append(indexed["template"])
+            contexts.append(
+                {
+                    "identity": f"docs/mini/result-{number}.csv",
+                    "reason": "select exact members",
+                    "selection_contract": "select one exact scope",
+                    "collections": ["output/shared"],
+                    "collection_structure": {
+                        "output/shared": {"direct_sibling_files": ["one.csv"]}
+                    },
+                    "recorded_invocations": [{"invocation": "e001:shared"}],
+                    "target_dependencies": [
+                        {"path": f"docs/mini/result-{number}.csv", "role": "target"}
+                    ],
+                }
+            )
+
+        packet = EXCHANGE._render_packet_with_contexts(
+            "docs/mini.md", items, "continuation", contexts
+        )
+
+        self.assertEqual(packet.count('"collection_structure"'), 1)
+        self.assertEqual(packet.count('"target_dependencies"'), 2)
+        self.assertEqual(packet.count("Shared context: shared context C001"), 2)
+
+    def test_collection_locality_orders_equal_shared_projections_together(
+        self,
+    ) -> None:
+        scan = {
+            "summary": "docs/mini.md",
+            "validation_rules_version": "rules-v1",
+            "input_fingerprint": "scan-v1",
+        }
+        adjudication = {"date": "2026-08-16"}
+        items = []
+        contexts = []
+        for number, invocation in enumerate(["shared", "other", "shared"]):
+            indexed = self.indexed_item(number)
+            indexed["template"]["kind"] = "collection_scope"
+            items.append(indexed["template"])
+            contexts.append(
+                {
+                    "identity": f"docs/mini/result-{number}.csv",
+                    "collections": ["output/shared"],
+                    "collection_structure": {"output/shared": {}},
+                    "recorded_invocations": [{"invocation": invocation}],
+                    "target_dependencies": [],
+                }
+            )
+
+        index = EXCHANGE._bounded_session_index(
+            scan, adjudication, items, {}, contexts
+        )
+        ordered = [item["template"]["identity"] for item in index["items"]]
+
+        shared_positions = [
+            position
+            for position, identity in enumerate(ordered)
+            if identity in {"docs/mini/result-0.csv", "docs/mini/result-2.csv"}
+        ]
+        self.assertEqual(shared_positions[1] - shared_positions[0], 1)
+
+    def test_page_can_cross_normal_target_to_finish_one_locality_cluster(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            indexed = [
+                self.indexed_item(
+                    number,
+                    context={"payload": f"{number}-" + "x" * 180},
+                )
+                for number in range(3)
+            ]
+            index = {"summary": "docs/mini.md", "items": indexed}
+            state = {
+                "session_identity": "session",
+                "next_offset": 0,
+                "next_page_number": 1,
+                "output_dir": directory,
+                "session": "work/session",
+                "summary_path": "docs/mini.md",
+                "summary": "docs/mini.md",
+                "review_kind": "bounded_review",
+            }
+
+            with (
+                mock.patch.object(EXCHANGE, "TARGET_PACKET_BYTES", 1_000),
+                mock.patch.object(EXCHANGE, "MAX_PACKET_BYTES", 2_500),
+            ):
+                page = EXCHANGE._session_page(
+                    session_dir, index, state, review_diagnostics=True
+                )
+
+            self.assertEqual(page["item_count"], 3)
+            self.assertGreater(page["byte_count"], 1_000)
+            self.assertLessEqual(page["byte_count"], 2_500)
+            self.assertTrue(page["page_diagnostics"]["locality_overflow_used"])
+            self.assertFalse(page["page_diagnostics"]["split_locality_cluster"])
+
+    def test_page_splits_cluster_instead_of_crossing_hard_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            indexed = [
+                self.indexed_item(
+                    number,
+                    context={"payload": f"{number}-" + "x" * 180},
+                )
+                for number in range(4)
+            ]
+            index = {"summary": "docs/mini.md", "items": indexed}
+            state = {
+                "session_identity": "session",
+                "next_offset": 0,
+                "next_page_number": 1,
+                "output_dir": directory,
+                "session": "work/session",
+                "summary_path": "docs/mini.md",
+                "summary": "docs/mini.md",
+                "review_kind": "bounded_review",
+            }
+
+            with (
+                mock.patch.object(EXCHANGE, "TARGET_PACKET_BYTES", 1_000),
+                mock.patch.object(EXCHANGE, "MAX_PACKET_BYTES", 1_200),
+            ):
+                page = EXCHANGE._session_page(
+                    session_dir, index, state, review_diagnostics=True
+                )
+
+            self.assertLess(page["item_count"], 4)
+            self.assertLessEqual(page["byte_count"], 1_000)
+            self.assertFalse(page["page_diagnostics"]["locality_overflow_used"])
+            self.assertTrue(page["page_diagnostics"]["split_locality_cluster"])
+
+    def test_indivisible_question_can_cross_normal_target_below_hard_ceiling(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            indexed = [
+                self.indexed_item(0, context={"payload": "x" * 800})
+            ]
+            index = {"summary": "docs/mini.md", "items": indexed}
+            state = {
+                "session_identity": "session",
+                "next_offset": 0,
+                "next_page_number": 1,
+                "output_dir": directory,
+                "session": "work/session",
+                "summary_path": "docs/mini.md",
+                "summary": "docs/mini.md",
+                "review_kind": "bounded_review",
+            }
+
+            with (
+                mock.patch.object(EXCHANGE, "TARGET_PACKET_BYTES", 500),
+                mock.patch.object(EXCHANGE, "MAX_PACKET_BYTES", 2_000),
+            ):
+                page = EXCHANGE._session_page(
+                    session_dir, index, state, review_diagnostics=True
+                )
+
+            self.assertEqual(page["item_count"], 1)
+            self.assertGreater(page["byte_count"], 500)
+            self.assertLessEqual(page["byte_count"], 2_000)
 
     def test_pre_pass_3_paged_packet_remains_acceptable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

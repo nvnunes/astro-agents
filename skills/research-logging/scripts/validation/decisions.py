@@ -49,7 +49,7 @@ from .producer_bindings import (
     verify_producer_binding,
 )
 from .review_batches import (
-    orphan_candidate_fingerprint,
+    orphan_fingerprint_context,
 )
 from .review_index import ReviewContextIndex, ReviewQuerySession
 
@@ -650,6 +650,7 @@ class _ReviewDecisionContext(NamedTuple):
     row: Dict[str, Any]
     identity_cache: Mapping[str, str]
     review_session: Optional[ReviewQuerySession] = None
+    trusted_orphan_fingerprints: Mapping[str, str] | None = None
 
 
 def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
@@ -1148,6 +1149,7 @@ def _validated_orphan_batch_item(
     adjudication: Mapping[str, Any],
     item: Mapping[str, Any],
     action: Mapping[str, Any],
+    trusted_fingerprints: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Return exact submitted candidates after candidate-scoped stale checks."""
 
@@ -1190,18 +1192,19 @@ def _validated_orphan_batch_item(
         raise ValidationToolError(
             "orphan batch contains candidates no longer pending in this adjudication"
         )
-    for identity, fingerprint in fingerprints.items():
-        expected = orphan_candidate_fingerprint(
+    if not _fingerprints_are_trusted(fingerprints, trusted_fingerprints):
+        fingerprint_context = orphan_fingerprint_context(
             scan,
             adjudication.get("schema_version"),
             entry_id,
-            current[identity],
             DECISION_SCHEMA_VERSION,
         )
-        if fingerprint != expected:
-            raise ValidationToolError(
-                f"orphan candidate fingerprint is stale or invalid: {identity}"
-            )
+        for identity, fingerprint in fingerprints.items():
+            expected = fingerprint_context.fingerprint(current[identity])
+            if fingerprint != expected:
+                raise ValidationToolError(
+                    f"orphan candidate fingerprint is stale or invalid: {identity}"
+                )
     selected = dict(item)
     selected["candidates"] = [current[identity] for identity in sorted(fingerprints)]
     return selected
@@ -1570,6 +1573,7 @@ def _apply_orphan_review_item(context: _ReviewDecisionContext) -> None:
             context.adjudication,
             context.item,
             context.action,
+            context.trusted_orphan_fingerprints,
         )
     _apply_orphan_decision(
         context.adjudication,
@@ -1601,6 +1605,7 @@ def _orphan_batch_reapplication_status(
     scan: ScanRecord,
     adjudication: Mapping[str, Any],
     action: Mapping[str, Any],
+    trusted_fingerprints: Mapping[str, str] | None = None,
 ) -> str:
     """Return `pending` or `applied`, rejecting stale or conflicting repeats."""
 
@@ -1615,7 +1620,11 @@ def _orphan_batch_reapplication_status(
         return "pending"
     entry_id = matcher["entry"]
     _validate_reapplied_fingerprints(
-        scan, adjudication, entry_id, fingerprints
+        scan,
+        adjudication,
+        entry_id,
+        fingerprints,
+        trusted_fingerprints,
     )
     desired = _desired_orphan_decisions(action)
     if set(desired) != set(fingerprints):
@@ -1628,7 +1637,10 @@ def _validate_reapplied_fingerprints(
     adjudication: Mapping[str, Any],
     entry_id: str,
     fingerprints: Mapping[str, Any],
+    trusted_fingerprints: Mapping[str, str] | None = None,
 ) -> None:
+    if _fingerprints_are_trusted(fingerprints, trusted_fingerprints):
+        return
     scan_entry = next(
         (
             entry
@@ -1644,18 +1656,32 @@ def _validate_reapplied_fingerprints(
         for candidate in scan_entry.get("orphan_inventory", [])
         if isinstance(candidate, dict) and isinstance(candidate.get("identity"), str)
     }
+    fingerprint_context = orphan_fingerprint_context(
+        scan,
+        adjudication.get("schema_version"),
+        entry_id,
+        DECISION_SCHEMA_VERSION,
+    )
     for identity, fingerprint in fingerprints.items():
         candidate = candidates.get(identity)
-        if candidate is None or fingerprint != orphan_candidate_fingerprint(
-            scan,
-            adjudication.get("schema_version"),
-            entry_id,
-            candidate,
-            DECISION_SCHEMA_VERSION,
+        if candidate is None or fingerprint != fingerprint_context.fingerprint(
+            candidate
         ):
             raise ValidationToolError(
                 f"orphan candidate fingerprint is stale or invalid: {identity}"
             )
+
+
+def _fingerprints_are_trusted(
+    fingerprints: Mapping[str, Any],
+    trusted: Mapping[str, str] | None,
+) -> bool:
+    """Return whether every submitted digest matches a same-session index."""
+
+    return trusted is not None and all(
+        trusted.get(identity) == fingerprint
+        for identity, fingerprint in fingerprints.items()
+    )
 
 
 def _desired_orphan_decisions(
@@ -1801,6 +1827,10 @@ def apply_review_decisions(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     decisions: Mapping[str, Any],
+    *,
+    trusted_orphan_fingerprints: Mapping[
+        str, Mapping[str, str]
+    ] | None = None,
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """Apply compact, explicit decisions and reconcile their graph effects."""
 
@@ -1842,8 +1872,21 @@ def apply_review_decisions(
         else None
     )
     for action_number, action in enumerate(actions, 1):
+        matcher = action.get("match")
+        trusted_entry_fingerprints = (
+            trusted_orphan_fingerprints.get(str(matcher.get("entry")))
+            if trusted_orphan_fingerprints is not None
+            and isinstance(matcher, Mapping)
+            else None
+        )
         if action.get("decision") == "orphan-batch" and (
-            _orphan_batch_reapplication_status(scan, result, action) == "applied"
+            _orphan_batch_reapplication_status(
+                scan,
+                result,
+                action,
+                trusted_entry_fingerprints,
+            )
+            == "applied"
         ):
             counts["orphan-batch-noop"] = counts.get("orphan-batch-noop", 0) + 1
             continue
@@ -1876,6 +1919,7 @@ def apply_review_decisions(
                     row=row,
                     identity_cache=identity_cache,
                     review_session=review_session,
+                    trusted_orphan_fingerprints=trusted_entry_fingerprints,
                 )
             )
             removed = _update_batch_queue_after_decision(

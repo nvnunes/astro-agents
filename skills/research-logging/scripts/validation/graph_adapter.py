@@ -193,23 +193,42 @@ def _orphanable_inventory(scan: Mapping[str, Any]) -> Set[str]:
     return result
 
 
-def _material_owner_entry(scan: Mapping[str, Any], identity: str, default: str) -> str:
+def _material_ownership_index(
+    scan: Mapping[str, Any],
+) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Index exact material owners and ordered entry-root fallbacks once."""
+
+    exact: dict[str, str] = {}
+    roots: list[tuple[str, str]] = []
     for entry in scan.get("entries", []):
-        if any(
-            candidate.get("identity") == identity
-            for candidate in (
-                *entry.get("candidate_targets", []),
-                *entry.get("orphan_inventory", []),
-            )
-        ):
-            return entry["id"]
-    for entry in scan.get("entries", []):
-        path = entry.get("path")
-        if not isinstance(path, str):
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str):
             continue
-        entry_root = Path(path).parent.as_posix() + "/"
+        for candidate in (
+            *entry.get("candidate_targets", []),
+            *entry.get("orphan_inventory", []),
+        ):
+            identity = candidate.get("identity")
+            if isinstance(identity, str):
+                exact.setdefault(identity, entry_id)
+        path = entry.get("path")
+        if isinstance(path, str):
+            roots.append((Path(path).parent.as_posix() + "/", entry_id))
+    return exact, roots
+
+
+def _material_owner_entry(
+    identity: str,
+    default: str,
+    exact: Mapping[str, str],
+    roots: Sequence[tuple[str, str]],
+) -> str:
+    owner = exact.get(identity)
+    if owner is not None:
+        return owner
+    for entry_root, entry_id in roots:
         if identity.startswith(entry_root):
-            return entry["id"]
+            return entry_id
     return default
 
 
@@ -224,6 +243,8 @@ class _GraphBuildState:
     lookup: Dict[str, str]
     local_identities: Set[str]
     orphanable: Set[str]
+    material_owners: Mapping[str, str]
+    entry_roots: Sequence[tuple[str, str]]
     material_keys: Dict[str, NodeKey] = field(default_factory=dict)
     token_keys: Dict[Tuple[str, str], NodeKey] = field(default_factory=dict)
 
@@ -261,7 +282,10 @@ class _GraphBuildState:
         )
         if owner_namespace == self.namespace and self.default_entry is not None:
             owner_id = _material_owner_entry(
-                self.scan, identity, self.default_entry.identity
+                identity,
+                self.default_entry.identity,
+                self.material_owners,
+                self.entry_roots,
             )
             owner_entry = self.entries.get(owner_id, self.default_entry)
             self.builder.add_edge(
@@ -314,6 +338,7 @@ def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
     log = NodeKey(namespace, NodeKind.LOG, namespace)
     builder.add_node(log, summary_origin)
     entries = _entry_nodes(scan, builder, namespace, log)
+    material_owners, entry_roots = _material_ownership_index(scan)
     return _GraphBuildState(
         scan=scan,
         namespace=namespace,
@@ -324,6 +349,8 @@ def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
         lookup=_identity_lookup(scan),
         local_identities=_local_identities(scan),
         orphanable=_orphanable_inventory(scan),
+        material_owners=material_owners,
+        entry_roots=entry_roots,
     )
 
 

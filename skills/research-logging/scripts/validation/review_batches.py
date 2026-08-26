@@ -13,6 +13,75 @@ from .contracts import ValidationToolError
 DEFAULT_ORPHAN_BATCH_SIZE = 200
 
 
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class OrphanFingerprintContext:
+    """Canonical entry-scoped state shared by orphan candidate fingerprints.
+
+    The encoded prefix and suffix preserve the historical canonical JSON bytes;
+    only the candidate-local object is serialized for each fingerprint.
+    """
+
+    prefix: bytes
+    suffix: bytes
+
+    def fingerprint(self, candidate: Mapping[str, Any]) -> str:
+        """Return the compatible digest for one candidate-local payload."""
+
+        digest = hashlib.sha256()
+        digest.update(self.prefix)
+        digest.update(_canonical_json(dict(candidate)))
+        digest.update(self.suffix)
+        return digest.hexdigest()
+
+
+def orphan_fingerprint_context(
+    scan: Mapping[str, Any],
+    adjudication_schema_version: Any,
+    entry_id: str,
+    decision_schema_version: int,
+) -> OrphanFingerprintContext:
+    """Prepare invariant canonical bytes for one entry's orphan candidates."""
+
+    entry: Mapping[str, Any] = next(
+        (
+            value
+            for value in scan.get("entries", [])
+            if value.get("id") == entry_id and "error" not in value
+        ),
+        {},
+    )
+    notes = sorted(
+        str(note.get("sha256"))
+        for note in entry.get("validation_notes", [])
+        if isinstance(note.get("sha256"), str)
+    )
+    prefix = (
+        b'{"adjudication_schema_version":'
+        + _canonical_json(adjudication_schema_version)
+        + b',"candidate":'
+    )
+    suffix_values = (
+        ("commands", entry.get("commands", [])),
+        ("data_index", entry.get("data_index", {})),
+        ("decision_schema_version", decision_schema_version),
+        ("entry", entry_id),
+        ("scan_schema_version", scan.get("schema_version")),
+        ("validation_notes", notes),
+        ("validation_rules_version", scan.get("validation_rules_version", "")),
+    )
+    suffix = b"".join(
+        b',"' + key.encode("utf-8") + b'":' + _canonical_json(value)
+        for key, value in suffix_values
+    ) + b"}"
+    return OrphanFingerprintContext(prefix, suffix)
+
+
 def ordered_orphan_candidates(
     item: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -36,34 +105,12 @@ def orphan_candidate_fingerprint(
 ) -> str:
     """Return conservative stale protection for one orphan candidate."""
 
-    entry: Mapping[str, Any] = next(
-        (
-            value
-            for value in scan.get("entries", [])
-            if value.get("id") == entry_id and "error" not in value
-        ),
-        {},
-    )
-    notes = sorted(
-        str(note.get("sha256"))
-        for note in entry.get("validation_notes", [])
-        if isinstance(note.get("sha256"), str)
-    )
-    payload = {
-        "validation_rules_version": scan.get("validation_rules_version", ""),
-        "scan_schema_version": scan.get("schema_version"),
-        "adjudication_schema_version": adjudication_schema_version,
-        "decision_schema_version": decision_schema_version,
-        "entry": entry_id,
-        "candidate": dict(candidate),
-        "commands": entry.get("commands", []),
-        "data_index": entry.get("data_index", {}),
-        "validation_notes": notes,
-    }
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return orphan_fingerprint_context(
+        scan,
+        adjudication_schema_version,
+        entry_id,
+        decision_schema_version,
+    ).fingerprint(candidate)
 
 
 @dataclass(frozen=True)
@@ -126,14 +173,14 @@ def select_orphan_batch(
     entry_id = item.get("entry")
     if not isinstance(entry_id, str):
         raise ValidationToolError("orphan review item lacks an entry identity")
+    fingerprint_context = orphan_fingerprint_context(
+        scan,
+        adjudication.get("schema_version"),
+        entry_id,
+        request.decision_schema_version,
+    )
     candidate_fingerprints = {
-        candidate["identity"]: orphan_candidate_fingerprint(
-            scan,
-            adjudication.get("schema_version"),
-            entry_id,
-            candidate,
-            request.decision_schema_version,
-        )
+        candidate["identity"]: fingerprint_context.fingerprint(candidate)
         for candidate in selected
     }
     return OrphanBatch(

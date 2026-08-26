@@ -315,6 +315,37 @@ def _validate_unique_record_rows(
         raise TargetRecordError(f"{field} contains duplicate identities")
 
 
+def _coalesce_saved_judgments(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load exact historical duplicates once without rewriting saved shards.
+
+    Some already-published manifests reference the same immutable judgment row
+    from different shards. Identical rows are one logical judgment. Conflicting
+    rows with the same identity remain a durable-state error, and newly
+    constructed logical records still reject duplicate identities through
+    ``decode_record``.
+    """
+
+    loaded: list[dict[str, Any]] = []
+    by_identity: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        current = copy.deepcopy(dict(row))
+        identity = current.get("identity")
+        if not isinstance(identity, str):
+            loaded.append(current)
+            continue
+        prior = by_identity.get(identity)
+        if prior is None:
+            by_identity[identity] = current
+            loaded.append(current)
+        elif prior != current:
+            raise TargetRecordError(
+                "saved judgments contain conflicting duplicate identities"
+            )
+    return loaded
+
+
 def _outcome_row_identity(outcome: Mapping[str, Any]) -> tuple[str, str, str, str]:
     """Identify one durable outcome without conflating compatible rows."""
 
@@ -529,6 +560,7 @@ def hydrate_record_shell(
         return decode_record(record)
     manifest = decode_sharded_manifest(record["_sharded_manifest"])
     rows = sharded_state.hydrate_rows(validation_directory(output_dir), manifest)
+    rows["judgments"] = _coalesce_saved_judgments(rows["judgments"])
     logical = {
         key: copy.deepcopy(value)
         for key, value in manifest.items()
@@ -549,11 +581,12 @@ def hydrate_record_rows(
     if not is_sharded_shell(record):
         return decode_record(record)
     result = copy.deepcopy(dict(record))
-    result.update(
-        sharded_state.hydrate_selected_rows(
-            validation_directory(output_dir), record["_sharded_manifest"], kinds
-        )
+    rows = sharded_state.hydrate_selected_rows(
+        validation_directory(output_dir), record["_sharded_manifest"], kinds
     )
+    if "judgments" in rows:
+        rows["judgments"] = _coalesce_saved_judgments(rows["judgments"])
+    result.update(rows)
     return result
 
 
@@ -703,12 +736,14 @@ def load_judgments_for_subjects(
     if not isinstance(manifest, Mapping):
         judgments = record.get("judgments", [])
         return list(judgments) if isinstance(judgments, list) else []
-    return sharded_state.load_subject_rows(
-        validation_directory(output_dir),
-        manifest,
-        "judgments",
-        subjects,
-        _atomic_write_bytes,
+    return _coalesce_saved_judgments(
+        sharded_state.load_subject_rows(
+            validation_directory(output_dir),
+            manifest,
+            "judgments",
+            subjects,
+            _atomic_write_bytes,
+        )
     )
 
 

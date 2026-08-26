@@ -191,6 +191,56 @@ counts with any accepted baseline update. The current accepted result is
 recorded in
 `skills/research-logging/tests/validation-review-benchmark-baseline.json`.
 
+Use the production-shaped session mode when changing paged acceptance,
+fingerprinting, decision translation, or post-review graph reconciliation:
+
+```bash
+./.conda/bin/python \
+  skills/research-logging/scripts/benchmark_validation_review.py \
+  --mode session \
+  --orphans 12000 \
+  --orphans 24000 \
+  --warmups 0 \
+  --runs 1 \
+  --output tmp/validation-review-session-benchmark.json
+```
+
+This diagnostic accepts every bounded page, retains accepted-fragment judgment
+identities, merges the complete session, translates mixed orphan decisions,
+applies the canonical bulk action, and performs required graph reconciliation.
+Its workload includes commands, an entry-wide data index, validation-note
+state, complete orphan inventory, pending orphan rows, and exact subtree
+questions. It is intentionally more expensive than the retained preparation
+benchmark and is not part of the routine tool gate. Record its phase timings
+when investigating final-acceptance scaling.
+
+Measure the retained activity logger independently when production wall times
+are not comparable:
+
+```bash
+./.conda/bin/python \
+  skills/research-logging/scripts/benchmark_validation_review.py \
+  --activity-overhead \
+  --activity-cycles 100 \
+  --warmups 0 \
+  --runs 5 \
+  --output tmp/validation-activity-overhead.json
+```
+
+This paired diagnostic runs identical controller-shaped phase, operation, and
+checkpoint sequences with logging disabled and enabled. Use per-event overhead
+to judge the retained logger; do not substitute results from a busy host for
+the production review-scaling baseline.
+
+Performance changes must continue to load existing monolithic session indexes,
+accepted fragments, manifests, caches, and immutable row shards without
+migration or regeneration. New sessions may use optional hash-verified item
+shards, but saved artifacts must not require conversion.
+
+Historical manifests that contain the same exact judgment row in different
+immutable shards must coalesce that row in memory without rewriting saved
+artifacts. A conflicting row with the same identity remains invalid.
+
 Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused
 manual behavior cases for Record, Replace, Update Summary, Review, and Validate
 changes.

@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import research_log_validation_test_support  # noqa: F401
+
 TARGET = importlib.import_module("validation.target_records")
 STORE = importlib.import_module("validation.sharded_state")
 
@@ -129,6 +131,64 @@ def index_delta_directory(root: Path) -> Path:
 
 
 class TargetRecordTests(unittest.TestCase):
+    def test_saved_exact_duplicate_judgments_load_without_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            record["judgments"] = [review_judgment(1), review_judgment(2)]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            manifest_path = root / TARGET.RECORD_FILENAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+            overlapping = native_record()
+            overlapping["judgments"] = [
+                review_judgment(1),
+                review_judgment(3),
+            ]
+            prepared = STORE.prepare_state(overlapping)
+            STORE.publish_immutable_files(
+                TARGET.validation_directory(root),
+                prepared.files,
+                TARGET._atomic_write_bytes,
+            )
+            manifest["shards"]["judgments"].extend(
+                prepared.manifest["shards"]["judgments"]
+            )
+            manifest["row_counts"]["judgments"] += 2
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            saved_manifest = manifest_path.read_bytes()
+
+            loaded = TARGET.load_record(manifest_path)
+            shell, _ = TARGET.load_record_header_with_source(manifest_path)
+            selected = TARGET.load_judgments_for_subjects(
+                root,
+                shell,
+                [review_judgment(1)["subject"]],
+            )
+
+            self.assertEqual(
+                [row["identity"] for row in loaded["judgments"]],
+                ["decision-1", "decision-2", "decision-3"],
+            )
+            self.assertEqual(
+                [row["identity"] for row in selected], ["decision-1"]
+            )
+            self.assertEqual(manifest_path.read_bytes(), saved_manifest)
+
+    def test_saved_conflicting_duplicate_judgments_remain_invalid(self) -> None:
+        first = review_judgment(1)
+        conflicting = copy.deepcopy(first)
+        conflicting["decision"] = "fail"
+
+        with self.assertRaisesRegex(
+            TARGET.TargetRecordError,
+            "saved judgments contain conflicting duplicate identities",
+        ):
+            TARGET._coalesce_saved_judgments([first, conflicting])
+
     def test_empty_record_shell_is_canonical_unpublished_state(self) -> None:
         shell = TARGET.empty_record_shell("docs/mini.md", "rules-v1")
 

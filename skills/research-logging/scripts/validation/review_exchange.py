@@ -6,8 +6,9 @@ import copy
 import hashlib
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
@@ -29,6 +30,7 @@ from .orphan_rules import (
 from .review_batches import (
     ordered_orphan_candidates,
     orphan_candidate_fingerprint,
+    orphan_fingerprint_context,
 )
 from .review_index import ReviewContextIndex, ReviewQuerySession
 from .review_reuse import (
@@ -49,9 +51,184 @@ CONTEXT_PROJECTION_VERSION = 2
 SESSION_BASE_FILENAME = "base.json"
 SESSION_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
+SESSION_ITEMS_DIRECTORY = "items"
+SESSION_ITEM_SHARD_SIZE = MAX_PACKET_ITEMS
 VALIDATION_WORK_ROOT = "work"
 VALIDATION_DIRECTORY = "validation"
 LOCAL_CACHE_DIRECTORY = ".cache"
+
+
+class _ReviewExchangeProjection:
+    """Exchange-owned indexes for deterministic context projection."""
+
+    def __init__(
+        self, scan: ScanRecord, adjudication: AdjudicationRecord
+    ) -> None:
+        self.scan = scan
+        self.adjudication = adjudication
+        self.entries, self.targets = _review_entry_indexes(scan, adjudication)
+        (
+            self.queue,
+            self.orphan_queues,
+            self.orphan_candidates,
+            self.orphan_descendants,
+        ) = _review_queue_indexes(adjudication)
+        self._query_session: ReviewQuerySession | None = None
+
+    def queue_item(self, item: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Resolve one template to its first compatible queue item."""
+
+        entry = str(item.get("entry", ""))
+        if item.get("kind") in {SUBTREE_REVIEW_KIND, "orphan_candidate"}:
+            return self.orphan_queues.get(entry)
+        return self.queue.get(
+            (entry, str(item.get("kind", "")), str(item.get("identity", "")))
+        )
+
+    def entry(self, entry_id: Any) -> Mapping[str, Any]:
+        return self.entries.get(str(entry_id), {})
+
+    def target(self, entry_id: Any, identity: Any) -> Mapping[str, Any]:
+        return self.targets.get((str(entry_id), str(identity)), {})
+
+    def candidate(self, entry_id: Any, identity: Any) -> Mapping[str, Any]:
+        return self.orphan_candidates.get(str(entry_id), {}).get(
+            str(identity), {}
+        )
+
+    def subtree_candidates(
+        self, entry_id: Any, root: Any
+    ) -> Sequence[Mapping[str, Any]]:
+        return self.orphan_descendants.get(str(entry_id), {}).get(str(root), ())
+
+    def eligible_invocations(
+        self, queue_item: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        if self._query_session is None:
+            self._query_session = ReviewQuerySession(
+                ReviewContextIndex.build(self.scan)
+            )
+        return [
+            {
+                "invocation": invocation.key,
+                "entry": invocation.entry_id,
+                "line": invocation.command.get("line"),
+                "command": invocation.command.get("command", ""),
+                "path_arguments": invocation.command.get("path_arguments", []),
+            }
+            for invocation in self._query_session.eligible_candidate_invocations(
+                str(queue_item.get("entry", "")),
+                str(queue_item.get("identity", "")),
+                queue_item.get("sections", []),
+            )
+        ]
+
+
+def _review_entry_indexes(
+    scan: ScanRecord, adjudication: AdjudicationRecord
+) -> tuple[
+    dict[str, Mapping[str, Any]],
+    dict[tuple[str, str], Mapping[str, Any]],
+]:
+    entries: dict[str, Mapping[str, Any]] = {}
+    for entry in scan.get("entries", []):
+        entry_id = entry.get("id")
+        if isinstance(entry_id, str):
+            entries.setdefault(entry_id, entry)
+    targets: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for entry in adjudication.get("entries", []):
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str):
+            continue
+        for target in entry.get("targets", []):
+            target_id = target.get("target")
+            if isinstance(target_id, str):
+                targets.setdefault((entry_id, target_id), target)
+    return entries, targets
+
+
+def _review_queue_indexes(
+    adjudication: AdjudicationRecord,
+) -> tuple[
+    dict[tuple[str, str, str], Mapping[str, Any]],
+    dict[str, Mapping[str, Any]],
+    dict[str, dict[str, Mapping[str, Any]]],
+    dict[str, dict[str, list[Mapping[str, Any]]]],
+]:
+    queue: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    orphan_queues: dict[str, Mapping[str, Any]] = {}
+    orphan_candidates: dict[str, dict[str, Mapping[str, Any]]] = {}
+    orphan_descendants: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
+    for item in adjudication.get("review_queue", []):
+        entry = str(item.get("entry", ""))
+        kind = str(item.get("kind", ""))
+        identity = str(item.get("identity", ""))
+        queue.setdefault((entry, kind, identity), item)
+        if kind != "orphan_candidates" or entry in orphan_queues:
+            continue
+        orphan_queues[entry] = item
+        candidates = [
+            candidate
+            for candidate in item.get("candidates", [])
+            if isinstance(candidate, Mapping)
+        ]
+        orphan_candidates[entry] = {
+            str(candidate.get("identity")): candidate for candidate in candidates
+        }
+        descendants: dict[str, list[Mapping[str, Any]]] = {}
+        for candidate in candidates:
+            candidate_identity = candidate.get("identity")
+            if not isinstance(candidate_identity, str):
+                continue
+            descendants.setdefault(candidate_identity, []).append(candidate)
+            for parent in PurePosixPath(candidate_identity).parents:
+                descendants.setdefault(parent.as_posix(), []).append(candidate)
+        orphan_descendants[entry] = descendants
+    return queue, orphan_queues, orphan_candidates, orphan_descendants
+
+
+@dataclass(frozen=True)
+class _PreparedReviewItems:
+    """Templates and their single exchange-owned context projections."""
+
+    items: list[dict[str, Any]]
+    contexts: list[Mapping[str, Any]]
+    orphan_fingerprints: dict[str, dict[str, str]]
+
+
+class _JudgmentQueueIndex:
+    """Queue lookup index used while projecting accepted judgment shards."""
+
+    def __init__(self, adjudication: AdjudicationRecord) -> None:
+        self.ordinary: dict[
+            tuple[str, str], Mapping[str, Any]
+        ] = {}
+        self.orphan: dict[str, Mapping[str, Any]] = {}
+        self.orphan_entries: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for item in adjudication.get("review_queue", []):
+            entry = str(item.get("entry", ""))
+            identity = str(item.get("identity", ""))
+            self.ordinary.setdefault((entry, identity), item)
+            if item.get("kind") != "orphan_candidates":
+                continue
+            self.orphan.setdefault(entry, item)
+            for candidate in item.get("candidates", []):
+                if isinstance(candidate, Mapping):
+                    self.orphan_entries.setdefault(
+                        (entry, str(candidate.get("identity", ""))), item
+                    )
+
+    def queue_item(self, row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        entry = str(row.get("entry", ""))
+        identity = str(row.get("identity", ""))
+        ordinary = self.ordinary.get((entry, identity))
+        if ordinary is not None:
+            return ordinary
+        if row.get("kind") == SUBTREE_REVIEW_KIND:
+            return self.orphan.get(entry)
+        if row.get("kind") == "orphan_candidate":
+            return self.orphan_entries.get((entry, identity))
+        return None
 
 
 def _fingerprint(value: Any) -> str:
@@ -80,6 +257,146 @@ def _atomic_write(path: Path, value: bytes) -> None:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _write_session_index(
+    session_dir: Path, index: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Persist a compact index with optional hash-verified item shards."""
+
+    items = list(index.get("items", []))
+    if len(items) <= SESSION_ITEM_SHARD_SIZE:
+        retained = copy.deepcopy(dict(index))
+        _atomic_write(
+            session_dir / SESSION_INDEX_FILENAME, _json_bytes(retained)
+        )
+        return retained
+    items_dir = session_dir / SESSION_ITEMS_DIRECTORY
+    items_dir.mkdir()
+    shards = []
+    session_identity = index["session_identity"]
+    for offset in range(0, len(items), SESSION_ITEM_SHARD_SIZE):
+        selected = items[offset : offset + SESSION_ITEM_SHARD_SIZE]
+        payload = {
+            "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
+            "session_identity": session_identity,
+            "offset": offset,
+            "items": selected,
+        }
+        encoded = _json_bytes(payload)
+        name = f"items-{offset:08d}.json"
+        _atomic_write(items_dir / name, encoded)
+        shards.append(
+            {
+                "file": f"{SESSION_ITEMS_DIRECTORY}/{name}",
+                "offset": offset,
+                "item_count": len(selected),
+                "sha256": _sha256(encoded),
+            }
+        )
+    retained = {
+        key: copy.deepcopy(value)
+        for key, value in index.items()
+        if key != "items"
+    }
+    retained["item_count"] = len(items)
+    retained["item_shards"] = shards
+    _atomic_write(session_dir / SESSION_INDEX_FILENAME, _json_bytes(retained))
+    return retained
+
+
+def _validated_item_shards(
+    session_dir: Path, index: Mapping[str, Any]
+) -> list[Mapping[str, Any]]:
+    raw_shards = index.get("item_shards")
+    if not isinstance(raw_shards, list) or not raw_shards:
+        raise ValidationToolError("review session item shards are invalid")
+    expected_offset = 0
+    shards = []
+    expected_files = set()
+    for shard in raw_shards:
+        if not (
+            isinstance(shard, Mapping)
+            and set(shard) == {"file", "offset", "item_count", "sha256"}
+            and isinstance(shard.get("file"), str)
+            and isinstance(shard.get("offset"), int)
+            and isinstance(shard.get("item_count"), int)
+            and isinstance(shard.get("sha256"), str)
+        ):
+            raise ValidationToolError("review session item shards are invalid")
+        name = f"items-{expected_offset:08d}.json"
+        if (
+            shard["file"] != f"{SESSION_ITEMS_DIRECTORY}/{name}"
+            or shard["offset"] != expected_offset
+            or shard["item_count"] < 1
+            or shard["item_count"] > SESSION_ITEM_SHARD_SIZE
+            or len(shard["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in shard["sha256"])
+        ):
+            raise ValidationToolError("review session item shards are invalid")
+        expected_files.add(name)
+        shards.append(shard)
+        expected_offset += int(shard["item_count"])
+    if expected_offset != index.get("item_count"):
+        raise ValidationToolError("review session item shards are incomplete")
+    items_dir = session_dir / SESSION_ITEMS_DIRECTORY
+    if items_dir.is_symlink() or not items_dir.is_dir():
+        raise ValidationToolError("review session item shard directory is invalid")
+    contents = list(items_dir.iterdir())
+    present = {path.name for path in contents}
+    if present != expected_files or any(
+        path.is_symlink() or not path.is_file() for path in contents
+    ):
+        raise ValidationToolError("review session item shard directory is invalid")
+    return shards
+
+
+def _session_items(
+    session_dir: Path,
+    index: Mapping[str, Any],
+    offset: int = 0,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load one bounded item range from current or legacy session storage."""
+
+    raw_items = index.get("items")
+    if isinstance(raw_items, list):
+        selected = raw_items[offset : None if limit is None else offset + limit]
+        return list(selected)
+    end = int(index.get("item_count", 0)) if limit is None else offset + limit
+    items = []
+    for shard in _validated_item_shards(session_dir, index):
+        shard_offset = int(shard["offset"])
+        shard_end = shard_offset + int(shard["item_count"])
+        if shard_end <= offset or shard_offset >= end:
+            continue
+        path = session_dir / str(shard["file"])
+        encoded = path.read_bytes()
+        if _sha256(encoded) != shard["sha256"]:
+            raise ValidationToolError("review session item shard identity differs")
+        try:
+            payload = json.loads(encoded)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ValidationToolError(
+                "review session item shard is invalid"
+            ) from exc
+        shard_items = payload.get("items") if isinstance(payload, Mapping) else None
+        if not (
+            isinstance(payload, Mapping)
+            and payload.get("schema_version") == REVIEW_SESSION_SCHEMA_VERSION
+            and payload.get("session_identity") == index.get("session_identity")
+            and payload.get("offset") == shard_offset
+            and isinstance(shard_items, list)
+            and len(shard_items) == shard["item_count"]
+        ):
+            raise ValidationToolError("review session item shard is invalid")
+        low = max(offset, shard_offset) - shard_offset
+        high = min(end, shard_end) - shard_offset
+        items.extend(shard_items[low:high])
+    expected_count = max(0, min(end, int(index.get("item_count", 0))) - offset)
+    if len(items) != expected_count:
+        raise ValidationToolError("review session item range is incomplete")
+    return items
 
 
 def _summary_work_root(output_dir: Path) -> Path:
@@ -304,14 +621,14 @@ def _orphan_templates(
     candidates = ordered_orphan_candidates(item)
     if not candidates:
         raise ValidationToolError("orphan review cannot select an empty queue")
+    fingerprint_context = orphan_fingerprint_context(
+        scan,
+        adjudication.get("schema_version"),
+        str(item["entry"]),
+        DECISION_SCHEMA_VERSION,
+    )
     fingerprints = {
-        str(candidate["identity"]): orphan_candidate_fingerprint(
-            scan,
-            adjudication.get("schema_version"),
-            str(item["entry"]),
-            candidate,
-            DECISION_SCHEMA_VERSION,
-        )
+        str(candidate["identity"]): fingerprint_context.fingerprint(candidate)
         for candidate in candidates
     }
     notes = [
@@ -422,8 +739,9 @@ def _template_items(
         )
         items.extend(expanded)
         orphan_fingerprints[str(queue_item["entry"])] = fingerprints
+    projection = _ReviewExchangeProjection(scan, adjudication)
     for item in items:
-        context = _packet_context(scan, adjudication, item)
+        context = _packet_context(scan, adjudication, item, projection)
         item["context_identity"] = _fingerprint(context)
     return items, orphan_fingerprints
 
@@ -434,6 +752,17 @@ def _all_template_items(
     context_levels: Mapping[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
     """Return the complete linear question set for a bounded session."""
+
+    prepared = _prepare_all_template_items(scan, adjudication, context_levels)
+    return prepared.items, prepared.orphan_fingerprints
+
+
+def _prepare_all_template_items(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    context_levels: Mapping[str, int] | None = None,
+) -> _PreparedReviewItems:
+    """Project every session template and context exactly once."""
 
     levels = context_levels or {}
     items: list[dict[str, Any]] = []
@@ -451,11 +780,13 @@ def _all_template_items(
         else:
             level = levels.get(context_request_key(queue_item), 0)
             items.append(_ordinary_template(queue_item, level))
+    projection = _ReviewExchangeProjection(scan, adjudication)
+    contexts = []
     for item in items:
-        item["context_identity"] = _fingerprint(
-            _packet_context(scan, adjudication, item)
-        )
-    return items, orphan_fingerprints
+        context = _packet_context(scan, adjudication, item, projection)
+        item["context_identity"] = _fingerprint(context)
+        contexts.append(context)
+    return _PreparedReviewItems(items, contexts, orphan_fingerprints)
 
 
 def _semantic_provenance_context(
@@ -499,6 +830,7 @@ def _collection_context(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
     inventories = {}
     for collection in queue_item.get("collections", []):
@@ -513,15 +845,23 @@ def _collection_context(
         "identity": queue_item.get("identity"),
         "collections": queue_item.get("collections", []),
         "reason": queue_item.get("reason"),
-        "target_dependencies": _target_row(adjudication, queue_item).get(
+        "target_dependencies": _target_row(adjudication, queue_item, projection).get(
             "dependencies", []
         ),
-        "recorded_invocations": _eligible_invocations(scan, queue_item),
+        "recorded_invocations": _eligible_invocations(
+            scan, queue_item, projection
+        ),
         "shallow_member_inventory": inventories,
     }
 
 
-def _entry(scan: ScanRecord, queue_item: Mapping[str, Any]) -> Mapping[str, Any]:
+def _entry(
+    scan: ScanRecord,
+    queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
+) -> Mapping[str, Any]:
+    if projection is not None:
+        return projection.entry(queue_item.get("entry"))
     return next(
         (
             entry
@@ -533,8 +873,14 @@ def _entry(scan: ScanRecord, queue_item: Mapping[str, Any]) -> Mapping[str, Any]
 
 
 def _target_row(
-    adjudication: AdjudicationRecord, queue_item: Mapping[str, Any]
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> Mapping[str, Any]:
+    if projection is not None:
+        return projection.target(
+            queue_item.get("entry"), queue_item.get("identity")
+        )
     entry = next(
         (
             row
@@ -554,8 +900,12 @@ def _target_row(
 
 
 def _eligible_invocations(
-    scan: ScanRecord, queue_item: Mapping[str, Any]
+    scan: ScanRecord,
+    queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> list[dict[str, Any]]:
+    if projection is not None:
+        return projection.eligible_invocations(queue_item)
     session = ReviewQuerySession(ReviewContextIndex.build(scan))
     return [
         {
@@ -577,6 +927,7 @@ def _target_review_context(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
     kind = queue_item["kind"]
     expected = {
@@ -589,7 +940,7 @@ def _target_review_context(
             "presented-evidence associations support the retained target."
         ),
     }[kind]
-    entry = _entry(scan, queue_item)
+    entry = _entry(scan, queue_item, projection)
     return {
         "target": queue_item.get("identity"),
         "sections": queue_item.get("sections", []),
@@ -602,7 +953,7 @@ def _target_review_context(
         },
         "expected_contract": expected,
         "producer_candidates": queue_item.get("producer_candidates", []),
-        "target_dependencies": _target_row(adjudication, queue_item).get(
+        "target_dependencies": _target_row(adjudication, queue_item, projection).get(
             "dependencies", []
         ),
         "authored_validation_notes": entry.get("validation_notes", []),
@@ -613,13 +964,14 @@ def _reproduction_context(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
-    entry = _entry(scan, queue_item)
+    entry = _entry(scan, queue_item, projection)
     return {
         "target": queue_item.get("identity"),
         "sections": queue_item.get("sections", []),
-        "eligible_invocations": _eligible_invocations(scan, queue_item),
-        "retained_evidence": _target_row(adjudication, queue_item).get(
+        "eligible_invocations": _eligible_invocations(scan, queue_item, projection),
+        "retained_evidence": _target_row(adjudication, queue_item, projection).get(
             "dependencies", []
         ),
         "comparison_rule": entry.get("validation_notes", []),
@@ -635,6 +987,7 @@ def _minimum_context(
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
     item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
     kind = item["kind"]
     if kind == "semantic_provenance":
@@ -642,11 +995,11 @@ def _minimum_context(
     if kind == "upstream_producer":
         return _upstream_context(queue_item, item.get("material"))
     if kind == "collection_scope":
-        return _collection_context(scan, adjudication, queue_item)
+        return _collection_context(scan, adjudication, queue_item, projection)
     if kind in {"mechanical_failure", "semantic_fallback"}:
-        return _target_review_context(scan, adjudication, queue_item)
+        return _target_review_context(scan, adjudication, queue_item, projection)
     if kind == "reproduction":
-        return _reproduction_context(scan, adjudication, queue_item)
+        return _reproduction_context(scan, adjudication, queue_item, projection)
     raise ValidationToolError(f"review kind lacks a context projection: {kind}")
 
 
@@ -724,8 +1077,9 @@ def _expanded_context(
     scan: ScanRecord,
     queue_item: Mapping[str, Any],
     minimum: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
-    entry = _entry(scan, queue_item)
+    entry = _entry(scan, queue_item, projection)
     section_passages, used_bytes = _expanded_entry_passages(
         scan, entry, queue_item
     )
@@ -762,56 +1116,48 @@ def _packet_context(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
     item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection | None = None,
 ) -> Mapping[str, Any]:
-    for queue_item in adjudication["review_queue"]:
-        if queue_item.get("entry") != item.get("entry"):
-            continue
-        if item["kind"] == SUBTREE_REVIEW_KIND:
-            if queue_item.get("kind") != "orphan_candidates":
-                continue
-            question = {
-                "root": item.get("identity"),
-                "material": item.get("material"),
-                "candidates": candidates_below(
-                    queue_item.get("candidates", []), str(item.get("identity", ""))
+    projection = projection or _ReviewExchangeProjection(scan, adjudication)
+    queue_item = projection.queue_item(item)
+    if queue_item is None:
+        return {}
+    if item["kind"] == SUBTREE_REVIEW_KIND:
+        question = {
+            "root": item.get("identity"),
+            "material": item.get("material"),
+            "candidates": candidates_below(
+                projection.subtree_candidates(
+                    item.get("entry"), item.get("identity")
                 ),
-            }
-            return {
-                "structural_summary": structural_summary(question),
-                "reachability_reason": queue_item.get("reason"),
-                "authored_validation_notes": queue_item.get("validation_notes", []),
-                "decision_constraint": (
-                    "Classify only if every current and future compatible residual "
-                    "descendant shares one lifecycle; otherwise split."
-                ),
-            }
-        if item["kind"] == "orphan_candidate":
-            if queue_item.get("kind") != "orphan_candidates":
-                continue
-            candidate: Mapping[str, Any] = next(
-                (
-                    candidate
-                    for candidate in queue_item.get("candidates", [])
-                    if candidate.get("identity") == item.get("identity")
-                ),
-                {},
-            )
-            return {
-                "candidate": candidate,
-                "reachability_reason": queue_item.get("reason"),
-                "validation_notes": queue_item.get("validation_notes", []),
-            }
-        if queue_item.get("kind") != item.get("kind") or queue_item.get(
-            "identity"
-        ) != item.get("identity"):
-            continue
-        context = _minimum_context(scan, adjudication, queue_item, item)
-        return (
-            _expanded_context(scan, queue_item, context)
-            if item.get("context_level") == 1
-            else context
-        )
-    return {}
+                str(item.get("identity", "")),
+            ),
+        }
+        return {
+            "structural_summary": structural_summary(question),
+            "reachability_reason": queue_item.get("reason"),
+            "authored_validation_notes": queue_item.get("validation_notes", []),
+            "decision_constraint": (
+                "Classify only if every current and future compatible residual "
+                "descendant shares one lifecycle; otherwise split."
+            ),
+        }
+    if item["kind"] == "orphan_candidate":
+        return {
+            "candidate": projection.candidate(
+                item.get("entry"), item.get("identity")
+            ),
+            "reachability_reason": queue_item.get("reason"),
+            "validation_notes": queue_item.get("validation_notes", []),
+        }
+    context = _minimum_context(
+        scan, adjudication, queue_item, item, projection
+    )
+    return (
+        _expanded_context(scan, queue_item, context, projection)
+        if item.get("context_level") == 1
+        else context
+    )
 
 
 def _render_packet_with_contexts(
@@ -1059,9 +1405,18 @@ def _bounded_session_index(
     adjudication: AdjudicationRecord,
     items: list[dict[str, Any]],
     orphan_fingerprints: Mapping[str, Mapping[str, str]],
+    contexts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     indexed_items: list[dict[str, Any]] = []
-    for item in items:
+    projected = (
+        list(contexts)
+        if contexts is not None
+        else [
+            _packet_context(scan, adjudication, item)
+            for item in items
+        ]
+    )
+    for item, context in zip(items, projected, strict=True):
         fingerprint = (
             orphan_fingerprints.get(str(item.get("entry")), {}).get(
                 str(item.get("identity"))
@@ -1072,7 +1427,7 @@ def _bounded_session_index(
         indexed_items.append(
             {
                 "template": copy.deepcopy(item),
-                "context": _packet_context(scan, adjudication, item),
+                "context": context,
                 "fingerprint": fingerprint,
             }
         )
@@ -1112,7 +1467,9 @@ def _session_page(
 
     offset = int(state["next_offset"])
     page_number = int(state["next_page_number"])
-    candidates = list(index["items"])[offset : offset + MAX_PACKET_ITEMS]
+    candidates = _session_items(
+        session_dir, index, offset, MAX_PACKET_ITEMS
+    )
     if not candidates:
         raise ValidationToolError("review session has no next page")
     low = 1
@@ -1246,7 +1603,7 @@ def _create_review_session(
         "controller": copy.deepcopy(dict(controller_state)),
     }
     _atomic_write(session_dir / SESSION_BASE_FILENAME, _json_bytes(base))
-    _atomic_write(session_dir / SESSION_INDEX_FILENAME, _json_bytes(index))
+    retained_index = _write_session_index(session_dir, index)
     state = {
         "schema_version": REVIEW_SESSION_SCHEMA_VERSION,
         "session_identity": index["session_identity"],
@@ -1264,7 +1621,7 @@ def _create_review_session(
         "accepted_batches": [],
         "current": None,
     }
-    return _session_page(session_dir, index, state)
+    return _session_page(session_dir, retained_index, state)
 
 
 def review_session_reference(
@@ -1326,6 +1683,7 @@ def _record_session_fragment(
     state: dict[str, Any],
     decisions: Mapping[str, Any],
     session_identity: Any,
+    judgment_identities: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     current = state["current"]
     page_number = int(current["page_number"])
@@ -1336,6 +1694,11 @@ def _record_session_fragment(
         "continuation": decisions["continuation"],
         "batch_identity": current["batch_identity"],
         "decisions": copy.deepcopy(dict(decisions)),
+        **(
+            {"judgment_identities": list(judgment_identities)}
+            if judgment_identities
+            else {}
+        ),
     }
     fragment_bytes = _json_bytes(fragment)
     fragment_name = f"accepted-{current['batch_identity']}.json"
@@ -1366,8 +1729,9 @@ def _merged_session_rows(
     session_dir: Path,
     fragments: list[dict[str, Any]],
     session_identity: Any,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     rows = []
+    judgment_identities = []
     for retained in fragments:
         payload = _read_object(
             session_dir / str(retained["file"]),
@@ -1382,14 +1746,23 @@ def _merged_session_rows(
         if not isinstance(fragment_rows, list):
             raise ValidationToolError("accepted review fragment has invalid items")
         rows.extend(copy.deepcopy(fragment_rows))
-    return rows
+        raw_identities = payload.get("judgment_identities", [])
+        if not (
+            isinstance(raw_identities, list)
+            and all(isinstance(identity, str) for identity in raw_identities)
+        ):
+            raise ValidationToolError(
+                "accepted review fragment has invalid judgment identities"
+            )
+        judgment_identities.extend(raw_identities)
+    return rows, judgment_identities
 
 
 def _deferred_orphan_fingerprints(
-    index: Mapping[str, Any],
+    items: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
     fingerprints: dict[str, dict[str, str]] = {}
-    for item in index["items"]:
+    for item in items:
         template = item["template"]
         if template.get("kind") != "orphan_candidate":
             continue
@@ -1406,7 +1779,7 @@ def _ready_review_session(
     index: Mapping[str, Any],
 ) -> dict[str, Any]:
     fragments = list(state.get("accepted_batches", []))
-    rows = _merged_session_rows(
+    rows, judgment_identities = _merged_session_rows(
         session_dir, fragments, state["session_identity"]
     )
     if len(rows) != int(state["total_items"]):
@@ -1424,7 +1797,14 @@ def _ready_review_session(
         },
         "orphan_fingerprints": copy.deepcopy(
             index.get("orphan_fingerprints")
-            or _deferred_orphan_fingerprints(index)
+            or _deferred_orphan_fingerprints(
+                _session_items(session_dir, index)
+            )
+        ),
+        **(
+            {"judgment_identities": judgment_identities}
+            if judgment_identities
+            else {}
         ),
     }
 
@@ -1491,6 +1871,7 @@ def resume_review_session(
                 state,
                 decisions,
                 state["session_identity"],
+                fragment.get("judgment_identities", []),
             )
     if int(state["next_offset"]) >= int(state["total_items"]):
         base = _read_object(
@@ -1533,7 +1914,7 @@ def empty_review_session_refresh_context(
     )
     context_levels = {
         context_request_key(template): int(template.get("context_level", 0))
-        for item in index.get("items", [])
+        for item in _session_items(session_dir, index)
         for template in [item.get("template", {})]
         if isinstance(template, Mapping)
     }
@@ -1550,7 +1931,7 @@ def accept_review_page(
     decisions: Mapping[str, Any],
     internal: Mapping[str, Any],
     publish_batch: Callable[
-        [Mapping[str, Any], Mapping[str, Any]], None
+        [Mapping[str, Any], Mapping[str, Any]], Sequence[str] | None
     ]
     | None = None,
 ) -> dict[str, Any]:
@@ -1559,9 +1940,16 @@ def accept_review_page(
     session_dir, state, base, index, session_identity = _load_review_session(
         decisions, internal
     )
-    if publish_batch is not None:
-        publish_batch(decisions, base)
-    _record_session_fragment(session_dir, state, decisions, session_identity)
+    judgment_identities = (
+        publish_batch(decisions, base) if publish_batch is not None else None
+    )
+    _record_session_fragment(
+        session_dir,
+        state,
+        decisions,
+        session_identity,
+        judgment_identities or (),
+    )
     if int(state["next_offset"]) < int(state["total_items"]):
         return _session_page(session_dir, index, state)
     _atomic_write(
@@ -1650,7 +2038,7 @@ def create_exchange(
         return _create_review_session(
             scan, adjudication, controller_state, deferred_index
         )
-    items, orphan_fingerprints = _all_template_items(
+    prepared = _prepare_all_template_items(
         scan, adjudication, context_levels
     )
     return _create_review_session(
@@ -1658,7 +2046,11 @@ def create_exchange(
         adjudication,
         controller_state,
         _bounded_session_index(
-            scan, adjudication, items, orphan_fingerprints
+            scan,
+            adjudication,
+            prepared.items,
+            prepared.orphan_fingerprints,
+            prepared.contexts,
         ),
     )
 
@@ -1959,6 +2351,7 @@ def _orphan_row_effect(
     row: Mapping[str, Any],
     current: Mapping[str, Mapping[str, Any]],
     fingerprints: Mapping[str, Any],
+    subtree_candidates: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[str], tuple[str, str, str | None] | None, dict[str, Any] | None]:
     if row["kind"] == "orphan_candidate":
         decision = str(row["decision"])
@@ -1975,10 +2368,14 @@ def _orphan_row_effect(
         return [str(row["identity"])], decoded, None
 
     root = str(row["identity"])
-    identities = [
-        str(candidate["identity"])
-        for candidate in candidates_below(list(current.values()), root)
-    ]
+    identities = (
+        list(subtree_candidates.get(root, ()))
+        if subtree_candidates is not None
+        else [
+            str(candidate["identity"])
+            for candidate in candidates_below(list(current.values()), root)
+        ]
+    )
     if split_choice(row["decision"]):
         return (
             identities,
@@ -2035,6 +2432,28 @@ def _orphan_disposition_payload(
     }
 
 
+def _subtree_candidate_index(
+    rows: Sequence[Mapping[str, Any]],
+    current: Mapping[str, Mapping[str, Any]],
+) -> dict[str, list[str]]:
+    roots = {
+        str(row["identity"])
+        for row in rows
+        if row.get("kind") == SUBTREE_REVIEW_KIND
+    }
+    indexed: dict[str, list[str]] = {root: [] for root in roots}
+    for identity in current:
+        if identity in indexed:
+            indexed[identity].append(identity)
+        for parent in PurePosixPath(identity).parents:
+            root = parent.as_posix()
+            if root in indexed:
+                indexed[root].append(identity)
+    for identities in indexed.values():
+        identities.sort(key=lambda value: (value.casefold(), value))
+    return indexed
+
+
 def _append_orphan_actions(
     actions: list[dict[str, Any]],
     grouped: Mapping[str, list[Mapping[str, Any]]],
@@ -2050,13 +2469,17 @@ def _append_orphan_actions(
             str(candidate["identity"]): dict(candidate)
             for candidate in queue_item.get("candidates", [])
         }
+        subtree_candidates = _subtree_candidate_index(selected, current)
         dispositions: dict[str, tuple[str, str, str | None]] = {}
         rationales: dict[str, str] = {}
         splits = []
         stale_identities: set[str] = set()
         for row in selected:
             identities, decoded, split = _orphan_row_effect(
-                row, current, fingerprints[entry]
+                row,
+                current,
+                fingerprints[entry],
+                subtree_candidates,
             )
             if split is not None:
                 splits.append(split)
@@ -2126,15 +2549,24 @@ def durable_review_judgments(
     """Return compact rationale-owning judgments for accepted template rows."""
 
     judgments = []
+    queue_index = (
+        _JudgmentQueueIndex(adjudication)
+        if scan is not None and adjudication is not None
+        else None
+    )
     for row in decisions["items"]:
         if row["decision"] == "needs_context" or split_choice(row["decision"]):
             continue
         inputs: list[dict[str, Any]] = []
         if scan is not None and adjudication is not None:
-            queue_item = _judgment_queue_item(adjudication, row)
+            queue_item = _judgment_queue_item(adjudication, row, queue_index)
             if queue_item is not None:
                 inputs = review_judgment_inputs(
-                    scan, adjudication, queue_item, row, row["decision"]
+                    scan,
+                    adjudication,
+                    queue_item,
+                    row,
+                    row["decision"],
                 )
         subject = {
             "kind": row["kind"],
@@ -2189,8 +2621,12 @@ def durable_review_judgments(
 
 
 def _judgment_queue_item(
-    adjudication: AdjudicationRecord, row: Mapping[str, Any]
+    adjudication: AdjudicationRecord,
+    row: Mapping[str, Any],
+    queue_index: _JudgmentQueueIndex | None = None,
 ) -> Mapping[str, Any] | None:
+    if queue_index is not None:
+        return queue_index.queue_item(row)
     for item in adjudication["review_queue"]:
         if item.get("entry") != row.get("entry"):
             continue
@@ -2280,6 +2716,7 @@ def _candidate_reuse_template(
     adjudication: AdjudicationRecord,
     queue_item: Mapping[str, Any],
     candidate: Mapping[str, Any],
+    fingerprint: str | None = None,
 ) -> dict[str, Any]:
     identity = str(candidate["identity"])
     notes = [
@@ -2291,7 +2728,8 @@ def _candidate_reuse_template(
         "id": _fingerprint(
             {
                 "candidate": identity,
-                "fingerprint": orphan_candidate_fingerprint(
+                "fingerprint": fingerprint
+                or orphan_candidate_fingerprint(
                     scan,
                     adjudication.get("schema_version"),
                     str(queue_item["entry"]),
@@ -2331,17 +2769,21 @@ def _orphan_reuse_action(
 ) -> dict[str, Any] | None:
     selected: dict[str, tuple[str, str, str | None, str]] = {}
     fingerprints: dict[str, str] = {}
+    fingerprint_context = orphan_fingerprint_context(
+        scan,
+        adjudication.get("schema_version"),
+        str(queue_item["entry"]),
+        DECISION_SCHEMA_VERSION,
+    )
     for candidate in ordered_orphan_candidates(queue_item):
         identity = str(candidate["identity"])
-        fingerprints[identity] = orphan_candidate_fingerprint(
-            scan,
-            adjudication.get("schema_version"),
-            str(queue_item["entry"]),
-            candidate,
-            DECISION_SCHEMA_VERSION,
-        )
+        fingerprints[identity] = fingerprint_context.fingerprint(candidate)
         template = _candidate_reuse_template(
-            scan, adjudication, queue_item, candidate
+            scan,
+            adjudication,
+            queue_item,
+            candidate,
+            fingerprints[identity],
         )
         answer = reusable_review_answer(
             scan,

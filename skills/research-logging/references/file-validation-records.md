@@ -82,6 +82,11 @@ equal `<kind>/<sha256>.jsonl`. Reject absolute paths, traversal, backslashes,
 symlinks, aliases, unexpected file types, duplicate identities, and any
 path/content-identity disagreement.
 
+Historical manifests that reference an exact identical judgment row from
+different immutable shards load that row once in memory without rewriting the
+manifest or shards. Rows with the same judgment identity but different content
+remain invalid. Newly published logical judgment sets remain unique.
+
 A row shard contains at most 200 rows and 8 MiB. An individual row may occupy
 a shard by itself but may not exceed the byte limit.
 

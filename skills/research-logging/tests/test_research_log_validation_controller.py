@@ -36,6 +36,49 @@ def make_no_semantic_log(root: Path) -> Path:
 
 
 class ValidationControllerTests(unittest.TestCase):
+    def test_final_acceptance_loads_canonical_accepted_judgment_shards(
+        self,
+    ) -> None:
+        identities = ["b" * 64, "a" * 64]
+        loaded = [
+            {"identity": "a" * 64, "subject": {"kind": "first"}},
+            {"identity": "b" * 64, "subject": {"kind": "second"}},
+        ]
+        decisions = {
+            "items": [
+                {
+                    "kind": "orphan_candidate",
+                    "entry": "e001",
+                    "identity": "data/result.csv",
+                }
+            ]
+        }
+        with mock.patch.object(
+            CONTROLLER,
+            "load_judgments_for_subjects",
+            return_value=loaded,
+        ) as load:
+            result = CONTROLLER._accepted_review_judgments(
+                Path("/tmp/log"),
+                {"_sharded_manifest": {}},
+                decisions,
+                identities,
+            )
+
+        assert result is not None
+        self.assertEqual(
+            [judgment["identity"] for judgment in result], identities
+        )
+        self.assertEqual(
+            load.call_args.args[2],
+            [
+                {
+                    "kind": "orphan_candidate",
+                    "entry": "e001",
+                    "identity": "data/result.csv",
+                }
+            ],
+        )
     def test_no_semantic_log_completes_and_publishes_only_target_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary = make_no_semantic_log(Path(directory))

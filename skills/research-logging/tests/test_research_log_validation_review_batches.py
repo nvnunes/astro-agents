@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import importlib
+import json
 from unittest.mock import patch
 
 from research_log_validation_test_support import (
@@ -19,6 +21,61 @@ REVIEW_BATCHES = importlib.import_module("validation.review_batches")
 
 
 class OrphanBatchTests(unittest.TestCase):
+    def test_entry_scoped_context_preserves_historical_fingerprint_bytes(
+        self,
+    ) -> None:
+        candidate = {
+            "identity": "entries/e001/data/résult.json",
+            "kind": "artifact",
+            "metadata": {"z": 2, "a": ["α", 1]},
+        }
+        scan = {
+            "schema_version": 16,
+            "validation_rules_version": "rules-v1",
+            "entries": [
+                {
+                    "id": "e001",
+                    "commands": [{"command": "python run.py", "line": 12}],
+                    "data_index": {"input": {"sha256": "a" * 64}},
+                    "validation_notes": [
+                        {"sha256": "c" * 64},
+                        {"sha256": "b" * 64},
+                    ],
+                }
+            ],
+        }
+        payload = {
+            "validation_rules_version": "rules-v1",
+            "scan_schema_version": 16,
+            "adjudication_schema_version": 7,
+            "decision_schema_version": 6,
+            "entry": "e001",
+            "candidate": candidate,
+            "commands": scan["entries"][0]["commands"],
+            "data_index": scan["entries"][0]["data_index"],
+            "validation_notes": ["b" * 64, "c" * 64],
+        }
+        historical = hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        context = REVIEW_BATCHES.orphan_fingerprint_context(
+            scan, 7, "e001", 6
+        )
+
+        self.assertEqual(context.fingerprint(candidate), historical)
+        self.assertEqual(
+            REVIEW_BATCHES.orphan_candidate_fingerprint(
+                scan, 7, "e001", candidate, 6
+            ),
+            historical,
+        )
+
     def test_batches_are_bounded_stale_safe_atomic_and_convergent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -147,13 +204,20 @@ class OrphanBatchTests(unittest.TestCase):
                 DECISIONS, "reconcile_semantic_dependencies"
             ) as reconcile_semantic, patch.object(
                 DECISIONS, "reconcile_graph_orphans"
-            ) as reconcile_orphans:
+            ) as reconcile_orphans, patch.object(
+                DECISIONS,
+                "orphan_fingerprint_context",
+                side_effect=AssertionError("trusted fingerprints were recomputed"),
+            ):
                 decided, _ = DECISIONS.apply_review_decisions(
                     scan,
                     prepared,
                     {
                         "schema_version": DECISIONS.DECISION_SCHEMA_VERSION,
                         "actions": [unresolved_action],
+                    },
+                    trusted_orphan_fingerprints={
+                        str(orphan["entry"]): dict(first.candidate_fingerprints)
                     },
                 )
             reconcile_semantic.assert_not_called()

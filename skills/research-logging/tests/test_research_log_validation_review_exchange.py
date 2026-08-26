@@ -62,6 +62,53 @@ def fill_page(path: Path) -> None:
 
 
 class ReviewSessionTests(unittest.TestCase):
+    def test_exchange_builds_one_query_index_and_projects_each_context_once(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scan, adjudication = review_fixture(root, count=2)
+            scan["resolved_paths"] = {}
+            scan["mechanical_checks"] = {}
+            adjudication["review_queue"][:0] = [
+                {
+                    "entry": "e001",
+                    "kind": "reproduction",
+                    "identity": f"docs/mini/result-{index}.csv",
+                    "sections": [],
+                }
+                for index in range(2)
+            ]
+            original_build = EXCHANGE.ReviewContextIndex.build
+            original_context = EXCHANGE._packet_context
+            with (
+                mock.patch.object(
+                    EXCHANGE.ReviewContextIndex,
+                    "build",
+                    side_effect=original_build,
+                ) as build,
+                mock.patch.object(
+                    EXCHANGE,
+                    "_packet_context",
+                    wraps=original_context,
+                ) as project,
+            ):
+                first = EXCHANGE.create_exchange(scan, adjudication, {})
+            session_dir = Path(first["decision_file"]).parent.parent
+            self.addCleanup(
+                lambda: EXCHANGE.finish_review_session(session_dir)
+                if session_dir.exists()
+                else None
+            )
+            state = json.loads(
+                (session_dir / EXCHANGE.SESSION_STATE_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual(project.call_count, state["total_items"])
+
     def test_durable_judgment_identity_changes_with_dependency_projection(
         self,
     ) -> None:
@@ -474,6 +521,14 @@ class ReviewSessionTests(unittest.TestCase):
             )
             base_path = session_dir / EXCHANGE.SESSION_BASE_FILENAME
             base_before = base_path.read_bytes()
+            index = json.loads(
+                (session_dir / EXCHANGE.SESSION_INDEX_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertNotIn("items", index)
+            self.assertEqual(index["item_count"], 401)
+            self.assertEqual(len(index["item_shards"]), 3)
             first_count = first["item_count"]
             self.assertLessEqual(first_count, 200)
             self.assertLessEqual(first["byte_count"], EXCHANGE.MAX_PACKET_BYTES)
@@ -482,7 +537,9 @@ class ReviewSessionTests(unittest.TestCase):
             decisions, internal = EXCHANGE.load_decisions(
                 Path(first["decision_file"])
             )
-            second = EXCHANGE.accept_review_page(decisions, internal)
+            second = EXCHANGE.accept_review_page(
+                decisions, internal, lambda *_: ["a" * 64]
+            )
             self.assertEqual(second["status"], "review_required")
             second_count = second["item_count"]
             self.assertLessEqual(second_count, 200)
@@ -492,7 +549,9 @@ class ReviewSessionTests(unittest.TestCase):
             decisions, internal = EXCHANGE.load_decisions(
                 Path(second["decision_file"])
             )
-            third = EXCHANGE.accept_review_page(decisions, internal)
+            third = EXCHANGE.accept_review_page(
+                decisions, internal, lambda *_: ["b" * 64]
+            )
             self.assertEqual(third["status"], "review_required")
             self.assertEqual(
                 third["item_count"], 401 - first_count - second_count
@@ -502,10 +561,16 @@ class ReviewSessionTests(unittest.TestCase):
             decisions, internal = EXCHANGE.load_decisions(
                 Path(third["decision_file"])
             )
-            ready = EXCHANGE.accept_review_page(decisions, internal)
+            ready = EXCHANGE.accept_review_page(
+                decisions, internal, lambda *_: ["c" * 64]
+            )
 
             self.assertEqual(ready["status"], "ready")
             self.assertEqual(len(ready["decisions"]["items"]), 401)
+            self.assertEqual(
+                ready["judgment_identities"],
+                ["a" * 64, "b" * 64, "c" * 64],
+            )
             self.assertEqual(base_path.read_bytes(), base_before)
             self.assertEqual(
                 len(list(session_dir.glob("accepted-*.json"))), 3

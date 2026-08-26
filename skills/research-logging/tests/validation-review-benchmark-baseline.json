@@ -1,5 +1,5 @@
 {
-  "recorded_date": "2026-08-16",
+  "recorded_date": "2026-08-25",
   "generator_version": 3,
   "generator_identity": "ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a",
   "batch_size": 200,
@@ -14,11 +14,11 @@
   "public_12000": {
     "warmups": 1,
     "samples_seconds": [
-      0.6906673749908805,
-      0.6783357500098646,
-      0.6571011249907315
+      0.34151233290322125,
+      0.3341620829887688,
+      0.3354039581026882
     ],
-    "median_seconds": 0.6783357500098646,
+    "median_seconds": 0.3354039581026882,
     "candidate_count": 12000,
     "question_count": 1,
     "packet_bytes": 3707
@@ -26,16 +26,96 @@
   "public_24000": {
     "warmups": 1,
     "samples_seconds": [
-      1.389705166919157,
-      1.3288857920560986,
-      1.308207959169522
+      0.6681487502064556,
+      0.6692195001523942,
+      0.6980089589487761
     ],
-    "median_seconds": 1.3288857920560986,
+    "median_seconds": 0.6692195001523942,
     "candidate_count": 24000,
     "question_count": 1,
     "packet_bytes": 3707
   },
-  "scaling_ratio_24000_over_12000": 1.959038414290819,
+  "scaling_ratio_24000_over_12000": 1.9952641702203886,
+  "production_session": {
+    "warmups": 0,
+    "runs": 1,
+    "session_12000": {
+      "elapsed_seconds": 18.542409165995196,
+      "session_pages": 261,
+      "accepted_items": 12000,
+      "accepted_judgment_identities": 12000,
+      "action_count": 1,
+      "remaining_review_items": 0,
+      "exchange_seconds": 6.4001847920008,
+      "page_acceptance_seconds": 8.716473625041544,
+      "action_translation_seconds": 0.1308464170433581,
+      "action_application_seconds": 2.911830208962783,
+      "packet_bytes": 64353
+    },
+    "session_24000": {
+      "elapsed_seconds": 57.19783691712655,
+      "session_pages": 522,
+      "accepted_items": 24000,
+      "accepted_judgment_identities": 24000,
+      "action_count": 1,
+      "remaining_review_items": 0,
+      "exchange_seconds": 24.50445254193619,
+      "page_acceptance_seconds": 24.57152666710317,
+      "action_translation_seconds": 0.2639527500141412,
+      "action_application_seconds": 7.687379957875237,
+      "packet_bytes": 64353
+    },
+    "scaling_ratio_24000_over_12000": 3.084703632903393,
+    "deferred_dominant_costs": [
+      {
+        "phase": "exchange",
+        "reason": "Historical orphan fingerprint bytes include entry-wide commands and data-index state; retaining saved-artifact compatibility requires hashing those canonical bytes for each new candidate."
+      },
+      {
+        "phase": "page_acceptance",
+        "reason": "Each independent continuation still loads the saved session base to project durable judgments; item sharding removes complete-index replay without changing existing session artifacts."
+      }
+    ]
+  },
+  "retained_activity_logging": {
+    "measurement_kind": "paired_controller_event_microbenchmark",
+    "production_wall_time_comparison": false,
+    "host_load_note": "The host was busy, so these paired samples measure only per-event logger cost and are excluded from production review-scaling comparisons.",
+    "warmups": 0,
+    "runs": 5,
+    "cycles_per_sample": 100,
+    "events_per_sample": 4000,
+    "disabled_samples_seconds": [
+      0.0007672500796616077,
+      0.0008078329265117645,
+      0.0007984999101608992,
+      0.000803167000412941,
+      0.0007229167968034744
+    ],
+    "enabled_samples_seconds": [
+      2.7594915830995888,
+      2.8058404999319464,
+      2.7569049999583513,
+      2.792474666843191,
+      2.8592762909829617
+    ],
+    "disabled_median_seconds": 0.0007984999101608992,
+    "enabled_median_seconds": 2.792474666843191,
+    "incremental_seconds_per_event": 0.0006979190417332574,
+    "production_owner": "validation/.cache/validation.log phase, operation, checkpoint, and heartbeat events"
+  },
+  "saved_artifact_compatibility": {
+    "production_manifest_rows": {
+      "outcomes": 1200,
+      "judgments": 15225,
+      "failures": 144
+    },
+    "logical_unique_judgments": 15223,
+    "exact_historical_duplicate_judgments": 2,
+    "conflicting_duplicate_judgments": 0,
+    "load_strategy": "coalesce exact duplicates in memory",
+    "saved_artifacts_rewritten": false
+  },
   "acceptance": {
     "approximately_linear_preparation": true,
     "one_bounded_subtree_question": true,

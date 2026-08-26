@@ -19,9 +19,21 @@ sys.path.insert(0, str(SCRIPTS))
 from research_log_validation_test_support import CLI, make_log, write  # noqa: E402
 
 ACTIVITY = importlib.import_module("validation.activity")
+BENCHMARK = importlib.import_module("benchmark_validation_review")
 
 
 class ValidationActivityLogTests(unittest.TestCase):
+    def test_activity_overhead_benchmark_pairs_enabled_and_disabled_paths(
+        self,
+    ) -> None:
+        disabled = BENCHMARK._activity_overhead_sample(False, 1)
+        enabled = BENCHMARK._activity_overhead_sample(True, 1)
+
+        self.assertEqual(disabled["event_count"], 40)
+        self.assertEqual(disabled["log_lines"], 0)
+        self.assertEqual(enabled["event_count"], 40)
+        self.assertEqual(enabled["log_lines"], 42)
+
     def test_heartbeat_identifies_oldest_active_operation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

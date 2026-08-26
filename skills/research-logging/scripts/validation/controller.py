@@ -79,6 +79,7 @@ class ValidationProgress:
     cache: dict[str, Any]
     state_status: str
     publish: bool
+    activity: ValidationActivityLog | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ class LoadedValidation:
             self.cache,
             self.state_status,
             self.request.publish,
+            self.request.activity,
         )
 
 def _record_has_progress(record: Mapping[str, Any]) -> bool:
@@ -551,6 +553,7 @@ def _finish_review_acceptance(
 ) -> dict[str, Any]:
     """Apply one complete review session and publish its canonical result."""
 
+    activity = progress.activity
     scan = cast(ScanRecord, accepted["scan"])
     adjudication = cast(AdjudicationRecord, accepted["adjudication"])
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
@@ -562,36 +565,129 @@ def _finish_review_acceptance(
         "adjudication": adjudication,
         "orphan_fingerprints": accepted["orphan_fingerprints"],
     }
-    actions = decisions_to_actions(decisions, action_internal)
-    decided, _ = apply_review_decisions(scan, adjudication, actions)
-    review_judgments = durable_review_judgments(
-        decisions, adjudication["date"], scan, adjudication
+    log_phase(
+        activity,
+        "review.finalize.translate-actions",
+        decisions=len(decisions.get("items", [])),
     )
+    with log_operation(
+        activity,
+        "translate-review-actions",
+        subject=scan["summary"],
+        decisions=len(decisions.get("items", [])),
+    ):
+        actions = decisions_to_actions(decisions, action_internal)
+    log_phase(
+        activity,
+        "review.finalize.apply-actions",
+        actions=len(actions.get("actions", [])),
+    )
+    with log_operation(
+        activity,
+        "apply-review-actions",
+        subject=scan["summary"],
+        actions=len(actions.get("actions", [])),
+    ):
+        decided, _ = apply_review_decisions(
+            scan,
+            adjudication,
+            actions,
+            trusted_orphan_fingerprints=cast(
+                Mapping[str, Mapping[str, str]],
+                accepted["orphan_fingerprints"],
+            ),
+        )
+    output_dir = summary_path.with_suffix("")
+    retained_identities = accepted.get("judgment_identities")
+    log_phase(activity, "review.finalize.load-accepted-judgments")
+    with log_operation(
+        activity,
+        "load-accepted-judgments",
+        subject=scan["summary"],
+        expected=(
+            len(retained_identities)
+            if isinstance(retained_identities, list)
+            else 0
+        ),
+    ):
+        review_judgments = _accepted_review_judgments(
+            output_dir,
+            progress.record,
+            decisions,
+            retained_identities,
+        )
+        if review_judgments is None:
+            review_judgments = durable_review_judgments(
+                decisions, adjudication["date"], scan, adjudication
+            )
     _merge_review_judgments(progress.record, review_judgments)
     if decided["review_queue"]:
-        progress.record["judgments"] = load_judgments_for_subjects(
-            summary_path.with_suffix(""),
-            progress.record,
-            reusable_review_subjects(
-                scan, cast(AdjudicationRecord, decided)
-            ),
+        log_phase(
+            activity,
+            "review.finalize.resolve-residual-subjects",
+            review_items=len(decided["review_queue"]),
         )
+        with log_operation(
+            activity,
+            "resolve-residual-subjects",
+            subject=scan["summary"],
+        ):
+            residual_subjects = reusable_review_subjects(
+                scan, cast(AdjudicationRecord, decided)
+            )
+        log_checkpoint(
+            activity,
+            "residual-subjects-resolved",
+            subjects=len(residual_subjects),
+        )
+        with log_operation(
+            activity,
+            "load-residual-judgments",
+            subject=scan["summary"],
+            subjects=len(residual_subjects),
+        ):
+            progress.record["judgments"] = load_judgments_for_subjects(
+                output_dir,
+                progress.record,
+                residual_subjects,
+            )
         _merge_review_judgments(progress.record, review_judgments)
-        decided = cast(
-            dict[str, Any],
-            _apply_reusable_judgments(
+        log_phase(
+            activity,
+            "review.finalize.apply-reusable-judgments",
+            judgments=len(progress.record["judgments"]),
+        )
+        with log_operation(
+            activity,
+            "apply-residual-judgments",
+            subject=scan["summary"],
+            judgments=len(progress.record["judgments"]),
+        ):
+            decided = cast(
+                dict[str, Any],
+                _apply_reusable_judgments(
+                    scan,
+                    cast(AdjudicationRecord, decided),
+                    progress.record["judgments"],
+                ),
+            )
+    if decided["review_queue"]:
+        log_phase(
+            activity,
+            "review.finalize.create-residual-session",
+            review_items=len(decided["review_queue"]),
+        )
+        with log_operation(
+            activity,
+            "create-residual-review-session",
+            subject=scan["summary"],
+        ):
+            result = _review_required(
                 scan,
                 cast(AdjudicationRecord, decided),
-                progress.record["judgments"],
-            ),
-        )
-    if decided["review_queue"]:
-        result = _review_required(
-            scan,
-            cast(AdjudicationRecord, decided),
-            progress,
-            _requested_context_levels(decisions),
-        )
+                progress,
+                _requested_context_levels(decisions),
+            )
         finish_review_session(Path(str(accepted["session_dir"])))
         result.update(
             {
@@ -611,6 +707,7 @@ def _finish_review_acceptance(
             progress.record,
             review_judgments,
             progress.publish,
+            activity,
         )
     )
     finish_review_session(Path(str(accepted["session_dir"])))
@@ -628,6 +725,41 @@ def _finish_review_acceptance(
         "counts": assembly.counts(),
         "cleanup": cleanup,
     }
+
+
+def _accepted_review_judgments(
+    output_dir: Path,
+    record: Mapping[str, Any],
+    decisions: Mapping[str, Any],
+    raw_identities: Any,
+) -> list[dict[str, Any]] | None:
+    """Load canonical accepted shards, or defer for a legacy review session."""
+
+    if not (
+        isinstance(raw_identities, list)
+        and raw_identities
+        and all(isinstance(identity, str) for identity in raw_identities)
+        and isinstance(record.get("_sharded_manifest"), Mapping)
+    ):
+        return None
+    subjects = [
+        {
+            "kind": row.get("kind"),
+            "entry": row.get("entry"),
+            "identity": row.get("identity"),
+            **({"material": row["material"]} if "material" in row else {}),
+        }
+        for row in decisions.get("items", [])
+        if isinstance(row, Mapping)
+    ]
+    loaded = load_judgments_for_subjects(output_dir, record, subjects)
+    by_identity = {str(row.get("identity")): row for row in loaded}
+    missing = [identity for identity in raw_identities if identity not in by_identity]
+    if missing:
+        raise ValidationToolError(
+            "accepted review judgment shards are incomplete for this session"
+        )
+    return [copy.deepcopy(by_identity[identity]) for identity in raw_identities]
 
 
 def _requested_context_levels(
@@ -652,7 +784,10 @@ def _ensure_current_review_rules(scan: ScanRecord | None) -> None:
 
 
 def _continue_review(
-    summary_path: Path, decision_file: Path, publish: bool
+    summary_path: Path,
+    decision_file: Path,
+    publish: bool,
+    activity: ValidationActivityLog | None = None,
 ) -> dict[str, Any]:
     decisions, internal = load_decisions(decision_file)
     session, scan, adjudication = _loaded_review_context(summary_path, internal)
@@ -679,7 +814,7 @@ def _continue_review(
         def publish_batch(
             accepted_decisions: Mapping[str, Any],
             base: Mapping[str, Any],
-        ) -> None:
+        ) -> list[str]:
             nonlocal record
             adjudication_date = str(base["adjudication"]["date"])
             batch = durable_review_judgments(
@@ -689,10 +824,22 @@ def _continue_review(
                 cast(AdjudicationRecord, base["adjudication"]),
             )
             record = append_judgment_batch(output_dir, record, batch)
+            return [str(judgment["identity"]) for judgment in batch]
 
-        accepted = accept_review_page(
-            decisions, internal, publish_batch
+        log_phase(
+            activity,
+            "review.accept-page",
+            decisions=len(decisions.get("items", [])),
         )
+        with log_operation(
+            activity,
+            "accept-review-page",
+            subject=summary,
+            decisions=len(decisions.get("items", [])),
+        ):
+            accepted = accept_review_page(
+                decisions, internal, publish_batch
+            )
         if accepted["status"] == "review_required":
             accepted.update(
                 {
@@ -705,7 +852,9 @@ def _continue_review(
         return _finish_review_acceptance(
             summary_path,
             accepted,
-            ValidationProgress(record, cache, state_status, publish),
+            ValidationProgress(
+                record, cache, state_status, publish, activity
+            ),
         )
     record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
     assert scan is not None
@@ -865,12 +1014,12 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             "review.continue",
             decision_file=request.decision_file.as_posix(),
         )
-        with log_operation(activity, "continue-review", subject=context.summary):
-            return _continue_review(
-                context.summary_path,
-                request.decision_file.resolve(),
-                request.publish,
-            )
+        return _continue_review(
+            context.summary_path,
+            request.decision_file.resolve(),
+            request.publish,
+            activity,
+        )
     log_phase(activity, "review.resume-check")
     resumed = _resume_active_review(context)
     if resumed is not None:

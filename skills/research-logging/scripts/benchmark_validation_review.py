@@ -18,12 +18,21 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
+from validation.activity import (
+    ValidationActivityLog,
+    ValidationActivityRequest,
+    log_checkpoint,
+    log_operation,
+    log_phase,
+)
 from validation.contracts import AdjudicationRecord, ScanRecord
+from validation.decisions import apply_review_decisions
 from validation.producer_bindings import identity_for_path, resolved_identity_cache
 from validation.review_exchange import (
     MAX_PACKET_BYTES,
     accept_review_page,
     create_exchange,
+    decisions_to_actions,
     finish_review_session,
     load_decisions,
 )
@@ -36,6 +45,8 @@ DEFAULT_COMMANDS = 16
 DEFAULT_EXPECTED_IDENTITY = (
     "ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a"
 )
+BENCHMARK_VALIDATION_NOTE = "d" * 64
+ACTIVITY_OVERHEAD_PHASES = 10
 
 
 def _candidate_identity(index: int) -> str:
@@ -166,6 +177,59 @@ def generated_workload(
         and identity != DEFAULT_EXPECTED_IDENTITY
     ):
         raise RuntimeError("canonical benchmark generator identity changed")
+    return scan, adjudication, identity
+
+
+def generated_session_workload(
+    root: Path,
+    *,
+    orphan_count: int,
+    command_count: int = DEFAULT_COMMANDS,
+) -> tuple[ScanRecord, AdjudicationRecord, str]:
+    """Return a production-shaped workload for complete session acceptance."""
+
+    scan, adjudication, identity = generated_workload(
+        root,
+        orphan_count=orphan_count,
+        command_count=command_count,
+    )
+    queue_item = adjudication["review_queue"][0]
+    candidates = queue_item["candidates"]
+    entry = scan["entries"][0]
+    entry["data_index"] = {
+        f"benchmark-input-{index:05d}": {
+            "path": candidate["identity"],
+            "role": "input",
+        }
+        for index, candidate in enumerate(candidates)
+    }
+    entry["validation_notes"] = [{"sha256": BENCHMARK_VALIDATION_NOTE}]
+    entry["orphan_inventory"] = candidates
+    queue_item.update(
+        {
+            "identity": "Orphaned artifacts, scripts, and references",
+            "subtree_splits": [
+                "docs/training/entries/benchmark-e001/data/training"
+            ],
+            "validation_notes": [{"sha256": BENCHMARK_VALIDATION_NOTE}],
+        }
+    )
+    adjudication["entries"] = [
+        {
+            "id": "e001",
+            "targets": [
+                {"target": "Orphaned artifacts, scripts, and references"}
+            ],
+            "orphan_items": [
+                {
+                    "identity": candidate["identity"],
+                    "decision": "pending",
+                    "basis": "-",
+                }
+                for candidate in candidates
+            ],
+        }
+    ]
     return scan, adjudication, identity
 
 
@@ -388,62 +452,275 @@ def _peak_memory_bytes() -> int:
     return value if sys.platform == "darwin" else value * 1024
 
 
+def _activity_overhead_sample(
+    enabled: bool, cycles: int
+) -> dict[str, Any]:
+    """Measure one controller-shaped activity sequence with logging toggled."""
+
+    with tempfile.TemporaryDirectory(
+        prefix="validation-activity-overhead-"
+    ) as directory:
+        root = Path(directory)
+        activity = (
+            ValidationActivityLog(
+                ValidationActivityRequest(
+                    root,
+                    root / "summary.md",
+                    "standard",
+                    14,
+                    False,
+                    heartbeat_seconds=3600.0,
+                )
+            )
+            if enabled
+            else None
+        )
+        started = time.monotonic()
+        for _cycle in range(cycles):
+            for phase in range(ACTIVITY_OVERHEAD_PHASES):
+                log_phase(
+                    activity,
+                    f"review.finalize.phase-{phase}",
+                    items=DEFAULT_ORPHANS,
+                )
+                with log_operation(
+                    activity,
+                    f"operation-{phase}",
+                    subject="docs/ao-predict/training.md",
+                    items=DEFAULT_ORPHANS,
+                ):
+                    pass
+                log_checkpoint(
+                    activity,
+                    f"checkpoint-{phase}",
+                    items=DEFAULT_ORPHANS,
+                )
+        elapsed = time.monotonic() - started
+        log_lines = 0
+        if activity is not None:
+            activity.finish("complete")
+            log_lines = activity.path.read_text(encoding="utf-8").count("\n")
+        return {
+            "enabled": enabled,
+            "elapsed_seconds": elapsed,
+            "event_count": cycles * ACTIVITY_OVERHEAD_PHASES * 4,
+            "log_lines": log_lines,
+        }
+
+
+def _activity_overhead_driver(args: argparse.Namespace) -> dict[str, Any]:
+    """Return paired activity-log overhead samples without research scanning."""
+
+    for _ in range(args.warmups):
+        _activity_overhead_sample(False, args.activity_cycles)
+        _activity_overhead_sample(True, args.activity_cycles)
+    samples: dict[str, list[dict[str, Any]]] = {
+        "disabled": [],
+        "enabled": [],
+    }
+    for number in range(args.runs):
+        order = (False, True) if number % 2 == 0 else (True, False)
+        for enabled in order:
+            samples["enabled" if enabled else "disabled"].append(
+                _activity_overhead_sample(enabled, args.activity_cycles)
+            )
+    disabled_median = statistics.median(
+        sample["elapsed_seconds"] for sample in samples["disabled"]
+    )
+    enabled_median = statistics.median(
+        sample["elapsed_seconds"] for sample in samples["enabled"]
+    )
+    event_count = args.activity_cycles * ACTIVITY_OVERHEAD_PHASES * 4
+    return {
+        "kind": "validation_activity_overhead",
+        "warmups": args.warmups,
+        "runs": args.runs,
+        "cycles_per_sample": args.activity_cycles,
+        "events_per_sample": event_count,
+        "disabled_median_seconds": disabled_median,
+        "enabled_median_seconds": enabled_median,
+        "incremental_seconds_per_event": (
+            enabled_median - disabled_median
+        )
+        / event_count,
+        "samples": samples,
+        "machine": _machine_context(),
+    }
+
+
+def _legacy_run(
+    scan: ScanRecord, adjudication: AdjudicationRecord
+) -> tuple[int, dict[str, Any]]:
+    counters = {
+        "entry_scans": 0,
+        "relationship_evaluations": 0,
+        "producer_source_reads": 0,
+    }
+    first_batch = []
+    candidates = adjudication["review_queue"][0]["candidates"]
+    for number, candidate in enumerate(candidates):
+        commands = _legacy_candidate_commands(
+            scan, "e001", candidate["identity"], counters
+        )
+        if number < DEFAULT_BATCH_SIZE:
+            first_batch.extend(command.get("command", "") for command in commands)
+    return len("\n".join(first_batch).encode("utf-8")), counters
+
+
+def _public_run(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    orphan_count: int,
+) -> tuple[int, dict[str, Any]]:
+    exchange = create_exchange(scan, adjudication, {})
+    decision_path = Path(exchange["decision_file"])
+    template = json.loads(decision_path.read_text(encoding="utf-8"))
+    for item in template["items"]:
+        item["decision"] = (
+            {"action": "classify-subtree", "disposition": "unresolved"}
+            if item["kind"] == "orphan_subtree"
+            else "unresolved"
+        )
+        item["rationale"] = "No local evidence connection is recorded."
+    decision_path.write_text(
+        json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    decisions, internal = load_decisions(decision_path)
+    following = accept_review_page(decisions, internal)
+    finish_review_session(decision_path.parent.parent)
+    return exchange["byte_count"], {
+        "candidates_indexed": orphan_count,
+        "first_packet_items": exchange["item_count"],
+        "accepted_items": len(decisions["items"]),
+        "next_packet_items": following.get("item_count", 0),
+        "packet_byte_bound": MAX_PACKET_BYTES,
+    }
+
+
+def _filled_session_page(
+    decision_path: Path, decision_offset: int
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    template = json.loads(decision_path.read_text(encoding="utf-8"))
+    judgment_identities = []
+    for number, item in enumerate(template["items"]):
+        item["decision"] = {
+            "action": "classify-subtree",
+            "disposition": (
+                "connected"
+                if (decision_offset + number) % 4 == 0
+                else "unresolved"
+            ),
+        }
+        item["rationale"] = (
+            "The production-shaped benchmark supplies a deterministic mixed "
+            "lifecycle decision."
+        )
+        judgment_identities.append(
+            hashlib.sha256(
+                f"benchmark-judgment:{decision_offset + number}".encode()
+            ).hexdigest()
+        )
+    decision_path.write_text(
+        json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    decisions, internal = load_decisions(decision_path)
+    return decisions, internal, judgment_identities
+
+
+def _accepted_session(
+    exchange: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], int, int, float]:
+    page = exchange
+    page_count = 0
+    accepted_items = 0
+    decision_offset = 0
+    started = time.monotonic()
+    while page["status"] == "review_required":
+        decisions, internal, identities = _filled_session_page(
+            Path(page["decision_file"]), decision_offset
+        )
+        page = accept_review_page(
+            decisions,
+            internal,
+            lambda *_args, values=identities: values,
+        )
+        page_count += 1
+        accepted_items += len(decisions["items"])
+        decision_offset += len(decisions["items"])
+    return page, page_count, accepted_items, time.monotonic() - started
+
+
+def _session_run(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    orphan_count: int,
+) -> tuple[int, dict[str, Any]]:
+    exchange_started = time.monotonic()
+    exchange = create_exchange(scan, adjudication, {})
+    exchange_seconds = time.monotonic() - exchange_started
+    page, page_count, accepted_items, acceptance_seconds = _accepted_session(
+        exchange
+    )
+    translation_started = time.monotonic()
+    actions = decisions_to_actions(
+        page["decisions"],
+        {
+            "scan": scan,
+            "adjudication": adjudication,
+            "orphan_fingerprints": page["orphan_fingerprints"],
+        },
+    )
+    translation_seconds = time.monotonic() - translation_started
+    application_started = time.monotonic()
+    decided, _ = apply_review_decisions(
+        scan,
+        adjudication,
+        actions,
+        trusted_orphan_fingerprints=page["orphan_fingerprints"],
+    )
+    application_seconds = time.monotonic() - application_started
+    finish_review_session(Path(exchange["decision_file"]).parent.parent)
+    return exchange["byte_count"], {
+        "candidates_indexed": orphan_count,
+        "session_pages": page_count,
+        "accepted_items": accepted_items,
+        "merged_items": len(page["decisions"]["items"]),
+        "accepted_judgment_identities": len(page.get("judgment_identities", [])),
+        "action_count": len(actions["actions"]),
+        "remaining_review_items": len(decided["review_queue"]),
+        "exchange_seconds": exchange_seconds,
+        "page_acceptance_seconds": acceptance_seconds,
+        "action_translation_seconds": translation_seconds,
+        "action_application_seconds": application_seconds,
+        "packet_byte_bound": MAX_PACKET_BYTES,
+    }
+
+
 def _single_run(mode: str, orphan_count: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(
         prefix="validation-review-benchmark-"
     ) as directory:
-        scan, adjudication, identity = generated_workload(
+        generator = (
+            generated_session_workload
+            if mode == "session"
+            else generated_workload
+        )
+        scan, adjudication, identity = generator(
             Path(directory), orphan_count=orphan_count
         )
         started = time.monotonic()
         if mode == "legacy":
-            counters = {
-                "entry_scans": 0,
-                "relationship_evaluations": 0,
-                "producer_source_reads": 0,
-            }
-            first_batch = []
-            candidates = adjudication["review_queue"][0]["candidates"]
-            for number, candidate in enumerate(candidates):
-                commands = _legacy_candidate_commands(
-                    scan, "e001", candidate["identity"], counters
-                )
-                if number < DEFAULT_BATCH_SIZE:
-                    first_batch.extend(
-                        command.get("command", "") for command in commands
-                    )
-            packet_bytes = len("\n".join(first_batch).encode("utf-8"))
-            metrics: dict[str, Any] = counters
-        else:
-            exchange = create_exchange(scan, adjudication, {})
-            decision_path = Path(exchange["decision_file"])
-            template = json.loads(decision_path.read_text(encoding="utf-8"))
-            for item in template["items"]:
-                item["decision"] = (
-                    {
-                        "action": "classify-subtree",
-                        "disposition": "unresolved",
-                    }
-                    if item["kind"] == "orphan_subtree"
-                    else "unresolved"
-                )
-                item["rationale"] = "No local evidence connection is recorded."
-            decision_path.write_text(
-                json.dumps(template, sort_keys=True, ensure_ascii=False, indent=2)
-                + "\n",
-                encoding="utf-8",
+            packet_bytes, metrics = _legacy_run(scan, adjudication)
+        elif mode == "public":
+            packet_bytes, metrics = _public_run(
+                scan, adjudication, orphan_count
             )
-            decisions, internal = load_decisions(decision_path)
-            following = accept_review_page(decisions, internal)
-            finish_review_session(decision_path.parent.parent)
-            metrics = {
-                "candidates_indexed": orphan_count,
-                "first_packet_items": exchange["item_count"],
-                "accepted_items": len(decisions["items"]),
-                "next_packet_items": following.get("item_count", 0),
-                "packet_byte_bound": MAX_PACKET_BYTES,
-            }
-            packet_bytes = exchange["byte_count"]
+        else:
+            packet_bytes, metrics = _session_run(
+                scan, adjudication, orphan_count
+            )
         elapsed = time.monotonic() - started
         return {
             "mode": mode,
@@ -610,8 +887,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--single-fanout")
+    parser.add_argument("--activity-overhead", action="store_true")
+    parser.add_argument("--activity-cycles", type=int, default=100)
     parser.add_argument(
-        "--mode", action="append", choices=("legacy", "public"), default=[]
+        "--mode",
+        action="append",
+        choices=("legacy", "public", "session"),
+        default=[],
     )
     parser.add_argument("--orphans", action="append", type=int, default=[])
     parser.add_argument("--fanout", action="append", default=[])
@@ -628,7 +910,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     fanout = args.fanout or ["5x5", "10x10"]
     if any(value < 1 for value in orphans):
         raise SystemExit("--orphans values must be positive")
-    if args.single_fanout:
+    if args.activity_cycles < 1:
+        raise SystemExit("--activity-cycles must be positive")
+    if args.activity_overhead:
+        result = _activity_overhead_driver(args)
+    elif args.single_fanout:
         materials, candidates = (
             int(value) for value in args.single_fanout.split("x", 1)
         )

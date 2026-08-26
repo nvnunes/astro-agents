@@ -15,6 +15,7 @@ from .activity import (
     log_phase,
 )
 from .adjudication import ORPHAN_TARGET
+from .compatibility import COMPONENT_VERSIONS, INPUT_PROJECTION_VERSIONS
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import apply_review_decisions, canonical_review_decisions
 from .diagnostics import ValidationDiagnostics
@@ -218,6 +219,27 @@ def _compatible_cached_dependencies(
     return session
 
 
+def _cached_contract_is_current(record: Mapping[str, Any]) -> bool:
+    """Require cached completion to use the current rule registries.
+
+    A mismatch bypasses the cache-only return. The normal scan then applies
+    per-outcome compatibility, so only outcomes that declare a changed rule or
+    input projection reopen.
+    """
+
+    dependencies = record.get("rule_dependencies")
+    if not isinstance(dependencies, Mapping):
+        return False
+    components = dependencies.get("components")
+    input_projections = dependencies.get("input_projections")
+    return (
+        isinstance(components, Mapping)
+        and dict(components) == COMPONENT_VERSIONS
+        and isinstance(input_projections, Mapping)
+        and dict(input_projections) == INPUT_PROJECTION_VERSIONS
+    )
+
+
 def _cached_completion(
     request: ValidationRequest,
     output_dir: Path,
@@ -229,6 +251,7 @@ def _cached_completion(
     ready = (
         cache_status == "loaded"
         and record.get("validation_rules_version") == RULES_VERSION
+        and _cached_contract_is_current(record)
         and record.get("result") is not None
         and record.get("continuation") is None
         and _coherent_report_projection(output_dir, record)

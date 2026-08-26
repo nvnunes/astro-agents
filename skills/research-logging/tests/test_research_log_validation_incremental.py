@@ -198,6 +198,67 @@ class IncrementalComparisonTests(unittest.TestCase):
         self.assertEqual(unchanged["reusable_checks"], 1)
         self.assertEqual(changed["rerun_checks"], 1)
 
+    def test_component_change_reopens_only_declaring_outcome(self) -> None:
+        identity = {
+            "size": 2,
+            "mtime_ns": 1,
+            "ctime_ns": 1,
+            "sha256": "a" * 64,
+        }
+        scan = {
+            "component_versions": {
+                "integrity": 1,
+                "mechanical_producer": 3,
+            },
+            "entries": [],
+            "resolved_paths": {"data/result.csv": "/project/data/result.csv"},
+            "files": {"data/result.csv": identity},
+            "directory_memberships": {},
+        }
+        outcomes = []
+        for check, rules in (
+            ("Integrity", {"integrity": 1}),
+            ("Provenance", {"mechanical_producer": 2}),
+        ):
+            outcome = {
+                "entry": "e001",
+                "target": "data/result.csv",
+                "check": check,
+                "result": "2026-08-15",
+                "dependencies": [
+                    {
+                        "path": "data/result.csv",
+                        "role": "target",
+                        "identity": identity,
+                    }
+                ],
+                "rule_dependencies": rules,
+            }
+            outcome["input_dependencies"] = (
+                COMPATIBILITY.input_dependencies_for_check(scan, outcome)
+            )
+            outcome["compatibility_identity"] = "b" * 64
+            outcomes.append(outcome)
+
+        with mock.patch.object(
+            INCREMENTAL, "producer_bindings_for_check", return_value=[]
+        ):
+            compared = INCREMENTAL.compare_prior_record(
+                scan,
+                {"outcomes": outcomes},
+                INCREMENTAL.IncrementalOperations(
+                    dependency_snapshot=lambda *_args: identity,
+                    orphan_fingerprints=INCREMENTAL.orphan_item_fingerprints,
+                ),
+            )
+
+        self.assertEqual(compared["reusable_checks"], 1)
+        self.assertEqual(compared["rerun_checks"], 1)
+        self.assertEqual(
+            [row["check"] for row in compared["checks"] if row["status"] == "rerun"],
+            ["Provenance"],
+        )
+
     def test_compact_directory_outcome_reopens_for_membership_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "collection"

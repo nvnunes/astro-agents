@@ -232,6 +232,50 @@ class ValidationControllerTests(unittest.TestCase):
                 ],
             )
 
+    def test_component_change_bypasses_cached_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            changed = CONTROLLER.COMPONENT_VERSIONS["mechanical_producer"] + 1
+
+            with (
+                mock.patch.dict(
+                    CONTROLLER.COMPONENT_VERSIONS,
+                    {"mechanical_producer": changed},
+                ),
+                mock.patch.object(
+                    CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+                ) as scanned,
+            ):
+                second = run_validate(summary, result_date="2026-08-15", jobs=1)
+
+            self.assertEqual(second["status"], "complete")
+            self.assertNotEqual(second.get("cached"), True)
+            scanned.assert_called_once()
+
+    def test_input_projection_change_bypasses_cached_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary = make_no_semantic_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "complete")
+            changed = CONTROLLER.INPUT_PROJECTION_VERSIONS["exact-material"] + 1
+
+            with (
+                mock.patch.dict(
+                    CONTROLLER.INPUT_PROJECTION_VERSIONS,
+                    {"exact-material": changed},
+                ),
+                mock.patch.object(
+                    CONTROLLER, "scan_log", wraps=CONTROLLER.scan_log
+                ) as scanned,
+            ):
+                second = run_validate(summary, result_date="2026-08-15", jobs=1)
+
+            self.assertEqual(second["status"], "complete")
+            self.assertNotEqual(second.get("cached"), True)
+            scanned.assert_called_once()
+
     def test_cached_completion_prunes_incompatible_judgments_without_scan(
         self,
     ) -> None:

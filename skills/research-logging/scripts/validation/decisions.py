@@ -22,6 +22,12 @@ from .adjudication import (
     ORPHAN_TARGET,
     is_success_date,
 )
+from .collection_scopes import (
+    COLLECTION_DIRECTORY_SELECTION_KEY,
+    COLLECTION_DIRECTORY_SELECTIONS_KEY,
+    DIRECTORY_SELECTOR_KEYS,
+    validated_directory_selector,
+)
 from .contracts import (
     AdjudicationRecord,
     ScanRecord,
@@ -56,6 +62,7 @@ from .review_index import ReviewContextIndex, ReviewQuerySession
 DECISION_SCHEMA_VERSION = 7
 DECISION_DEPENDENCY_KEYS = {
     "members",
+    COLLECTION_DIRECTORY_SELECTIONS_KEY,
     "add_dependencies",
     "remove_dependencies",
     "copy_dependencies_from",
@@ -414,19 +421,26 @@ def _expanded_selected_member(root: Path, identity: str, member: str) -> list[st
     return descendants
 
 
-def _validated_member_paths(
+def _validated_member_selection(
     scan: Mapping[str, Any], identity: str, members: Any
-) -> List[str]:
-    """Validate and expand a compact decision's collection-member scope."""
+) -> tuple[List[str], dict[str, str] | None]:
+    """Validate and expand one collection selection and its optional basis."""
 
     raw = scan.get("resolved_paths", {}).get(identity)
     if raw is None or not Path(raw).is_dir():
         raise ValidationToolError(f"collection dependency is not resolved: {identity}")
     root = Path(raw)
     if isinstance(members, dict):
+        if set(members) == DIRECTORY_SELECTOR_KEYS:
+            selection = validated_directory_selector(root, members)
+            return selection.members, {
+                "directory": selection.directory,
+                "membership_identity": selection.membership_identity,
+            }
         if set(members) != {"glob"} or not isinstance(members["glob"], str):
             raise ValidationToolError(
-                "collection member selector must contain exactly one glob string"
+                "collection member selector must be a glob or an exact directory "
+                "selector"
             )
         pattern = members["glob"]
         pattern_path = Path(pattern)
@@ -448,13 +462,24 @@ def _validated_member_paths(
             f"collection members for {identity} must be a nonempty string list "
             "or a glob selector"
         )
-    return sorted(
-        {
-            selected
-            for member in members
-            for selected in _expanded_selected_member(root, identity, member)
-        }
+    return (
+        sorted(
+            {
+                selected
+                for member in members
+                for selected in _expanded_selected_member(root, identity, member)
+            }
+        ),
+        None,
     )
+
+
+def _validated_member_paths(
+    scan: Mapping[str, Any], identity: str, members: Any
+) -> List[str]:
+    """Validate and expand a compact decision's collection-member scope."""
+
+    return _validated_member_selection(scan, identity, members)[0]
 
 
 def canonical_review_decisions(
@@ -472,10 +497,20 @@ def canonical_review_decisions(
         members = decision.get("members")
         if not isinstance(members, dict):
             continue
-        decision["members"] = {
-            identity: _validated_member_paths(scan, identity, selected)
-            for identity, selected in members.items()
-        }
+        expanded = {}
+        selections = copy.deepcopy(
+            row.get(COLLECTION_DIRECTORY_SELECTIONS_KEY, {})
+        )
+        for identity, selected in members.items():
+            expanded_members, selection = _validated_member_selection(
+                scan, identity, selected
+            )
+            expanded[identity] = expanded_members
+            if selection is not None:
+                selections[identity] = selection
+        decision["members"] = expanded
+        if selections:
+            row[COLLECTION_DIRECTORY_SELECTIONS_KEY] = selections
     return canonical
 
 
@@ -591,6 +626,19 @@ def _deduplicate_dependencies(dependencies: List[Dict[str, Any]]) -> None:
                 "duplicate dependency has conflicting member scopes: "
                 f"{dependency.get('path')}"
             )
+        retained_selection = retained.get(COLLECTION_DIRECTORY_SELECTION_KEY)
+        candidate_selection = dependency.get(COLLECTION_DIRECTORY_SELECTION_KEY)
+        if retained_selection is None and candidate_selection is not None:
+            retained[COLLECTION_DIRECTORY_SELECTION_KEY] = candidate_selection
+        elif (
+            retained_selection is not None
+            and candidate_selection is not None
+            and retained_selection != candidate_selection
+        ):
+            raise ValidationToolError(
+                "duplicate dependency has conflicting directory selections: "
+                f"{dependency.get('path')}"
+            )
     dependencies[:] = unique
 
 
@@ -598,6 +646,7 @@ def _scope_decision_collections(
     scan: Mapping[str, Any],
     dependencies: List[Dict[str, Any]],
     member_scopes: Any,
+    directory_selections: Any = None,
 ) -> None:
     """Apply exact reviewed member scopes to existing directory dependencies."""
 
@@ -614,6 +663,37 @@ def _scope_decision_collections(
                 f"collection dependency is not unique on target: {identity}"
             )
         matches[0]["members"] = _validated_member_paths(scan, identity, members)
+    if directory_selections is None:
+        return
+    if not isinstance(directory_selections, dict) or not set(
+        directory_selections
+    ) <= set(member_scopes):
+        raise ValidationToolError(
+            "collection directory selections must match reviewed member scopes"
+        )
+    for identity, selection in directory_selections.items():
+        if not isinstance(selection, dict) or set(selection) != DIRECTORY_SELECTOR_KEYS:
+            raise ValidationToolError(
+                "collection directory selection has an invalid shape"
+            )
+        matches = [
+            dependency
+            for dependency in dependencies
+            if dependency.get("path") == identity
+        ]
+        if len(matches) != 1:
+            raise ValidationToolError(
+                f"collection dependency is not unique on target: {identity}"
+            )
+        current = validated_directory_selector(
+            Path(str(scan["resolved_paths"][identity])), selection
+        )
+        if matches[0].get("members") != current.members:
+            raise ValidationToolError(
+                "collection directory selection differs from its explicit members: "
+                f"{identity}"
+            )
+        matches[0][COLLECTION_DIRECTORY_SELECTION_KEY] = dict(selection)
 
 
 def _select_decision_producer(
@@ -714,7 +794,10 @@ def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
     )
     _deduplicate_dependencies(dependencies)
     _scope_decision_collections(
-        context.scan, dependencies, context.action.get("members", {})
+        context.scan,
+        dependencies,
+        context.action.get("members", {}),
+        context.action.get(COLLECTION_DIRECTORY_SELECTIONS_KEY),
     )
     _select_decision_producer(
         context, context.action.get(PRODUCER_SELECTION_KEY)

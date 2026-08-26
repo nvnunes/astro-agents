@@ -10,6 +10,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 ADJUDICATION = importlib.import_module("validation.adjudication")
+COLLECTION_SCOPES = importlib.import_module("validation.collection_scopes")
 CONTRACTS = importlib.import_module("validation.contracts")
 DECISIONS = importlib.import_module("validation.decisions")
 EVIDENCE = importlib.import_module("validation.evidence")
@@ -299,6 +300,63 @@ class DecisionApplicationTests(unittest.TestCase):
                 decisions["items"][0]["decision"]["members"]["data/run"],
                 ["payloads/a.pkl", "payloads/b.pkl", "summary.csv"],
             )
+            self.assertNotIn(
+                COLLECTION_SCOPES.COLLECTION_DIRECTORY_SELECTIONS_KEY,
+                decisions["items"][0],
+            )
+
+    def test_collection_scope_canonicalizes_a_hash_bound_directory_choice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collection = Path(directory) / "run"
+            nested = collection / "payloads"
+            nested.mkdir(parents=True)
+            (nested / "b.pkl").write_bytes(b"b")
+            (nested / "a.pkl").write_bytes(b"a")
+            choice = COLLECTION_SCOPES.compact_directory_choices(collection)[0]
+            decisions = DECISIONS.canonical_review_decisions(
+                {"resolved_paths": {"data/run": str(collection)}},
+                {
+                    "items": [
+                        {
+                            "kind": "collection_scope",
+                            "decision": {
+                                "members": {"data/run": choice["selector"]}
+                            },
+                        }
+                    ]
+                },
+            )
+
+            row = decisions["items"][0]
+            self.assertEqual(
+                row["decision"]["members"]["data/run"],
+                ["payloads/a.pkl", "payloads/b.pkl"],
+            )
+            self.assertEqual(
+                row[COLLECTION_SCOPES.COLLECTION_DIRECTORY_SELECTIONS_KEY],
+                {"data/run": choice["selector"]},
+            )
+
+            (nested / "c.pkl").write_bytes(b"c")
+            with self.assertRaisesRegex(
+                CONTRACTS.ValidationToolError,
+                "membership changed after review packet creation",
+            ):
+                DECISIONS.canonical_review_decisions(
+                    {"resolved_paths": {"data/run": str(collection)}},
+                    {
+                        "items": [
+                            {
+                                "kind": "collection_scope",
+                                "decision": {
+                                    "members": {"data/run": choice["selector"]}
+                                },
+                            }
+                        ]
+                    },
+                )
 
     def test_decision_owner_applies_and_reconciles_an_empty_queue(self) -> None:
         decided, counts = DECISIONS.apply_review_decisions(

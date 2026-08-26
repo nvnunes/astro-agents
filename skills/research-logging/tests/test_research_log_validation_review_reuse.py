@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import importlib
+import tempfile
 import unittest
+from pathlib import Path
 
 import research_log_validation_test_support  # noqa: F401
 
 REUSE = importlib.import_module("validation.review_reuse")
+COLLECTION_SCOPES = importlib.import_module("validation.collection_scopes")
 
 
 def target_fixture(kind: str = "semantic_fallback") -> tuple[dict, ...]:
@@ -173,6 +176,88 @@ class ReviewReuseTests(unittest.TestCase):
                 changed, adjudication, queue, template, [judgment]
             )
         )
+
+    def test_compact_directory_judgment_reopens_when_membership_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collection_root = Path(directory) / "collection"
+            retained = collection_root / "retained-run"
+            retained.mkdir(parents=True)
+            (retained / "a.csv").write_text("a\n", encoding="utf-8")
+            collection = "output/collection"
+            member = f"{collection}/retained-run/a.csv"
+            scan, adjudication, queue, template = target_fixture("collection_scope")
+            scan["resolved_paths"] = {collection: collection_root.as_posix()}
+            scan["files"][member] = {
+                "size": 2,
+                "sha256": "d" * 64,
+                "mtime_ns": 1,
+                "ctime_ns": 2,
+            }
+            queue["collections"] = [collection]
+            adjudication["entries"][0]["targets"][0]["dependencies"].append(
+                {"path": collection, "role": "input"}
+            )
+            decision = {"members": {collection: ["retained-run/a.csv"]}}
+            choice = COLLECTION_SCOPES.compact_directory_choices(collection_root)[0]
+            template[COLLECTION_SCOPES.COLLECTION_DIRECTORY_SELECTIONS_KEY] = {
+                collection: choice["selector"]
+            }
+            template["allowed_decisions"] = [decision, "fail"]
+            judgment = review_decision(
+                scan, adjudication, queue, template, decision
+            )
+
+            current_template = copy.deepcopy(template)
+            current_template.pop(
+                COLLECTION_SCOPES.COLLECTION_DIRECTORY_SELECTIONS_KEY
+            )
+            self.assertEqual(
+                REUSE.reusable_review_answer(
+                    scan, adjudication, queue, current_template, [judgment]
+                )[0],
+                decision,
+            )
+
+            (retained / "b.csv").write_text("b\n", encoding="utf-8")
+            self.assertIsNone(
+                REUSE.reusable_review_answer(
+                    scan, adjudication, queue, current_template, [judgment]
+                )
+            )
+
+    def test_legacy_collection_judgment_keeps_explicit_member_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collection_root = Path(directory) / "collection"
+            retained = collection_root / "retained-run"
+            retained.mkdir(parents=True)
+            (retained / "a.csv").write_text("a\n", encoding="utf-8")
+            collection = "output/collection"
+            member = f"{collection}/retained-run/a.csv"
+            scan, adjudication, queue, template = target_fixture("collection_scope")
+            scan["resolved_paths"] = {collection: collection_root.as_posix()}
+            scan["files"][member] = {
+                "size": 2,
+                "sha256": "d" * 64,
+                "mtime_ns": 1,
+                "ctime_ns": 2,
+            }
+            queue["collections"] = [collection]
+            adjudication["entries"][0]["targets"][0]["dependencies"].append(
+                {"path": collection, "role": "input"}
+            )
+            decision = {"members": {collection: ["retained-run/a.csv"]}}
+            template["allowed_decisions"] = [decision, "fail"]
+            judgment = review_decision(
+                scan, adjudication, queue, template, decision
+            )
+
+            (retained / "b.csv").write_text("b\n", encoding="utf-8")
+            self.assertEqual(
+                REUSE.reusable_review_answer(
+                    scan, adjudication, queue, template, [judgment]
+                )[0],
+                decision,
+            )
 
     def test_reuse_misses_have_stable_diagnostic_reasons(self) -> None:
         scan, adjudication, queue, template = target_fixture()

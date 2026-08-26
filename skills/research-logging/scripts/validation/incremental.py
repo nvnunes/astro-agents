@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from .collection_scopes import COLLECTION_DIRECTORY_SELECTION_KEY
 from .compatibility import (
     COMPONENT_VERSIONS,
     components_compatible,
@@ -199,6 +200,10 @@ def _stored_dependency(
     members = previous_identity.get("members")
     if isinstance(members, list):
         stored["members"] = members
+    if COLLECTION_DIRECTORY_SELECTION_KEY in dependency:
+        stored[COLLECTION_DIRECTORY_SELECTION_KEY] = copy.deepcopy(
+            dependency[COLLECTION_DIRECTORY_SELECTION_KEY]
+        )
     return stored
 
 

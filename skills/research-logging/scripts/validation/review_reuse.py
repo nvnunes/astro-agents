@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, MutableMapping, NamedTuple, Sequence
 
+from .collection_scopes import (
+    COLLECTION_DIRECTORY_SELECTIONS_KEY,
+    directory_selection,
+)
 from .compatibility import (
     decode_input_dependencies,
     input_dependencies_for_check,
@@ -361,8 +365,16 @@ def _review_decision_answers(
         ):
             continue
         decision = judgment.get("decision")
+        stored = _decoded_inputs(judgment)
+        current_template = _template_with_stored_directory_selections(
+            template, stored
+        )
         current = review_judgment_inputs(
-            scan, adjudication, queue_item, template, decision
+            scan,
+            adjudication,
+            queue_item,
+            current_template,
+            decision,
         )
         compatible = _contains_current_inputs(judgment, current)
         if template.get("kind") == SUBTREE_REVIEW_KIND:
@@ -410,10 +422,17 @@ def _review_decision_answers_diagnostics(
         if not _answer_allowed(queue_item, template, decision):
             miss_reasons.add("candidate_or_allowed_answer_changed")
             continue
-        current = review_judgment_inputs(
-            scan, adjudication, queue_item, template, decision
-        )
         stored = _decoded_inputs(judgment)
+        current_template = _template_with_stored_directory_selections(
+            template, stored
+        )
+        current = review_judgment_inputs(
+            scan,
+            adjudication,
+            queue_item,
+            current_template,
+            decision,
+        )
         if stored is None or (
             not stored and template.get("kind") != SUBTREE_REVIEW_KIND
         ):
@@ -446,7 +465,13 @@ def review_judgment_inputs(
         return _orphan_review_inputs(scan, template)
     if template.get("kind") == SUBTREE_REVIEW_KIND:
         return _subtree_review_inputs(scan, template, decision)
-    return _ordinary_review_inputs(scan, adjudication, queue_item, template, decision)
+    return _ordinary_review_inputs(
+        scan,
+        adjudication,
+        queue_item,
+        template,
+        decision,
+    )
 
 
 def _ordinary_review_inputs(
@@ -470,6 +495,15 @@ def _ordinary_review_inputs(
     if collection_inputs is None:
         return []
     result.extend(collection_inputs)
+    selections = template.get(COLLECTION_DIRECTORY_SELECTIONS_KEY)
+    if not isinstance(selections, Mapping):
+        selections = {}
+    directory_inputs = _current_collection_directory_inputs(
+        scan, selections, relationships
+    )
+    if directory_inputs is None:
+        return []
+    result.extend(directory_inputs)
     return sorted(
         result,
         key=lambda item: (
@@ -479,6 +513,74 @@ def _ordinary_review_inputs(
             item["relationship"],
         ),
     )
+
+
+def _stored_collection_directory_selections(
+    inputs: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, dict[str, str]]:
+    """Recover new selector locators while leaving legacy judgments unchanged."""
+
+    selections: dict[str, dict[str, str]] = {}
+    for item in inputs or ():
+        if item.get("kind") != "collection-directory-membership":
+            continue
+        locator = item.get("source_locator")
+        if not isinstance(locator, Mapping):
+            continue
+        path = locator.get("path")
+        directory = locator.get("directory")
+        if isinstance(path, str) and path and isinstance(directory, str) and directory:
+            selections[path] = {"directory": directory}
+    return selections
+
+
+def _template_with_stored_directory_selections(
+    template: Mapping[str, Any],
+    inputs: Sequence[Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    """Restore selector locators only for judgments created with the new rule."""
+
+    selections = _stored_collection_directory_selections(inputs)
+    if not selections or COLLECTION_DIRECTORY_SELECTIONS_KEY in template:
+        return template
+    return {**template, COLLECTION_DIRECTORY_SELECTIONS_KEY: selections}
+
+
+def _current_collection_directory_inputs(
+    scan: ScanRecord,
+    selections: Mapping[str, Mapping[str, Any]],
+    relationships: Mapping[str, str],
+) -> list[dict[str, Any]] | None:
+    """Project current recursive membership for new compact directory choices."""
+
+    current = []
+    for path, selector in sorted(selections.items()):
+        directory = selector.get("directory") if isinstance(selector, Mapping) else None
+        raw_root = scan.get("resolved_paths", {}).get(path)
+        if not isinstance(directory, str) or not isinstance(raw_root, str):
+            return None
+        try:
+            selection = directory_selection(Path(raw_root), directory)
+            membership: Mapping[str, Any] = {
+                "directory": selection.directory,
+                "regular_file_descendant_count": len(selection.members),
+                "membership_identity": selection.membership_identity,
+            }
+        except (OSError, ValidationToolError) as exc:
+            membership = {"directory": directory, "error": str(exc)}
+        relationship = relationships.get(path)
+        if relationship is None:
+            return None
+        current.append(
+            projection(
+                "collection-directory-membership",
+                f"collection-directory-membership:{path}:{directory}",
+                membership,
+                relationship,
+                source_locator={"path": path, "directory": directory},
+            )
+        )
+    return current
 
 
 def _subtree_review_inputs(

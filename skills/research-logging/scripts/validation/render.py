@@ -21,6 +21,7 @@ from .adjudication import (
     ORPHAN_TARGET,
     is_success_date,
 )
+from .collection_scopes import COLLECTION_DIRECTORY_SELECTION_KEY
 from .compatibility import (
     input_dependencies_for_check,
     outcome_compatibility_identity,
@@ -128,6 +129,10 @@ def dependencies_for_check(row: Mapping[str, Any], check: str) -> List[Dict[str,
                     "dependency members must be a list of relative paths"
                 )
             dependency["members"] = members
+        if COLLECTION_DIRECTORY_SELECTION_KEY in item:
+            dependency[COLLECTION_DIRECTORY_SELECTION_KEY] = dict(
+                item[COLLECTION_DIRECTORY_SELECTION_KEY]
+            )
         result.append(dependency)
     return result
 
@@ -869,6 +874,15 @@ def _stored_checks(
                     "path": dependency["path"],
                     "role": dependency["role"],
                     "identity": snapshot,
+                    **(
+                        {
+                            COLLECTION_DIRECTORY_SELECTION_KEY: dict(
+                                dependency[COLLECTION_DIRECTORY_SELECTION_KEY]
+                            )
+                        }
+                        if COLLECTION_DIRECTORY_SELECTION_KEY in dependency
+                        else {}
+                    ),
                 }
             )
         rules = rule_dependencies_for_check(check)

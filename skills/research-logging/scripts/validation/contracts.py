@@ -457,13 +457,33 @@ def _validate_dependency_rows(value: Any, description: str) -> None:
             dependency,
             f"{description} item {index}",
             frozenset({"path", "role"}),
-            frozenset({"members"}),
+            frozenset({"members", "collection_directory_selection"}),
         )
         _validate_string_fields(
             dependency, f"{description} item {index}", ("path", "role")
         )
         if "members" in dependency:
             _string_list(dependency["members"], f"{description} item {index} members")
+        if "collection_directory_selection" in dependency:
+            selection = _mapping(
+                dependency["collection_directory_selection"],
+                f"{description} item {index} collection_directory_selection",
+            )
+            _exact_fields(
+                selection,
+                f"{description} item {index} collection_directory_selection",
+                frozenset({"directory", "membership_identity"}),
+            )
+            _validate_string_fields(
+                selection,
+                f"{description} item {index} collection_directory_selection",
+                ("directory", "membership_identity"),
+            )
+            if _HEX_IDENTITY.fullmatch(selection["membership_identity"]) is None:
+                raise LifecycleRecordContractError(
+                    f"{description} item {index} collection directory membership "
+                    "identity must be a SHA-256"
+                )
 
 
 def _validate_finding_rows(value: Any, description: str) -> None:

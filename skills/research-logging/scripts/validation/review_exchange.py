@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
+from .collection_scopes import (
+    COLLECTION_DIRECTORY_SELECTIONS_KEY,
+    DIRECTORY_SELECTOR_KEYS,
+    compact_directory_choices,
+)
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
 from .decisions import DECISION_SCHEMA_VERSION
 from .orphan_rules import (
@@ -51,7 +56,7 @@ MAX_PACKET_ITEMS = 200
 MAX_PACKET_BYTES = 65_536
 MAX_EXPANDED_CONTEXT_BYTES = MAX_PACKET_BYTES // 2
 REVIEW_SESSION_SCHEMA_VERSION = 1
-CONTEXT_PROJECTION_VERSION = 2
+CONTEXT_PROJECTION_VERSION = 3
 SESSION_BASE_FILENAME = "base.json"
 SESSION_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
@@ -491,11 +496,26 @@ def _ordinary_allowed_decisions(
             )
         return [*invocations, "unresolved"]
     if kind == "collection_scope":
+        collections = [str(value) for value in item.get("collections", [])]
         return [
             {
                 "members": {
-                    str(collection): ["<relative/member>"]
-                    for collection in item.get("collections", [])
+                    collection: ["<relative/member>"] for collection in collections
+                }
+            },
+            {
+                "members": {
+                    collection: {"glob": "<relative/glob>"}
+                    for collection in collections
+                }
+            },
+            {
+                "members": {
+                    collection: {
+                        "directory": "<relative/subdirectory>",
+                        "membership_identity": "<sha256>",
+                    }
+                    for collection in collections
                 }
             },
             "fail",
@@ -817,25 +837,46 @@ def _collection_context(
     queue_item: Mapping[str, Any],
     projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
-    inventories = {}
+    structures = {}
     for collection in queue_item.get("collections", []):
         raw_path = scan.get("resolved_paths", {}).get(collection)
-        members: list[str] = []
+        choices: list[dict[str, Any]] = []
+        direct_files: list[str] = []
         if isinstance(raw_path, str) and Path(raw_path).is_dir():
-            members = sorted(
-                child.name for child in Path(raw_path).iterdir() if child.is_file()
-            )[:80]
-        inventories[str(collection)] = members
-    return {
+            root = Path(raw_path)
+            choices = compact_directory_choices(root)
+            direct_files = sorted(
+                child.name for child in root.iterdir() if child.is_file()
+            )
+        structures[str(collection)] = {
+            "directory_choices": choices,
+            "directory_choice_count": len(choices),
+            "direct_sibling_files": direct_files,
+            "direct_sibling_file_count": len(direct_files),
+        }
+    invocations = _eligible_invocations(scan, queue_item, projection)
+    context = {
         "identity": queue_item.get("identity"),
         "collections": queue_item.get("collections", []),
         "reason": queue_item.get("reason"),
         "target_dependencies": _target_row(adjudication, queue_item, projection).get(
             "dependencies", []
         ),
-        "recorded_invocations": _eligible_invocations(scan, queue_item, projection),
-        "shallow_member_inventory": inventories,
+        "recorded_invocations": invocations,
+        "collection_structure": structures,
+        "selection_contract": (
+            "Choose an exact directory selector from collection_structure when "
+            "one complete subdirectory is the meaningful retained unit. Lists "
+            "and glob selectors remain valid for other exact scopes."
+        ),
     }
+    if not invocations:
+        passages, _ = _expanded_entry_passages(
+            scan, _entry(scan, queue_item, projection), queue_item
+        )
+        if passages:
+            context["authored_entry_passages"] = passages
+    return context
 
 
 def _entry(
@@ -1024,36 +1065,6 @@ def _expanded_entry_passages(
     return section_passages, used_bytes
 
 
-def _expanded_collection_inventory(
-    scan: ScanRecord,
-    queue_item: Mapping[str, Any],
-    used_bytes: int,
-) -> tuple[dict[str, list[str]], list[str]]:
-    """Return one bounded recursive inventory for focused collection review."""
-
-    recursive_inventory: dict[str, list[str]] = {}
-    truncated: list[str] = []
-    inventory_limit = MAX_EXPANDED_CONTEXT_BYTES - 1024
-    if queue_item.get("kind") == "collection_scope":
-        for collection in queue_item.get("collections", []):
-            raw_path = scan.get("resolved_paths", {}).get(collection)
-            members: list[str] = []
-            if isinstance(raw_path, str) and Path(raw_path).is_dir():
-                root = Path(raw_path)
-                for child in sorted(root.rglob("*")):
-                    if not child.is_file():
-                        continue
-                    member = child.relative_to(root).as_posix()
-                    member_bytes = len(member.encode("utf-8")) + 4
-                    if used_bytes + member_bytes > inventory_limit:
-                        truncated.append(str(collection))
-                        break
-                    used_bytes += member_bytes
-                    members.append(member)
-            recursive_inventory[str(collection)] = members
-    return recursive_inventory, truncated
-
-
 def _expanded_context(
     scan: ScanRecord,
     queue_item: Mapping[str, Any],
@@ -1061,10 +1072,7 @@ def _expanded_context(
     projection: _ReviewExchangeProjection | None = None,
 ) -> dict[str, Any]:
     entry = _entry(scan, queue_item, projection)
-    section_passages, used_bytes = _expanded_entry_passages(scan, entry, queue_item)
-    recursive_inventory, truncated_inventory = _expanded_collection_inventory(
-        scan, queue_item, used_bytes
-    )
+    section_passages, _ = _expanded_entry_passages(scan, entry, queue_item)
     return {
         "minimum": minimum,
         "focused_expansion": {
@@ -1074,16 +1082,6 @@ def _expanded_context(
             "decision_hint": queue_item.get("reason"),
             **(
                 {"entry_section_passages": section_passages} if section_passages else {}
-            ),
-            **(
-                {"recursive_member_inventory": recursive_inventory}
-                if recursive_inventory
-                else {}
-            ),
-            **(
-                {"truncated_recursive_inventories": truncated_inventory}
-                if truncated_inventory
-                else {}
             ),
         },
     }
@@ -1181,9 +1179,6 @@ def _bounded_collection_packet_context(
     minimum = context.get("minimum", context)
     if not isinstance(minimum, Mapping):
         minimum = {}
-    focused = context.get("focused_expansion", {})
-    if not isinstance(focused, Mapping):
-        focused = {}
     dependencies = []
     for dependency in minimum.get("target_dependencies", []):
         if not isinstance(dependency, Mapping):
@@ -1216,22 +1211,7 @@ def _bounded_collection_packet_context(
                 if key in invocation
             }
         )
-    inventories = {}
-    source_inventories = focused.get(
-        "recursive_member_inventory",
-        minimum.get("shallow_member_inventory", {}),
-    )
-    if isinstance(source_inventories, Mapping):
-        for collection, members in source_inventories.items():
-            if not isinstance(members, list):
-                continue
-            inventories[str(collection)] = {
-                "members": list(members[:20]),
-                "listed_member_count": len(members),
-                "truncated": len(members) > 20
-                or str(collection)
-                in focused.get("truncated_recursive_inventories", []),
-            }
+    structures = _bounded_collection_structures(minimum)
     return {
         "context_projection": "bounded-terminal-collection",
         "identity": minimum.get("identity"),
@@ -1239,17 +1219,45 @@ def _bounded_collection_packet_context(
         "reason": minimum.get("reason"),
         "target_dependencies": dependencies,
         "recorded_invocations": invocations,
-        "member_inventory": inventories,
+        "collection_structure": structures,
         "decision_constraint": (
-            "Select members only when this bounded view establishes the exact "
-            "material set. A selected subdirectory expands to all of its current "
-            "regular-file descendants; otherwise record a provenance failure."
+            "Select a listed hash-bound directory only when it establishes the "
+            "exact material set. The selector expands to all current regular-file "
+            "descendants; otherwise use an exact list or glob, or record failure."
         ),
         "omitted_context": (
             "The complete collection context exceeds the packet byte bound; "
             "its full identity remains continuation-bound."
         ),
     }
+
+
+def _bounded_collection_structures(
+    minimum: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Bound directory choices and loose files without expanding descendants."""
+
+    structures: dict[str, dict[str, Any]] = {}
+    source_structures = minimum.get("collection_structure", {})
+    if isinstance(source_structures, Mapping):
+        for collection, structure in source_structures.items():
+            if not isinstance(structure, Mapping):
+                continue
+            choices = structure.get("directory_choices", [])
+            direct_files = structure.get("direct_sibling_files", [])
+            if not isinstance(choices, list):
+                continue
+            if not isinstance(direct_files, list):
+                direct_files = []
+            structures[str(collection)] = {
+                "directory_choices": copy.deepcopy(choices[:20]),
+                "directory_choice_count": len(choices),
+                "choices_truncated": len(choices) > 20,
+                "direct_sibling_files": list(direct_files[:80]),
+                "direct_sibling_file_count": len(direct_files),
+                "direct_sibling_files_truncated": len(direct_files) > 80,
+            }
+    return structures
 
 
 def _render_contexts(
@@ -2183,11 +2191,22 @@ def _valid_collection_scope(
             set(),
         )
     )
+    def valid_selection(value: Any) -> bool:
+        if isinstance(value, list):
+            return bool(value) and all(
+                isinstance(member, str) and member for member in value
+            )
+        if not isinstance(value, Mapping):
+            return False
+        if set(value) == {"glob"}:
+            return isinstance(value.get("glob"), str) and bool(value["glob"])
+        return set(value) == DIRECTORY_SELECTOR_KEYS and all(
+            isinstance(value.get(field), str) and bool(value[field])
+            for field in DIRECTORY_SELECTOR_KEYS
+        )
+
     return set(members) == expected_collections and all(
-        isinstance(values, list)
-        and values
-        and all(isinstance(value, str) and value for value in values)
-        for values in members.values()
+        valid_selection(values) for values in members.values()
     )
 
 
@@ -2305,6 +2324,15 @@ def _ordinary_action(row: Mapping[str, Any]) -> dict[str, Any] | None:
             "match": match,
             "decision": "pass",
             "members": copy.deepcopy(decision["members"]),
+            **(
+                {
+                    COLLECTION_DIRECTORY_SELECTIONS_KEY: copy.deepcopy(
+                        row[COLLECTION_DIRECTORY_SELECTIONS_KEY]
+                    )
+                }
+                if COLLECTION_DIRECTORY_SELECTIONS_KEY in row
+                else {}
+            ),
         }
     elif row["kind"] == "reproduction":
         action = _reproduction_action(row)

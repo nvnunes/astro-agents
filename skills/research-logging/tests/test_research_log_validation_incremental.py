@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from unittest import mock
 INCREMENTAL = importlib.import_module("validation.incremental")
 COMPATIBILITY = importlib.import_module("validation.compatibility")
 JUDGMENT_RULES = importlib.import_module("validation.judgment_rules")
+COLLECTION_SCOPES = importlib.import_module("validation.collection_scopes")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
@@ -195,6 +197,66 @@ class IncrementalComparisonTests(unittest.TestCase):
             )
         self.assertEqual(unchanged["reusable_checks"], 1)
         self.assertEqual(changed["rerun_checks"], 1)
+
+    def test_compact_directory_outcome_reopens_for_membership_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "collection"
+            retained = root / "retained-run"
+            retained.mkdir(parents=True)
+            (retained / "a.csv").write_text("a\n", encoding="utf-8")
+            collection = "output/collection"
+            explicit_identity = {
+                "members": ["retained-run/a.csv"],
+                "size": 2,
+                "mtime_ns": 1,
+                "ctime_ns": 1,
+                "sha256": "a" * 64,
+            }
+            choice = COLLECTION_SCOPES.compact_directory_choices(root)[0]
+            dependency = {
+                "path": collection,
+                "role": "input",
+                "identity": explicit_identity,
+                COLLECTION_SCOPES.COLLECTION_DIRECTORY_SELECTION_KEY: choice[
+                    "selector"
+                ],
+            }
+            scan = {
+                "component_versions": {"entry_provenance": 2},
+                "entries": [],
+                "resolved_paths": {collection: root.as_posix()},
+                "files": {},
+                "directory_memberships": {},
+            }
+            outcome = {
+                "entry": "e001",
+                "target": "result.csv",
+                "check": "Provenance",
+                "result": "2026-08-26",
+                "dependencies": [dependency],
+                "rule_dependencies": {"entry_provenance": 2},
+            }
+            outcome["input_dependencies"] = (
+                COMPATIBILITY.input_dependencies_for_check(scan, outcome)
+            )
+            outcome["compatibility_identity"] = "b" * 64
+            operations = INCREMENTAL.IncrementalOperations(
+                dependency_snapshot=lambda *_args: explicit_identity,
+                orphan_fingerprints=INCREMENTAL.orphan_item_fingerprints,
+            )
+            with mock.patch.object(
+                INCREMENTAL, "producer_bindings_for_check", return_value=[]
+            ):
+                unchanged = INCREMENTAL.compare_prior_record(
+                    scan, {"outcomes": [outcome]}, operations
+                )
+                (retained / "b.csv").write_text("b\n", encoding="utf-8")
+                changed = INCREMENTAL.compare_prior_record(
+                    scan, {"outcomes": [outcome]}, operations
+                )
+
+            self.assertEqual(unchanged["reusable_checks"], 1)
+            self.assertEqual(changed["rerun_checks"], 1)
 
 
 if __name__ == "__main__":

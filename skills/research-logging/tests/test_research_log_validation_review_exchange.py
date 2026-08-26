@@ -283,11 +283,12 @@ class ReviewSessionTests(unittest.TestCase):
             self.assertEqual(ready["status"], "ready")
             self.assertEqual(len(ready["decisions"]["items"]), 2)
 
-    def test_collection_context_expansion_lists_nested_members(self) -> None:
+    def test_collection_context_presents_a_compact_directory_choice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             collection = root / "output" / "collection"
             write(collection / "nested" / "member.pkl", "payload")
+            write(collection / "summary.csv", "value\n1\n")
             scan = {
                 "project_root": root.as_posix(),
                 "entries": [
@@ -295,6 +296,7 @@ class ReviewSessionTests(unittest.TestCase):
                         "id": "e001",
                         "path": "docs/mini/e001.md",
                         "validation_notes": [],
+                        "commands": [],
                         "sections": [
                             {
                                 "section": "Evidence",
@@ -308,6 +310,7 @@ class ReviewSessionTests(unittest.TestCase):
                     "docs/mini/e001.md": (root / "docs/mini/e001.md").as_posix(),
                     "output/collection": collection.as_posix(),
                 },
+                "mechanical_checks": {},
             }
             write(root / "docs/mini/e001.md", "## Evidence\ncase mapping\n")
             item = {
@@ -318,24 +321,61 @@ class ReviewSessionTests(unittest.TestCase):
                 "sections": ["Evidence"],
             }
 
-            expanded = EXCHANGE._expanded_context(scan, item, {})
+            adjudication = {
+                "entries": [
+                    {
+                        "id": "e001",
+                        "targets": [
+                            {
+                                "target": item["identity"],
+                                "dependencies": [
+                                    {"path": "output/collection", "role": "input"}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+            context = EXCHANGE._collection_context(scan, adjudication, item)
+            choice = context["collection_structure"]["output/collection"][
+                "directory_choices"
+            ][0]
 
             self.assertEqual(
-                expanded["focused_expansion"]["recursive_member_inventory"],
-                {"output/collection": ["nested/member.pkl"]},
+                {
+                    key: choice[key]
+                    for key in (
+                        "relative_directory",
+                        "regular_file_descendant_count",
+                    )
+                },
+                {
+                    "relative_directory": "nested",
+                    "regular_file_descendant_count": 1,
+                },
             )
             self.assertEqual(
-                expanded["focused_expansion"]["entry_section_passages"],
+                context["collection_structure"]["output/collection"][
+                    "direct_sibling_files"
+                ],
+                ["summary.csv"],
+            )
+            self.assertEqual(len(choice["membership_identity"]), 64)
+            self.assertEqual(
+                context["authored_entry_passages"],
                 {"Evidence": "## Evidence\ncase mapping"},
             )
+            self.assertNotIn("nested/member.pkl", json.dumps(context))
 
-    def test_collection_context_expansion_truncates_to_its_byte_budget(self) -> None:
+    def test_collection_context_size_does_not_scale_with_descendant_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             collection = root / "output" / "collection"
+            nested = collection / "retained-run"
             for number in range(1000):
                 write(
-                    collection / f"member-{number:04d}-{'x' * 48}.pkl",
+                    nested / f"member-{number:04d}-{'x' * 48}.pkl",
                     "payload",
                 )
             scan = {
@@ -346,11 +386,13 @@ class ReviewSessionTests(unittest.TestCase):
                         "path": "docs/mini/e001.md",
                         "validation_notes": [],
                         "sections": [],
+                        "commands": [],
                     }
                 ],
                 "resolved_paths": {
                     "output/collection": collection.as_posix(),
                 },
+                "mechanical_checks": {},
             }
             item = {
                 "kind": "collection_scope",
@@ -360,21 +402,24 @@ class ReviewSessionTests(unittest.TestCase):
                 "sections": [],
             }
 
-            expanded = EXCHANGE._expanded_context(scan, item, {})
-            focused = expanded["focused_expansion"]
+            adjudication = {
+                "entries": [
+                    {
+                        "id": "e001",
+                        "targets": [
+                            {"target": item["identity"], "dependencies": []}
+                        ],
+                    }
+                ]
+            }
+            context = EXCHANGE._collection_context(scan, adjudication, item)
+            choice = context["collection_structure"]["output/collection"][
+                "directory_choices"
+            ][0]
 
-            self.assertEqual(
-                focused["truncated_recursive_inventories"],
-                ["output/collection"],
-            )
-            self.assertLess(
-                len(focused["recursive_member_inventory"]["output/collection"]),
-                1000,
-            )
-            self.assertLessEqual(
-                len(json.dumps(expanded).encode("utf-8")),
-                EXCHANGE.MAX_EXPANDED_CONTEXT_BYTES,
-            )
+            self.assertEqual(choice["regular_file_descendant_count"], 1000)
+            self.assertLess(len(json.dumps(context).encode("utf-8")), 4096)
+            self.assertNotIn("member-0999", json.dumps(context))
 
     def test_oversized_collection_context_gets_terminal_bounded_projection(
         self,
@@ -401,15 +446,24 @@ class ReviewSessionTests(unittest.TestCase):
                     }
                 ],
                 "recorded_invocations": [],
-            },
-            "focused_expansion": {
-                "recursive_member_inventory": {
-                    "output/collection": [
-                        f"member-{number:04d}-{'x' * 48}.pkl" for number in range(1000)
-                    ]
+                "collection_structure": {
+                    "output/collection": {
+                        "directory_choices": [
+                            {
+                                "relative_directory": f"run-{number:04d}",
+                                "regular_file_descendant_count": 1,
+                                "membership_identity": f"{number:064x}",
+                                "selector": {
+                                    "directory": f"run-{number:04d}",
+                                    "membership_identity": f"{number:064x}",
+                                },
+                            }
+                            for number in range(1000)
+                        ]
+                    }
                 },
-                "truncated_recursive_inventories": ["output/collection"],
             },
+            "focused_expansion": {},
         }
 
         packet, projected = EXCHANGE._render_contexts(
@@ -422,7 +476,9 @@ class ReviewSessionTests(unittest.TestCase):
             "bounded-terminal-collection",
         )
         self.assertTrue(
-            projected[0]["member_inventory"]["output/collection"]["truncated"]
+            projected[0]["collection_structure"]["output/collection"][
+                "choices_truncated"
+            ]
         )
 
     def test_paged_collection_scope_uses_cli_owned_collection_set(self) -> None:

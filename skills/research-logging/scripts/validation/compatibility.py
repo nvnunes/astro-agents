@@ -7,8 +7,13 @@ import json
 import re
 import shlex
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, cast
 
+from .collection_scopes import (
+    COLLECTION_DIRECTORY_SELECTION_KEY,
+    directory_selection,
+)
 from .contracts import ScanRecord, ValidationToolError
 
 COMPONENT_VERSIONS: dict[str, int] = {
@@ -30,6 +35,7 @@ INPUT_PROJECTION_VERSIONS: dict[str, int] = {
     "exact-material": 1,
     "collection-member": 1,
     "collection-membership": 1,
+    "collection-directory-membership": 1,
     "experimental-section": 1,
     "presented-item": 1,
     "evidence-association": 1,
@@ -296,6 +302,39 @@ def _dependency_projection(
             )
             for member in sorted(members)
         )
+        selection = dependency.get(COLLECTION_DIRECTORY_SELECTION_KEY)
+        if isinstance(selection, Mapping):
+            directory = selection.get("directory")
+            raw_root = scan.get("resolved_paths", {}).get(path)
+            try:
+                current = directory_selection(Path(str(raw_root)), directory)
+                membership: Mapping[str, Any] = {
+                    "directory": current.directory,
+                    "regular_file_descendant_count": len(current.members),
+                    "membership_identity": current.membership_identity,
+                }
+            except (OSError, ValidationToolError) as exc:
+                membership = {
+                    "directory": directory,
+                    "error": str(exc),
+                }
+            result.append(
+                projection(
+                    "collection-directory-membership",
+                    f"collection-directory-membership:{path}:{directory}",
+                    membership,
+                    role,
+                    source_locator={"path": path, "directory": directory},
+                )
+            )
+            result.sort(
+                key=lambda item: (
+                    item["kind"],
+                    item["semantic_identity"],
+                    item["projection_version"],
+                    item["relationship"],
+                )
+            )
         return result
     kind = (
         "entry"

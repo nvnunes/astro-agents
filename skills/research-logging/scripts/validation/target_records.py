@@ -198,6 +198,26 @@ def _validate_dependencies(value: Any, field: str) -> None:
         _nonempty_string(item.get("path"), f"{field}[{number}].path")
         _nonempty_string(item.get("role"), f"{field}[{number}].role")
         _validate_identity(item.get("identity"), f"{field}[{number}].identity")
+        selection = item.get("collection_directory_selection")
+        if selection is not None:
+            selection = _mapping(
+                selection,
+                f"{field}[{number}].collection_directory_selection",
+            )
+            if set(selection) != {"directory", "membership_identity"}:
+                raise TargetRecordError(
+                    f"{field}[{number}].collection_directory_selection has "
+                    "incorrect fields"
+                )
+            _nonempty_string(
+                selection.get("directory"),
+                f"{field}[{number}].collection_directory_selection.directory",
+            )
+            _validate_sha256(
+                selection.get("membership_identity"),
+                f"{field}[{number}].collection_directory_selection."
+                "membership_identity",
+            )
 
 
 def _validate_input_dependencies(value: Any, field: str) -> None:

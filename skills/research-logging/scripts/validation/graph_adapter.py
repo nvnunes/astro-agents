@@ -40,7 +40,12 @@ from .graph import (
 )
 from .graph_queries import orphan_nodes
 from .orphan_rules import effective_basis
-from .producer_bindings import ProducerBindingOptions, verify_producer_binding
+from .producer_bindings import (
+    ProducerBindingInvocation,
+    ProducerBindingOptions,
+    producer_binding_invocation_cache,
+    verify_producer_binding,
+)
 
 
 def _fingerprint(value: Any) -> str:
@@ -241,6 +246,7 @@ class _GraphBuildState:
     entries: Dict[str, NodeKey]
     default_entry: Optional[NodeKey]
     lookup: Dict[str, str]
+    invocation_lookup: Mapping[str, ProducerBindingInvocation]
     local_identities: Set[str]
     orphanable: Set[str]
     material_owners: Mapping[str, str]
@@ -347,6 +353,7 @@ def _new_graph_build_state(scan: Mapping[str, Any]) -> _GraphBuildState:
         entries=entries,
         default_entry=entries.get("Log level") or next(iter(entries.values()), None),
         lookup=_identity_lookup(scan),
+        invocation_lookup=producer_binding_invocation_cache(scan),
         local_identities=_local_identities(scan),
         orphanable=_orphanable_inventory(scan),
         material_owners=material_owners,
@@ -875,7 +882,9 @@ def _add_reviewed_producer_bindings(
                 raw_binding["material"],
                 raw_binding["invocation"],
                 row.get("dependencies", []),
-                ProducerBindingOptions("upstream-reviewed", state.lookup),
+                ProducerBindingOptions(
+                    "upstream-reviewed", state.lookup, state.invocation_lookup
+                ),
             )
         except ValidationToolError as exc:
             if not required:
@@ -936,7 +945,10 @@ def _reviewed_row(
                 target_identity,
                 producer_identity,
                 dependencies,
-                ProducerBindingOptions(identity_cache=state.lookup),
+                ProducerBindingOptions(
+                    identity_cache=state.lookup,
+                    invocation_cache=state.invocation_lookup,
+                ),
             )
         except ValidationToolError as exc:
             if not required:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence
 
@@ -54,11 +55,20 @@ class ProducerCandidateClass(NamedTuple):
     section: bool
 
 
+class ProducerBindingInvocation(NamedTuple):
+    """One recorded invocation prepared for repeated binding verification."""
+
+    entry_id: str
+    command: Mapping[str, Any]
+    duplicate_count: int
+
+
 class ProducerBindingOptions(NamedTuple):
     """Optional verification inputs kept behind one stable argument."""
 
     producer_basis: str | None = None
     identity_cache: Mapping[str, str] | None = None
+    invocation_cache: Mapping[str, ProducerBindingInvocation] | None = None
 
 
 class ProducerEligibility(NamedTuple):
@@ -87,6 +97,35 @@ def resolved_identity_cache(scan: ScanRecord) -> Dict[str, str]:
         Path(path).resolve().as_posix(): identity
         for identity, path in scan["resolved_paths"].items()
     }
+
+
+def producer_binding_invocation_cache(
+    scan: Mapping[str, Any],
+) -> Dict[str, ProducerBindingInvocation]:
+    """Index recorded invocations for one bounded verification lifecycle."""
+
+    result: Dict[str, ProducerBindingInvocation] = {}
+    for entry in scan.get("entries", []):
+        entry_id = str(entry.get("id", ""))
+        commands = entry.get("commands", [])
+        identities = invocation_identities(entry_id, commands)
+        groups = [
+            (
+                " ".join(str(command.get("section", "")).split()).casefold(),
+                normalized_command(str(command.get("command", ""))),
+            )
+            for command in commands
+        ]
+        duplicate_counts = Counter(groups)
+        result.update(
+            {
+                identity: ProducerBindingInvocation(
+                    entry_id, command, duplicate_counts[group]
+                )
+                for identity, command, group in zip(identities, commands, groups)
+            }
+        )
+    return result
 
 
 def identity_for_path(
@@ -381,15 +420,42 @@ def exact_mechanical_producer(
 
 
 def _invocation_lookup(
-    scan: Mapping[str, Any], invocation_identity: str
-) -> tuple[str, Mapping[str, Any], Sequence[Mapping[str, Any]]]:
+    scan: Mapping[str, Any],
+    invocation_identity: str,
+    cache: Mapping[str, ProducerBindingInvocation] | None = None,
+) -> ProducerBindingInvocation:
+    if cache is not None:
+        prepared = cache.get(invocation_identity)
+        if prepared is not None:
+            return prepared
+        raise ValidationToolError(
+            "producer binding names a missing recorded invocation: "
+            f"{invocation_identity}"
+        )
     for entry in scan.get("entries", []):
         entry_id = str(entry.get("id", ""))
         commands = entry.get("commands", [])
         identities = invocation_identities(entry_id, commands)
         for identity, command in zip(identities, commands):
             if identity == invocation_identity:
-                return entry_id, command, commands
+                group = (
+                    " ".join(str(command.get("section", "")).split()).casefold(),
+                    normalized_command(str(command.get("command", ""))),
+                )
+                return ProducerBindingInvocation(
+                    entry_id,
+                    command,
+                    sum(
+                        (
+                            " ".join(
+                                str(item.get("section", "")).split()
+                            ).casefold(),
+                            normalized_command(str(item.get("command", ""))),
+                        )
+                        == group
+                        for item in commands
+                    ),
+                )
     raise ValidationToolError(
         f"producer binding names a missing recorded invocation: {invocation_identity}"
     )
@@ -404,9 +470,15 @@ def verify_producer_binding(
 ) -> dict[str, Any]:
     """Build and verify one complete native producer binding."""
 
-    entry_id, command, commands = _invocation_lookup(scan, invocation_identity)
     options = options or ProducerBindingOptions()
-    identities = options.identity_cache or resolved_identity_cache(scan)
+    entry_id, command, duplicate_count = _invocation_lookup(
+        scan, invocation_identity, options.invocation_cache
+    )
+    identities = (
+        options.identity_cache
+        if options.identity_cache is not None
+        else resolved_identity_cache(scan)
+    )
     eligibility = producer_eligibility(scan, command, target, identities)
     if not eligibility.eligible:
         raise ValidationToolError(
@@ -448,24 +520,13 @@ def verify_producer_binding(
         raise ValidationToolError(
             "producer binding requires reviewed output direction"
         )
-    group = (
-        " ".join(str(command.get("section", "")).split()).casefold(),
-        normalized_command(str(command.get("command", ""))),
-    )
     binding: dict[str, Any] = {
         "kind": eligibility.kind,
         "invocation_identity": invocation_identity,
         "producer_basis": basis,
         "coverage_identity": eligibility.coverage_identity,
         "direction_evidence": eligibility.direction_evidence,
-        "duplicate_count": sum(
-            (
-                " ".join(str(item.get("section", "")).split()).casefold(),
-                normalized_command(str(item.get("command", ""))),
-            )
-            == group
-            for item in commands
-        ),
+        "duplicate_count": duplicate_count,
         "source_locator": {"entry": entry_id, "line": command.get("line")},
     }
     if members is not None:
@@ -513,7 +574,10 @@ def verify_persisted_producer_binding(
 
 
 def producer_bindings_for_check(
-    scan: ScanRecord, check: Mapping[str, Any]
+    scan: ScanRecord,
+    check: Mapping[str, Any],
+    identity_cache: Mapping[str, str] | None = None,
+    invocation_cache: Mapping[str, ProducerBindingInvocation] | None = None,
 ) -> list[dict[str, Any]]:
     """Project one check's raw resolutions through the shared verifier."""
 
@@ -543,7 +607,7 @@ def producer_bindings_for_check(
             material,
             invocation,
             dependencies,
-            ProducerBindingOptions(basis),
+            ProducerBindingOptions(basis, identity_cache, invocation_cache),
         )
         for material, invocation, basis in raw
     ]

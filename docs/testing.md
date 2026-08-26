@@ -214,6 +214,27 @@ questions. It is intentionally more expensive than the retained preparation
 benchmark and is not part of the routine tool gate. Record its phase timings
 when investigating final-acceptance scaling.
 
+Use the isolated reusable-application benchmark when changing durable answer
+projection, producer-binding verification, or semantic action application:
+
+```bash
+./.conda/bin/python \
+  skills/research-logging/scripts/benchmark_validation_review.py \
+  --reuse-application \
+  --reuse-targets 100 \
+  --reuse-targets 200 \
+  --warmups 1 \
+  --runs 3 \
+  --output tmp/validation-reuse-application-benchmark.json
+```
+
+The benchmark creates deterministic in-memory scan, adjudication, and judgment
+records and does not scan research evidence. At each size, require one answer,
+one action, and one applied pass per question, zero reuse misses, and an empty
+residual queue. Record action-construction and action-application wall times for
+diagnosis, but judge correctness by the stable counts and do not impose a fixed
+runtime threshold on a busy host.
+
 Measure the retained activity logger independently when production wall times
 are not comparable:
 

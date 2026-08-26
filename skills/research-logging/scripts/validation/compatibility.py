@@ -549,13 +549,16 @@ def input_dependencies_for_check(
 
 
 def producer_bindings_for_check(
-    scan: Mapping[str, Any], check: Mapping[str, Any]
+    scan: Mapping[str, Any],
+    check: Mapping[str, Any],
+    identity_cache: Mapping[str, str] | None = None,
+    invocation_cache: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Project producer resolutions through the shared verifier."""
 
     from .producer_bindings import producer_bindings_for_check as verify
 
-    return verify(cast(ScanRecord, scan), check)
+    return verify(cast(ScanRecord, scan), check, identity_cache, invocation_cache)
 
 
 def orphan_input_dependencies(

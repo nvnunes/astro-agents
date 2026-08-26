@@ -47,9 +47,11 @@ from .graph_queries import (
 )
 from .orphan_rules import below, effective_basis, material_scope, subtree_basis
 from .producer_bindings import (
+    ProducerBindingInvocation,
     ProducerBindingOptions,
     check_workflow_command,
     identity_for_path,
+    producer_binding_invocation_cache,
     producer_bindings_for_check,
     resolved_identity_cache,
     verify_producer_binding,
@@ -748,6 +750,10 @@ def _select_decision_producer(
         str(target_identity),
         invocation.key,
         context.row.get("dependencies", []),
+        ProducerBindingOptions(
+            identity_cache=context.identity_cache,
+            invocation_cache=context.invocation_cache,
+        ),
     )
     context.row["producer_invocation"] = invocation.key
     existing = {
@@ -772,6 +778,7 @@ class _ReviewDecisionContext(NamedTuple):
     kind: str
     row: Dict[str, Any]
     identity_cache: Mapping[str, str]
+    invocation_cache: Mapping[str, ProducerBindingInvocation] | None = None
     review_session: Optional[ReviewQuerySession] = None
     trusted_orphan_fingerprints: Mapping[str, str] | None = None
 
@@ -808,6 +815,10 @@ def _apply_decision_dependencies(context: _ReviewDecisionContext) -> None:
             str(context.row.get("target", context.item.get("identity", ""))),
             copied_producer,
             dependencies,
+            ProducerBindingOptions(
+                identity_cache=context.identity_cache,
+                invocation_cache=context.invocation_cache,
+            ),
         )
         context.row["producer_invocation"] = copied_producer
 
@@ -1567,7 +1578,12 @@ def _apply_pass_decision(context: _ReviewDecisionContext) -> None:
                 ),
             },
         }
-        producer_bindings_for_check(context.scan, verification_check)
+        producer_bindings_for_check(
+            context.scan,
+            verification_check,
+            context.identity_cache,
+            context.invocation_cache,
+        )
     for check in ("integrity", "provenance"):
         if context.row.get(check) != "N/A":
             context.row[check] = context.date
@@ -1667,7 +1683,11 @@ def _apply_review_item(context: _ReviewDecisionContext) -> None:
                 binding["material"],
                 binding["invocation"],
                 context.row.get("dependencies", []),
-                ProducerBindingOptions("upstream-reviewed"),
+                ProducerBindingOptions(
+                    "upstream-reviewed",
+                    context.identity_cache,
+                    context.invocation_cache,
+                ),
             )
         context.row["producer_bindings"] = [
             existing[key] for key in sorted(existing)
@@ -1981,6 +2001,7 @@ def apply_review_decisions(
         if review_session is not None
         else resolved_identity_cache(scan)
     )
+    invocation_cache = producer_binding_invocation_cache(scan)
     has_orphan_batch = any(
         action.get("decision") == "orphan-batch" for action in actions
     )
@@ -2044,6 +2065,7 @@ def apply_review_decisions(
                     kind=kind,
                     row=row,
                     identity_cache=identity_cache,
+                    invocation_cache=invocation_cache,
                     review_session=review_session,
                     trusted_orphan_fingerprints=trusted_entry_fingerprints,
                 )

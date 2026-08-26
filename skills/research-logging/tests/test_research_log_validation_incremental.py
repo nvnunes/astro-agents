@@ -11,6 +11,7 @@ INCREMENTAL = importlib.import_module("validation.incremental")
 COMPATIBILITY = importlib.import_module("validation.compatibility")
 JUDGMENT_RULES = importlib.import_module("validation.judgment_rules")
 COLLECTION_SCOPES = importlib.import_module("validation.collection_scopes")
+PRODUCER_BINDINGS = importlib.import_module("validation.producer_bindings")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
@@ -58,6 +59,44 @@ class IncrementalComparisonTests(unittest.TestCase):
         self.assertEqual(
             binding([command, {**command, "line": 30}])["duplicate_count"], 2
         )
+
+    def test_producer_binding_projection_reuses_supplied_identity_cache(
+        self,
+    ) -> None:
+        command = {
+            "section": "Results",
+            "command": "python run.py --output data/result.csv",
+            "line": 12,
+            "path_arguments": [
+                {"path": "/project/data/result.csv", "role_hint": "output"}
+            ],
+        }
+        invocation = COMPATIBILITY.invocation_identities("e001", [command])[0]
+        scan = {
+            "project_root": "/project",
+            "entries": [{"id": "e001", "commands": [command]}],
+            "resolved_paths": {
+                "data/result.csv": "/project/data/result.csv"
+            },
+        }
+        check = {
+            "entry": "e001",
+            "target": "data/result.csv",
+            "dependencies": [],
+            "resolution": {"producer_invocation": invocation},
+        }
+        identities = {"/project/data/result.csv": "data/result.csv"}
+
+        with mock.patch.object(
+            PRODUCER_BINDINGS,
+            "resolved_identity_cache",
+            side_effect=AssertionError("cache must not be rebuilt"),
+        ):
+            bindings = COMPATIBILITY.producer_bindings_for_check(
+                scan, check, identities
+            )
+
+        self.assertEqual(bindings[0]["invocation_identity"], invocation)
 
     def test_orphan_fingerprints_reuse_supplied_path_cache(self) -> None:
         root = Path("/project")

@@ -25,16 +25,20 @@ from validation.activity import (
     log_operation,
     log_phase,
 )
+from validation.compatibility import invocation_identities
 from validation.contracts import AdjudicationRecord, ScanRecord
 from validation.decisions import apply_review_decisions
+from validation.judgment_rules import SEMANTIC_REVIEW_RULES
 from validation.producer_bindings import identity_for_path, resolved_identity_cache
 from validation.review_exchange import (
     MAX_PACKET_BYTES,
+    _ordinary_template,
     accept_review_page,
     create_exchange,
     decisions_to_actions,
     finish_review_session,
     load_decisions,
+    reusable_review_actions,
 )
 
 GENERATOR_VERSION = 3
@@ -47,6 +51,7 @@ DEFAULT_EXPECTED_IDENTITY = (
 )
 BENCHMARK_VALIDATION_NOTE = "d" * 64
 ACTIVITY_OVERHEAD_PHASES = 10
+DEFAULT_REUSE_TARGETS = 200
 
 
 def _candidate_identity(index: int) -> str:
@@ -231,6 +236,163 @@ def generated_session_workload(
         }
     ]
     return scan, adjudication, identity
+
+
+def generated_reuse_application_workload(
+    root: Path,
+    *,
+    target_count: int,
+) -> tuple[ScanRecord, AdjudicationRecord, list[dict[str, Any]]]:
+    """Return deterministic producer decisions without scanning evidence."""
+
+    entry_path = "docs/benchmark/entries/e001/e001.md"
+    commands = []
+    targets = []
+    resolved_paths = {}
+    for number in range(target_count):
+        identity = f"docs/benchmark/entries/e001/data/result-{number:04d}.csv"
+        raw = root / identity
+        resolved_paths[identity] = raw.as_posix()
+        commands.append(
+            {
+                "line": number + 1,
+                "section": "Results",
+                "command": f"python produce.py --output {identity}",
+                "path_arguments": [
+                    {"path": raw.as_posix(), "role_hint": "output"}
+                ],
+            }
+        )
+        targets.append(
+            {
+                "target": identity,
+                "sections": ["Results"],
+                "integrity": None,
+                "provenance": None,
+                "reproducibility": "-",
+                "notes": "-",
+                "dependencies": [{"path": identity, "role": "target"}],
+                "findings": [],
+            }
+        )
+    invocations = invocation_identities("e001", commands)
+    queue = [
+        {
+            "kind": "semantic_fallback",
+            "entry": "e001",
+            "identity": row["target"],
+            "sections": ["Results"],
+            "workflow": {"status": "unresolved"},
+            "evidence": [],
+            "hard_failures": [],
+            "producer_candidates": [
+                {
+                    "material": row["target"],
+                    "invocation": invocation,
+                    "coverage_identity": row["target"],
+                    "coverage_kind": "exact-target",
+                }
+            ],
+        }
+        for row, invocation in zip(targets, invocations)
+    ]
+    scan = cast(
+        ScanRecord,
+        {
+            "schema_version": 16,
+            "validation_rules_version": "research-log-validation-v43",
+            "summary": "docs/benchmark.md",
+            "project_root": root.as_posix(),
+            "resolved_paths": resolved_paths,
+            "files": {
+                identity: {"size": 1, "sha256": "a" * 64}
+                for identity in resolved_paths
+            },
+            "directory_memberships": {},
+            "mechanical_checks": {},
+            "script_inventory": [],
+            "entries": [
+                {
+                    "id": "e001",
+                    "path": entry_path,
+                    "commands": commands,
+                    "orphan_inventory": [],
+                    "candidate_targets": [],
+                }
+            ],
+        },
+    )
+    adjudication = cast(
+        AdjudicationRecord,
+        {
+            "schema_version": 7,
+            "validation_rules_version": "research-log-validation-v43",
+            "date": "2026-08-26",
+            "summary": [],
+            "entries": [
+                {
+                    "id": "e001",
+                    "path": entry_path,
+                    "scope_paths": [entry_path],
+                    "orphan_items": [],
+                    "targets": targets,
+                }
+            ],
+            "review_queue": queue,
+        },
+    )
+    judgments = []
+    for item, invocation in zip(queue, invocations):
+        template = _ordinary_template(item)
+        judgments.append(
+            {
+                "identity": template["id"],
+                "kind": "review-decision",
+                "subject": {
+                    "kind": item["kind"],
+                    "entry": item["entry"],
+                    "identity": item["identity"],
+                },
+                "decision": invocation,
+                "rule_dependencies": SEMANTIC_REVIEW_RULES,
+                "input_dependencies": [],
+                "rationale": "Exact deterministic benchmark decision.",
+            }
+        )
+    return scan, adjudication, judgments
+
+
+def reuse_application_sample(target_count: int) -> dict[str, Any]:
+    """Benchmark exact reusable-action construction and application."""
+
+    with tempfile.TemporaryDirectory(
+        prefix="validation-reuse-application-benchmark-"
+    ) as directory:
+        scan, adjudication, judgments = generated_reuse_application_workload(
+            Path(directory), target_count=target_count
+        )
+        metrics: dict[str, Any] = {}
+        construction_started = time.monotonic()
+        actions = reusable_review_actions(
+            scan, adjudication, judgments, metrics
+        )
+        construction_seconds = time.monotonic() - construction_started
+        application_started = time.monotonic()
+        decided, counts = apply_review_decisions(scan, adjudication, actions)
+        application_seconds = time.monotonic() - application_started
+        return {
+            "kind": "reusable_judgment_application",
+            "target_count": target_count,
+            "questions_considered": int(metrics.get("questions_considered", 0)),
+            "answers_found": int(metrics.get("answers_found", 0)),
+            "misses_by_reason": dict(metrics.get("misses_by_reason", {})),
+            "action_count": len(actions["actions"]),
+            "remaining_review_items": len(decided["review_queue"]),
+            "applied_passes": counts.get("pass", 0),
+            "action_construction_seconds": construction_seconds,
+            "action_application_seconds": application_seconds,
+            "machine": _machine_context(),
+        }
 
 
 def _legacy_candidate_commands(
@@ -545,6 +707,50 @@ def _activity_overhead_driver(args: argparse.Namespace) -> dict[str, Any]:
         / event_count,
         "samples": samples,
         "machine": _machine_context(),
+    }
+
+
+def _reuse_application_driver(args: argparse.Namespace) -> dict[str, Any]:
+    """Return fresh-process reusable-application scaling samples."""
+
+    executable = Path(__file__).resolve()
+    results = []
+    for target_count in args.reuse_targets:
+        command = [
+            sys.executable,
+            executable.as_posix(),
+            "--single-reuse-application",
+            str(target_count),
+        ]
+        for _ in range(args.warmups):
+            subprocess.run(
+                command, check=True, capture_output=True, text=True
+            )
+        samples = [
+            json.loads(
+                subprocess.run(
+                    command, check=True, capture_output=True, text=True
+                ).stdout
+            )
+            for _ in range(args.runs)
+        ]
+        results.append(
+            {
+                "target_count": target_count,
+                "median_action_construction_seconds": statistics.median(
+                    sample["action_construction_seconds"] for sample in samples
+                ),
+                "median_action_application_seconds": statistics.median(
+                    sample["action_application_seconds"] for sample in samples
+                ),
+                "samples": samples,
+            }
+        )
+    return {
+        "kind": "reusable_judgment_application_scaling",
+        "warmups": args.warmups,
+        "runs": args.runs,
+        "results": results,
     }
 
 
@@ -887,7 +1093,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--single-fanout")
+    parser.add_argument("--single-reuse-application", type=int)
     parser.add_argument("--activity-overhead", action="store_true")
+    parser.add_argument("--reuse-application", action="store_true")
+    parser.add_argument("--reuse-targets", action="append", type=int, default=[])
     parser.add_argument("--activity-cycles", type=int, default=100)
     parser.add_argument(
         "--mode",
@@ -903,31 +1112,54 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _requested_result(
+    args: argparse.Namespace,
+    modes: list[str],
+    orphans: list[int],
+    fanout: list[str],
+) -> dict[str, Any]:
+    """Dispatch one selected benchmark operation."""
+
+    if args.activity_overhead:
+        return _activity_overhead_driver(args)
+    if args.reuse_application:
+        return _reuse_application_driver(args)
+    if args.single_reuse_application is not None:
+        return reuse_application_sample(args.single_reuse_application)
+    if args.single_fanout:
+        materials, candidates = (
+            int(value) for value in args.single_fanout.split("x", 1)
+        )
+        return _single_fanout(materials, candidates)
+    if args.single:
+        if len(modes) != 1 or len(orphans) != 1:
+            raise SystemExit("--single requires one --mode and one --orphans value")
+        return _single_run(modes[0], orphans[0])
+    args.mode = modes
+    args.orphans = orphans
+    args.fanout = fanout
+    return _driver(args)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     modes = args.mode or ["public"]
     orphans = args.orphans or [DEFAULT_ORPHANS, DOUBLED_ORPHANS]
     fanout = args.fanout or ["5x5", "10x10"]
+    reuse_targets = args.reuse_targets or [
+        DEFAULT_REUSE_TARGETS,
+        DEFAULT_REUSE_TARGETS * 2,
+    ]
     if any(value < 1 for value in orphans):
         raise SystemExit("--orphans values must be positive")
     if args.activity_cycles < 1:
         raise SystemExit("--activity-cycles must be positive")
-    if args.activity_overhead:
-        result = _activity_overhead_driver(args)
-    elif args.single_fanout:
-        materials, candidates = (
-            int(value) for value in args.single_fanout.split("x", 1)
-        )
-        result = _single_fanout(materials, candidates)
-    elif args.single:
-        if len(modes) != 1 or len(orphans) != 1:
-            raise SystemExit("--single requires one --mode and one --orphans value")
-        result = _single_run(modes[0], orphans[0])
-    else:
-        args.mode = modes
-        args.orphans = orphans
-        args.fanout = fanout
-        result = _driver(args)
+    if any(value < 1 for value in reuse_targets):
+        raise SystemExit("--reuse-targets values must be positive")
+    if args.single_reuse_application is not None and args.single_reuse_application < 1:
+        raise SystemExit("--single-reuse-application must be positive")
+    args.reuse_targets = reuse_targets
+    result = _requested_result(args, modes, orphans, fanout)
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

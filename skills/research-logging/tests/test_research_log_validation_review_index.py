@@ -14,6 +14,18 @@ REVIEW_INDEX = importlib.import_module("validation.review_index")
 
 
 class ReviewIndexTests(unittest.TestCase):
+    def test_reuse_application_benchmark_has_fixed_semantic_counts(self) -> None:
+        for target_count in (12, 24):
+            sample = BENCHMARK.reuse_application_sample(target_count)
+
+            self.assertEqual(sample["target_count"], target_count)
+            self.assertEqual(sample["questions_considered"], target_count)
+            self.assertEqual(sample["answers_found"], target_count)
+            self.assertEqual(sample["misses_by_reason"], {})
+            self.assertEqual(sample["action_count"], target_count)
+            self.assertEqual(sample["applied_passes"], target_count)
+            self.assertEqual(sample["remaining_review_items"], 0)
+
     def test_indexed_candidates_match_the_simple_v43_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             scan, adjudication, _ = BENCHMARK.generated_workload(

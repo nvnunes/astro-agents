@@ -5,6 +5,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from research_log_validation_test_support import (
+    RUNTIME,
+    complete_adjudication,
+    make_log,
+)
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -265,6 +272,35 @@ class CandidateCommandTests(unittest.TestCase):
 
 
 class DecisionApplicationTests(unittest.TestCase):
+    def test_decision_application_reuses_its_prepared_identity_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = make_log(Path(directory))
+            scan, _ = RUNTIME.scan_log(summary, jobs=1)
+            lookup = PRODUCER_BINDINGS._invocation_lookup
+
+            with (
+                mock.patch.object(
+                    PRODUCER_BINDINGS,
+                    "resolved_identity_cache",
+                    side_effect=AssertionError("cache must not be rebuilt"),
+                ),
+                mock.patch.object(
+                    PRODUCER_BINDINGS,
+                    "_invocation_lookup",
+                    wraps=lookup,
+                ) as invocation_lookup,
+            ):
+                decided = complete_adjudication(scan)
+
+            self.assertEqual(decided["review_queue"], [])
+            self.assertTrue(invocation_lookup.call_args_list)
+            self.assertTrue(
+                all(
+                    call.args[2] is not None
+                    for call in invocation_lookup.call_args_list
+                )
+            )
+
     def test_collection_scope_expands_a_selected_directory_to_exact_files(
         self,
     ) -> None:

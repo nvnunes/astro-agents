@@ -864,6 +864,51 @@ class TargetRecordTests(unittest.TestCase):
                 updated,
             )
 
+    def test_reaccepted_review_decision_keeps_original_audit_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            original = review_judgment(1)
+            record["judgments"] = [original]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            shell, _ = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME,
+                expected_summary="docs/mini.md",
+            )
+            reaccepted = copy.deepcopy(original)
+            reaccepted["decision_date"] = "2026-08-26"
+            reaccepted["rationale"] = "Reconfirmed from focused context."
+
+            updated = TARGET.append_judgment_batch(root, shell, [reaccepted])
+
+            self.assertEqual(updated, shell)
+            self.assertEqual(
+                TARGET.load_judgments_for_subjects(
+                    root, updated, [original["subject"]]
+                ),
+                [original],
+            )
+
+    def test_reaccepted_identity_rejects_a_different_review_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_record()
+            original = review_judgment(1)
+            record["judgments"] = [original]
+            TARGET.write_record_and_cache(root, record, TARGET.empty_cache())
+            shell, _ = TARGET.load_record_header_with_source(
+                root / TARGET.RECORD_FILENAME,
+                expected_summary="docs/mini.md",
+            )
+            conflicting = copy.deepcopy(original)
+            conflicting["decision"] = "fail"
+
+            with self.assertRaisesRegex(
+                STORE.ShardedStateError,
+                "conflicts with its durable identity",
+            ):
+                TARGET.append_judgment_batch(root, shell, [conflicting])
+
     def test_interrupted_batch_manifest_publish_is_idempotently_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

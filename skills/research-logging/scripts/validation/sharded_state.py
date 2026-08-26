@@ -846,6 +846,32 @@ def _prepare_index_delta(
     }
 
 
+def _same_review_decision(
+    prior: Mapping[str, Any], current: Mapping[str, Any]
+) -> bool:
+    """Return whether two rows encode the same review-decision identity.
+
+    Decision dates and rationale text are retained audit metadata, not part of
+    the durable semantic identity. Re-accepting an unchanged decision may
+    legitimately supply newer metadata, while the original immutable row
+    remains authoritative.
+    """
+
+    if prior.get("kind") != "review-decision" or current.get("kind") != prior.get(
+        "kind"
+    ):
+        return False
+    identity_fields = (
+        "result",
+        "decision",
+        "subject",
+        "rule_dependencies",
+        "input_dependencies",
+        "provenance",
+    )
+    return all(prior.get(field) == current.get(field) for field in identity_fields)
+
+
 def prepare_judgment_append(
     validation_dir: Path,
     manifest: Mapping[str, Any],
@@ -881,7 +907,7 @@ def prepare_judgment_append(
             raise ShardedStateError("accepted judgment lacks an identity")
         prior = by_identity.get(identity)
         if prior is not None:
-            if prior != row:
+            if prior != row and not _same_review_decision(prior, row):
                 raise ShardedStateError(
                     "accepted judgment conflicts with its durable identity"
                 )

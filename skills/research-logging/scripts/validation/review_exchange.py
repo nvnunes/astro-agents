@@ -1271,7 +1271,8 @@ def _bounded_collection_packet_context(
         "member_inventory": inventories,
         "decision_constraint": (
             "Select members only when this bounded view establishes the exact "
-            "material set; otherwise record a provenance failure."
+            "material set. A selected subdirectory expands to all of its current "
+            "regular-file descendants; otherwise record a provenance failure."
         ),
         "omitted_context": (
             "The complete collection context exceeds the packet byte bound; "
@@ -1885,10 +1886,10 @@ def resume_review_session(
     return _session_page(session_dir, index, state)
 
 
-def empty_review_session_refresh_context(
+def review_session_refresh_context(
     output_dir: Path, continuation: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Return a validated empty session base for context-projection refresh."""
+) -> dict[str, Any]:
+    """Return a validated session base for currentness and refresh checks."""
 
     session_dir = _session_path(output_dir, str(continuation.get("session", "")))
     state = _read_object(
@@ -1898,10 +1899,8 @@ def empty_review_session_refresh_context(
     if (
         state.get("session_identity") != continuation.get("session_identity")
         or state.get("session") != continuation.get("session")
-        or state.get("accepted_batches")
-        or int(state.get("next_offset", -1)) != 0
     ):
-        return None
+        raise ValidationToolError("review session state has another owner")
     base = _read_object(
         session_dir / SESSION_BASE_FILENAME,
         "review session base",
@@ -1924,6 +1923,8 @@ def empty_review_session_refresh_context(
         "adjudication": base["adjudication"],
         "context_levels": context_levels,
         "context_projection_version": index.get("context_projection_version", 1),
+        "accepted_batches": bool(state.get("accepted_batches")),
+        "next_offset": int(state.get("next_offset", -1)),
     }
 
 

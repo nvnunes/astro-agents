@@ -56,7 +56,7 @@ from .inventory import (
     collection_identity,
     directory_membership_identity,
 )
-from .observations import CONTENT_CHANGED, ObservationSession
+from .observations import CONTENT_CHANGED, ObservationSession, file_metadata_matches
 from .records import LOCK_FILENAME
 from .report import install_status_summary
 
@@ -1108,6 +1108,43 @@ def assert_scan_inputs_current(scan: ScanRecord, policy: RenderLifecyclePolicy) 
 
     _assert_scanned_files_current(scan)
     _assert_scanned_directories_current(scan, policy)
+
+
+def scan_input_metadata_matches(
+    scan: ScanRecord,
+    policy: RenderLifecyclePolicy,
+    metadata_files: Mapping[str, Mapping[str, Any]] | None = None,
+) -> bool:
+    """Check whether a saved scan can resume without hashing file content."""
+
+    for identity, expected in scan.get("files", {}).items():
+        raw_path = scan.get("resolved_paths", {}).get(identity)
+        saved_metadata = (
+            metadata_files.get(identity, expected)
+            if metadata_files is not None
+            else expected
+        )
+        if not isinstance(raw_path, str) or not file_metadata_matches(
+            Path(raw_path), saved_metadata
+        ):
+            return False
+    project_root = Path(scan["project_root"])
+    log_root = (project_root / scan["log_root"]).resolve()
+    generated = {
+        (log_root / name).resolve()
+        for name in (*policy.record_filenames, LOCK_FILENAME)
+    }
+    for identity, expected in scan.get("directory_memberships", {}).items():
+        raw_path = scan.get("resolved_paths", {}).get(identity)
+        if not isinstance(raw_path, str):
+            return False
+        try:
+            current = directory_membership_identity(Path(raw_path), generated)
+        except (OSError, ValidationToolError):
+            return False
+        if current != expected:
+            return False
+    return True
 
 
 def assemble_records(

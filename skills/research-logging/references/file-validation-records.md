@@ -43,6 +43,12 @@ future compatible residual descendants. Its authored-note and validation-rule
 dependencies still control reuse; graph reachability, an exact-path decision,
 or a more-specific subtree decision takes precedence.
 
+A collection-scope decision may select a listed subdirectory. Before applying
+or retaining that decision, the CLI expands the selection deterministically to
+the sorted, deduplicated regular-file descendants observed beneath that
+subdirectory. The explicit file list remains the canonical dependency scope;
+the selected directory is not retained as an opaque collection member.
+
 `validation/.cache/` is CLI-owned local state. `cache.json` may store reusable
 file identities, hashes, inspections, directory membership, and a terminal
 cleanup marker bound to the authoritative manifest closure.
@@ -118,6 +124,14 @@ log. The validator observes that path directly and never reads the external
 log's validation files. Orphan status is local to the material presented by
 the log being validated; another log's use does not exempt an unconnected
 local file.
+
+Before resuming a paged review session, the CLI compares current file and
+directory metadata with the physical metadata retained for the session's scan.
+This gate does not open or hash file content. When the scan is stale, the CLI
+rescans normally, reuses compatible cached identities and durable judgments,
+and retires the old session only after replacement state is published. An
+interruption before replacement publication leaves the old continuation and
+session available.
 
 Missing, inaccessible, ambiguous, or changing evidence remains unresolved.
 When a file changes during observation, the affected outcome is not completed

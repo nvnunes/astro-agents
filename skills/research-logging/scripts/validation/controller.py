@@ -16,7 +16,7 @@ from .activity import (
 )
 from .adjudication import ORPHAN_TARGET
 from .contracts import AdjudicationRecord, ScanRecord, ValidationToolError
-from .decisions import apply_review_decisions
+from .decisions import apply_review_decisions, canonical_review_decisions
 from .inventory import infer_project_root
 from .observations import (
     ObservationSession,
@@ -24,7 +24,7 @@ from .observations import (
     outcomes_are_compatible,
 )
 from .orphan_rules import inherited_basis
-from .render import assemble_records
+from .render import assemble_records, scan_input_metadata_matches
 from .review_exchange import (
     CONTEXT_PROJECTION_VERSION,
     accept_review_page,
@@ -32,7 +32,6 @@ from .review_exchange import (
     create_exchange,
     decisions_to_actions,
     durable_review_judgments,
-    empty_review_session_refresh_context,
     finish_legacy_ordinary_session,
     finish_review_session,
     load_decisions,
@@ -41,6 +40,7 @@ from .review_exchange import (
     reusable_review_actions,
     reusable_review_subjects,
     review_session_reference,
+    review_session_refresh_context,
 )
 from .runtime import (
     RULES_VERSION,
@@ -121,6 +121,7 @@ class LoadedValidation:
     record: dict[str, Any]
     cache: dict[str, Any]
     state_status: str
+    retired_review_session: Path | None = None
 
     @property
     def summary(self) -> str:
@@ -559,7 +560,8 @@ def _finish_review_acceptance(
     scanned_summary = Path(scan["project_root"]) / scan["summary"]
     if scanned_summary.resolve() != summary_path:
         raise ValidationToolError("review session belongs to another summary")
-    decisions = cast(dict[str, Any], accepted["decisions"])
+    accepted_decisions = cast(Mapping[str, Any], accepted["decisions"])
+    decisions = canonical_review_decisions(scan, accepted_decisions)
     action_internal = {
         "scan": scan,
         "adjudication": adjudication,
@@ -598,7 +600,11 @@ def _finish_review_acceptance(
             ),
         )
     output_dir = summary_path.with_suffix("")
-    retained_identities = accepted.get("judgment_identities")
+    retained_identities = (
+        accepted.get("judgment_identities")
+        if decisions == accepted_decisions
+        else None
+    )
     log_phase(activity, "review.finalize.load-accepted-judgments")
     with log_operation(
         activity,
@@ -783,19 +789,40 @@ def _ensure_current_review_rules(scan: ScanRecord | None) -> None:
         raise ValidationToolError("review decisions use superseded validation rules")
 
 
+def _current_review_session(
+    context: LoadedValidation, continuation: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    """Return a metadata-current session or stage it for safe replacement."""
+
+    recovery = review_session_refresh_context(context.output_dir, continuation)
+    current = scan_input_metadata_matches(
+        cast(ScanRecord, recovery["scan"]),
+        render_policy(),
+        cast(Mapping[str, Mapping[str, Any]], context.cache.get("files", {})),
+    )
+    if current:
+        return recovery
+    context.record["continuation"] = None
+    context.retired_review_session = Path(str(recovery["session_dir"]))
+    return None
+
+
 def _continue_review(
-    summary_path: Path,
+    context: LoadedValidation,
     decision_file: Path,
-    publish: bool,
     activity: ValidationActivityLog | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    summary_path = context.summary_path
+    output_dir = context.output_dir
+    publish = context.request.publish
     decisions, internal = load_decisions(decision_file)
     session, scan, adjudication = _loaded_review_context(summary_path, internal)
     _ensure_current_review_rules(scan)
-    output_dir = summary_path.with_suffix("")
-    project_root = infer_project_root(summary_path)
+    project_root = context.project_root
     summary = _relative_summary(summary_path, project_root)
-    record, cache, state_status = _load_target_state(output_dir, summary)
+    record = context.record
+    cache = context.cache
+    state_status = context.state_status
     continuation = record.get("continuation") or {}
     expected_continuation = (
         session.get("session_identity")
@@ -811,14 +838,20 @@ def _continue_review(
         raise ValidationToolError("review decisions are stale for the durable record")
     action_internal = internal
     if isinstance(session, Mapping):
+        if _current_review_session(context, continuation) is None:
+            return None
+
         def publish_batch(
             accepted_decisions: Mapping[str, Any],
             base: Mapping[str, Any],
         ) -> list[str]:
             nonlocal record
             adjudication_date = str(base["adjudication"]["date"])
+            canonical_decisions = canonical_review_decisions(
+                cast(ScanRecord, base["scan"]), accepted_decisions
+            )
             batch = durable_review_judgments(
-                accepted_decisions,
+                canonical_decisions,
                 adjudication_date,
                 cast(ScanRecord, base["scan"]),
                 cast(AdjudicationRecord, base["adjudication"]),
@@ -859,6 +892,7 @@ def _continue_review(
     record = hydrate_record_shell(record, output_dir, preserve_manifest=True)
     assert scan is not None
     assert adjudication is not None
+    decisions = canonical_review_decisions(scan, decisions)
     actions = decisions_to_actions(decisions, action_internal)
     decided, _ = apply_review_decisions(scan, adjudication, actions)
     review_judgments = durable_review_judgments(
@@ -928,6 +962,9 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             context.record["continuation"] = None
             return None
     elif continuation.get("kind") == "paged":
+        recovery = _current_review_session(context, continuation)
+        if recovery is None:
+            return None
         resumed = resume_review_session(
             context.output_dir, continuation
         )
@@ -935,11 +972,9 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
             return _finish_review_acceptance(
                 context.summary_path, resumed, context.progress()
             )
-        recovery = empty_review_session_refresh_context(
-            context.output_dir, continuation
-        )
         if (
-            recovery is not None
+            not recovery.get("accepted_batches")
+            and int(recovery.get("next_offset", -1)) == 0
             and recovery.get("context_projection_version")
             != CONTEXT_PROJECTION_VERSION
         ):
@@ -956,6 +991,14 @@ def _resume_active_review(context: LoadedValidation) -> dict[str, Any] | None:
         }
     )
     return resumed
+
+
+def _finish_retired_review_session(context: LoadedValidation) -> None:
+    """Delete a stale session only after its replacement state is durable."""
+
+    if context.request.publish and context.retired_review_session is not None:
+        finish_review_session(context.retired_review_session)
+        context.retired_review_session = None
 
 
 def _refresh_empty_context_session(
@@ -1014,21 +1057,24 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             "review.continue",
             decision_file=request.decision_file.as_posix(),
         )
-        return _continue_review(
-            context.summary_path,
+        continued = _continue_review(
+            context,
             request.decision_file.resolve(),
-            request.publish,
             activity,
         )
-    log_phase(activity, "review.resume-check")
-    resumed = _resume_active_review(context)
-    if resumed is not None:
-        log_checkpoint(
-            activity,
-            "review-resumed",
-            status=str(resumed.get("status", "unknown")),
-        )
-        return resumed
+        if continued is not None:
+            return continued
+        log_phase(activity, "review.stale-restart")
+    else:
+        log_phase(activity, "review.resume-check")
+        resumed = _resume_active_review(context)
+        if resumed is not None:
+            log_checkpoint(
+                activity,
+                "review-resumed",
+                status=str(resumed.get("status", "unknown")),
+            )
+            return resumed
     log_phase(activity, "state.hydrate-outcomes")
     context.record = hydrate_record_rows(
         context.record, context.output_dir, ("outcomes", "failures")
@@ -1121,6 +1167,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             activity, "create-review-packet", subject=context.summary
         ):
             result = _review_required(scan, adjudication, context.progress())
+        _finish_retired_review_session(context)
         result.update(
             {"summary": context.summary, "state_status": context.state_status}
         )
@@ -1137,6 +1184,7 @@ def _run_loaded_validation(context: LoadedValidation) -> dict[str, Any]:
             activity,
         )
     )
+    _finish_retired_review_session(context)
     return {
         "status": "complete",
         "summary": context.summary,

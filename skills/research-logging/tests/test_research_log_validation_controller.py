@@ -36,6 +36,47 @@ def make_no_semantic_log(root: Path) -> Path:
 
 
 class ValidationControllerTests(unittest.TestCase):
+    def test_changed_review_inputs_restart_without_deleting_active_session(
+        self,
+    ) -> None:
+        summary = Path("/tmp/project/docs/mini.md")
+        session = Path("/tmp/project/docs/mini/validation/.cache/work/session")
+        context = CONTROLLER.LoadedValidation(
+            CONTROLLER.ValidationRequest(summary),
+            summary,
+            summary.with_suffix(""),
+            Path("/tmp/project"),
+            "docs/mini.md",
+            {
+                "continuation": {
+                    "kind": "paged",
+                    "session": "session",
+                    "session_identity": "identity",
+                }
+            },
+            {},
+            "native-v2:loaded",
+        )
+        with (
+            mock.patch.object(
+                CONTROLLER,
+                "review_session_refresh_context",
+                return_value={"scan": {}, "session_dir": session.as_posix()},
+            ),
+            mock.patch.object(
+                CONTROLLER, "scan_input_metadata_matches", return_value=False
+            ),
+            mock.patch.object(CONTROLLER, "resume_review_session") as resume,
+            mock.patch.object(CONTROLLER, "finish_review_session") as finish,
+        ):
+            result = CONTROLLER._resume_active_review(context)
+
+        self.assertIsNone(result)
+        self.assertIsNone(context.record["continuation"])
+        self.assertEqual(context.retired_review_session, session)
+        resume.assert_not_called()
+        finish.assert_not_called()
+
     def test_final_acceptance_loads_canonical_accepted_judgment_shards(
         self,
     ) -> None:
@@ -689,6 +730,7 @@ class ValidationControllerTests(unittest.TestCase):
                 summary, decision_file=decision_path, jobs=1
             )
             self.assertEqual(continued["status"], "review_required")
+
             self.assertLess(continued["item_count"], first["item_count"])
             expanded = json.loads(
                 Path(continued["decision_file"]).read_text(encoding="utf-8")
@@ -728,6 +770,48 @@ class ValidationControllerTests(unittest.TestCase):
             ]
             self.assertEqual(len(reviewed), 1)
             self.assertEqual(reviewed[0]["rationale"], "Focused fixture decision.")
+
+    def test_changed_inputs_restart_a_decision_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = make_log(Path(directory))
+            first = run_validate(summary, result_date="2026-08-15", jobs=1)
+            self.assertEqual(first["status"], "review_required")
+            old_session = Path(first["decision_file"]).parent.parent
+            decision_path = Path(first["decision_file"])
+            template = json.loads(decision_path.read_text(encoding="utf-8"))
+            for item in template["items"]:
+                item["decision"] = (
+                    {
+                        "action": "classify-subtree",
+                        "disposition": "unresolved",
+                    }
+                    if item["kind"] == "orphan_subtree"
+                    else (
+                        "unresolved"
+                        if item["kind"] == "orphan_candidate"
+                        else "needs_context"
+                    )
+                )
+                item["rationale"] = "Focused fixture decision."
+            decision_path.write_text(
+                json.dumps(template, indent=2) + "\n", encoding="utf-8"
+            )
+            entry.write_text(
+                entry.read_text(encoding="utf-8") + "\n<!-- changed -->\n",
+                encoding="utf-8",
+            )
+
+            restarted = run_validate(
+                summary,
+                decision_file=decision_path,
+                jobs=1,
+            )
+
+            self.assertEqual(restarted["status"], "review_required")
+            self.assertNotEqual(
+                restarted["session_identity"], first["session_identity"]
+            )
+            self.assertFalse(old_session.exists())
 
     def test_pre_pass_3_ordinary_packet_continues_without_rebuilding_rows(
         self,
@@ -1048,9 +1132,12 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertEqual(resumed["status"], "review_required")
             self.assertEqual(resumed["continuation"], second["continuation"])
             self.assertEqual(record_path.read_bytes(), record_after_first_batch)
-            self.assertNotIn(
-                EXCHANGE.SESSION_BASE_FILENAME,
-                [call.args[0].name for call in session_reader.call_args_list],
+            self.assertEqual(
+                [
+                    call.args[0].name
+                    for call in session_reader.call_args_list
+                ].count(EXCHANGE.SESSION_BASE_FILENAME),
+                1,
             )
             second_path = Path(second["decision_file"])
             second_template = json.loads(second_path.read_text(encoding="utf-8"))

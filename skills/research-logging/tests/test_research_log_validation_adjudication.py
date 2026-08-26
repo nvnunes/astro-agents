@@ -264,6 +264,42 @@ class CandidateCommandTests(unittest.TestCase):
 
 
 class DecisionApplicationTests(unittest.TestCase):
+    def test_collection_scope_expands_a_selected_directory_to_exact_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collection = Path(directory) / "run"
+            nested = collection / "payloads"
+            nested.mkdir(parents=True)
+            (nested / "b.pkl").write_bytes(b"b")
+            (nested / "a.pkl").write_bytes(b"a")
+            (collection / "summary.csv").write_text(
+                "value\n1\n", encoding="utf-8"
+            )
+
+            decisions = DECISIONS.canonical_review_decisions(
+                {"resolved_paths": {"data/run": str(collection)}},
+                {
+                    "schema_version": 1,
+                    "continuation": "continuation",
+                    "items": [
+                        {
+                            "kind": "collection_scope",
+                            "decision": {
+                                "members": {
+                                    "data/run": ["summary.csv", "payloads"]
+                                }
+                            },
+                        }
+                    ],
+                },
+            )
+
+            self.assertEqual(
+                decisions["items"][0]["decision"]["members"]["data/run"],
+                ["payloads/a.pkl", "payloads/b.pkl", "summary.csv"],
+            )
+
     def test_decision_owner_applies_and_reconciles_an_empty_queue(self) -> None:
         decided, counts = DECISIONS.apply_review_decisions(
             {

@@ -93,6 +93,17 @@ def _cached_metadata(identity: Mapping[str, Any] | None) -> tuple[Any, Any, Any]
     )
 
 
+def file_metadata_matches(path: Path, identity: Mapping[str, Any]) -> bool:
+    """Check a saved file identity using metadata without opening its content."""
+
+    absolute = _absolute(path)
+    try:
+        metadata = absolute.stat()
+        return absolute.is_file() and _metadata(metadata) == _cached_metadata(identity)
+    except OSError:
+        return False
+
+
 class ObservationSession:
     """Share metadata-gated identities and inspections within one invocation."""
 

@@ -23,6 +23,23 @@ def cached_identity(path: Path, sha256: str) -> dict[str, object]:
 
 
 class ObservationTests(unittest.TestCase):
+    def test_metadata_match_does_not_open_unchanged_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.bin"
+            path.write_bytes(b"evidence")
+            metadata = path.stat()
+            identity = {
+                "size": metadata.st_size,
+                "mtime_ns": metadata.st_mtime_ns,
+                "ctime_ns": metadata.st_ctime_ns,
+                "sha256": "unused",
+            }
+
+            with mock.patch.object(Path, "open", side_effect=AssertionError):
+                self.assertTrue(
+                    OBSERVATIONS.file_metadata_matches(path, identity)
+                )
+
     def test_unchanged_metadata_opens_and_hashes_zero_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.csv"

@@ -386,10 +386,38 @@ def _remove_decision_target(
         )
 
 
+def _expanded_selected_member(root: Path, identity: str, member: str) -> list[str]:
+    """Resolve one selected file or directory to exact collection members."""
+
+    relative = Path(member)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValidationToolError(
+            f"collection member must be a relative child path: {member}"
+        )
+    child = root / relative
+    if child.is_file():
+        return [relative.as_posix()]
+    if not child.is_dir():
+        raise ValidationToolError(
+            "collection member does not exist as a file or directory: "
+            f"{identity}: {member}"
+        )
+    descendants = [
+        path.relative_to(root).as_posix()
+        for path in child.rglob("*")
+        if path.is_file()
+    ]
+    if not descendants:
+        raise ValidationToolError(
+            f"collection member directory has no files: {identity}: {member}"
+        )
+    return descendants
+
+
 def _validated_member_paths(
     scan: Mapping[str, Any], identity: str, members: Any
 ) -> List[str]:
-    """Validate a compact decision's explicit collection-member scope."""
+    """Validate and expand a compact decision's collection-member scope."""
 
     raw = scan.get("resolved_paths", {}).get(identity)
     if raw is None or not Path(raw).is_dir():
@@ -420,20 +448,35 @@ def _validated_member_paths(
             f"collection members for {identity} must be a nonempty string list "
             "or a glob selector"
         )
-    normalized = []
-    for member in members:
-        relative = Path(member)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValidationToolError(
-                f"collection member must be a relative child path: {member}"
-            )
-        child = root / relative
-        if not child.is_file():
-            raise ValidationToolError(
-                f"collection member does not exist as a file: {identity}: {member}"
-            )
-        normalized.append(relative.as_posix())
-    return sorted(set(normalized))
+    return sorted(
+        {
+            selected
+            for member in members
+            for selected in _expanded_selected_member(root, identity, member)
+        }
+    )
+
+
+def canonical_review_decisions(
+    scan: Mapping[str, Any], decisions: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Expand collection-directory selections into exact durable file scopes."""
+
+    canonical = copy.deepcopy(dict(decisions))
+    for row in canonical.get("items", []):
+        decision = row.get("decision")
+        if row.get("kind") != "collection_scope" or not isinstance(
+            decision, dict
+        ):
+            continue
+        members = decision.get("members")
+        if not isinstance(members, dict):
+            continue
+        decision["members"] = {
+            identity: _validated_member_paths(scan, identity, selected)
+            for identity, selected in members.items()
+        }
+    return canonical
 
 
 def _copy_decision_dependencies(

@@ -579,11 +579,264 @@ class ReviewSessionTests(unittest.TestCase):
                 ["summary.csv"],
             )
             self.assertEqual(len(choice["membership_identity"]), 64)
+            self.assertNotIn("authored_entry_passages", context)
+            self.assertNotIn("nested/member.pkl", json.dumps(context))
+
+    def test_collection_without_invocation_starts_in_terminal_focused_context(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_path = root / "docs/mini/e001.md"
+            write(entry_path, "# Entry\n\n## Evidence\ncase mapping\n")
+            queue_item = {
+                "kind": "collection_scope",
+                "entry": "e001",
+                "identity": "docs/mini/result.csv",
+                "collections": ["output/collection"],
+                "sections": ["Evidence"],
+            }
+            scan = {
+                "project_root": root.as_posix(),
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/mini/e001.md",
+                        "sections": [
+                            {"section": "Evidence", "line": 3, "end_line": 4}
+                        ],
+                        "commands": [],
+                        "validation_notes": [],
+                    }
+                ],
+                "resolved_paths": {
+                    "docs/mini/e001.md": entry_path.as_posix(),
+                },
+                "mechanical_checks": {},
+            }
+            adjudication = {
+                "review_queue": [queue_item],
+                "entries": [
+                    {
+                        "id": "e001",
+                        "targets": [
+                            {"target": queue_item["identity"], "dependencies": []}
+                        ],
+                    }
+                ],
+            }
+
+            with mock.patch.object(
+                EXCHANGE.ReviewQuerySession,
+                "eligible_candidate_invocations",
+                return_value=[],
+            ) as eligible:
+                prepared = EXCHANGE._prepare_all_template_items(scan, adjudication)
+
+            self.assertEqual(eligible.call_count, 1)
+            self.assertEqual(prepared.items[0]["context_level"], 1)
+            self.assertNotIn(
+                "needs_context", prepared.items[0]["allowed_decisions"]
+            )
+            self.assertNotIn(
+                "authored_entry_passages", prepared.contexts[0]["minimum"]
+            )
             self.assertEqual(
-                context["authored_entry_passages"],
+                prepared.contexts[0]["focused_expansion"][
+                    "entry_section_passages"
+                ],
                 {"Evidence": "## Evidence\ncase mapping"},
             )
-            self.assertNotIn("nested/member.pkl", json.dumps(context))
+
+    def test_collection_with_invocation_remains_at_minimum_context(self) -> None:
+        queue_item = {
+            "kind": "collection_scope",
+            "entry": "e001",
+            "identity": "docs/mini/result.csv",
+            "collections": ["output/collection"],
+            "sections": ["Evidence"],
+        }
+        scan = {
+            "entries": [
+                {
+                    "id": "e001",
+                    "sections": [
+                        {"section": "Evidence", "line": 1, "end_line": 1}
+                    ],
+                }
+            ],
+            "resolved_paths": {},
+            "mechanical_checks": {},
+        }
+        adjudication = {"review_queue": [queue_item], "entries": []}
+        invocation = {
+            "invocation": "e001:producer",
+            "entry": "e001",
+            "line": 1,
+            "command": "python produce.py",
+            "path_arguments": [],
+        }
+
+        with mock.patch.object(
+            EXCHANGE._ReviewExchangeProjection,
+            "eligible_invocations",
+            return_value=[invocation],
+        ):
+            prepared = EXCHANGE._prepare_all_template_items(scan, adjudication)
+
+        self.assertEqual(prepared.items[0]["context_level"], 0)
+        self.assertIn("needs_context", prepared.items[0]["allowed_decisions"])
+        self.assertEqual(prepared.contexts[0]["recorded_invocations"], [invocation])
+        self.assertNotIn("focused_expansion", prepared.contexts[0])
+
+    def test_collection_keeps_context_request_when_focused_packet_is_too_large(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_path = root / "docs/mini/e001.md"
+            write(entry_path, "## Evidence\ncase mapping\n")
+            queue_item = {
+                "kind": "collection_scope",
+                "entry": "e001",
+                "identity": "docs/mini/result.csv",
+                "collections": ["output/collection"],
+                "sections": ["Evidence"],
+            }
+            scan = {
+                "summary": "docs/mini.md",
+                "project_root": root.as_posix(),
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/mini/e001.md",
+                        "sections": [
+                            {"section": "Evidence", "line": 1, "end_line": 2}
+                        ],
+                        "commands": [],
+                        "validation_notes": [],
+                    }
+                ],
+                "resolved_paths": {
+                    "docs/mini/e001.md": entry_path.as_posix(),
+                },
+                "mechanical_checks": {},
+            }
+            adjudication = {"review_queue": [queue_item], "entries": []}
+
+            with mock.patch.object(EXCHANGE, "MAX_PACKET_BYTES", 1):
+                prepared = EXCHANGE._prepare_all_template_items(
+                    scan, adjudication
+                )
+
+            self.assertEqual(prepared.items[0]["context_level"], 0)
+            self.assertIn("needs_context", prepared.items[0]["allowed_decisions"])
+            self.assertNotIn("focused_expansion", prepared.contexts[0])
+
+    def test_collection_without_matching_section_remains_at_minimum_context(
+        self,
+    ) -> None:
+        queue_item = {
+            "kind": "collection_scope",
+            "entry": "e001",
+            "identity": "docs/mini/result.csv",
+            "collections": ["output/collection"],
+            "sections": ["Missing"],
+        }
+        scan = {
+            "entries": [
+                {
+                    "id": "e001",
+                    "sections": [
+                        {"section": "Evidence", "line": 1, "end_line": 1}
+                    ],
+                    "commands": [],
+                }
+            ],
+            "resolved_paths": {},
+            "mechanical_checks": {},
+        }
+        adjudication = {"review_queue": [queue_item], "entries": []}
+
+        prepared = EXCHANGE._prepare_all_template_items(scan, adjudication)
+
+        self.assertEqual(prepared.items[0]["context_level"], 0)
+        self.assertIn("needs_context", prepared.items[0]["allowed_decisions"])
+        self.assertNotIn("focused_expansion", prepared.contexts[0])
+
+    def test_mixed_page_keeps_structural_and_minimum_context_levels_independent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_path = root / "docs/mini/e001.md"
+            write(entry_path, "# Entry\n\n## Evidence\ncase mapping\n")
+            collection_item = {
+                "kind": "collection_scope",
+                "entry": "e001",
+                "identity": "docs/mini/collection.csv",
+                "collections": ["output/collection"],
+                "sections": ["Evidence"],
+            }
+            ordinary_item = {
+                "kind": "semantic_fallback",
+                "entry": "e001",
+                "identity": "docs/mini/ordinary.csv",
+                "sections": ["Evidence"],
+                "workflow": {"status": "unresolved"},
+                "evidence": [],
+            }
+            scan = {
+                "summary": "docs/mini.md",
+                "project_root": root.as_posix(),
+                "validation_rules_version": "rules-v1",
+                "input_fingerprint": "scan-v1",
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/mini/e001.md",
+                        "sections": [
+                            {"section": "Evidence", "line": 3, "end_line": 4}
+                        ],
+                        "commands": [],
+                        "validation_notes": [],
+                    }
+                ],
+                "resolved_paths": {
+                    "docs/mini/e001.md": entry_path.as_posix(),
+                },
+                "mechanical_checks": {},
+            }
+            adjudication = {
+                "date": "2026-08-26",
+                "review_queue": [collection_item, ordinary_item],
+                "entries": [],
+            }
+
+            first = EXCHANGE.create_exchange(scan, adjudication, {})
+            session_dir = Path(first["decision_file"]).parent.parent
+            self.addCleanup(
+                lambda: (
+                    EXCHANGE.finish_review_session(session_dir)
+                    if session_dir.exists()
+                    else None
+                )
+            )
+            page = json.loads(
+                Path(first["decision_file"]).read_text(encoding="utf-8")
+            )
+            levels = {item["kind"]: item for item in page["items"]}
+
+            self.assertEqual(levels["collection_scope"]["context_level"], 1)
+            self.assertNotIn(
+                "needs_context",
+                levels["collection_scope"]["allowed_decisions"],
+            )
+            self.assertEqual(levels["semantic_fallback"]["context_level"], 0)
+            self.assertIn(
+                "needs_context",
+                levels["semantic_fallback"]["allowed_decisions"],
+            )
 
     def test_collection_context_size_does_not_scale_with_descendant_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

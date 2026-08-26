@@ -57,7 +57,7 @@ TARGET_PACKET_BYTES = 65_536
 MAX_PACKET_BYTES = 73_728
 MAX_EXPANDED_CONTEXT_BYTES = TARGET_PACKET_BYTES // 2
 REVIEW_SESSION_SCHEMA_VERSION = 1
-CONTEXT_PROJECTION_VERSION = 4
+CONTEXT_PROJECTION_VERSION = 5
 SESSION_BASE_FILENAME = "base.json"
 SESSION_INDEX_FILENAME = "index.json"
 SESSION_STATE_FILENAME = "state.json"
@@ -89,6 +89,9 @@ class _ReviewExchangeProjection:
             self.orphan_descendants,
         ) = _review_queue_indexes(adjudication)
         self._query_session: ReviewQuerySession | None = None
+        self._eligible_invocation_cache: dict[
+            tuple[str, str, tuple[str, ...]], tuple[dict[str, Any], ...]
+        ] = {}
 
     def queue_item(self, item: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """Resolve one template to its first compatible queue item."""
@@ -117,11 +120,19 @@ class _ReviewExchangeProjection:
     def eligible_invocations(
         self, queue_item: Mapping[str, Any]
     ) -> list[dict[str, Any]]:
+        cache_key = (
+            str(queue_item.get("entry", "")),
+            str(queue_item.get("identity", "")),
+            tuple(str(section) for section in queue_item.get("sections", [])),
+        )
+        cached = self._eligible_invocation_cache.get(cache_key)
+        if cached is not None:
+            return [dict(invocation) for invocation in cached]
         if self._query_session is None:
             self._query_session = ReviewQuerySession(
                 ReviewContextIndex.build(self.scan)
             )
-        return [
+        invocations = tuple(
             {
                 "invocation": invocation.key,
                 "entry": invocation.entry_id,
@@ -134,7 +145,9 @@ class _ReviewExchangeProjection:
                 str(queue_item.get("identity", "")),
                 queue_item.get("sections", []),
             )
-        ]
+        )
+        self._eligible_invocation_cache[cache_key] = invocations
+        return [dict(invocation) for invocation in invocations]
 
 
 def _review_entry_indexes(
@@ -723,6 +736,62 @@ def _orphan_templates(
     return templates, fingerprints
 
 
+def _structural_initial_context_level(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    projection: _ReviewExchangeProjection,
+) -> tuple[int, Mapping[str, Any] | None]:
+    """Start at expanded context only when minimum context cannot be terminal."""
+
+    if queue_item.get("kind") != "collection_scope":
+        return 0, None
+    requested_sections = {
+        str(section) for section in queue_item.get("sections", []) if section
+    }
+    if not requested_sections:
+        return 0, None
+    available_sections = {
+        str(section.get("section"))
+        for section in projection.entry(queue_item.get("entry")).get("sections", [])
+        if isinstance(section, Mapping) and section.get("section")
+    }
+    if requested_sections.isdisjoint(available_sections):
+        return 0, None
+    if projection.eligible_invocations(queue_item):
+        return 0, None
+    template = _ordinary_template(queue_item, 1)
+    minimum = _minimum_context(
+        scan, adjudication, queue_item, template, projection
+    )
+    expanded = _expanded_context(scan, queue_item, minimum, projection)
+    packet = _render_packet_with_contexts(
+        str(scan.get("summary", "")), [template], "0" * 64, [expanded]
+    )
+    return (
+        (1, expanded)
+        if len(packet.encode("utf-8")) <= MAX_PACKET_BYTES
+        else (0, minimum)
+    )
+
+
+def _initial_ordinary_context(
+    scan: ScanRecord,
+    adjudication: AdjudicationRecord,
+    queue_item: Mapping[str, Any],
+    context_levels: Mapping[str, int],
+    projection: _ReviewExchangeProjection,
+) -> tuple[int, Mapping[str, Any] | None]:
+    """Return the initial level and any context already built to choose it."""
+
+    requested = context_levels.get(context_request_key(queue_item), 0)
+    if requested == 1:
+        return 1, None
+    return _structural_initial_context_level(
+        scan, adjudication, queue_item, projection
+    )
+
+
 def _template_items(
     scan: ScanRecord,
     adjudication: AdjudicationRecord,
@@ -731,6 +800,8 @@ def _template_items(
     levels = context_levels or {}
     items: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
+    projection = _ReviewExchangeProjection(scan, adjudication)
+    preprojected_contexts: dict[str, Mapping[str, Any]] = {}
     for queue_item in adjudication["review_queue"]:
         remaining = MAX_PACKET_ITEMS - len(items)
         if remaining < 1:
@@ -746,17 +817,23 @@ def _template_items(
             items.extend(expanded)
             continue
         if queue_item["kind"] != "orphan_candidates":
-            level = levels.get(context_request_key(queue_item), 0)
-            items.append(_ordinary_template(queue_item, level))
+            level, context = _initial_ordinary_context(
+                scan, adjudication, queue_item, levels, projection
+            )
+            template = _ordinary_template(queue_item, level)
+            items.append(template)
+            if context is not None:
+                preprojected_contexts[template["id"]] = context
             continue
         expanded, fingerprints = _orphan_templates(
             scan, adjudication, queue_item, remaining
         )
         items.extend(expanded)
         orphan_fingerprints[str(queue_item["entry"])] = fingerprints
-    projection = _ReviewExchangeProjection(scan, adjudication)
     for item in items:
-        context = _packet_context(scan, adjudication, item, projection)
+        context = preprojected_contexts.get(item["id"])
+        if context is None:
+            context = _packet_context(scan, adjudication, item, projection)
         item["context_identity"] = _fingerprint(context)
     return items, orphan_fingerprints
 
@@ -782,6 +859,8 @@ def _prepare_all_template_items(
     levels = context_levels or {}
     items: list[dict[str, Any]] = []
     orphan_fingerprints: dict[str, dict[str, str]] = {}
+    projection = _ReviewExchangeProjection(scan, adjudication)
+    preprojected_contexts: dict[str, Mapping[str, Any]] = {}
     for queue_item in adjudication["review_queue"]:
         if queue_item["kind"] == "upstream_producer":
             items.extend(_upstream_templates(queue_item, levels))
@@ -793,12 +872,18 @@ def _prepare_all_template_items(
             items.extend(expanded)
             orphan_fingerprints[str(queue_item["entry"])] = fingerprints
         else:
-            level = levels.get(context_request_key(queue_item), 0)
-            items.append(_ordinary_template(queue_item, level))
-    projection = _ReviewExchangeProjection(scan, adjudication)
+            level, context = _initial_ordinary_context(
+                scan, adjudication, queue_item, levels, projection
+            )
+            template = _ordinary_template(queue_item, level)
+            items.append(template)
+            if context is not None:
+                preprojected_contexts[template["id"]] = context
     contexts = []
     for item in items:
-        context = _packet_context(scan, adjudication, item, projection)
+        context = preprojected_contexts.get(item["id"])
+        if context is None:
+            context = _packet_context(scan, adjudication, item, projection)
         item["context_identity"] = _fingerprint(context)
         contexts.append(context)
     return _PreparedReviewItems(items, contexts, orphan_fingerprints)
@@ -878,12 +963,6 @@ def _collection_context(
             "and glob selectors remain valid for other exact scopes."
         ),
     }
-    if not invocations:
-        passages, _ = _expanded_entry_passages(
-            scan, _entry(scan, queue_item, projection), queue_item
-        )
-        if passages:
-            context["authored_entry_passages"] = passages
     return context
 
 

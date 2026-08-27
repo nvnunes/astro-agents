@@ -15,6 +15,76 @@ PRODUCER_BINDINGS = importlib.import_module("validation.producer_bindings")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
+    def test_presented_context_change_updates_provenance_dependency(self) -> None:
+        target = "docs/log/entries/e001/data/result.csv"
+
+        def dependencies(context: str) -> list[dict[str, Any]]:
+            scan = {
+                "entries": [
+                    {
+                        "id": "e001",
+                        "path": "docs/log/entries/e001/e001.md",
+                        "sections": [
+                            {
+                                "section": "Trial",
+                                "semantic_identity": "a" * 64,
+                                "content_identity": "b" * 64,
+                                "line": 3,
+                                "end_line": 12,
+                            }
+                        ],
+                        "evidence_record": {
+                            "rows": [
+                                {
+                                    "section": "Trial",
+                                    "kind": "statistic",
+                                    "evidence": "0.956",
+                                    "resolved_sources": [{"identity": target}],
+                                    "presented_item": {
+                                        "kind": "statistic",
+                                        "section": "Trial",
+                                        "selector": "0.956",
+                                        "base_selector": "0.956",
+                                        "context": context,
+                                        "line": 10,
+                                        "end_line": 11,
+                                        "identity": "statistic:L10:1",
+                                    },
+                                }
+                            ]
+                        },
+                        "candidate_targets": [],
+                    }
+                ],
+                "files": {target: {"size": 4, "sha256": "c" * 64}},
+            }
+            check = {
+                "entry": "e001",
+                "target": target,
+                "check": "Provenance",
+                "dependencies": [{"path": target, "role": "target"}],
+            }
+            return COMPATIBILITY.input_dependencies_for_check(scan, check)
+
+        clipped = dependencies(
+            "`0.956` for unstable points; GB `ZA=40 deg`"
+        )
+        complete = dependencies(
+            "GB `ZA=30 deg` has `0.956` for unstable points; "
+            "GB `ZA=40 deg` has `0.824`."
+        )
+
+        def presented_identity(rows: list[dict[str, Any]]) -> str:
+            return next(
+                row["content_identity"]
+                for row in rows
+                if row["relationship"] == "presented-evidence"
+            )
+
+        self.assertNotEqual(
+            presented_identity(clipped), presented_identity(complete)
+        )
+
     def test_recorded_command_path_content_is_an_outcome_dependency(self) -> None:
         path = "data/model.mat"
         check = {

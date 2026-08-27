@@ -80,6 +80,7 @@ ENTRY_EVIDENCE_HEADER = (
 SUMMARY_EVIDENCE_HEADER = ("statistic", "entry", "section", "transformation")
 EVIDENCE_KINDS = frozenset({"statistic", "table", "output"})
 BLOCK_LABEL_RE = re.compile(r"^\s*`([A-Za-z][A-Za-z -]*):`\s*$")
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
 EXPERIMENTAL_LABELS = {
     "Background",
     "Steps",
@@ -605,9 +606,9 @@ def _line_statistics(
     line: str,
     section: Mapping[str, Any],
     current_h2: str,
-    table_lines: set[int],
+    prose_context: Mapping[str, Any] | None,
 ) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    if HEADING_RE.match(line) or number in table_lines:
+    if HEADING_RE.match(line) or prose_context is None:
         return None, [], []
     marked = [
         match.group(1).strip()
@@ -631,13 +632,49 @@ def _line_statistics(
             "section": section["section"],
             "base_selector": value,
             "line": number,
-            "context": line.strip(),
+            "end_line": int(prose_context["end_line"]),
+            "context": str(prose_context["text"]),
         }
         for value in marked
     ]
     presented = items if section["section_type"] == "experimental" else []
     summary = [dict(item) for item in items] if current_h2 == "Summary" else []
     return numeric, presented, summary
+
+
+def _prose_contexts(
+    lines: Sequence[str], excluded_lines: set[int]
+) -> dict[int, dict[str, Any]]:
+    """Map prose lines to their complete contiguous Markdown paragraph."""
+
+    contexts: dict[int, dict[str, Any]] = {}
+    block: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        if not block:
+            return
+        context = {
+            "end_line": block[-1][0],
+            "text": " ".join(line.strip() for _, line in block),
+        }
+        for number, _ in block:
+            contexts[number] = context
+        block.clear()
+
+    for number, line in enumerate(lines, 1):
+        if (
+            number in excluded_lines
+            or not line.strip()
+            or HEADING_RE.match(line)
+            or BLOCK_LABEL_RE.match(line)
+        ):
+            flush()
+            continue
+        if LIST_ITEM_RE.match(line):
+            flush()
+        block.append((number, line))
+    flush()
+    return contexts
 
 
 def _scan_markdown_lines(
@@ -655,6 +692,7 @@ def _scan_markdown_lines(
         "presented": [],
         "summary": [],
     }
+    prose_contexts = _prose_contexts(lines, fenced_lines | table_lines)
     current_h2 = ""
     for number, line in enumerate(lines, 1):
         if number in fenced_lines:
@@ -670,7 +708,11 @@ def _scan_markdown_lines(
         found["inline_paths"].extend(inline_paths)
         found["citations"].extend(citations)
         numeric, presented, summary = _line_statistics(
-            number, line, section, current_h2, table_lines
+            number,
+            line,
+            section,
+            current_h2,
+            prose_contexts.get(number),
         )
         if numeric is not None:
             found["numeric"].append(numeric)

@@ -158,6 +158,43 @@ class MarkdownDiscoveryTests(unittest.TestCase):
                 ["0.2 [occurrence 1]", "0.2 [occurrence 2]"],
             )
 
+    def test_wrapped_statistic_context_preserves_its_complete_list_item(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "e001.md"
+            entry.write_text(
+                "# Fixture\n\n## Trial\n\n`Steps:`\n\n- Run.\n\n"
+                "`Results:`\n\n- Retain the generated summaries.\n\n"
+                "`Observations:`\n\n"
+                "- The direct plots are consistency diagnostics.\n"
+                "- Unstable points differ in the GB cases. GB `ZA=30 deg` has\n"
+                "  ratios of `0.956` for unstable points and `0.534` for stable "
+                "points;\n"
+                "  GB `ZA=40 deg` has `0.824` and `0.503`.\n"
+                "- The J case is mixed.\n",
+                encoding="utf-8",
+            )
+
+            parsed = DISCOVERY.parse_markdown(entry)
+            statistics = {
+                item["base_selector"]: item
+                for item in parsed["presented_items"]
+                if item["kind"] == "statistic"
+            }
+
+            expected = (
+                "- Unstable points differ in the GB cases. GB `ZA=30 deg` has "
+                "ratios of `0.956` for unstable points and `0.534` for stable "
+                "points; GB `ZA=40 deg` has `0.824` and `0.503`."
+            )
+            self.assertEqual(
+                set(statistics), {"0.956", "0.534", "0.824", "0.503"}
+            )
+            for item in statistics.values():
+                self.assertEqual(item["context"], expected)
+                self.assertEqual(item["end_line"], 18)
+
     def test_uuid_identifier_is_not_a_presented_statistic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "e001.md"

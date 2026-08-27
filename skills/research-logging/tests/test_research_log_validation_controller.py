@@ -1366,8 +1366,11 @@ class ValidationControllerTests(unittest.TestCase):
             self.assertIs(internal["scan"], scan)
             self.assertIs(internal["adjudication"], adjudication)
 
-    def test_partial_progress_excludes_targets_with_pending_scope_review(self) -> None:
+    def test_partial_progress_excludes_pending_targets_and_orphan_dispositions(
+        self,
+    ) -> None:
         target = "docs/mini/entries/e001/data/result.csv"
+        former_orphan = "docs/mini/entries/e001/data/model.mat"
         adjudication = {
             "summary": [],
             "review_queue": [
@@ -1389,7 +1392,13 @@ class ValidationControllerTests(unittest.TestCase):
                             "reproducibility": "-",
                         }
                     ],
-                    "orphan_items": [],
+                    "orphan_items": [
+                        {
+                            "identity": former_orphan,
+                            "decision": "accepted",
+                            "basis": "graph",
+                        }
+                    ],
                 }
             ],
         }
@@ -1397,6 +1406,7 @@ class ValidationControllerTests(unittest.TestCase):
         partial = CONTROLLER._partial_adjudication(adjudication)
 
         self.assertEqual(partial["entries"][0]["targets"], [])
+        self.assertEqual(partial["entries"][0]["orphan_items"], [])
 
     def test_completed_paged_context_request_starts_expanded_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

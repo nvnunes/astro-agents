@@ -386,11 +386,11 @@ def _partial_adjudication(
                 for check in ("integrity", "provenance", "reproducibility")
             )
         ]
-        entry["orphan_items"] = [
-            item
-            for item in entry.get("orphan_items", [])
-            if item.get("decision") == "accepted"
-        ]
+        # Item dispositions belong to the complete graph. Pending target rows
+        # are absent from this projection and may be their only reachability
+        # roots, so retaining dispositions here can contradict the partial
+        # graph assembled below.
+        entry["orphan_items"] = []
     return partial
 
 

@@ -86,6 +86,47 @@ class GraphCoreTests(unittest.TestCase):
         self.assertIn(selected_input, closure)
         self.assertNotIn(alternative_input, closure)
 
+    def test_unresolved_command_paths_exclude_all_established_outputs(self) -> None:
+        namespace = "docs/mini"
+        invocation = GRAPH.NodeKey(
+            namespace, GRAPH.NodeKind.INVOCATION, "reviewed"
+        )
+        model = GRAPH.NodeKey(
+            namespace, GRAPH.NodeKind.ARTIFACT, "data/model.mat"
+        )
+        summary = GRAPH.NodeKey(
+            namespace, GRAPH.NodeKind.ARTIFACT, "data/summary.csv"
+        )
+        plot = GRAPH.NodeKey(
+            namespace, GRAPH.NodeKind.ARTIFACT, "images/plot.png"
+        )
+        builder = GRAPH.GraphBuilder("test-rules")
+        for node in (invocation, model, summary, plot):
+            builder.add_node(node, self.origin())
+        for path in (model, summary, plot):
+            builder.add_edge(
+                GRAPH.EdgeKind.CONSUMES,
+                invocation,
+                path,
+                namespace,
+                self.origin(),
+                {"semantic_direction": "unresolved-command-path"},
+            )
+        for output in (summary, plot):
+            builder.add_edge(
+                GRAPH.EdgeKind.PRODUCES,
+                invocation,
+                output,
+                namespace,
+                self.origin(),
+            )
+
+        dependencies = GRAPH_QUERIES.unresolved_command_path_nodes(
+            builder.build(), {invocation}
+        )
+
+        self.assertEqual(dependencies, {model})
+
     def test_orphan_locations_keep_entry_identity(self) -> None:
         first = GRAPH.NodeKey(
             "docs/mini", GRAPH.NodeKind.INDEXED_INPUT, "e001:<shared>"

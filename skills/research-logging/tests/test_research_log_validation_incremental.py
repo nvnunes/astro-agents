@@ -15,6 +15,32 @@ PRODUCER_BINDINGS = importlib.import_module("validation.producer_bindings")
 
 
 class IncrementalComparisonTests(unittest.TestCase):
+    def test_recorded_command_path_content_is_an_outcome_dependency(self) -> None:
+        path = "data/model.mat"
+        check = {
+            "entry": "e001",
+            "target": "data/result.csv",
+            "check": "Provenance",
+            "dependencies": [
+                {"path": path, "role": "recorded-command-path"}
+            ],
+        }
+        original = COMPATIBILITY.input_dependencies_for_check(
+            {"files": {path: {"size": 4, "sha256": "a" * 64}}}, check
+        )
+        changed = COMPATIBILITY.input_dependencies_for_check(
+            {"files": {path: {"size": 4, "sha256": "b" * 64}}}, check
+        )
+
+        self.assertEqual(len(original), 1)
+        self.assertEqual(original[0]["kind"], "exact-material")
+        self.assertEqual(
+            original[0]["relationship"], "recorded-command-path"
+        )
+        self.assertNotEqual(
+            original[0]["content_identity"], changed[0]["content_identity"]
+        )
+
     def test_presented_candidate_uses_its_section_instead_of_the_whole_entry(
         self,
     ) -> None:

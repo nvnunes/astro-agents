@@ -272,6 +272,35 @@ class CandidateCommandTests(unittest.TestCase):
 
 
 class DecisionApplicationTests(unittest.TestCase):
+    def test_unresolved_command_path_is_persisted_for_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "model.mat"
+            model.write_bytes(b"model")
+            node = object()
+            dependencies: list[dict] = []
+            with (
+                mock.patch.object(
+                    DECISIONS,
+                    "unresolved_command_path_nodes",
+                    return_value={node},
+                ),
+                mock.patch.object(
+                    DECISIONS, "display_identity", return_value="data/model.mat"
+                ),
+            ):
+                DECISIONS._append_semantic_graph_dependencies(
+                    object(),
+                    set(),
+                    {"data/model.mat": str(model)},
+                    set(),
+                    dependencies,
+                )
+
+        self.assertEqual(
+            dependencies,
+            [{"path": "data/model.mat", "role": "recorded-command-path"}],
+        )
+
     def test_decision_application_reuses_its_prepared_identity_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = make_log(Path(directory))

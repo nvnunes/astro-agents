@@ -267,6 +267,34 @@ def provenance_nodes(
     )
 
 
+def unresolved_command_path_nodes(
+    graph: DependencyGraph, reached: Iterable[NodeKey]
+) -> Set[NodeKey]:
+    """Return unresolved command paths that can affect reached invocations.
+
+    Established outputs are excluded.  The remaining paths are compatibility
+    dependencies only; this query does not resolve their semantic direction.
+    """
+
+    result: Set[NodeKey] = set()
+    for invocation in {
+        node for node in reached if node.kind is NodeKind.INVOCATION
+    }:
+        outputs = {
+            edge.target
+            for edge in graph.outgoing(
+                invocation, {EdgeKind.PRODUCES, EdgeKind.CAPTURES}
+            )
+        }
+        result.update(
+            edge.target
+            for edge in graph.outgoing(invocation, {EdgeKind.CONSUMES})
+            if edge.attribute("semantic_direction") == "unresolved-command-path"
+            and edge.target not in outputs
+        )
+    return result
+
+
 def display_identity(graph: DependencyGraph, key: NodeKey) -> str:
     """Return the research-log identity represented by one graph node."""
 

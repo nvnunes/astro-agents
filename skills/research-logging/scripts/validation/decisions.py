@@ -14,6 +14,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     cast,
 )
@@ -33,7 +34,7 @@ from .contracts import (
     ScanRecord,
     ValidationToolError,
 )
-from .graph import DependencyGraph, RootPolicy
+from .graph import DependencyGraph, NodeKey, RootPolicy
 from .graph_adapter import build_dependency_graph
 from .graph_queries import (
     ambiguous_producer_nodes,
@@ -44,6 +45,7 @@ from .graph_queries import (
     orphanable_nodes,
     provenance_nodes,
     target_provenance_seeds,
+    unresolved_command_path_nodes,
 )
 from .orphan_rules import below, effective_basis, material_scope, subtree_basis
 from .producer_bindings import (
@@ -1022,6 +1024,33 @@ def _reconcile_collection_queue(
         queued["collections"] = sorted(set(collections))
 
 
+def _append_semantic_graph_dependencies(
+    graph: DependencyGraph,
+    closure: Set[NodeKey],
+    resolved_paths: Mapping[str, str],
+    script_inventory: set[Path],
+    dependencies: List[Dict[str, Any]],
+) -> None:
+    """Persist supporting and conservative command-path dependencies."""
+
+    existing = {item["path"] for item in dependencies}
+    supporting = {display_identity(graph, key) for key in closure}
+    unresolved = {
+        display_identity(graph, key)
+        for key in unresolved_command_path_nodes(graph, closure)
+    }
+    for identity in sorted(supporting | unresolved):
+        if identity in existing or identity not in resolved_paths:
+            continue
+        raw = Path(resolved_paths[identity]).resolve()
+        if identity in supporting:
+            role = "producer" if raw in script_inventory else "input"
+        else:
+            role = "recorded-command-path"
+        dependencies.append({"path": identity, "role": role})
+        existing.add(identity)
+
+
 def reconcile_semantic_dependencies(
     scan: ScanRecord, adjudication: Dict[str, Any]
 ) -> None:
@@ -1053,19 +1082,13 @@ def reconcile_semantic_dependencies(
                 graph,
                 ((seed, RootPolicy.PRESENTED) for seed in seeds),
             )
-            existing = {item["path"] for item in dependencies}
-            closure_identities = {display_identity(graph, key) for key in closure}
-            for identity in sorted(closure_identities):
-                if identity in existing or identity not in resolved_paths:
-                    continue
-                raw = Path(resolved_paths[identity]).resolve()
-                dependencies.append(
-                    {
-                        "path": identity,
-                        "role": "producer" if raw in script_inventory else "input",
-                    }
-                )
-                existing.add(identity)
+            _append_semantic_graph_dependencies(
+                graph,
+                closure,
+                resolved_paths,
+                script_inventory,
+                dependencies,
+            )
 
             ambiguity = ambiguous_producer_nodes(graph, closure)
             queued = next(

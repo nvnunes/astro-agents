@@ -29,6 +29,17 @@ SCRIPT_SUFFIXES = frozenset({".ipynb", ".jl", ".m", ".py", ".r", ".sh"})
 IGNORED_SCRIPT_PARTS = frozenset(
     {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 )
+PATH_PRESERVING_CALLS = frozenset(
+    {
+        "absolute",
+        "expanduser",
+        "joinpath",
+        "path",
+        "resolve",
+        "with_name",
+        "with_suffix",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -160,6 +171,7 @@ def _call_path_role(call: ast.Call) -> Optional[str]:
         "exists",
         "is_dir",
         "is_file",
+        "loadmat",
         "read_bytes",
         "read_text",
     } or re.search(r"(?:^|_)(?:read|load|parse|inspect|scan)(?:_|$)", leaf):
@@ -171,6 +183,7 @@ def _represented_argument_destinations(
     value: ast.AST,
     destinations: set[str],
     known: Mapping[str, set[str]],
+    local_preservers: Mapping[str, tuple[int, str]] | None = None,
 ) -> set[str]:
     """Return parsed arguments preserved by one bounded path expression."""
 
@@ -184,39 +197,60 @@ def _represented_argument_destinations(
     if isinstance(value, ast.Name):
         return set(known.get(value.id, set()))
     if isinstance(value, ast.Attribute):
-        return _represented_argument_destinations(value.value, destinations, known)
+        return _represented_argument_destinations(
+            value.value, destinations, known, local_preservers
+        )
     if isinstance(value, (ast.BoolOp, ast.BinOp, ast.IfExp)):
         return set().union(
             *(
-                _represented_argument_destinations(child, destinations, known)
+                _represented_argument_destinations(
+                    child, destinations, known, local_preservers
+                )
                 for child in ast.iter_child_nodes(value)
             )
         )
-    if not isinstance(value, ast.Call) or _call_leaf_name(value) not in {
-        "absolute",
-        "expanduser",
-        "joinpath",
-        "path",
-        "resolve",
-        "with_name",
-        "with_suffix",
-    }:
+    values = _path_preserving_call_values(value, local_preservers or {})
+    if not values:
         return set()
-    values: list[ast.AST] = list(value.args)
-    if isinstance(value.func, ast.Attribute):
-        values.append(value.func.value)
     return set().union(
         *(
-            _represented_argument_destinations(child, destinations, known)
+            _represented_argument_destinations(
+                child, destinations, known, local_preservers
+            )
             for child in values
         )
     )
+
+
+def _path_preserving_call_values(
+    value: ast.AST, local_preservers: Mapping[str, tuple[int, str]]
+) -> list[ast.AST]:
+    """Return call values that preserve the represented path identity."""
+
+    if not isinstance(value, ast.Call):
+        return []
+    if isinstance(value.func, ast.Name) and value.func.id in local_preservers:
+        index, parameter = local_preservers[value.func.id]
+        if index < len(value.args):
+            return [value.args[index]]
+        return [
+            keyword.value
+            for keyword in value.keywords
+            if keyword.arg == parameter
+        ]
+    if _call_leaf_name(value) not in PATH_PRESERVING_CALLS:
+        return []
+    result: list[ast.AST] = list(value.args)
+    if isinstance(value.func, ast.Attribute):
+        result.append(value.func.value)
+    return result
 
 
 def _parsed_argument_aliases(
     tree: ast.AST,
     destinations: set[str],
     initial: Optional[Mapping[str, set[str]]] = None,
+    local_preservers: Mapping[str, tuple[int, str]] | None = None,
 ) -> Dict[str, set[str]]:
     """Return path-preserving local aliases of parsed argument values."""
 
@@ -234,7 +268,7 @@ def _parsed_argument_aliases(
             if value is None:
                 continue
             referenced = _represented_argument_destinations(
-                value, destinations, aliases
+                value, destinations, aliases, local_preservers
             )
             for target in targets:
                 if not isinstance(target, ast.Name) or not referenced:
@@ -246,6 +280,49 @@ def _parsed_argument_aliases(
         if not changed:
             break
     return aliases
+
+
+def _local_path_preservers(tree: ast.AST) -> Dict[str, tuple[int, str]]:
+    """Return local helpers whose every value return preserves one path."""
+
+    result: Dict[str, tuple[int, str]] = {}
+    for function in (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        parameters = [
+            argument.arg
+            for argument in (
+                *function.args.posonlyargs,
+                *function.args.args,
+                *function.args.kwonlyargs,
+            )
+        ]
+        if not parameters:
+            continue
+        aliases = _parsed_argument_aliases(
+            function,
+            set(parameters),
+            {parameter: {parameter} for parameter in parameters},
+        )
+        returns = [
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Return) and node.value is not None
+        ]
+        represented = [
+            _represented_argument_destinations(value, set(parameters), aliases)
+            for value in returns
+        ]
+        if not represented or any(len(item) != 1 for item in represented):
+            continue
+        preserved = set.intersection(*represented)
+        if len(preserved) != 1:
+            continue
+        parameter = next(iter(preserved))
+        result[function.name] = (parameters.index(parameter), parameter)
+    return result
 
 
 def _argument_destinations(
@@ -306,6 +383,7 @@ def _path_roles_for_use(
     node: ast.AST,
     parents: Mapping[ast.AST, ast.AST],
     local_roles: Mapping[str, Mapping[str, str]],
+    local_preservers: Mapping[str, tuple[int, str]],
 ) -> set[str]:
     """Return path roles implied by the bounded ancestors of one value use."""
 
@@ -336,6 +414,12 @@ def _path_roles_for_use(
             found.add("dependency-container")
         if isinstance(current, ast.Call):
             local, role = _local_call_role(current, argument, local_roles)
+            if (
+                local
+                and isinstance(current.func, ast.Name)
+                and current.func.id in local_preservers
+            ):
+                role = None
             if not local:
                 role = _call_path_role(current)
             if role:
@@ -354,7 +438,9 @@ def _role_from_uses(found: set[str]) -> str:
 
 
 def _local_function_roles(
-    tree: ast.AST, parents: Mapping[ast.AST, ast.AST]
+    tree: ast.AST,
+    parents: Mapping[ast.AST, ast.AST],
+    local_preservers: Mapping[str, tuple[int, str]],
 ) -> Dict[str, Dict[str, str]]:
     """Infer local helper parameter roles from their function bodies."""
 
@@ -376,10 +462,14 @@ def _local_function_roles(
         aliases: Dict[str, set[str]] = {
             parameter: {parameter} for parameter in parameters
         }
-        aliases = _parsed_argument_aliases(function, set(parameters), aliases)
+        aliases = _parsed_argument_aliases(
+            function, set(parameters), aliases, local_preservers
+        )
         for node in ast.walk(function):
             for parameter in _argument_destinations(node, set(parameters), aliases):
-                uses[parameter].update(_path_roles_for_use(node, parents, {}))
+                uses[parameter].update(
+                    _path_roles_for_use(node, parents, {}, local_preservers)
+                )
         result[function.name] = {
             parameter: _role_from_uses(uses[parameter]) for parameter in parameters
         }
@@ -397,14 +487,21 @@ def _argument_roles_from_ast(
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    aliases = _parsed_argument_aliases(tree, destination_set)
-    local_roles = _local_function_roles(tree, parents)
+    local_preservers = _local_path_preservers(tree)
+    aliases = _parsed_argument_aliases(
+        tree, destination_set, local_preservers=local_preservers
+    )
+    local_roles = _local_function_roles(tree, parents, local_preservers)
 
     roles: Dict[str, set[str]] = {destination: set() for destination in destination_set}
     for node in ast.walk(tree):
         referenced = _argument_destinations(node, destination_set, aliases)
         found = (
-            _path_roles_for_use(node, parents, local_roles) if referenced else set()
+            _path_roles_for_use(
+                node, parents, local_roles, local_preservers
+            )
+            if referenced
+            else set()
         )
         for destination in referenced:
             roles[destination].update(found)

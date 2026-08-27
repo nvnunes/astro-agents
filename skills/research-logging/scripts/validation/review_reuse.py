@@ -14,6 +14,7 @@ from .collection_scopes import (
 from .compatibility import (
     decode_input_dependencies,
     input_dependencies_for_check,
+    normalized_command,
     orphan_input_dependencies,
     projection,
 )
@@ -204,15 +205,30 @@ def _without_unscoped_collections(
 
 
 def _contains_current_inputs(
-    judgment: Mapping[str, Any], current: Sequence[Mapping[str, Any]]
+    judgment: Mapping[str, Any],
+    current: Sequence[Mapping[str, Any]],
+    *,
+    allow_legacy_producer_selection: bool = False,
 ) -> bool:
     stored = _decoded_inputs(judgment)
     if stored is None or not current:
         return False
     stored_scopes = _scope_map(stored)
-    return all(
+    if all(
         stored_scopes.get(scope) == content
         for scope, content in _scope_map(current).items()
+    ):
+        return True
+    if not allow_legacy_producer_selection or any(
+        item.get("kind") == "recorded-invocation" for item in stored
+    ):
+        return False
+    legacy_current = [
+        item for item in current if item.get("kind") != "recorded-invocation"
+    ]
+    return bool(legacy_current) and all(
+        stored_scopes.get(scope) == content
+        for scope, content in _scope_map(legacy_current).items()
     )
 
 
@@ -234,6 +250,75 @@ def _answer_allowed(
             and all(isinstance(value, str) and value for value in values)
             for values in members.values()
         )
+    )
+
+
+def _selected_producer_candidate(
+    queue_item: Mapping[str, Any],
+    template: Mapping[str, Any],
+    decision: Any,
+) -> Mapping[str, Any] | None:
+    """Return the exact current producer candidate named by one decision."""
+
+    if (
+        template.get("kind") != "semantic_fallback"
+        or not isinstance(decision, str)
+        or decision not in template.get("allowed_decisions", [])
+    ):
+        return None
+    candidates = [
+        candidate
+        for candidate in queue_item.get("producer_candidates", [])
+        if isinstance(candidate, Mapping)
+        and candidate.get("invocation") == decision
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _producer_selection_inputs(
+    current: Sequence[Mapping[str, Any]], candidate: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Project only facts that govern one producer-selection answer."""
+
+    result = [
+        dict(item)
+        for item in current
+        if item.get("relationship") in {"target", "producer"}
+    ]
+    if not any(item.get("relationship") == "target" for item in result):
+        return []
+    invocation = str(candidate.get("invocation", ""))
+    if not invocation:
+        return []
+    result.append(
+        projection(
+            "recorded-invocation",
+            f"recorded-invocation:{invocation}",
+            {
+                "entry": candidate.get("entry"),
+                "invocation": invocation,
+                "normalized_command": candidate.get("normalized_command")
+                or normalized_command(str(candidate.get("command", ""))),
+                "path_arguments": candidate.get("path_arguments", []),
+                "coverage_kind": candidate.get("coverage_kind"),
+                "coverage_identity": candidate.get("coverage_identity"),
+                "target_member": candidate.get("target_member"),
+            },
+            "producer-selection",
+            source_locator={
+                "entry": candidate.get("entry"),
+                "line": candidate.get("line"),
+            },
+        )
+    )
+    return sorted(
+        result,
+        key=lambda item: (
+            item["kind"],
+            item["semantic_identity"],
+            item["projection_version"],
+            item["relationship"],
+        ),
     )
 
 
@@ -376,7 +461,14 @@ def _review_decision_answers(
             current_template,
             decision,
         )
-        compatible = _contains_current_inputs(judgment, current)
+        producer_selection = _selected_producer_candidate(
+            queue_item, template, decision
+        )
+        compatible = _contains_current_inputs(
+            judgment,
+            current,
+            allow_legacy_producer_selection=producer_selection is not None,
+        )
         if template.get("kind") == SUBTREE_REVIEW_KIND:
             stored = _decoded_inputs(judgment)
             compatible = stored is not None and _scope_map(stored) == _scope_map(
@@ -438,7 +530,14 @@ def _review_decision_answers_diagnostics(
         ):
             miss_reasons.add("incomplete_legacy_input_dependencies")
             continue
-        compatible = _contains_current_inputs(judgment, current)
+        producer_selection = _selected_producer_candidate(
+            queue_item, template, decision
+        )
+        compatible = _contains_current_inputs(
+            judgment,
+            current,
+            allow_legacy_producer_selection=producer_selection is not None,
+        )
         if template.get("kind") == SUBTREE_REVIEW_KIND:
             compatible = _scope_map(stored) == _scope_map(current)
         if compatible:
@@ -485,8 +584,25 @@ def _ordinary_review_inputs(
     if current is None:
         return []
     result = _without_unscoped_collections(current, _collection_paths(queue_item))
+    producer_selection = _selected_producer_candidate(
+        queue_item, template, decision
+    )
+    if producer_selection is not None:
+        return _producer_selection_inputs(result, producer_selection)
     if template.get("kind") != "collection_scope" or not isinstance(decision, Mapping):
         return result
+    return _collection_selection_inputs(scan, queue_item, template, decision, result)
+
+
+def _collection_selection_inputs(
+    scan: ScanRecord,
+    queue_item: Mapping[str, Any],
+    template: Mapping[str, Any],
+    decision: Mapping[str, Any],
+    result: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add exact selected-member dependencies for one collection answer."""
+
     selected = _review_collection_selection(queue_item, decision)
     if selected is None:
         return []

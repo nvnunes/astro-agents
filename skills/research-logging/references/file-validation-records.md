@@ -108,6 +108,17 @@ manifest closure; otherwise rebuild the base deterministically from referenced
 outcome and judgment shards. Compatibility checks still validate the loaded
 rows' dependencies, rules, candidate content, and allowed answer.
 
+A producer-selection judgment is bound to its target, relevant producer
+material, and exact currently allowed recorded invocation rather than the
+whole owning experimental section. Historical ordinary judgments may contain
+a broader compatible dependency superset; the validator may reuse that answer
+without rewriting its immutable shard when the narrow current producer surface
+matches. Newly recorded producer selections retain the narrow projection, so
+surrounding prose or evidence-context changes do not reopen an unchanged
+producer relationship. A changed target, producer, invocation, eligibility, or
+allowed answer still prevents reuse. Historical reuse also requires the exact
+answer to remain eligible in the current question.
+
 Reused outcomes retain their original result dates. A current report may
 therefore contain dates older than its report-update date: the current
 operation established that the outcome's declared rule and evidence

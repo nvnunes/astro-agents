@@ -1,0 +1,32 @@
+[
+  {
+    "id": "training/e002/evidence.csv:104",
+    "presentation": "0.299–0.371%",
+    "transformation": {"form":"range","unit":"%","values":[{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":0,"item":0}},{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":0,"item":1}}]},
+    "values": ["0.29927789015139733", "0.37121374291946646"]
+  },
+  {
+    "id": "mastsel/e005/evidence.csv:24",
+    "presentation": "1.300 +/- 0.010",
+    "transformation": {"form":"plus_minus","values":[{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":0,"item":0}},{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":0,"item":1}}]},
+    "values": ["1.2998162129248279", "0.009575860365343511"]
+  },
+  {
+    "id": "training/e002/evidence.csv:124",
+    "presentation": "29.635 [29.383, 29.849] million examples/s",
+    "transformation": {"form":"interval","unit":"million examples/s","values":[{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"scale":0.000001,"source":{"input":0,"item":0}},{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"scale":0.000001,"source":{"input":0,"item":1}},{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"scale":0.000001,"source":{"input":0,"item":2}}]},
+    "values": ["29635339.31603419", "29383066.76482351", "29848661.0366029"]
+  },
+  {
+    "id": "mastsel/e004/evidence.csv:34",
+    "presentation": "(0.40, 0.45) mas",
+    "transformation": {"form":"tuple","unit":"mas","values":[{"parse":"decimal","render":{"decimal_places":2,"mode":"fixed"},"source":{"input":0,"item":0}},{"parse":"decimal","render":{"decimal_places":2,"mode":"fixed"},"source":{"input":0,"item":1}}]},
+    "values": ["0.4021452923517581", "0.44907895827441485"]
+  },
+  {
+    "id": "hybrid/e002c/evidence.csv:2",
+    "presentation": "0.38",
+    "transformation": {"form":"scalar","values":[{"parse":"decimal","render":{"decimal_places":2,"mode":"fixed"},"source":{"input":0,"item":0}}]},
+    "values": ["0.3751454883084359"]
+  }
+]

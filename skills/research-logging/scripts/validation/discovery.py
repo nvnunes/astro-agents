@@ -22,7 +22,6 @@ from research_log_data_index import (
 
 from .evidence import NUMBER_RE
 from .inventory import display_path
-from .validation_notes import retention_scope
 
 
 class MarkdownDiscoveryError(ValueError):
@@ -509,6 +508,8 @@ def _validation_notes(
 ) -> List[Dict[str, Any]]:
     """Return bounded text from entry ``Validation:`` blocks."""
 
+    from .validation_notes import retention_scope
+
     notes: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
 
@@ -734,7 +735,14 @@ def _assign_item_identities(collection: Sequence[Dict[str, Any]]) -> None:
 def parse_markdown(path: Path) -> Dict[str, Any]:
     """Extract deterministic locations and validation candidates from Markdown."""
 
-    text = _read_utf8(path)
+    return parse_markdown_text(path, _read_utf8(path))
+
+
+def parse_markdown_text(
+    path: Path, text: str, *, include_validation_notes: bool = True
+) -> Dict[str, Any]:
+    """Extract Markdown facts from one caller-owned stable UTF-8 observation."""
+
     lines = text.splitlines()
     sections = section_ranges(lines)
     fenced = _fenced_blocks(lines, sections)
@@ -811,7 +819,9 @@ def parse_markdown(path: Path) -> Dict[str, Any]:
         "summary_statistics": found["summary"],
         "citations": found["citations"],
         "summary_items": _summary_items(lines),
-        "validation_notes": _validation_notes(lines, sections),
+        "validation_notes": (
+            _validation_notes(lines, sections) if include_validation_notes else []
+        ),
     }
 
 

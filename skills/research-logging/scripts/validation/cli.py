@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="evaluate and report without publishing generated files",
     )
+    validate_parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="ignore the existing mechanical cache and rebuild it after evaluation",
+    )
     return parser
 
 
@@ -46,6 +51,7 @@ def _run_validate(args: argparse.Namespace) -> int:
             result_date=args.date,
             jobs=args.jobs,
             publish=not args.dry_run,
+            recompute=args.recompute,
         )
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

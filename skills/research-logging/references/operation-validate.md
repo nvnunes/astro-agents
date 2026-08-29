@@ -35,7 +35,11 @@ Resolve `scripts/research_log_validation.py` from this skill package and run:
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--jobs N` to change the positive worker bound. Use `--dry-run` to evaluate
-without writing generated files.
+without writing generated files. Use `--recompute` when a cache-independent
+validation is required: it ignores the existing mechanical cache, evaluates
+every check from current research material, and rebuilds the cache after a
+completed published run. `--recompute --dry-run` performs the complete fresh
+evaluation without writing generated files.
 
 Interpret `status` as follows:
 

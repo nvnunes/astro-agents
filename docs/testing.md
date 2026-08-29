@@ -98,8 +98,8 @@ operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
-- the public CLI accepts only `validate`, `--summary`, `--date`,
-  `--jobs`, and `--dry-run`;
+- the public CLI accepts only `validate`, `--summary`, `--date`, `--jobs`,
+  `--recompute`, and `--dry-run`;
 - complete-clear, complete-findings, and upgrade-required results exit zero,
   while incomplete evaluation and tool failure exit nonzero;
 - v1 evidence and recognized legacy generated state produce one precise
@@ -113,6 +113,9 @@ The research-log test gate must verify:
 - cache absence, corruption, or an unsupported cache schema causes bounded
   recomputation, and cached checks are reused only when the complete cache
   contract, rules version, dependency projection, and check content match;
+- `--recompute` bypasses every existing cache entry, publishes a newly rebuilt
+  cache after a completed run, and writes nothing when combined with
+  `--dry-run`;
 - `validation.md` contains separate Mechanical Validation and Reproduction
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;

@@ -30,12 +30,14 @@ class ValidationCliTests(unittest.TestCase):
                 "2026-08-29",
                 "--jobs",
                 "3",
+                "--recompute",
                 "--dry-run",
             ]
         )
         self.assertEqual(args.summary, Path("mini.md"))
         self.assertEqual(args.date, "2026-08-29")
         self.assertEqual(args.jobs, 3)
+        self.assertTrue(args.recompute)
         self.assertTrue(args.dry_run)
         for retired in ("--decisions", "--mode", "--review-diagnostics"):
             with self.subTest(retired=retired), self.assertRaises(SystemExit):

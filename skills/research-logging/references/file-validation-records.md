@@ -63,7 +63,10 @@ Canonical publication holds the per-log lock, rechecks the required observed
 state, and replaces the generated files atomically per destination. An
 ordinary publication error restores the prior completed bundle. Cache absence,
 corruption, or an unsupported cache schema causes bounded recomputation rather
-than changing the validation result.
+than changing the validation result. `--recompute` bypasses all existing cache
+reuse for one invocation. A completed published recomputation installs the
+newly rebuilt cache; a recomputation combined with `--dry-run` leaves the
+existing generated bundle byte-identical.
 
 Mechanical validation is code-only. It does not request agent judgment,
 produce repair instructions, inspect script internals to infer associations,

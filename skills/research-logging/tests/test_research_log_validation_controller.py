@@ -217,6 +217,68 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertGreater(second["metrics"]["checks_reused"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
+    def test_recompute_bypasses_cache_and_publishes_rebuilt_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            ordinary = CONTROLLER.ValidationRequest(
+                summary, result_date="2026-08-29"
+            )
+            CONTROLLER.validate(ordinary)
+            reused = CONTROLLER.validate(ordinary)
+            self.assertGreater(reused["metrics"]["checks_reused"], 0)
+
+            recomputed = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(
+                    summary,
+                    result_date="2026-08-29",
+                    recompute=True,
+                )
+            )
+
+            cache_path = (
+                summary.with_suffix("") / "validation/.cache/mechanical.json"
+            )
+            self.assertEqual(recomputed["status"], "complete_clear")
+            self.assertTrue(recomputed["published"])
+            self.assertEqual(recomputed["metrics"]["checks_reused"], 0)
+            self.assertEqual(
+                json.loads(cache_path.read_text())["schema"],
+                "research-log-mechanical-cache/1",
+            )
+
+    def test_recompute_dry_run_neither_reads_cache_nor_publishes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+            log_root = summary.with_suffix("")
+            tracked = (
+                log_root / "validation/mechanical.json",
+                log_root / "validation/.cache/mechanical.json",
+                log_root / "validation.md",
+            )
+            before = {path: path.read_bytes() for path in tracked}
+
+            with mock.patch.object(
+                CONTROLLER,
+                "_load_cache",
+                side_effect=AssertionError("recompute must not read the cache"),
+            ):
+                result = CONTROLLER.validate(
+                    CONTROLLER.ValidationRequest(
+                        summary,
+                        result_date="2026-08-29",
+                        publish=False,
+                        recompute=True,
+                    )
+                )
+
+            self.assertEqual(result["status"], "complete_clear")
+            self.assertFalse(result["published"])
+            self.assertEqual(result["metrics"]["checks_reused"], 0)
+            self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+
     def test_oversized_cache_is_ignored_and_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

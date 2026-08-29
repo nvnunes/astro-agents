@@ -56,12 +56,14 @@ class ValidationRequest:
         result_date: Optional ISO calendar date for completed findings.
         jobs: Positive worker bound passed to the mechanical engine.
         publish: Whether to publish completed generated state.
+        recompute: Whether to bypass all prior mechanical-cache reuse.
     """
 
     summary: Path
     result_date: str | None = None
     jobs: int = 8
     publish: bool = True
+    recompute: bool = False
 
 
 def validate(request: ValidationRequest) -> dict[str, Any]:
@@ -78,7 +80,11 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         return cutover
     result_date = _result_date(request.result_date)
     log_root = summary.with_suffix("")
-    prior_cache = _load_cache(log_root / "validation" / ".cache" / "mechanical.json")
+    prior_cache = (
+        None
+        if request.recompute
+        else _load_cache(log_root / "validation" / ".cache" / "mechanical.json")
+    )
     evaluation = evaluate_mechanical(
         MechanicalEvaluationRequest(
             summary,

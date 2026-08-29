@@ -2914,14 +2914,19 @@ The public operation is:
 
 ```text
 research_log_validation.py validate --summary PATH
-  [--date YYYY-MM-DD] [--jobs N] [--dry-run]
+  [--date YYYY-MM-DD] [--jobs N] [--recompute] [--dry-run]
 ```
 
 `--summary` names one regular non-symlink maintained summary whose sibling log
 root is a regular directory. `--date` defaults to the local calendar date and,
-when present, must be one exact ISO date. `--jobs` must be positive. These are
-the only public standard-validation inputs; there is no mode, decisions,
-review, semantic, or reproduction input.
+when present, must be one exact ISO date. `--jobs` must be positive.
+`--recompute` bypasses all existing mechanical-cache reuse for the invocation:
+the validator re-evaluates every check and rereads or rehashes every source and
+artifact needed by those checks. It does not change validation scope, rules, or
+the published result format. A completed published recomputation replaces the
+disposable cache with the newly computed passing checks. These are the only
+public standard-validation inputs; there is no mode, decisions, review,
+semantic, or reproduction input.
 
 The CLI writes one JSON result envelope to standard output when evaluation or
 cutover preflight completes:
@@ -2943,8 +2948,11 @@ the requested evaluation or preflight completed. `incomplete` exits 3 and
 publishes nothing. Invalid inputs, interrupted-upgrade recovery requirements,
 observation failures outside the mechanical outcome contract, and publication
 failures are operational errors: they exit 2, write a precise message to
-standard error, and publish no result. `--dry-run` returns the applicable
-mechanical envelope with `published:false` and writes no generated path.
+standard error, and publish no result.
+`--dry-run` returns the applicable mechanical envelope with
+`published:false` and writes no generated path. When combined with
+`--recompute`, it performs the complete cache-independent evaluation without
+publishing either the result or the rebuilt cache.
 
 A completed published evaluation owns exactly these active generated paths:
 
@@ -2973,7 +2981,9 @@ the exact check and its `dependency_projection`. Reuse requires the exact
 cache shape, current rules version, current dependency projection, and an
 identical current check. Absence, invalid JSON, excess size, extra or malformed
 fields, an unsupported schema or rules version, or mismatched content causes
-bounded recomputation. Cache state never changes a conclusion.
+bounded recomputation. `--recompute` treats the cache as absent for reuse but
+does not delete or modify it unless the completed evaluation publishes the
+replacement generated bundle. Cache state never changes a conclusion.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, counts by every scope and

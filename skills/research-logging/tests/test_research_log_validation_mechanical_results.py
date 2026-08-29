@@ -77,17 +77,9 @@ class MechanicalResultTests(unittest.TestCase):
             ],
         )
 
-        completion = RESULTS.MechanicalCompletion.completed(record)
+        self.assertEqual(record.completion, RESULTS.CompletionState.INCOMPLETE)
 
-        self.assertEqual(completion.state, RESULTS.CompletionState.INCOMPLETE)
-
-    def test_operational_error_has_no_research_record(self) -> None:
-        completion = RESULTS.MechanicalCompletion.error("cannot acquire lock")
-
-        self.assertEqual(completion.state, RESULTS.CompletionState.ERROR)
-        self.assertIsNone(completion.record)
-
-    def test_failure_projection_contains_no_repair_scaffold(self) -> None:
+    def test_failure_payload_contains_no_repair_scaffold(self) -> None:
         failure = RESULTS.FailurePayload(
             code="producer.missing",
             subject="data/result.csv",
@@ -96,14 +88,14 @@ class MechanicalResultTests(unittest.TestCase):
             dependency="association:result",
         )
 
-        rendered = RESULTS.render_failure(failure)
+        projected = failure.as_dict()
 
-        self.assertIn("[producer.missing]", rendered)
-        self.assertIn("data/result.csv", rendered)
-        self.assertNotIn("repair", rendered.lower())
-        self.assertNotIn("suggest", rendered.lower())
+        self.assertEqual(projected["code"], "producer.missing")
+        self.assertEqual(projected["subject"], "data/result.csv")
+        self.assertNotIn("repair", projected)
+        self.assertNotIn("suggestion", projected)
 
-    def test_provisional_record_round_trips_strict_json(self) -> None:
+    def test_public_record_round_trips_strict_json(self) -> None:
         record = RESULTS.MechanicalGeneratedRecord.build(
             "docs/log.md",
             "mechanical-v2",

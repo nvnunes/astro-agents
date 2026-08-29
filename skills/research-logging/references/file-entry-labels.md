@@ -7,14 +7,14 @@ Classify every descriptive `##` section as exactly one of these forms:
 
 - **Experimental section:** Generates new evidence. It must contain `Steps:`
   and `Results:` and must not contain `Findings:`. It may also contain
-  `Background:`, `Observations:`, `Decisions:`, `Uncertainty:`, `Validation:`,
-  and `Follow-up:`. Only experimental sections enter agent-led validation.
+  `Background:`, `Observations:`, `Decisions:`, `Uncertainty:`, and
+  `Follow-up:`. Only experimental sections enter mechanical validation.
 - **Synthesis section:** Inspects, compares, audits, or combines existing
   material. It must contain `Findings:` and must not contain `Steps:`,
-  `Results:`, `Observations:`, or `Validation:`. It may also contain
+  `Results:`, or `Observations:`. It may also contain
   `Background:`, `Decisions:`, `Uncertainty:`, and `Follow-up:`. The researcher
-  validates its scientific content; agent-led validation skips the section and
-  `evidence.csv` records nothing from it.
+  validates its scientific content; mechanical validation skips the section
+  and creates no evidence target from it.
 - **Prose section:** Uses no block labels. Use it for orientation, connective
   narrative, scope, historical context, planned work, navigation, or brief
   status information. Move substantive synthesis into a synthesis section and
@@ -43,9 +43,7 @@ investigations when it is the only surviving record.
 Labels are local to their descriptive `##` section. Put content under the
 defined label it most closely matches rather than inventing a synonym. Do not
 invent content to fill a label. Omit conditional labels when they have no
-content. Place `Validation:` after `Decisions:` when present, or after the last
-experimental evidence, interpretation, or uncertainty label otherwise, and
-before `Follow-up:`.
+content.
 
 Write each label on its own line in inline code, for example `Background:`.
 
@@ -102,41 +100,6 @@ When drafting, record only researcher decisions. When reviewing, treat direct
 decisions as researcher decisions unless explicitly marked proposed,
 provisional, or agent-generated. Preserve the evidence or constraint supplied
 with the decision. Omit the label if no researcher decision exists.
-
-### `Validation:`
-
-Use this optional experimental-section label only for short persistent
-information directed to a future validation agent. Add or revise it only under
-researcher direction. Do not use it for validation status, routine caveats, or
-TODOs, and do not infer an exception merely because an artifact or workflow is
-incomplete.
-
-Use ordinary bullets. A reproduction exception identifies the exact artifact
-and affected part, comparison rule or tolerance, required match, and technical
-reason.
-
-Begin an orphan-retention note with `Retain`, then give one code-formatted
-scope: an exact file, script, retained artifact, homogeneous directory, or
-exact `<name>` token consumed by a recorded command. Keep the note in the
-experimental section that produced or used the material, and explain why the
-material remains part of that experiment's evidence. A homogeneous directory
-belongs to one experiment and one retained lifecycle or purpose; a shared file
-extension alone does not make a directory homogeneous. A valid directory note
-covers that directory's contents.
-
-For example:
-
-- valid: ``- Retain `images/pass7/` because these diagnostics document the
-  pass-7 control scan.``
-- valid: ``- Retain `<reference_grid>` because the recorded command consumes
-  this indexed input.``
-- invalid: ``- Retain `data` because it contains retained results.``
-- invalid: ``- Retain `images` because the plots may be useful.``
-
-Do not use `data`, `images`, or another heterogeneous artifact root to
-authorize unrelated retained material. Use exact-file notes or
-experiment-local homogeneous subdirectories instead. A wholly unused
-`data.csv` row is a review issue rather than an exception candidate.
 
 ### `Follow-up:`
 

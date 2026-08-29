@@ -8,15 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
-from .evidence import locator_values as legacy_locator_values
-from .locator_v2 import canonical_source_value
+from .evidence_v1_upgrade import locator_values as legacy_locator_values
+from .json_codec import canonical_json
+from .locator import canonical_source_value
 from .mechanical_values import (
     SelectionItem,
     SelectionResult,
     selection_dependency,
     source_content_identity,
 )
-from .v2_json import canonical_json
 
 CLAUSE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 VERSION_RE = re.compile(r"v(?P<version>[0-9]+):")

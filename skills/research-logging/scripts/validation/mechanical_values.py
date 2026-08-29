@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Mapping, Sequence
 
-from .v2_json import canonical_json
+from .json_codec import canonical_json
 
 
 @dataclass(frozen=True)

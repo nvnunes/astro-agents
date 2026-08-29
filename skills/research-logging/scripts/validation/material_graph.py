@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from .command_v2 import Invocation
-from .evidence_v2 import EvidenceFile, RetentionRecord
-from .v2_json import canonical_json
+from .commands import Invocation
+from .evidence import EvidenceFile, RetentionRecord
+from .json_codec import canonical_json
 
 MAX_GRAPH_NODES = 1_000_000
 MAX_GRAPH_EDGES = 4_000_000

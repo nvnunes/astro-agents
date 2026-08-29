@@ -16,8 +16,9 @@ by `docs/research-log-evidence-record-spec.md`. It owns:
 - upgrade-only v1 conformance and failure identification.
 
 It does not define an active standard-validation mode. Standard validation is
-v2-only. Encountering `evidence.csv` during standard validation produces
-`evidence.upgrade_required`; it does not invoke this reader automatically.
+v2-only. Encountering `evidence.csv` during standard validation produces the
+public `validation.upgrade_required` cutover result; it does not invoke this
+reader automatically.
 
 The active specification owns the upgrade operation, v2 `evidence.json`,
 presentation association, command-derived provenance, material hygiene,

@@ -11,8 +11,8 @@ Validation: [latest completed report](<log>/validation.md)
 ```
 
 The link contains no date, result, failure count, freshness claim, or rules
-version. Do not add a `## Validation` section or a Validation item to
-`## Contents`.
+version. It is the summary's complete validation surface and has no matching
+item in `## Contents`.
 
 The link is research-document scaffolding. Record initialization installs it.
 Record, Replace, Update Summary, and Reorganize preserve it exactly and do not
@@ -20,6 +20,9 @@ open, repair, delete, or normalize generated validation files. Validate reads
 the summary but never changes it. Before the first validation, the link may
 resolve to a report that does not yet exist.
 
-`<log>/validation.md` owns the latest completed status, including its date,
-Summary status, per-entry rows, failures, and reproducibility state. Correct
-generated records through a later validation run, never through summary edits.
+`<log>/validation.md` is the shared human projection. Its Mechanical Validation
+section shows the latest completed mechanical date, scope/status counts, and
+non-passing checks grouped by entry. Its independent Reproduction section shows
+`not_yet_run` until reproduction has its own generated result. The report has no
+combined conclusion. Correct generated records through their owning operation,
+never through summary edits.

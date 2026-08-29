@@ -21,8 +21,9 @@ A research log uses five core operations:
 3. **Update Summary** when you want the current research state and follow-ups
    brought up to date.
 4. **Review** structure, presentation, associations, and scientific meaning.
-5. **Validate** that presented computational results are intact, traceable to
-   their sources, and reproducible where applicable.
+5. **Validate** mechanically that presented computational results match their
+   declared sources, have visible provenance, and leave no unexplained retained
+   material.
 
 Reference management supports these operations when needed; it is not an
 additional stage. Reorganizing the log is part of Record because it revises
@@ -42,9 +43,15 @@ part of that workflow, not the organizing principle for the whole log.
 
 Each research log has a current Markdown summary and a directory with the same
 base name. The directory contains numbered entry folders, entry documents,
-supporting material, `evidence.csv` records that connect results to sources,
-and generated validation records. The summary describes the current state;
-entries and their saved material preserve the detailed research record.
+supporting material, evidence records that connect results to sources, and
+generated validation records. The summary describes the current state; entries
+and their saved material preserve the detailed research record.
+
+This document temporarily retains v1 `evidence.csv` authoring guidance until
+Pass 9 upgrades maintained logs and their authoring surface. The active
+validator is already v2-only: a pre-upgrade log returns
+`validation.upgrade_required` and receives no new generated files. Therefore,
+v1 evidence and the new mechanical bundle are never a supported mixed state.
 
 The minimum structure is:
 
@@ -54,7 +61,7 @@ The minimum structure is:
   entries/
 ```
 
-A populated log may contain:
+A populated pre-upgrade log may contain:
 
 ```text
 <log>.md
@@ -62,7 +69,6 @@ A populated log may contain:
   refs.bib
   scripts/
   evidence.csv
-  validation.md
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
@@ -72,6 +78,30 @@ A populated log may contain:
       images/
       scripts/
       evidence.csv
+```
+
+After its Pass 9 upgrade, the same log instead uses entry-local
+`evidence.json`, hidden presentation IDs and summary references, and the active
+generated bundle:
+
+```text
+<log>.md
+<log>/
+  validation.md
+  validation/
+    mechanical.json
+    .cache/
+      mechanical.json
+      lock
+  entries/
+    2026-05-01-e001-calibration-drift-check/
+      e001.md
+      evidence.json
+      data.csv
+      pyrun -> <installed launcher>
+      data/
+      images/
+      scripts/
 ```
 
 Create optional files and folders only when they are needed. Start navigation
@@ -230,12 +260,11 @@ those checks. It does not decide whether the science is correct.
 
 ### Validate
 
-Validation checks presented computational results and the saved workflows
-behind them. A standard check inspects the record without running research
-code. A reproduction check reruns eligible recorded commands in a temporary
-location. Validation may repeat relevant checks independently; successful
-execution during Record is not validation. Validation reports problems but
-does not repair research content.
+Mechanical validation uses code to check presented computational evidence,
+its declared sources, its visible command relationships, and unused retained
+material. It does not run research commands, judge scientific meaning, or
+perform reproduction. Semantic review and reproduction are separate workflows.
+Validation reports precise problems but does not repair research content.
 
 ## Entries and section types
 
@@ -308,17 +337,18 @@ Do not add an empty label or invent a synonym.
 | `Observations:` | In an experimental section, record patterns or interpretations grounded in that section's results. Treat agent-drafted observations as drafts until you review them. |
 | `Uncertainty:` | Record only uncertainty you intentionally retain with a result or decision; do not use it for routine caveats or unfinished work. |
 | `Decisions:` | Record your decisions and their supporting evidence or constraint. Mark proposals and provisional choices explicitly. |
-| `Validation:` | When needed, direct the agent to record a narrowly defined comparison rule or explain why a named unused file is intentionally kept. Do not put validation status here. |
 | `Follow-up:` | Record deferred work you want carried into the log-level follow-up list, not current planned work or speculative ideas. |
 
 Experimental sections require `Steps:` and `Results:` and may also use
-`Background:`, `Observations:`, `Decisions:`, `Uncertainty:`, `Validation:`,
-and `Follow-up:`; they never use `Findings:`. Synthesis sections require
+`Background:`, `Observations:`, `Decisions:`, `Uncertainty:`, and
+`Follow-up:`; they never use `Findings:`. Synthesis sections require
 `Findings:` and may use `Background:`, `Decisions:`, `Uncertainty:`, and
 `Follow-up:`. Prose sections use no labels.
 
-Place `Validation:` after `Decisions:` when present, or after the last result,
-observation, or uncertainty label, and before `Follow-up:`.
+Do not add a `Validation:` label. Active mechanical metadata belongs in the
+applicable evidence record or adjacent hidden annotation, while generated
+status belongs only in validation-owned files. Historical `Validation:` prose
+has no authority in active mechanical validation.
 
 ### Compact examples
 
@@ -824,9 +854,11 @@ link may point to a report that does not yet exist.
 
 Record, Replace, Reorganize, and Update Summary preserve this link exactly and
 never edit generated validation files. Validate reads the maintained summary
-but never changes it. The generated `<log>/validation.md` report owns the date,
-Summary status, included entry set, Integrity and Provenance counts,
-Reproducibility status, and current failures.
+but never changes it. The generated `<log>/validation.md` report contains an
+independent Mechanical Validation section with its date, scope/status counts,
+and non-passing checks, plus a separate Reproduction section. Until the
+reproduction workflow is implemented and run, that section states
+`not_yet_run`. The report has no combined conclusion.
 
 ## Reviewing a research log
 
@@ -869,232 +901,113 @@ Review checks the structure and support of the record. Validation separately
 checks whether declared sources resolve, presented results match their sources,
 and the computational history is complete. You retain authority over methods,
 interpretation, conclusions, accepted synthesis, and research direction.
-
 ## Validating a research log
 
-### What validation checks
+Mechanical validation is a code-only check of one maintained research log. It
+does not execute research commands, inspect script internals for hidden
+relationships, judge scientific meaning, or perform reproduction.
 
-Validation checks whether deliberately presented computational results are
-intact and traceable to saved source material. It asks three questions:
+`docs/research-log-evidence-record-spec.md` is the normative source of truth
+for evidence, mechanical evaluation, generated state, and the explicit upgrade
+boundary. This section is its researcher-facing operational summary.
 
-- Does each saved result exist and open correctly?
-- Can each presented result be traced through the recorded command, code,
-  settings, and inputs that produced it? This history is called provenance.
-- When reproduction is requested, can the recorded workflow regenerate the
-  result?
+### Mechanical scopes
 
-Validation recognizes evidence from the formats defined in Results and
-supporting evidence. It does not treat every file, number, command, or citation
-as evidence. It also does not judge whether a scientific method, interpretation,
-or conclusion is correct.
+The generated record keeps four conclusions independent:
 
-### How validation works
+- **Conformance** checks the active evidence-file, locator, transformation,
+  presentation-marker, command-annotation, and resource-bound contracts.
+- **Evidence** checks that each declared source selection and transformation
+  reproduces the exact supported presentation template.
+- **Provenance** checks that each evidence source is rooted in external data, a
+  model, or a simulation through visible recorded-command relationships.
+- **Hygiene** reports retained local material and data-index names that are
+  neither connected to evidence nor explicitly retained.
 
-Checks use automated inspection wherever the answer is clear. When a
-relationship cannot be established safely from file paths, commands, and file
-contents alone, an independent validation agent reviews the relevant material.
-Ambiguity is reported; it is not treated as success.
+A failure in one scope does not rewrite another scope's result. Missing,
+ambiguous, changing, unsafe, or unavailable observations remain explicit.
+Mechanical validation never asks an agent to choose a plausible interpretation.
 
-A missing or malformed required evidence record remains a failure for that
-run; interpretation cannot override it. For a marked statistic, finding the
-same number in the selected source is only a candidate match. The selected
-value must support the same claim in context before Provenance can pass.
+### Running validation
 
-Validation follows each result back through the materials needed to produce
-it. Shared inputs and code are checked once and their results are reused where
-appropriate. An explicit path into another log is external evidence of the
-log being checked: the validator observes that path directly without reading
-the other log's validation files or requiring that log to be initialized or
-current. Unused-material status remains local. A file unconnected within its
-own log is still a local validation problem even when another log refers to it.
+Use the research project's required Python environment:
 
-A standard check inspects the saved record without running research code. A
-reproduction check reruns eligible recorded commands in a temporary location
-and compares the new outputs with the saved results. The validation agent reads
-`evidence.csv` but never changes it.
+```bash
+<project-python> <validation-tool> validate \
+  --summary <log-summary>
+```
 
-### Standard and reproduction checks
+Use `--date YYYY-MM-DD` when an explicit result date is required,
+`--jobs N` to set the positive worker bound, and `--dry-run` to evaluate
+without writing generated files.
 
-Canonical validation covers one maintained log and is the only form that
-updates generated validation records. It never updates the maintained summary
-or coordinates validation of the other maintained logs.
+The structured status is one of:
 
-A standard check examines presented results, saved files, commands, code, and
-inputs without executing the research workflow. Earlier results may be reused
-when the relevant material and validation rules have not changed. If something
-has changed, only the affected checks are repeated. A complete run still
-reports every discovered problem in the log; a correct `FAIL` result means the
-check itself completed successfully.
+- `complete_clear`: evaluation completed without findings;
+- `complete_findings`: evaluation completed and found one or more precise
+  mechanical problems;
+- `upgrade_required`: the cutover preflight found v1 evidence, recognized
+  legacy generated validation metadata, or both;
+- `incomplete`: at least one required mechanical observation was unavailable.
 
-A reproduction check reruns eligible commands in a temporary location and
-compares each regenerated file with the saved result. It never overwrites
-saved research material. Slow or expensive work—such as large simulations,
-data processing, or model training—is excluded unless you request it
-explicitly. A canonical reproduction still covers the complete log inventory,
-while rerunning only the eligible workflows included in that reproduction.
-Temporary outputs are removed after comparison.
+Complete-clear, complete-findings, and upgrade-required results exit zero.
+Incomplete evaluation and tool failure exit nonzero. A correctly reported
+finding is a completed result, not a tool error.
 
-By default, reproduced outputs must be logically identical:
+The active validator accepts the v2 evidence contract. During the temporary
+cutover interval before the maintained-log upgrade, a log that still contains
+`evidence.csv` or legacy generated validation metadata returns one
+`validation.upgrade_required` result identifying every detected condition.
+It writes nothing, does not interpret legacy semantic state, and does not fall
+back to the retired validator.
 
-- text and opaque files match byte for byte;
-- figures match as decoded images;
-- CSV, JSON, FITS, HDF5, and similar structured files match in structure and
-  values.
+### Generated records
 
-An experimental section may include a short `Validation:` note when a result
-needs a different comparison rule or when an otherwise unused file is being
-kept intentionally. Name the exact file or directory, state what may differ,
-what must still match, and why. The validation agent may follow these notes but
-cannot create or relax them. Only you, or a research agent acting on your
-direction, may change them.
+A completed mechanical evaluation may publish:
 
-Place `Validation:` after `Decisions:` when present, or after the last result,
-interpretation, or uncertainty label otherwise, and before `Follow-up:`.
+```text
+<log>/
+  validation.md
+  validation/
+    mechanical.json
+    .cache/
+      mechanical.json
+      lock
+```
 
-### What gets checked
+`validation/mechanical.json` is the authoritative machine-readable record and
+uses schema `research-log-mechanical/1`. It contains every check, its precise
+failure payload when applicable, the independent scope aggregates, rules
+version, and result date.
 
-Validation reports results by entry document and stable entry ID. Split entry
-documents such as `e002a` and `e002b` remain separate.
+`validation/.cache/mechanical.json` is a disposable reuse projection with the
+independent `research-log-mechanical-cache/1` schema. Missing, corrupt, or
+unsupported cache state causes bounded recomputation and never changes the
+validation conclusion.
 
-Each saved file or collection supporting a presented result receives one row
-in `validation.md`. Several presented results may point to the same row through
-`evidence.csv`, and one result may depend on several rows. Commands, scripts,
-settings, and inputs are checked as part of the saved result they produced,
-not as separate scientific results.
+`validation.md` is the human projection. Its Mechanical Validation section
+shows completion and date, counts by scope and status, and every non-passing
+check grouped by entry. Passing check details remain in `mechanical.json`.
+Its separate Reproduction section states `not_yet_run` until reproduction has
+its own generated result. The report never combines the two operations into one
+pass/fail conclusion.
 
-A direct external input that a recorded command only consumes is a terminal
-source. It needs a stable identity and its actual use recorded, but it does not
-need an invented producing command.
+Validation publishes under one per-log lock and leaves research-owned files
+unchanged. Dry-run and incomplete evaluation publish nothing. An ordinary
+publication failure restores the prior completed bundle.
 
-When a generated input or result has several eligible recorded producers,
-validation must select the one exact command invocation that produced it. It
-does not combine alternative workflows. A change to that command or to the set
-of eligible alternatives reopens the affected Provenance result.
+### Resolving findings
 
-A directory or dataset collection may use one row when it is presented as a
-single result. Members presented separately receive separate rows. A Markdown
-table or block showing saved command output remains one presented result rather
-than one result per cell or line.
+The validation agent reports generated findings but does not edit research
+material. A research agent resolves them in a separate task using the evidence
+specification, recorded-command conventions, and the exact code, subject,
+observed state, and violated rule in `mechanical.json`. The next validation
+confirms the correction.
 
-If a marked statistic, table, or block showing saved command output has no
-valid `evidence.csv` row, validation adds a failed row identifying the
-unsupported result. If a declared source file is missing, its normal row fails
-both Integrity and Provenance. Synthesis and prose sections create no evidence
-rows. An invalid section creates one structural failure rather than partial
-results for its contents.
-
-The separate Summary table contains one row per marked statistic in the
-current summary. Each statistic must point to exactly one entry and one section
-and must not introduce a new calculation.
-
-Validation also looks for research material that is saved in the log but is
-not connected to a presented result. This includes scripts, files, and
-`data.csv` resources used by recorded commands. Validation reports such items
-as unexplained or unused material; the report uses the established label
-`Orphaned artifacts, scripts, and references`. This status is local to the log:
-use by another maintained research log does not connect the material to a
-presented result in its own log.
-
-One catch-all row is used for each affected entry folder or for the log as a
-whole. The row uses `-` for Section, `N/A` for Integrity and Reproducibility,
-`FAIL` for Provenance, and gives the number of unresolved items in Notes. The
-individual paths appear in `validation.md` under `## Remediation`. A `Validation:` note you
-approve can explain why a named item is intentionally kept.
-
-When semantic review is needed, validation emits a bounded packet containing
-only the unresolved questions and evidence needed for those decisions. The
-validator owns candidate selection and continuation; the agent fills only the
-requested decision and concise rationale fields. A decision bound to changed
-evidence or an older continuation is rejected without changing the durable
-record.
-
-Bounded review may also establish that an apparently unused item participates
-in presented work through a relationship that paths and commands could not
-show mechanically. This is different from a retention exception: the former
-records an evidence connection found during validation, while the latter
-records your explicit decision to keep an otherwise unused item.
-
-For residual material under an entry's `data/`, `images/`, or `scripts/`
-tree, validation may ask whether a proposed subtree has one lifecycle or must
-be split. A classification applies prospectively to compatible descendants;
-splitting returns immediate child folders and loose files in the next bounded
-round. The material directories themselves are containers, never subtree
-units: questions begin at their immediate subfolders, while loose files use
-exact-path review. Graph connections take precedence, followed by exact-path
-exceptions and then the most-specific compatible subtree rule.
-
-### Check results
-
-Every saved result uses three peer checks:
-
-| Check | Successful result means |
-| --- | --- |
-| Integrity | The saved result exists, can be opened safely, and has the expected structure. Figures render and collections contain their expected members. A known unsupported or prohibited format remains unresolved unless it is explicitly treated as an opaque file. |
-| Provenance | The presented result matches its declared source and can be traced through the recorded command, code, settings, and inputs. |
-| Reproducibility | The recorded workflow regenerated the result and the new output matched the saved result under the stated comparison rule. |
-
-External or compiled software can pass Provenance without inspecting its
-internal code when the exact software and version or build are identified and
-the recorded command names it. Note this limitation in Notes. Missing or
-ambiguous software version fails Provenance.
-
-A temporary access failure for an otherwise well-identified external source is
-not itself a validation failure. Note the access boundary. A missing required
-input description, saved copy, or stable source reference fails Provenance.
-
-A successful check records its most recent success date. An unsuccessful check
-reports `FAIL`. Reproducibility uses `-` when it has no current result and
-`N/A` when it does not meaningfully apply. Standard validation does not replace
-`-` with a date. Requested reproduction reruns the eligible workflows selected
-for that run; canonical reproduction retains complete-log scope.
-
-If material used by a prior reproduction result changes and reproduction is not
-requested, replace its date with `-`; do not report `FAIL` because reproduction
-was not attempted. Only `FAIL`, `-`, and `N/A` use inline code formatting in
-generated report cells. Successful dates and results use ordinary text.
-
-Before reusing an earlier result, a standard check observes the dependencies
-recorded for that outcome. New, renamed, missing, inaccessible, ambiguous, or
-changing material remains explicit. Size, modification time, and change time
-are inexpensive change-detection evidence: when all three are unchanged, the
-validator reuses the stored content identity without opening the file. When
-metadata changes, one shared hash distinguishes a byte-identical rewrite from
-a content change. Only outcomes that depend on changed content or rules reopen.
-
-### Validation report and generated files
-
-`<log>/validation.md` is the official researcher-facing record of completed
-validation results. It assembles dependency-bound observations, preserves each
-outcome's result date, and records whether the operation used standard or
-reproduction validation. It does not claim one repository-wide or whole-log
-snapshot and does not reduce the log to one overall pass-or-fail result.
-
-Near the top, `## Status Summary` gives the report-update date, Summary status,
-and one compact row per included entry. Detailed sections cover marked Summary
-statistics and every checked entry target. Counts show how many rows were
-checked and how many failed. Short notes may identify the presented result,
-explain an approved comparison rule, or state a known inspection limitation.
-Detailed problems belong under `## Remediation` in the same report.
-
-#### Details about problems
-
-The report's generated `## Remediation` section groups problems by summary or
-entry and identifies which check failed, what was found, and any specific
-unresolved paths or `data.csv` references. It is part of the durable completed
-record. A research agent resolves or disputes a finding by changing
-research-owned evidence or instructions; the next completed validation alone
-rebuilds the report.
-
-The validator also manages machine-readable state for compatible reuse,
-recovery, and semantic continuation. This state is validation-owned and is not
-intended for direct use or hand editing. Research agents preserve generated
-validation artifacts exactly; validation agents create, update, or remove
-them through the validation tool. The detailed generated-artifact contract is
-owned by
-`skills/research-logging/references/file-validation-records.md`.
-
-Compatible reused outcomes keep their original result dates, so a current
-report can legitimately contain dates older than its report-update date.
+Do not hand-edit generated records, invoke retired semantic validation code, or
+treat report existence as proof of currentness. Mechanical validation does not
+continue into semantic review or reproduction; those workflows have separate
+ownership.
 
 ## Roles and keeping validation current
 
@@ -1110,17 +1023,17 @@ unresolved. Unrelated concurrent changes do not discard compatible completed
 work. Different logs may validate concurrently, while the validation tool
 safely coordinates writes to the same log.
 
-The validation agent may read maintained summaries, entries, scripts, saved
-evidence, `data.csv`, `evidence.csv`, and authored `Validation:` notes, but it
-cannot change them. It records results only in generated validation files and
+The validation agent may read maintained summaries, entries, visible recorded
+commands, scripts as identified artifacts, saved evidence, `data.csv`, and
+evidence records, but it cannot change them or inspect script internals to
+invent associations. It records results only in generated validation files and
 reports problems without repairing the research record.
 
-The research agent may edit the research record, maintain `evidence.csv`, and,
-under your direction, add or revise an authored `Validation:` note. It never
-edits, deletes, repairs, or normalizes generated validation files and cannot
-assign a completed validation result.
+The research agent may edit the research record and maintain its evidence and
+command-association metadata. It never edits, deletes, repairs, or normalizes
+generated validation files and cannot assign a completed validation result.
 
-Research changes do not trigger validation, reproduction, broad checks, or a
+Research changes do not trigger validation, semantic review, reproduction, or
 summary update. Perform only the production check needed to keep changed
 presentation consistent with its retained source. The next Validate request
 compares outcome dependencies with saved observations, reuses compatible work,

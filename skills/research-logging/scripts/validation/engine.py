@@ -1,4 +1,4 @@
-"""Integrated internal v2 mechanical-validation engine."""
+"""Integrated mechanical-validation engine for active evidence records."""
 
 from __future__ import annotations
 
@@ -10,15 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence
 
-from .command_v2 import (
+from .commands import (
     CommandContext,
     Invocation,
     discover_commands,
     load_data_index,
     order_invocations,
 )
-from .discovery import parse_markdown_text
-from .evidence_v2 import (
+from .evidence import (
     MAX_PRESENTATIONS_PER_LOG,
     MAX_RECORDS_PER_LOG,
     MAX_SUMMARY_REFERENCES_PER_LOG,
@@ -32,17 +31,21 @@ from .evidence_v2 import (
     active_evidence_version,
     associate_presentations,
     index_direct_artifacts,
+    index_entry_documents,
+    index_entry_presentation_candidates,
     index_entry_presentations,
     index_summary_references,
+    index_summary_statistic_candidates,
     load_evidence_file,
     resolve_summary_references,
 )
-from .locator_v2 import (
+from .json_codec import canonical_json
+from .locator import (
     SourceObservation,
     evaluate_observed_locator,
     observe_source,
 )
-from .material_graph_v2 import (
+from .material_graph import (
     DataIndexSurface,
     DirectArtifactConnection,
     EvidenceConnection,
@@ -61,15 +64,15 @@ from .mechanical_results import (
     MechanicalCheck,
     MechanicalGeneratedRecord,
 )
-from .provenance_v2 import evaluate_provenance
-from .transformation_v2 import (
+from .provenance import evaluate_provenance
+from .transformation import (
     TransformationResult,
     compare_presentation,
     evaluate_transformation,
 )
-from .v2_json import canonical_json
 
 RULES_VERSION = "research-log-evidence/v2-initial"
+CACHE_SCHEMA = "research-log-mechanical-cache/1"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
 
@@ -141,11 +144,10 @@ class _ScanState:
     source_evaluations: int = 0
     timings: dict[str, float] = field(default_factory=dict)
     text_cache: dict[Path, str] = field(default_factory=dict)
-    markdown_cache: dict[Path, Mapping[str, Any]] = field(default_factory=dict)
 
 
-def mechanical_v2_policy() -> MechanicalEvaluationPolicy[MechanicalGeneratedRecord]:
-    """Return the complete internal v2 policy for ``evaluate_mechanical``."""
+def mechanical_policy() -> MechanicalEvaluationPolicy[MechanicalGeneratedRecord]:
+    """Return the active policy for ``evaluate_mechanical``."""
 
     return MechanicalEvaluationPolicy(scan=_scan, evaluate=_evaluate)
 
@@ -265,16 +267,11 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
 
 
 def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
-    parsed = _parsed_markdown(state.summary, text, state)
-    links = parsed.get("links", [])
     result: list[Path] = []
-    for link in links:
-        raw = link.get("path") if isinstance(link, Mapping) else None
-        if not isinstance(raw, str) or "/entries/" not in raw:
-            continue
-        path = Path(raw)
+    for target in index_entry_documents(text):
+        path = (state.summary.parent / target).resolve()
         if path.suffix == ".md" and ENTRY_ID_RE.fullmatch(path.stem):
-            result.append(path.resolve())
+            result.append(path)
     return tuple(dict.fromkeys(result))
 
 
@@ -365,10 +362,8 @@ def _require_complete_markers(
     text: str,
     state: _ScanState,
 ) -> None:
-    parsed = _parsed_markdown(document, text, state)
     expected = Counter(
-        (str(item["kind"]), int(item["line"]))
-        for item in parsed.get("presented_items", [])
+        (item.kind, item.line) for item in index_entry_presentation_candidates(text)
     )
     observed = Counter((item.kind, item.line) for item in indexed)
     missing = expected - observed
@@ -595,10 +590,7 @@ def _require_complete_summary_references(
     references: Sequence[SummaryReference],
     state: _ScanState,
 ) -> None:
-    parsed = _parsed_markdown(summary, text, state)
-    expected = Counter(
-        int(item["line"]) for item in parsed.get("summary_statistics", [])
-    )
+    expected = Counter(index_summary_statistic_candidates(text))
     observed = Counter(reference.line for reference in references)
     missing = expected - observed
     if missing:
@@ -943,7 +935,7 @@ def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
         "collection.manifest.invalid",
         "data_index.raw_external",
         "evidence.declaration.invalid",
-        "evidence.upgrade_required",
+        "validation.upgrade_required",
         "provenance.resource.too_large",
         "retention.declaration.invalid",
         "retention.target.missing",
@@ -977,15 +969,6 @@ def _read_text(path: Path, state: _ScanState) -> str:
     state.markdown_reads += 1
     state.text_cache[path] = text
     return text
-
-
-def _parsed_markdown(path: Path, text: str, state: _ScanState) -> Mapping[str, Any]:
-    path = path.resolve()
-    cached = state.markdown_cache.get(path)
-    if cached is None:
-        cached = parse_markdown_text(path, text, include_validation_notes=False)
-        state.markdown_cache[path] = cached
-    return cached
 
 
 def _project_root(summary: Path) -> Path:
@@ -1026,7 +1009,9 @@ def _reuse_checks(
     prior_checks = prior.get("checks") if isinstance(prior, Mapping) else None
     if (
         not isinstance(prior, Mapping)
-        or prior.get("schema") != "research-log-mechanical-cache/pass6-1"
+        or set(prior) != {"checks", "rules_version", "schema"}
+        or prior.get("schema") != CACHE_SCHEMA
+        or prior.get("rules_version") != RULES_VERSION
         or not isinstance(prior_checks, Mapping)
     ):
         return tuple(checks), 0
@@ -1039,15 +1024,15 @@ def _reuse_checks(
             check.status is CheckStatus.PASS
             and check.dependencies
             and isinstance(cached, Mapping)
+            and set(cached) == {"check", "dependency_projection"}
             and cached.get("dependency_projection") == dependency
         ):
             try:
                 previous = MechanicalCheck.from_dict(cached.get("check"))
             except (TypeError, ValueError):
-                previous = check
+                pass
             else:
-                if previous.status is CheckStatus.PASS:
-                    check = previous
+                if previous == check and previous.status is CheckStatus.PASS:
                     reused += 1
         result.append(check)
     return tuple(result), reused
@@ -1064,7 +1049,7 @@ def _cache_projection(checks: Sequence[MechanicalCheck]) -> Mapping[str, object]
             if check.status is CheckStatus.PASS and check.dependencies
         },
         "rules_version": RULES_VERSION,
-        "schema": "research-log-mechanical-cache/pass6-1",
+        "schema": CACHE_SCHEMA,
     }
 
 

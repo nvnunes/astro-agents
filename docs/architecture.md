@@ -42,11 +42,13 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
-Research logging has two parallel surfaces. `docs/research-logging.md` is the
-independently complete researcher-facing workflow and file-contract guide;
-`skills/research-logging/` is the independently complete agent implementation.
-Neither surface loads or delegates required behavior to the other. Reviews and
-focused tests maintain their alignment explicitly.
+Research logging has two parallel operational surfaces.
+`docs/research-logging.md` is the independently complete researcher-facing
+workflow guide; `skills/research-logging/` is the independently complete agent
+implementation. `docs/research-log-evidence-record-spec.md` is the shared
+normative owner for evidence and mechanical-validation contracts. The
+operational surfaces summarize that contract without redefining it. Reviews
+and focused tests maintain their alignment explicitly.
 
 ## AGENTS.md As Project Brief
 
@@ -95,7 +97,9 @@ At the project root:
   - validation requirements for changes inside `astro-agents`
 - `docs/research-logging.md`
   - researcher-facing source of truth for the complete research-log workflow
-    and durable file contracts
+- `docs/research-log-evidence-record-spec.md`
+  - normative evidence, mechanical-validation, generated-state, and upgrade
+    contract
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`
@@ -196,31 +200,30 @@ Future validation changes must preserve these invariants:
   coordination or reconciliation requirements.
 - **Explicit uncertainty:** Missing, inaccessible, or ambiguous evidence must
   remain visible and must not be treated as successful validation.
-- **Progressive work:** Retain valid completed work as it is produced. Do not
-  discard it merely because other validation work remains incomplete or later
-  work fails.
+- **Completed publication:** Publish a coherent completed mechanical bundle.
+  Incomplete evaluation does not replace the prior completed bundle, and an
+  ordinary publication failure restores it.
 - **Coherent results:** Report completion only when the human-facing result and
   its supporting validation artifacts agree. Missing or stale derived state
   must not make uncertain work appear complete.
-- **Bounded review:** Give every semantic question minimum-sufficient context,
-  keep review requests bounded, and resolve requests for more context through
-  a finite continuation.
-- **Maximum reuse:** Reuse compatible past work to minimize validation effort.
-  Use inexpensive metadata to detect possible changes, hash content when that
-  metadata changes, and revalidate only when the content or applicable rules
-  changed.
+- **Safe reuse:** Reuse a prior passing check only when the current rules,
+  dependency projection, and complete check agree exactly. Cache state is
+  disposable and may never change a conclusion. Add metadata or hashing
+  shortcuts only when retained measurements justify the extra currentness
+  machinery.
 - **Proportional cost:** Validation time should grow approximately linearly
   with the evidence examined wherever possible.
 - **On-disk state:** Validation is source-control agnostic and validates the
   research material currently present on disk.
-- **Appropriate tool use:** Maximize deterministic tool use where work can be
-  specified mechanically. Reserve agent judgment for work that requires
-  semantic interpretation.
+- **Code-only mechanical scope:** Mechanical validation uses deterministic
+  code and precise authored metadata. Semantic review and reproduction are
+  separate workflows with separate ownership.
 - **Separate write ownership:** Validation agents manage validation artifacts
   and do not modify research-log entries, scripts, or artifacts. Research
   agents manage research material and do not modify validation artifacts.
-- **Low-cost evolution:** Changes to validation rules or implementation should
-  preserve compatible validation artifacts and minimize rebuilding.
+- **Low-cost evolution:** Generated record and cache schemas evolve
+  independently. Cache state is disposable; authored evidence-format changes
+  use an explicit upgrade rather than compatibility branches in validation.
 
 ## Validation
 

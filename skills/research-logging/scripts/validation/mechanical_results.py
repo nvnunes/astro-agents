@@ -1,8 +1,8 @@
-"""Result and provisional record contracts for mechanical validation.
+"""Public result contracts for mechanical research-log validation.
 
-These contracts are internal during Pass 6. They deliberately contain no
-semantic judgments, review continuation, reproduction result, or generated
-repair instructions. Public compatibility remains a Pass 9 decision.
+The generated record contains mechanical checks only. It deliberately excludes
+semantic judgments, review continuation, reproduction results, and generated
+repair instructions.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
-GENERATED_RECORD_SCHEMA = "research-log-mechanical/pass6-1"
+GENERATED_RECORD_SCHEMA = "research-log-mechanical/1"
 
 
 class MechanicalResultContractError(ValueError):
@@ -43,7 +43,6 @@ class CompletionState(str, Enum):
     COMPLETE_CLEAR = "complete_clear"
     COMPLETE_FINDINGS = "complete_findings"
     INCOMPLETE = "incomplete"
-    ERROR = "error"
 
 
 @dataclass(frozen=True)
@@ -201,12 +200,14 @@ class ScopeResult:
     scope: CheckScope
     status: CheckStatus
     checks: int
+    counts: Mapping[str, int]
 
     def as_dict(self) -> dict[str, Any]:
         """Return the generated-record projection."""
 
         return {
             "checks": self.checks,
+            "counts": dict(self.counts),
             "scope": self.scope.value,
             "status": self.status.value,
         }
@@ -214,7 +215,7 @@ class ScopeResult:
 
 @dataclass(frozen=True)
 class MechanicalGeneratedRecord:
-    """Provisional complete mechanical record used by Pass 6 components."""
+    """Complete public record for one mechanical validation evaluation."""
 
     summary: str
     rules_version: str
@@ -255,7 +256,7 @@ class MechanicalGeneratedRecord:
         return CompletionState.COMPLETE_CLEAR
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the complete provisional record."""
+        """Return the complete public generated record."""
 
         return {
             "checks": [check.as_dict() for check in self.checks],
@@ -268,7 +269,7 @@ class MechanicalGeneratedRecord:
         }
 
     def canonical_json(self) -> str:
-        """Serialize the provisional record deterministically."""
+        """Serialize the public record deterministically."""
 
         return json.dumps(
             self.as_dict(),
@@ -298,7 +299,7 @@ class MechanicalGeneratedRecord:
 
     @classmethod
     def from_dict(cls, value: object) -> MechanicalGeneratedRecord:
-        """Read only the exact provisional schema used within Pass 6."""
+        """Read only the exact public schema version owned here."""
 
         item = _mapping(value, "generated record")
         expected = {
@@ -354,43 +355,6 @@ class MechanicalGeneratedRecord:
         return cls.from_dict(value)
 
 
-@dataclass(frozen=True)
-class MechanicalCompletion:
-    """Operation envelope separating validation meaning from tool failure."""
-
-    state: CompletionState
-    record: MechanicalGeneratedRecord | None = None
-    operational_error: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.state is CompletionState.ERROR:
-            if self.record is not None or not self.operational_error:
-                raise MechanicalResultContractError(
-                    "operational error requires only a nonempty error message"
-                )
-            return
-        if self.record is None or self.operational_error is not None:
-            raise MechanicalResultContractError(
-                "non-error completion requires only one generated record"
-            )
-        if self.state is not self.record.completion:
-            raise MechanicalResultContractError(
-                "completion state does not match generated record"
-            )
-
-    @classmethod
-    def completed(cls, record: MechanicalGeneratedRecord) -> MechanicalCompletion:
-        """Wrap one mechanically completed or incomplete record."""
-
-        return cls(state=record.completion, record=record)
-
-    @classmethod
-    def error(cls, message: str) -> MechanicalCompletion:
-        """Return an operational failure with no research conclusion."""
-
-        return cls(state=CompletionState.ERROR, operational_error=message)
-
-
 def aggregate_scopes(checks: Sequence[MechanicalCheck]) -> tuple[ScopeResult, ...]:
     """Aggregate checks independently using deterministic status precedence."""
 
@@ -406,26 +370,21 @@ def aggregate_scopes(checks: Sequence[MechanicalCheck]) -> tuple[ScopeResult, ..
             status = CheckStatus.FAIL
         else:
             status = CheckStatus.PASS
-        results.append(ScopeResult(scope=scope, status=status, checks=len(members)))
+        counts = {
+            member_status.value: sum(
+                check.status is member_status for check in members
+            )
+            for member_status in CheckStatus
+        }
+        results.append(
+            ScopeResult(
+                scope=scope,
+                status=status,
+                checks=len(members),
+                counts=counts,
+            )
+        )
     return tuple(results)
-
-
-def render_failure(failure: FailurePayload) -> str:
-    """Project one precise payload to concise human-readable text."""
-
-    observed = json.dumps(
-        dict(failure.observed),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    dependency = (
-        f" Dependency: {failure.dependency}." if failure.dependency is not None else ""
-    )
-    return (
-        f"[{failure.code}] {failure.subject}: observed {observed}. "
-        f"Violated rule: {failure.rule}.{dependency}"
-    )
 
 
 def _mapping(value: object, field: str) -> Mapping[str, Any]:

@@ -23,7 +23,6 @@ class MechanicalEvaluationRequest:
     summary_path: Path
     date: str
     jobs: int = 8
-    prior_scan: Mapping[str, Any] | None = None
     prior_cache: Mapping[str, Any] | None = None
 
 

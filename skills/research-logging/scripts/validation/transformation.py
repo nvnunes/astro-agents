@@ -10,9 +10,9 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
-from .locator_v2 import DECIMAL_TEXT_RE, INTEGER_TEXT_RE, authored_literal
+from .json_codec import V2JsonError, canonical_json, decode_json
+from .locator import DECIMAL_TEXT_RE, INTEGER_TEXT_RE, authored_literal
 from .mechanical_values import CanonicalValue, SelectionResult
-from .v2_json import V2JsonError, canonical_json, decode_json
 
 MAX_TRANSFORMATION_BYTES = 32 * 1024
 MAX_INPUT_SLOTS = 256

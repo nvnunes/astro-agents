@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from .command_v2 import Invocation, MaterialCollection
-from .v2_json import canonical_json
+from .commands import Invocation, MaterialCollection
+from .json_codec import canonical_json
 
 MAX_LINEAGE_DEPTH = 64
 

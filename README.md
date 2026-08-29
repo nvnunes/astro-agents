@@ -77,7 +77,10 @@ frontmatter is the source of truth for exact activation wording.
 - `docs/usage.md`
   - concrete adoption path for downstream projects and user-global bootstrap
 - `docs/research-logging.md`
-  - complete researcher-facing workflow and durable file contracts for research logs
+  - complete researcher-facing workflow for research logs
+- `docs/research-log-evidence-record-spec.md`
+  - normative evidence, mechanical-validation, generated-state, and upgrade
+    contract
 - `docs/architecture.md`
   - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
 - `skills/`

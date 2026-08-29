@@ -3,48 +3,40 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
 import stat
 import tempfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 LOCK_FILENAME = "validation/.cache/lock"
+PUBLISHABLE_PATHS = frozenset(
+    {
+        "validation.md",
+        "validation/mechanical.json",
+        "validation/reproduction.json",
+        "validation/.cache/mechanical.json",
+    }
+)
 
 
 class RecordPublicationError(RuntimeError):
-    """Raised when exclusive validation publication cannot complete safely."""
-
-
-@dataclass(frozen=True)
-class PublicationGuard:
-    """Staleness identity and optional currentness hook for one publication."""
-
-    expected_identity: str
-    identity_filenames: Iterable[str] | None = None
-    validate_publication: Callable[[], None] | None = None
+    """Raised when generated validation state cannot be published safely."""
 
 
 @contextmanager
-def validation_lock(output_dir: Path) -> Iterator[None]:
-    """Hold one log's nonblocking canonical-publication lock.
+def validation_lock(log_root: Path) -> Iterator[None]:
+    """Hold one log's nonblocking generated-state publication lock."""
 
-    The lock file is stable local state under the owning log. The operating
-    system releases the advisory lock automatically when the process exits.
-    """
-
-    output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = output_dir / LOCK_FILENAME
-    current = output_dir
-    for part in Path(LOCK_FILENAME).parts:
+    log_root = log_root.resolve()
+    lock_path = log_root / LOCK_FILENAME
+    current = log_root
+    for part in PurePosixPath(LOCK_FILENAME).parts:
         current /= part
         if current.is_symlink():
             raise RecordPublicationError(
-                "validation lock path must not contain a symlink"
+                f"validation publication path must not contain a symlink: {current}"
             )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
@@ -58,35 +50,6 @@ def validation_lock(output_dir: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _validated_names(filenames: Iterable[str]) -> tuple[str, ...]:
-    names = tuple(filenames)
-    if (
-        not names
-        or len(set(names)) != len(names)
-        or any(not name or Path(name).name != name for name in names)
-    ):
-        raise RecordPublicationError("publication filenames must be unique basenames")
-    return names
-
-
-def record_bundle_identity(output_dir: Path, filenames: Iterable[str]) -> str:
-    """Identify the exact present/missing content of one generated bundle."""
-
-    names = _validated_names(filenames)
-    digest = hashlib.sha256()
-    for name in sorted(names):
-        path = output_dir / name
-        digest.update(f"{name}\0".encode())
-        if not path.is_file():
-            digest.update(b"missing\n")
-            continue
-        payload = path.read_bytes()
-        digest.update(f"present\0{len(payload)}\0".encode())
-        digest.update(hashlib.sha256(payload).digest())
-        digest.update(b"\n")
-    return digest.hexdigest()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -113,64 +76,82 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _publish_one(staged: Path, destination: Path) -> None:
-    """Atomically replace or remove one generated record."""
-
-    if staged.is_file():
-        _atomic_write_bytes(destination, staged.read_bytes())
-    else:
-        destination.unlink(missing_ok=True)
-        _fsync_directory(destination.parent)
-
-
-def _validate_publication_paths(
-    staged_dir: Path, output_dir: Path, names: Iterable[str]
-) -> None:
-    if output_dir.is_symlink():
+def _publication_paths(
+    log_root: Path, outputs: Mapping[str, bytes]
+) -> tuple[tuple[str, Path, bytes], ...]:
+    if not outputs or not set(outputs) <= PUBLISHABLE_PATHS:
         raise RecordPublicationError(
-            "publication output directory must not be a symlink"
+            "validation publication contains unsupported paths"
         )
-    if staged_dir.is_symlink() or not staged_dir.is_dir():
-        raise RecordPublicationError("publication staging directory is invalid")
-    for name in names:
-        destination = output_dir / name
-        if destination.is_symlink():
+    resolved: list[tuple[str, Path, bytes]] = []
+    for relative, payload in sorted(outputs.items()):
+        if not isinstance(payload, bytes):
             raise RecordPublicationError(
-                f"publication destination must not be a symlink: {destination}"
+                f"publication payload is not bytes: {relative}"
             )
+        pure = PurePosixPath(relative)
+        if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            raise RecordPublicationError(f"invalid publication path: {relative}")
+        path = log_root.joinpath(*pure.parts)
+        current = log_root
+        for part in pure.parts:
+            current /= part
+            if current.is_symlink():
+                raise RecordPublicationError(
+                    f"validation publication path must not contain a symlink: {current}"
+                )
+        if path.exists() and not path.is_file():
+            raise RecordPublicationError(
+                f"validation publication destination is not a file: {path}"
+            )
+        resolved.append((relative, path, payload))
+    return tuple(resolved)
 
 
-def publish_record_bundle(
-    staged_dir: Path,
-    output_dir: Path,
-    filenames: Iterable[str],
-    guard: PublicationGuard,
+def publish_validation_outputs(
+    log_root: Path,
+    outputs: Mapping[str, bytes],
+    *,
+    validate_current: Callable[[], None] | None = None,
 ) -> None:
-    """Publish a staged bundle with atomic files and fail-closed interruption.
+    """Publish one bundle and restore the complete prior bundle after an error.
 
-    The caller owns the per-log publication lock. ``expected_identity`` rejects a stale
-    render packet. There is deliberately no rollback: a later canonical scan
-    rejects an incomplete bundle and rebuilds it from research inputs.
+    Each destination replacement is atomic. Process termination outside Python
+    remains subject to the normal per-file atomicity boundary.
     """
 
-    names = _validated_names(filenames)
-    _validate_publication_paths(staged_dir, output_dir, names)
-    identity_names = _validated_names(guard.identity_filenames or names)
-    if record_bundle_identity(output_dir, identity_names) != guard.expected_identity:
-        raise RecordPublicationError("canonical validation bundle changed after scan")
-    if guard.validate_publication is not None:
-        guard.validate_publication()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        for name in names:
-            _publish_one(staged_dir / name, output_dir / name)
-        if guard.validate_publication is not None:
-            guard.validate_publication()
-    except BaseException as exc:
-        if isinstance(exc, Exception):
+    log_root = log_root.resolve()
+    with validation_lock(log_root):
+        resolved = _publication_paths(log_root, outputs)
+        if validate_current is not None:
+            validate_current()
+        prior = {
+            relative: path.read_bytes() if path.is_file() else None
+            for relative, path, _ in resolved
+        }
+        attempted: list[tuple[str, Path]] = []
+        try:
+            for relative, path, payload in resolved:
+                attempted.append((relative, path))
+                _atomic_write_bytes(path, payload)
+            if validate_current is not None:
+                validate_current()
+        except Exception as exc:
+            rollback_errors: list[str] = []
+            for relative, path in reversed(attempted):
+                try:
+                    prior_payload = prior[relative]
+                    if prior_payload is None:
+                        path.unlink(missing_ok=True)
+                        _fsync_directory(path.parent)
+                    else:
+                        _atomic_write_bytes(path, prior_payload)
+                except Exception as rollback_error:  # pragma: no cover
+                    rollback_errors.append(f"{relative}: {rollback_error}")
+            detail = (
+                f"; rollback failed for {rollback_errors}" if rollback_errors else ""
+            )
             raise RecordPublicationError(
-                "validation-record publication was interrupted; "
-                "the next validation must rebuild the incomplete bundle: "
-                f"{exc}"
+                "validation publication failed and prior state was restored: "
+                f"{exc}{detail}"
             ) from exc
-        raise

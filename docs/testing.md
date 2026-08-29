@@ -87,195 +87,69 @@ The complexity check is a ratchet over explicitly recorded complexity debt. It
 allows refactoring to reduce findings, but rejects a new complex function, a
 higher complexity score, or growth in the total advisory finding count.
 
-### Research-Log Publication Boundary
+### Research-Log Mechanical Validation Boundary
 
-Treat maintained summaries, entries, `data.csv`, `evidence.csv`, scripts,
-retained evidence, scientific artifacts, and authored `Validation:` notes as
-research-owned. Canonical validation may write only the generated artifacts
+Treat maintained summaries, entries, `data.csv`, evidence records, commands,
+scripts, retained evidence, scientific artifacts, and authored prose as
+research-owned. Mechanical validation may write only the generated artifacts
 defined in
 `skills/research-logging/references/file-validation-records.md`. Research
 operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
-- every rendered report contains one canonical `## Status Summary` derived from
-  its detailed completed rows;
-- every maintained summary uses the exact stable report link directly below
-  its H1 and contains no generated `## Validation` section or Contents item;
-- target record and cache schemas reject unsupported native formats with an
-  actionable diagnostic, while cache absence or corruption remains a bounded
-  recomputation case;
-- unsupported retired artifacts fail before scanning with an actionable
-  diagnostic that directs maintainers to a pre-transition checkout;
-- component and input-projection changes reopen only outcomes that declare the
-  changed dependency, while compatible outcomes retain their original dates;
-- unchanged artifact metadata reuses recorded hashes and inspections without
-  opening artifact content, while a metadata change performs at most one
-  shared content hash;
-- progressive completed work survives interruption, unrelated change, later
-  operational failure, and semantic continuation;
-- accepted semantic decisions become durable progressively, while interrupted
-  publication retains prior valid work and local derived-state failure changes
-  no durable result;
-- validation of new state, review-session resume, semantic reuse, and
-  completion do not fully hydrate historical judgments, and exact stable-
-  subject reuse through a validated ignored index opens only mapped judgment
-  shards;
-- one log validates without maintained-summary discovery, repository-wide
-  coordination, Git state, or another log's validation files;
-- an explicit cross-log path is observed as external evidence, while a local
-  orphan remains a local problem even when another log refers to it;
-- generated semantic packets are bounded and continuation-bound, expose only
-  minimum-sufficient context, and allow the agent to edit only requested
-  decision and rationale fields;
-- prospective orphan-subtree rules apply to new compatible descendants, while
-  graph reachability, exact-path exceptions, and more-specific subtree rules
-  retain their precedence;
-- terminal cleanup preserves exact exceptions and compatible unrelated
-  history, removes permanently rule-incompatible judgments only without an
-  active continuation, retains a coherent completed result after interruption,
-  and is read-only under `--dry-run`;
-- canonical publication rejects traversal, symlink, unexpected-filename,
-  duplicate-identity, path/identity disagreement, and output-directory alias
-  attempts;
-- validation publication leaves research-owned bytes unchanged, while Record,
-  Replace, Update Summary, Reorganize, and initialization leave generated
-  validation bytes unchanged.
+- the public CLI accepts only `validate`, `--summary`, `--date`,
+  `--jobs`, and `--dry-run`;
+- complete-clear, complete-findings, and upgrade-required results exit zero,
+  while incomplete evaluation and tool failure exit nonzero;
+- v1 evidence and recognized legacy generated state produce one precise
+  `validation.upgrade_required` result, report every detected condition, and
+  write nothing;
+- the active standard route imports no semantic review, decision,
+  continuation, reproduction, legacy target-record, or v1 evidence runtime;
+- `validation/mechanical.json` uses schema
+  `research-log-mechanical/1`, while the disposable cache uses the independent
+  `research-log-mechanical-cache/1` schema;
+- cache absence, corruption, or an unsupported cache schema causes bounded
+  recomputation, and cached checks are reused only when the complete cache
+  contract, rules version, dependency projection, and check content match;
+- `validation.md` contains separate Mechanical Validation and Reproduction
+  sections, shows reproduction as `not_yet_run`, and has no combined
+  conclusion;
+- the mechanical report shows completion and date, counts by scope and status,
+  and every non-passing check grouped by entry without rendering individual
+  passing checks;
+- dry-run writes nothing, incomplete evaluation publishes nothing, and an
+  ordinary publication failure restores the prior generated bundle;
+- a pending evidence-upgrade transaction returns the nonzero
+  `upgrade.recovery.required` operational error, writes nothing, and preserves
+  the prior generated bundle;
+- validation leaves all research-owned bytes unchanged and preserves the
+  maintained summary's exact stable report link;
+- evidence comparison, provenance, summary forwarding, and unused-material
+  hygiene remain independent code-only scopes with precise failure payloads;
+- external evidence is observed as a dependency of the current log without
+  reading another log's validation state;
+- unchanged dependency projections reuse compatible passing checks, while
+  changed dependencies reopen only affected checks;
+- source observations, locator evaluations, script hashes, and command
+  discovery stay bounded and shared within one invocation; and
+- active implementation, test, fixture, command, and source-of-truth filenames
+  use stable version-neutral names. Version labels remain only in data formats,
+  schema identifiers, explicit v1 upgrade modules, and historical records.
 
-For a future validation-contract upgrade, migrate one log at a time without
-reading or validating the remaining population. Dry-run the target operation,
-inspect its reuse and hashing diagnostics, then publish that log and confirm an
-unchanged follow-up hashes zero artifact bytes and requests no semantic review.
-Retired schemas must receive an actionable unsupported-format diagnostic.
+Run the complete research-logging tool gate after any validator change. Use the
+focused controller, engine, evidence, command, locator, transformation,
+provenance, material-graph, publication, and upgrade tests during iteration.
 
-The research-log test gate enforces the artifact ownership, layout, lifecycle,
-and recovery contract defined in
-`skills/research-logging/references/file-validation-records.md`, including its
-durable-row and semantic-packet bounds.
+Wall time is diagnostic rather than an objective gate. Require bounded
+complexity, no avoidable repeated reads or hashes, correct cache reuse, and no
+asymptotic regression.
 
-The retained large-orphan workload must produce one bounded structural
-question at either size. Exact accepted measurements are recorded in
-`skills/research-logging/tests/validation-review-benchmark-baseline.json`.
-
-### Validation Review Scaling Benchmark
-
-When changing research-log candidate selection, producer-source context,
-orphan review rendering, or compact orphan decisions, run the retained
-fresh-process benchmark:
-
-```bash
-./.conda/bin/python \
-  skills/research-logging/scripts/benchmark_validation_review.py \
-  --mode public \
-  --orphans 12000 \
-  --orphans 24000 \
-  --warmups 1 \
-  --runs 3 \
-  --output tmp/validation-review-benchmark.json
-```
-
-The canonical workload has generator identity
-`ab62e7ce2285fbcfafa90f13e2f344ec73ec1c117c08155c4e04c9accfbabb9a`.
-It models nested case artifacts beneath one lifecycle-oriented training
-subtree and exercises the public subtree packet and accepted-decision path.
-Compare the retained workload sizes for approximately linear preparation and
-verify that the structural projection remains one bounded question as
-membership grows.
-
-Also require one static preparation per invocation, no more than one source
-read per unique producer script, and no repeated evaluation of the same
-invocation-target-section relationship in one query session. Record wall time
-for diagnosis, but do not use a fixed runtime threshold or compare against the
-retired aggregate workflow. Keep the generator parameters and deterministic
-counts with any accepted baseline update. The current accepted result is
-recorded in
-`skills/research-logging/tests/validation-review-benchmark-baseline.json`.
-
-Use the production-shaped session mode when changing paged acceptance,
-fingerprinting, decision translation, or post-review graph reconciliation:
-
-```bash
-./.conda/bin/python \
-  skills/research-logging/scripts/benchmark_validation_review.py \
-  --mode session \
-  --orphans 12000 \
-  --orphans 24000 \
-  --warmups 0 \
-  --runs 1 \
-  --output tmp/validation-review-session-benchmark.json
-```
-
-This diagnostic accepts every bounded page, retains accepted-fragment judgment
-identities, merges the complete session, translates mixed orphan decisions,
-applies the canonical bulk action, and performs required graph reconciliation.
-Its workload includes commands, an entry-wide data index, validation-note
-state, complete orphan inventory, pending orphan rows, and exact subtree
-questions. It is intentionally more expensive than the retained preparation
-benchmark and is not part of the routine tool gate. Record its phase timings
-when investigating final-acceptance scaling.
-
-Use the isolated reusable-application benchmark when changing durable answer
-projection, producer-binding verification, or semantic action application:
-
-```bash
-./.conda/bin/python \
-  skills/research-logging/scripts/benchmark_validation_review.py \
-  --reuse-application \
-  --reuse-targets 100 \
-  --reuse-targets 200 \
-  --warmups 1 \
-  --runs 3 \
-  --output tmp/validation-reuse-application-benchmark.json
-```
-
-The benchmark creates deterministic in-memory scan, adjudication, and judgment
-records and does not scan research evidence. At each size, require one answer,
-one action, and one applied pass per question, zero reuse misses, and an empty
-residual queue. Record action-construction and action-application wall times for
-diagnosis, but judge correctness by the stable counts and do not impose a fixed
-runtime threshold on a busy host.
-
-Measure the retained activity logger independently when production wall times
-are not comparable:
-
-```bash
-./.conda/bin/python \
-  skills/research-logging/scripts/benchmark_validation_review.py \
-  --activity-overhead \
-  --activity-cycles 100 \
-  --warmups 0 \
-  --runs 5 \
-  --output tmp/validation-activity-overhead.json
-```
-
-This paired diagnostic runs identical controller-shaped phase, operation, and
-checkpoint sequences with logging disabled and enabled. Use per-event overhead
-to judge the retained logger; do not substitute results from a busy host for
-the production review-scaling baseline.
-
-### Opt-in Review Diagnostics
-
-For a maintainer investigation of semantic review demand, add
-`--review-diagnostics` to the public `validate` command. This opt-in mode adds
-transient lifecycle counts, reuse-miss categories, conservative shadow-policy
-matches, page/context measurements, and reviewer-wait timing to the structured
-result and terminal activity event. It may write an issue timestamp only to an
-active review session's transient cache state. Do not use it for routine
-validation or make validation results depend on its measurements.
-
-Performance changes must continue to load existing monolithic session indexes,
-accepted fragments, manifests, caches, and immutable row shards without
-migration or regeneration. New sessions may use optional hash-verified item
-shards, but saved artifacts must not require conversion.
-
-Historical manifests that contain the same exact judgment row in different
-immutable shards must coalesce that row in memory without rewriting saved
-artifacts. A conflicting row with the same identity remains invalid.
-
-Use `skills/research-logging/tests/presented-evidence-cases.md` as the focused
+Use
+`skills/research-logging/tests/presented-evidence-cases.md` as the focused
 manual behavior cases for Record, Replace, Update Summary, Review, and Validate
 changes.
-
 ## Codex Runtime Discovery
 
 Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:

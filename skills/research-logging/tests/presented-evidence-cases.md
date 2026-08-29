@@ -159,9 +159,9 @@ of the replacement boundary without explicit authorization.
 ## Section Types
 
 An experimental section contains both `Steps:` and `Results:` and may contain
-`Observations:`. It enters agent-led validation. A synthesis section contains
+`Observations:`. It enters mechanical validation. A synthesis section contains
 `Findings:` without experimental labels; its prose, tables, statistics, and
-links receive no evidence rows or validation targets. A prose section contains
+links receive no evidence records or validation targets. A prose section contains
 no block labels and is also skipped.
 
 A section with `Findings:` plus `Steps:` or `Results:`, only one of `Steps:`
@@ -173,25 +173,43 @@ and heading, and retains a failed structural target until review repairs it.
 
 Given a `bash` command under `Steps:` that ends with
 `2>&1 | tee data/run.log` and a `text` excerpt under `Results:`, record accepts
-the form and adds one `output` row to entry-level `evidence.csv` with
-`data/run.log` as its only source. Review checks the row shape. Validation
-remains responsible for verifying the excerpt-to-log association.
+the form, puts one stable `eid` marker immediately before the fence, and adds
+one `output` record to entry-level `evidence.json` with `data/run.log` as its
+only source. Review checks the marker and record shape. Validation verifies the
+excerpt-to-log association.
 
 Given only a `text` excerpt under `Results:` with a statement that an agent
 copied terminal output, review reports that the recorded command did not retain
 the source output.
 
+Given a command option such as `--output-summary-csv data/results.csv` or
+`--catalog-input data/catalog.csv`, the leading or trailing role token makes
+the exact path relationship discoverable. Record prefers this natural naming
+when maintaining the real command interface.
+
+Given a real interface whose natural option is `--results data/results.csv`,
+Record preserves the command and places
+`<!-- command results = output -->` immediately after the fence. It does not
+rename only the recorded command. An annotation may also identify positional,
+directory, manifest, model, or simulation roles.
+
+Given several commands in one fence, an annotation uses `command-N` to select
+only the command that needs it. Commands without annotations require no empty
+placeholder. Validation does not inspect script internals to infer a missing
+relationship.
+
 ## Statistics
 
 Given "MSE was `0.184` for `seed=42`", the result expression is presented
-evidence and the visibly named parameter is not. Given "MSE was 0.184", review
-reports an apparent unmarked result. Given a derived claim such as `14.3%
-lower`, record requires that the derived value already exist in one retained
-artifact and adds one `statistic` evidence row naming that artifact.
+evidence only when one adjacent `eid` marker names its entry record; the visibly
+named parameter is not. Given "MSE was 0.184", review reports an apparent
+unmarked result. Given a derived claim such as `14.3% lower`, Record requires
+that the derived value already exist in one retained artifact and adds one
+`statistic` record naming that artifact.
 
 Given a numerical result in a Results table that is discussed again under
 `Observations:`, the prose occurrence is independently marked and indexed.
-The table's evidence row does not exempt or absorb the prose statistic.
+The table's evidence record does not exempt or absorb the prose statistic.
 
 ## Tables And Artifacts
 
@@ -200,73 +218,64 @@ evidence. The same form outside `Results:` is not a validation target; review
 reports it only when the content appears intended as evidence.
 
 A presented table may select columns, reorder rows, round values, and reformat
-Markdown from one or more retained sources. Record adds one `table` evidence
-row that identifies every source and any necessary locators or transformation.
-A new derived column without a retained source is not acceptable.
+Markdown from one or more retained sources through a supported table recipe.
+Record puts one stable `eid` marker immediately before the table and adds one
+`table` record that identifies every source, locator, and transformation. A new
+derived column without a retained source is not acceptable.
 
-An image embed or artifact link under `Results:` receives no evidence row. Its
-target must resolve directly through a recorded command or `data.csv`; an
-evidence row cannot repair an unresolved target.
+An image embed or artifact link under `Results:` receives no evidence record or
+marker. Its target must resolve directly through a recorded command or
+`data.csv`; an evidence record cannot repair an unresolved target.
 
 ## Summary
 
 A summary may contain a backticked numerical statistic already supported by
-exactly one entry section and link the point to that entry. Update Summary adds
-one row to log-level `evidence.csv`. Record does not add, change, or remove that
-row merely because entry evidence changes. Review reports a summary table,
-image, generated-output fence, artifact link, newly calculated statistic,
-statistic without entry support, or malformed summary evidence row.
+exactly one entry record or exact numerical table cell. Update Summary places an
+adjacent hidden `ref` naming the entry and evidence ID, plus one-based row and
+column coordinates for a table cell. There is no summary evidence file. Review
+reports a summary table, image, generated-output fence, artifact link, newly
+calculated statistic, statistic without entry support, or malformed reference.
 
 ## Source Locators
 
-Given a CSV record selected by `case=1 NGS center, R=17.0; field=value`, the
-comma remains part of the exact filter value. Given several exact values or
-result fields, the locator uses `|` without surrounding spaces. It never uses a
-comma as a list separator.
+Given a CSV record, the locator uses structured `where` conditions and ordered
+`select` paths. A filter value such as `1 NGS center, R=17.0` remains one exact
+JSON string rather than participating in a delimiter language. Several values
+use an `in` condition; several result fields use several `select` paths.
 
-Given a table whose filter column is named `field`, `fields`, `path`,
-`property`, or `text`, the locator prefixes that filter with `where.`, as in
-`where.field=validation_error_percent; field=absolute_difference`. The
-unprefixed reserved name continues to select the result field or structured
-operation.
+Given JSON or a scientific container, the locator uses path arrays with exact
+mapping keys, indexes, slices, or dataset components. Structural evidence uses
+only the supported `property` operation with its declared expectations.
 
-Given a JSON or container value, the locator uses `path=` with dot-separated
-keys and optional indexes or slices. `path=$` selects the root. A root list of
-records or aligned NPZ arrays may use exact filters followed by `field=` or
-`fields=`. Relative structured fields may traverse nested JSON keys or HDF5
-dataset paths. Dataset counts and shapes use only `property=shape`,
-`property=shape[n]`, or `property=size`.
-
-Given a retained log excerpt, the locator uses `text=` with a distinctive
-literal fragment. A locator may be absent only when the whole artifact narrowly
-and unambiguously supports the presented item. Review reports free-form locator
-prose, ambiguous delimiters, or a missing locator for a broader artifact.
+Given a retained log excerpt, the locator uses the supported exact text
+selection and occurrence. Every evidence source has a bounded locator. Review
+reports free-form selector prose, ambiguous or over-broad selection, and
+missing identity or cardinality constraints where the relationship can drift.
 Validation never deserializes pickle evidence and instead requires a retained
-CSV or JSON producer summary.
+safe producer summary.
 
 ## Evidence Record Maintenance
 
-When Record or Replace changes an entry heading or presented item, it updates
-the affected entry-level rows in the same operation. When it removes presented
-evidence, it removes the row and deletes a header-only file. When an artifact
-changes at the same path without invalidating the declared locator, it leaves
-the row unchanged. The later Validate operation detects the content change
-from saved fingerprints.
+When Record or Replace changes a presented item, it keeps the stable evidence
+ID when identity is unchanged and updates its marker and entry record in the
+same operation. When it removes presented evidence, it removes both and deletes
+an empty `evidence.json`. A heading change alone does not change evidence
+identity. A document move updates `document`; a source or presentation change
+updates only the affected record fields.
 
-Given an approved Reorganize move or heading change that makes an `entry` or
-`section` value stale in a log-level evidence row, Reorganize repairs only that
-identifier through Record-content and presented-evidence guidance. It does not
-change the statistic, transformation, summary wording, or set of summary
-evidence rows.
+Given an approved Reorganize move, Reorganize preserves stable evidence IDs and
+repairs document paths or summary entry references that became stale. It does
+not change the statistic, transformation, summary wording, or set of summary
+references without separate authority.
 
 Review reports missing, duplicate, extra, malformed, or structurally stale
-rows. It checks selector uniqueness, kind values, source cardinality, and source
-syntax but does not decide whether the evidence matches the source. Validation
-resolves the source, checks the locator and transformation, and verifies logical
-equivalence and provenance. Neither Review nor Validate edits an evidence row;
-a requested repair routes to Record or Replace for an entry-level row and
-Update Summary for a log-level row. An ambiguous association is reported rather
-than guessed or recorded.
+records, markers, and references. It checks ID uniqueness, kind values, source
+cardinality, and syntax but does not decide whether the evidence scientifically
+supports the prose. Validation resolves the source, locator, transformation,
+presentation, and provenance. Neither Review nor Validate edits an evidence
+record; a requested repair routes to Record or Replace for entry evidence and
+Update Summary for a summary reference. An ambiguous association is reported
+rather than guessed.
 
 ## Validation Publication Boundary
 
@@ -276,14 +285,14 @@ below the title. It does not create a validation-status section or report.
 
 Given a Record request to synchronize an out-of-date Markdown table with an
 already regenerated artifact, Record changes the table, its evidence-based
-observations, and an `evidence.csv` row only when the row's selector, section,
+observations, and its `evidence.json` record only when the record's document,
 source, locator, or transformation changed. It performs the narrow production
 check needed to confirm the presentation matches the retained source. It does
 not run validation, change the fixed report link, or edit generated records.
 
-Given a source file whose values changed while the evidence selector, section,
+Given a source file whose values changed while the evidence ID, document,
 source, locator, and transformation remain correct, Record leaves the
-`evidence.csv` row unchanged and preserves the fixed report link and all
+`evidence.json` record unchanged and preserves the fixed report link and all
 generated validation files byte-for-byte.
 
 Given a new entry created after the latest report date, Record adds no `NOT RUN`
@@ -299,64 +308,48 @@ Given an existing generated failure report, Record, Replace, Update Summary,
 and Reorganize leave it unchanged. The next Validate request alone may rebuild
 or remove it from current outcomes.
 
-## Mechanical-First Validation
+## Mechanical Validation
 
-Given a complete `evidence.csv` row whose source exists, parses in a known
-format, and is produced through a statically resolved recorded command,
-validation completes the deterministic checks before requesting agent review.
-It sends only equivalence or provenance details that the tool cannot decide
-reliably to semantic fallback.
+Given current evidence whose source, locator, transformation, presentation
+marker, command relationship, and retained-material graph satisfy the
+specification, validation completes through code without agent judgment.
 
-Given a locator-selected statistic that differs only by recorded rounding,
-percentage conversion, scientific notation, or unit formatting, validation may
-establish logical equivalence mechanically. A table transformation, compound
-custom structure, ambiguous locator, or uncertain workflow connection remains
-unresolved for bounded semantic review.
+Given a supported presentation that differs from its selected source through an
+approved percentage, rounding, notation, unit, interval, tuple, uncertainty, or
+table transformation, validation applies the declared deterministic form.
+An unsupported or ambiguous declaration fails precisely; validation does not
+choose a plausible alternative.
 
-Given an apparent mechanical failure, the validation agent reviews the
-reported context before retaining `FAIL`. The agent may correct the temporary
-adjudication when the tool result is a false positive, but it never modifies
-the entry, artifact, producer, `data.csv`, or `evidence.csv`.
+Given a mechanical finding, the validation agent reports the exact code,
+subject, observed state, violated rule, and dependency cause from the generated
+record. The validation agent does not override the result or edit research
+material. A research agent resolves the issue separately and reruns Validate.
 
-Given a nonempty review queue, validation first generates a compact packet of
-presented context, locator-selected values, structural results, and candidate
-commands. The packet helps the agent make bounded semantic decisions; it does
-not turn a candidate command or matching numeral into a successful check.
+Given complete findings, the CLI exits zero and publishes
+`validation/mechanical.json`, its disposable cache, and `validation.md`.
+Given an unavailable required observation, it returns `incomplete`, exits
+nonzero, and leaves the prior completed bundle unchanged. Dry-run always writes
+nothing.
 
-Given unchanged successful checks, validation reuses their dates only after
-mechanically reconciling the current scope and fingerprints. A changed entry,
-association record, artifact, producer, input, or cached Summary locator
-invalidates only the affected checks.
+Given unchanged successful checks, validation reuses a check only when its
+complete dependency projection and active rules version still match. A changed
+presentation, evidence declaration, artifact, command relationship, input, or
+script identity reopens only dependent checks.
 
-Given a cached outcome and a later change to its presented item or
-`evidence.csv` association, validation compares that outcome's stored
-dependency identities with the current identities and reopens it. Rendering
-some other updated outcome never refreshes the changed dependency snapshot
-around the old result.
+Given a recorded command connected to evidence, visible exact output arguments
+and deterministic collections enter the material graph. Script internals are
+irrelevant. An ambiguous output directory or unsupported collection
+relationship fails until research-owned metadata makes the relationship exact.
 
-Given a newly recorded command that produces an existing evidence artifact,
-validation detects the changed dependency contract and reopens the affected
-Provenance outcome even when every previously known dependency identity is
-unchanged.
+Given a file outside the validated log and consumed by an active recorded
+workflow, validation treats it as external evidence for the current log. It
+does not inspect another log's validation state or use that external reference
+to change orphan classification in the file's owning log.
 
-Given a command established as part of a used evidence workflow, its declared
-sibling outputs and shell capture logs are not orphans. If the workflow
-consumes an upstream generated artifact, validation follows that artifact to
-its producer and applies the same rule there. A directory connects only the
-members selected during bounded collection review.
-
-Given a file outside the validated log and consumed by one of its active
-recorded workflows, validation observes that file as external evidence for the
-current log. It does not inspect another log's validation state or use that
-external reference to change orphan classification in the file's owning log.
-Changing an unrelated log does not invalidate the current log unless one of
-the current log's recorded dependencies changed.
-
-Given same-named local modules under directories added by consecutive
-`sys.path.insert(0, ...)` calls, validation follows the module found through
-the effective final path order. The module under the last inserted directory
-is used; a shadowed same-named module remains an orphan candidate unless some
-other active workflow reaches it.
+Given retained material not connected to evidence, a visible command
+relationship, a data-index input, or an explicit retention declaration,
+validation reports the exact residual path as a hygiene finding. Mechanical
+validation never asks an agent to classify the orphan semantically.
 
 ## Data Index
 

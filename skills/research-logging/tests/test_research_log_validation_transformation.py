@@ -8,9 +8,9 @@ from pathlib import Path
 from research_log_validation_test_support import unittest
 
 VALUES = importlib.import_module("validation.mechanical_values")
-TRANSFORM = importlib.import_module("validation.transformation_v2")
-V2JSON = importlib.import_module("validation.v2_json")
-CORPUS = Path(__file__).parent / "fixtures" / "transformation-v2-retained-corpus.json"
+TRANSFORM = importlib.import_module("validation.transformation")
+V2JSON = importlib.import_module("validation.json_codec")
+CORPUS = Path(__file__).parent / "fixtures" / "transformation-retained-corpus.json"
 
 
 def _selection(

@@ -8,7 +8,7 @@ from pathlib import Path
 from research_log_validation_test_support import write
 
 UPGRADE = importlib.import_module("validation.evidence_upgrade")
-V2 = importlib.import_module("validation.evidence_v2")
+V2 = importlib.import_module("validation.evidence")
 
 
 def legacy_log(root: Path) -> tuple[Path, Path, Path]:

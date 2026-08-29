@@ -43,7 +43,7 @@ Use this Record routing map:
   `references/file-entry-labels.md` and `references/research-log-writing.md`.
 - Scripts, figures, or serialized artifacts: read `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
-- Presented results or `evidence.csv`: read
+- Presented results or evidence records: read
   `references/file-presented-evidence.md`. A numerical result in experimental
   prose is separate evidence even when the same value appears in a Results
   table.
@@ -69,10 +69,9 @@ Choose the core operation:
   follow-ups in the log summary: read `references/operation-update-summary.md`.
 - Research-log structure, consistency, synthesis, or writing review: read
   `references/operation-review.md`.
-- Agent-led validation or reproduction checking: read
-  `references/operation-validate.md`. Use its single public validation
-  operation; when semantic review is requested, edit only the generated
-  decision and rationale fields and continue through that same operation.
+- Independent mechanical validation: read
+  `references/operation-validate.md`. Validate is code-only and never becomes
+  semantic review or reproduction. Those remain separate workflows.
 
 For standalone reference lookup, viewing, or candidate management, read
 `references/operation-reference.md`. During Record, route citation and BibTeX
@@ -95,8 +94,8 @@ Safety rules:
 - Do not invent evidence, validation, references, results, uncertainty, decisions, or conclusions.
 - Do not use generative AI to create data, results, figures, or citations.
 - Treat maintained summaries, entries, evidence records, scripts, artifacts,
-  and authored `Validation:` notes as research-owned. Research operations never
-  edit generated validation files; Validate reads research files and writes
+  and authored prose as research-owned. Research operations never edit
+  generated validation files; Validate reads research files and writes
   only the generated files defined in `references/file-validation-records.md`.
 - Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.

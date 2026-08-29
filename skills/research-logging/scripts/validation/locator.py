@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, NoReturn, Sequence, cast
 
+from .json_codec import V2JsonError, canonical_json, decode_json
 from .mechanical_values import (
     CanonicalValue,
     SelectionItem,
@@ -30,7 +31,6 @@ from .mechanical_values import (
     source_content_identity,
     string_value,
 )
-from .v2_json import V2JsonError, canonical_json, decode_json
 
 MAX_LOCATOR_BYTES = 8 * 1024
 MAX_PATHS = 256

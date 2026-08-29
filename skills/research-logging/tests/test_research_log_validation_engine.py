@@ -7,11 +7,10 @@ from pathlib import Path
 
 from research_log_validation_test_support import mock, unittest, write
 
-ENGINE = importlib.import_module("validation.engine_v2")
+ENGINE = importlib.import_module("validation.engine")
 MECHANICAL = importlib.import_module("validation.mechanical")
 RESULTS = importlib.import_module("validation.mechanical_results")
-LOCATOR = importlib.import_module("validation.locator_v2")
-DISCOVERY = importlib.import_module("validation.discovery")
+LOCATOR = importlib.import_module("validation.locator")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -80,7 +79,7 @@ def _evaluate(summary: Path, *, prior_cache: object = None) -> object:
         MECHANICAL.MechanicalEvaluationRequest(
             summary, "2026-08-29", prior_cache=prior_cache
         ),
-        ENGINE.mechanical_v2_policy(),
+        ENGINE.mechanical_policy(),
     )
 
 
@@ -283,7 +282,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in legacy.result.checks
                 if check.failure is not None
             ]
-            self.assertEqual(legacy_failures, ["evidence.upgrade_required"])
+            self.assertEqual(legacy_failures, ["validation.upgrade_required"])
 
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
@@ -382,6 +381,54 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ]
             self.assertIn("lineage.missing", codes)
 
+    def test_cross_log_evidence_reads_only_the_external_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            external_root = root / "docs" / "other"
+            external_source = external_root / "entries/e001/data/results.csv"
+            external_state = external_root / "validation/manifest.json"
+            write(external_source, "success_rate\n0.676\n")
+            write(external_state, "not valid validation state\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text())
+            evidence["records"][0]["sources"][0]["source"] = (
+                "<project>/docs/other/entries/e001/data/results.csv"
+            )
+            write(evidence_path, json.dumps(evidence) + "\n")
+            original_read_bytes = Path.read_bytes
+            original_read_text = Path.read_text
+
+            def guarded_read_bytes(path: Path) -> bytes:
+                if path.resolve() == external_state.resolve():
+                    raise AssertionError("external validation state was read")
+                return original_read_bytes(path)
+
+            def guarded_read_text(
+                path: Path, encoding: str | None = None, errors: str | None = None
+            ) -> str:
+                if path.resolve() == external_state.resolve():
+                    raise AssertionError("external validation state was read")
+                return original_read_text(path, encoding=encoding, errors=errors)
+
+            with mock.patch.object(Path, "read_bytes", guarded_read_bytes):
+                with mock.patch.object(Path, "read_text", guarded_read_text):
+                    evaluation = _evaluate(summary)
+
+            evidence_check = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            provenance_check = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(evidence_check.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance_check.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evaluation.metrics["source_reads"], 1)
+
     def test_malformed_annotation_has_complete_precise_failure_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -417,17 +464,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertNotIn(f"validation.{forbidden}", source)
                 self.assertNotIn(f"from .{forbidden}", source)
 
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            with mock.patch.object(
-                DISCOVERY,
-                "_validation_notes",
-                side_effect=AssertionError("legacy Validation notes were inspected"),
-            ):
-                evaluation = _evaluate(summary)
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+        self.assertNotIn("from .discovery", source)
 
     def test_unchanged_dependency_results_reuse_and_changed_script_reopens(
         self,
@@ -446,6 +483,28 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertEqual(
                 changed.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+
+    def test_cache_reuse_requires_exact_current_check_and_cache_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            first = _evaluate(summary)
+            corrupted_cache = json.loads(json.dumps(first.scan["cache"]))
+            for cached in corrupted_cache["checks"].values():
+                cached["check"]["subject"] = "wrong subject"
+
+            corrupted = _evaluate(summary, prior_cache=corrupted_cache)
+            extra_cache = json.loads(json.dumps(first.scan["cache"]))
+            extra_cache["extra"] = True
+            extra_field = _evaluate(summary, prior_cache=extra_cache)
+
+            self.assertEqual(corrupted.metrics["checks_reused"], 0)
+            self.assertEqual(extra_field.metrics["checks_reused"], 0)
+            self.assertEqual(
+                corrupted.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+            self.assertEqual(
+                extra_field.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
 
 

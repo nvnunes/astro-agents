@@ -6,8 +6,8 @@ from pathlib import Path
 
 from research_log_validation_test_support import unittest, write
 
-COMMAND = importlib.import_module("validation.command_v2")
-PROVENANCE = importlib.import_module("validation.provenance_v2")
+COMMAND = importlib.import_module("validation.commands")
+PROVENANCE = importlib.import_module("validation.provenance")
 
 
 def _context(root: Path, data_index: dict[str, str] | None = None) -> object:

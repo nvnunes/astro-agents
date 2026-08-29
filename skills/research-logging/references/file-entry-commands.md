@@ -54,6 +54,57 @@ Expose every retained entry-local output through a stable relative path value
 in the command. A collection may use a directory or manifest path value. A
 retained command log may instead use an explicit shell capture target.
 
+Make evidence-relevant input and output relationships mechanically visible.
+Prefer a natural option name whose complete leading or trailing token is
+`input` or `output`, such as `--input-data`, `--catalog-input`,
+`--output-summary-csv`, or `--image-output`. The role applies to that exact path
+argument only. Do not rename an option merely in the recorded Markdown; the
+recorded command must continue to match the real interface and the command
+actually run.
+
+When natural naming is unavailable or a command needs a type, positional role,
+directory role, manifest role, or explicit override, put one hidden annotation
+immediately after its command fence:
+
+```html
+<!-- command type = model; catalog = input; results = output -->
+```
+
+For a fence containing several independent commands, add the one-based command
+number only where an annotation is needed:
+
+```html
+<!-- command-1 results = output -->
+<!-- command-3 type = simulation; summary-csv = input; @2 = output -->
+```
+
+Option targets omit leading hyphens. Positional targets use `@N`, counting
+positional arguments after the executable or script token. Supported roles are
+`input`, `output`, `input-directory`, `output-directory`, `input-manifest`, and
+`output-manifest`. Use directory roles only when the entire non-empty directory
+has one direction and an output directory belongs to one producer. A manifest
+is a UTF-8 CSV with the exact header `path` and paths relative to the manifest's
+parent directory.
+
+Use `type = model` for a command that originates data by evaluating or sampling
+a model or mathematical relationship. Use `type = simulation` for a command
+that originates data through a simulated process. A project-local script named
+`simulate`, `simulation`, `simulate_*`, or `simulation_*` is recognized as a
+simulation without an annotation. Code is never inspected to infer these
+relationships.
+
+A model or simulation type establishes a generated provenance root; it does
+not hide the command's mechanically visible inputs. Those inputs must still
+trace to earlier generated outputs or to named external data. A resolved
+external `data.csv` input is trusted at that boundary, and validation does not
+attempt to reconstruct its earlier provenance.
+
+Annotations classify material already visible in the selected command. They do
+not bind a producer by name, extract a path from an opaque `label=path` value,
+or excuse a missing command relationship. Prefer the option-name convention
+when it keeps the real command interface natural; use an annotation as the
+explicit fallback.
+
 Use prose for the question, rationale, controlled relationship, selection
 criteria, and interpretation. Do not repeat a visible CLI parameter inventory.
 

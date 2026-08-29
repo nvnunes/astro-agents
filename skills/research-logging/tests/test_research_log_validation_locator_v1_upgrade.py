@@ -8,6 +8,7 @@ from pathlib import Path
 from research_log_validation_test_support import write
 
 V1 = importlib.import_module("validation.locator_v1_upgrade")
+LEGACY = importlib.import_module("validation.evidence_v1_upgrade")
 
 
 class LocatorV1UpgradeTests(unittest.TestCase):
@@ -46,6 +47,16 @@ class LocatorV1UpgradeTests(unittest.TestCase):
             self.assertEqual(result.effective_version, "v1")
             self.assertEqual(result.locator_identity, "v1:case_id=15; field=score")
             self.assertEqual(result.items[0].value.value, "0.95")
+
+    def test_isolated_reader_contains_only_locator_owned_v1_behavior(self) -> None:
+        for retired in (
+            "mechanical_evidence_support",
+            "normalized_text_equivalence",
+            "numeric_equivalence",
+            "table_equivalence",
+        ):
+            with self.subTest(retired=retired):
+                self.assertFalse(hasattr(LEGACY, retired))
 
 
 if __name__ == "__main__":

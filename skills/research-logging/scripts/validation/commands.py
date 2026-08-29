@@ -1,1221 +1,1016 @@
-"""Recorded-command parsing and local script dependency discovery."""
+"""Bounded v2 recorded-command discovery without script-internal inference."""
 
 from __future__ import annotations
 
-import ast
-import os
+import csv
+import hashlib
 import re
 import shlex
-import tempfile
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
+from typing import Mapping, MutableMapping, NoReturn, Sequence
 
-from .discovery import (
-    PATH_SUFFIXES,
-    TOKEN_RE,
-    data_index_path,
-    resolve_reference,
-)
-from .discovery import (
-    data_index as _data_index,
-)
-from .discovery import (
-    expand_local_tokens as _expand_local_tokens,
-)
-from .python import python_local_dependencies
+from .json_codec import canonical_json
 
-SCRIPT_SUFFIXES = frozenset({".ipynb", ".jl", ".m", ".py", ".r", ".sh"})
-IGNORED_SCRIPT_PARTS = frozenset(
-    {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+MAX_INVOCATIONS_PER_FENCE = 64
+MAX_INVOCATIONS_PER_LOG = 1000
+MAX_RELATIONSHIPS = 128
+MAX_COLLECTION_MEMBERS = 100_000
+MAX_COMMAND_BYTES = 1024 * 1024
+MAX_FENCE_BYTES = MAX_COMMAND_BYTES * MAX_INVOCATIONS_PER_FENCE
+MAX_PATH_BYTES = 512
+
+FENCE_RE = re.compile(r"^(?P<marker>`{3,}|~{3,})(?P<info>[^`~]*)$")
+HEADING_RE = re.compile(r"^##[ \t]+.+$")
+BLOCK_LABEL_RE = re.compile(r"^[ \t]*`(?P<label>Steps|Results):`[ \t]*$")
+ANNOTATION_RE = re.compile(
+    r"<!-- command(?P<ordinal>-[1-9][0-9]*)? (?P<body>.*?) -->\Z",
+    re.DOTALL,
 )
-PATH_PRESERVING_CALLS = frozenset(
+TARGET_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+POSITIONAL_RE = re.compile(r"@(?P<number>[1-9][0-9]*)\Z")
+ASSIGNMENT_RE = re.compile(r"(?P<target>[^=;]+) = (?P<value>[^=;]+)\Z")
+ENVIRONMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*\Z")
+ROLE_TOKENS = frozenset(
     {
-        "absolute",
-        "expanduser",
-        "joinpath",
-        "path",
-        "resolve",
-        "with_name",
-        "with_suffix",
+        "input",
+        "output",
+        "input-directory",
+        "output-directory",
+        "input-manifest",
+        "output-manifest",
     }
 )
+SHELL_LANGUAGES = frozenset({"bash", "console", "sh", "shell", "zsh"})
+SIMULATION_STEMS = ("simulate", "simulation")
+
+
+class CommandV2Error(ValueError):
+    """One precise command-discovery or collection failure."""
+
+    def __init__(self, code: str, subject: str, observed: object, rule: str):
+        super().__init__(f"{code}: {subject}: {observed}")
+        self.code = code
+        self.subject = subject
+        self.observed = observed
+        self.rule = rule
 
 
 @dataclass(frozen=True)
-class _PathArgumentContext:
-    interface: Optional[Dict[str, Any]]
-    entry_path: Path
-    project_root: Path
-    data_index: Dict[str, Any]
-    workspace_roots: frozenset[Path]
+class MaterialRelationship:
+    """One mechanically proved command-material direction."""
+
+    path: str
+    direction: str
+    proof: str
+    target: str | None = None
+    named_input: str | None = None
+    external: bool = False
 
 
 @dataclass(frozen=True)
-class _CommandContext:
-    entry_path: Path
+class MaterialCollection:
+    """One completely enumerated finite command collection."""
+
+    direction: str
+    mechanism: str
+    target: str
+    members: tuple[str, ...]
+    root: str | None = None
+
+
+@dataclass(frozen=True)
+class Invocation:
+    """One supported top-level invocation and its visible relationships."""
+
+    identity: str
+    document: str
+    entry: str
+    fence: int
+    ordinal: int
+    sequence: int
+    tokens: tuple[str, ...]
+    executable: str
+    script: str | None
+    script_identity: str | None
+    command_type: str | None
+    inputs: tuple[MaterialRelationship, ...]
+    outputs: tuple[MaterialRelationship, ...]
+    collections: tuple[MaterialCollection, ...]
+    candidates: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """All supported invocations found in one command document."""
+
+    invocations: tuple[Invocation, ...]
+    unsupported: tuple[Mapping[str, object], ...]
+
+
+@dataclass(frozen=True)
+class _OptionOccurrence:
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
+class _ParsedCommand:
+    tokens: tuple[str, ...]
+    executable_index: int
+    script_index: int | None
+    options: tuple[_OptionOccurrence, ...]
+    positionals: tuple[str, ...]
+    redirections: tuple[tuple[str, str], ...]
+    tee_outputs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Annotation:
+    ordinal: int
+    command_type: str | None
+    roles: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class CommandContext:
+    log_id: str
+    entry: str
+    document: str
+    entry_root: Path
+    log_root: Path
     project_root: Path
-    data_index: Dict[str, Any]
-    data_rows: Mapping[str, Mapping[str, Any]]
+    data_index: Mapping[str, str]
+    require_experimental_context: bool = True
+    script_identity_cache: MutableMapping[str, str] | None = None
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+@dataclass(frozen=True)
+class _InvocationPosition:
+    fence: int
+    ordinal: int
+    sequence: int
+    duplicate: int
 
 
-def _argparse_flags(path: Path) -> Dict[str, Any]:
-    try:
-        tree = ast.parse(_read_text(path), filename=str(path))
-    except (OSError, UnicodeError, SyntaxError) as exc:
-        return {
-            "parse": "fail",
-            "error": str(exc),
-            "flags": [],
-            "positionals": [],
-            "argument_roles": {},
-        }
-    flags = set()
-    positionals = []
-    destinations = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr != "add_argument":
-            continue
-        declared = []
-        for argument in node.args:
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                declared.append(argument.value)
-                if argument.value.startswith("-"):
-                    flags.add(argument.value)
-                else:
-                    positionals.append((node.lineno, argument.value))
-                    break
-        explicit_dest = next(
-            (
-                keyword.value.value
-                for keyword in node.keywords
-                if keyword.arg == "dest"
-                and isinstance(keyword.value, ast.Constant)
-                and isinstance(keyword.value.value, str)
-            ),
-            None,
-        )
-        if explicit_dest:
-            destinations.add(explicit_dest)
-        elif declared:
-            destinations.add(
-                next(
-                    (value for value in declared if not value.startswith("-")),
-                    declared[-1].lstrip("-").replace("-", "_"),
-                )
-            )
-    return {
-        "parse": "ok",
-        "error": None,
-        "flags": sorted(flags),
-        "positionals": [name for _, name in sorted(positionals)],
-        "argument_roles": _argument_roles_from_ast(tree, destinations),
-    }
+@dataclass(frozen=True)
+class _RoleState:
+    context: CommandContext
+    relationships: list[MaterialRelationship]
+    collections: list[MaterialCollection]
 
 
-def _call_leaf_name(call: ast.Call) -> str:
-    function = call.func
-    if isinstance(function, ast.Name):
-        return function.id.lower()
-    if isinstance(function, ast.Attribute):
-        return function.attr.lower()
-    return ""
+@dataclass(frozen=True)
+class _RelationshipRequest:
+    value: str
+    direction: str
+    proof: str
+    target: str | None
+    expanded: bool = False
 
 
-def _open_call_role(call: ast.Call) -> Optional[str]:
-    """Return the path role implied by builtin or bound ``open`` calls."""
+def discover_commands(
+    text: str,
+    context: CommandContext,
+) -> DiscoveryResult:
+    """Discover bounded visible invocation relationships in one Markdown file."""
 
-    mode = None
-    mode_index = 0 if isinstance(call.func, ast.Attribute) else 1
-    if len(call.args) > mode_index:
-        candidate = call.args[mode_index]
-        if isinstance(candidate, ast.Constant):
-            mode = candidate.value
-    for keyword in call.keywords:
-        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
-            mode = keyword.value.value
-    if not isinstance(mode, str):
-        return "input"
-    return "output" if any(flag in mode for flag in "wax+") else "input"
-
-
-def _call_path_role(call: ast.Call) -> Optional[str]:
-    leaf = _call_leaf_name(call)
-    if leaf == "open":
-        return _open_call_role(call)
-    if leaf in {
-        "mkdir",
-        "touch",
-        "write",
-        "write_bytes",
-        "write_text",
-        "writelines",
-        "savefig",
-        "savetxt",
-        "savez",
-        "savez_compressed",
-        "to_csv",
-        "to_hdf",
-        "to_json",
-        "to_parquet",
-        "to_pickle",
-    } or re.search(r"(?:^|_)(?:write|save|dump|export|emit)(?:_|$)", leaf):
-        return "output"
-    if leaf in {
-        "exists",
-        "is_dir",
-        "is_file",
-        "loadmat",
-        "read_bytes",
-        "read_text",
-    } or re.search(r"(?:^|_)(?:read|load|parse|inspect|scan)(?:_|$)", leaf):
-        return "input"
-    return None
-
-
-def _represented_argument_destinations(
-    value: ast.AST,
-    destinations: set[str],
-    known: Mapping[str, set[str]],
-    local_preservers: Mapping[str, tuple[int, str]] | None = None,
-) -> set[str]:
-    """Return parsed arguments preserved by one bounded path expression."""
-
-    if (
-        isinstance(value, ast.Attribute)
-        and isinstance(value.value, ast.Name)
-        and value.value.id in {"args", "parsed"}
-        and value.attr in destinations
-    ):
-        return {value.attr}
-    if isinstance(value, ast.Name):
-        return set(known.get(value.id, set()))
-    if isinstance(value, ast.Attribute):
-        return _represented_argument_destinations(
-            value.value, destinations, known, local_preservers
-        )
-    if isinstance(value, (ast.BoolOp, ast.BinOp, ast.IfExp)):
-        return set().union(
-            *(
-                _represented_argument_destinations(
-                    child, destinations, known, local_preservers
-                )
-                for child in ast.iter_child_nodes(value)
-            )
-        )
-    values = _path_preserving_call_values(value, local_preservers or {})
-    if not values:
-        return set()
-    return set().union(
-        *(
-            _represented_argument_destinations(
-                child, destinations, known, local_preservers
-            )
-            for child in values
-        )
+    context = CommandContext(
+        context.log_id,
+        context.entry,
+        context.document,
+        context.entry_root.resolve(),
+        context.log_root.resolve(),
+        context.project_root.resolve(),
+        context.data_index,
+        context.require_experimental_context,
+        context.script_identity_cache,
     )
-
-
-def _path_preserving_call_values(
-    value: ast.AST, local_preservers: Mapping[str, tuple[int, str]]
-) -> list[ast.AST]:
-    """Return call values that preserve the represented path identity."""
-
-    if not isinstance(value, ast.Call):
-        return []
-    if isinstance(value.func, ast.Name) and value.func.id in local_preservers:
-        index, parameter = local_preservers[value.func.id]
-        if index < len(value.args):
-            return [value.args[index]]
-        return [
-            keyword.value
-            for keyword in value.keywords
-            if keyword.arg == parameter
-        ]
-    if _call_leaf_name(value) not in PATH_PRESERVING_CALLS:
-        return []
-    result: list[ast.AST] = list(value.args)
-    if isinstance(value.func, ast.Attribute):
-        result.append(value.func.value)
-    return result
-
-
-def _parsed_argument_aliases(
-    tree: ast.AST,
-    destinations: set[str],
-    initial: Optional[Mapping[str, set[str]]] = None,
-    local_preservers: Mapping[str, tuple[int, str]] | None = None,
-) -> Dict[str, set[str]]:
-    """Return path-preserving local aliases of parsed argument values."""
-
-    aliases: Dict[str, set[str]] = {
-        name: set(values) for name, values in (initial or {}).items()
-    }
-    assignments = [
-        node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))
-    ]
-    for _ in range(len(assignments) + 1):
-        changed = False
-        for node in assignments:
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            value = node.value
-            if value is None:
+    invocations: list[Invocation] = []
+    unsupported: list[Mapping[str, object]] = []
+    duplicate_counts: dict[str, int] = {}
+    for fence_number, (body, annotation_texts) in enumerate(
+        _command_fences(text, context.require_experimental_context), 1
+    ):
+        parsed, failures = _parse_fence(body)
+        unsupported.extend(
+            {"fence": fence_number, "reason": failure} for failure in failures
+        )
+        decoded_annotations = _parse_annotations(
+            annotation_texts, len(parsed), context.document
+        )
+        for ordinal, command in enumerate(parsed, 1):
+            annotation = decoded_annotations.get(ordinal)
+            if command is None:
+                if annotation is not None:
+                    _fail(
+                        "invocation.command.unsupported",
+                        f"{context.document}:fence-{fence_number}:command-{ordinal}",
+                        {"annotation": True},
+                    )
                 continue
-            referenced = _represented_argument_destinations(
-                value, destinations, aliases, local_preservers
-            )
-            for target in targets:
-                if not isinstance(target, ast.Name) or not referenced:
-                    continue
-                current = aliases.setdefault(target.id, set())
-                before = len(current)
-                current.update(referenced)
-                changed |= len(current) != before
-        if not changed:
-            break
-    return aliases
-
-
-def _local_path_preservers(tree: ast.AST) -> Dict[str, tuple[int, str]]:
-    """Return local helpers whose every value return preserves one path."""
-
-    result: Dict[str, tuple[int, str]] = {}
-    for function in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ):
-        parameters = [
-            argument.arg
-            for argument in (
-                *function.args.posonlyargs,
-                *function.args.args,
-                *function.args.kwonlyargs,
-            )
-        ]
-        if not parameters:
-            continue
-        aliases = _parsed_argument_aliases(
-            function,
-            set(parameters),
-            {parameter: {parameter} for parameter in parameters},
-        )
-        returns = [
-            node.value
-            for node in ast.walk(function)
-            if isinstance(node, ast.Return) and node.value is not None
-        ]
-        represented = [
-            _represented_argument_destinations(value, set(parameters), aliases)
-            for value in returns
-        ]
-        if not represented or any(len(item) != 1 for item in represented):
-            continue
-        preserved = set.intersection(*represented)
-        if len(preserved) != 1:
-            continue
-        parameter = next(iter(preserved))
-        result[function.name] = (parameters.index(parameter), parameter)
-    return result
-
-
-def _argument_destinations(
-    node: ast.AST, destinations: set[str], aliases: Mapping[str, set[str]]
-) -> set[str]:
-    """Return parsed arguments represented by one AST value use."""
-
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id in {"args", "parsed"}
-        and node.attr in destinations
-    ):
-        return {node.attr}
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-        return set(aliases.get(node.id, set()))
-    return set()
-
-
-def _local_call_role(
-    call: ast.Call,
-    argument: ast.AST,
-    roles: Mapping[str, Mapping[str, str]],
-) -> tuple[bool, Optional[str]]:
-    """Return a local helper parameter's inferred role for one call argument."""
-
-    if not isinstance(call.func, ast.Name) or call.func.id not in roles:
-        return False, None
-    function_roles = roles[call.func.id]
-    parameters = list(function_roles)
-    index = next(
-        (index for index, item in enumerate(call.args) if item is argument), None
-    )
-    if index is not None:
-        role = (
-            function_roles.get(parameters[index])
-            if index < len(parameters)
-            else None
-        )
-        return True, role
-    keyword = next(
-        (
-            item
-            for item in call.keywords
-            if item.value is argument and isinstance(item.arg, str)
-        ),
-        None,
-    )
-    return (
-        True,
-        function_roles.get(keyword.arg)
-        if keyword is not None and keyword.arg is not None
-        else None,
-    )
-
-
-def _path_roles_for_use(
-    node: ast.AST,
-    parents: Mapping[ast.AST, ast.AST],
-    local_roles: Mapping[str, Mapping[str, str]],
-    local_preservers: Mapping[str, tuple[int, str]],
-) -> set[str]:
-    """Return path roles implied by the bounded ancestors of one value use."""
-
-    found: set[str] = set()
-    current: Optional[ast.AST] = node
-    for _ in range(8):
-        if current is None:
-            break
-        argument = current
-        current = parents.get(current)
-        if current is None:
-            break
-        if isinstance(current, ast.keyword) and current.arg in {
-            "cwd",
-            "working_dir",
-            "working_directory",
-        }:
-            found.add("workspace")
-        if isinstance(
-            current,
-            (ast.JoinedStr, ast.ListComp, ast.SetComp, ast.GeneratorExp),
-        ) and any(
-            isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
-            and "addpath(" in value.value.lower()
-            for value in ast.walk(current)
-        ):
-            found.add("dependency-container")
-        if isinstance(current, ast.Call):
-            local, role = _local_call_role(current, argument, local_roles)
-            if (
-                local
-                and isinstance(current.func, ast.Name)
-                and current.func.id in local_preservers
-            ):
-                role = None
-            if not local:
-                role = _call_path_role(current)
-            if role:
-                found.add(role)
-    return found
-
-
-def _role_from_uses(found: set[str]) -> str:
-    if len(found) == 1:
-        return next(iter(found))
-    if found == {"workspace", "input"}:
-        return "workspace"
-    if found == {"dependency-container", "input"}:
-        return "dependency-container"
-    return "unknown"
-
-
-def _local_function_roles(
-    tree: ast.AST,
-    parents: Mapping[ast.AST, ast.AST],
-    local_preservers: Mapping[str, tuple[int, str]],
-) -> Dict[str, Dict[str, str]]:
-    """Infer local helper parameter roles from their function bodies."""
-
-    result: Dict[str, Dict[str, str]] = {}
-    for function in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ):
-        parameters = [
-            argument.arg
-            for argument in (
-                *function.args.posonlyargs,
-                *function.args.args,
-                *function.args.kwonlyargs,
-            )
-        ]
-        uses: Dict[str, set[str]] = {parameter: set() for parameter in parameters}
-        aliases: Dict[str, set[str]] = {
-            parameter: {parameter} for parameter in parameters
-        }
-        aliases = _parsed_argument_aliases(
-            function, set(parameters), aliases, local_preservers
-        )
-        for node in ast.walk(function):
-            for parameter in _argument_destinations(node, set(parameters), aliases):
-                uses[parameter].update(
-                    _path_roles_for_use(node, parents, {}, local_preservers)
+            canonical = canonical_json(list(command.tokens))
+            duplicate = duplicate_counts.get(canonical, 0)
+            duplicate_counts[canonical] = duplicate + 1
+            invocations.append(
+                _build_invocation(
+                    command,
+                    annotation,
+                    context,
+                    _InvocationPosition(
+                        fence_number, ordinal, len(invocations), duplicate
+                    ),
                 )
-        result[function.name] = {
-            parameter: _role_from_uses(uses[parameter]) for parameter in parameters
-        }
+            )
+    if len(invocations) > MAX_INVOCATIONS_PER_LOG:
+        _fail(
+            "provenance.resource.too_large",
+            context.document,
+            {"invocations": len(invocations), "limit": MAX_INVOCATIONS_PER_LOG},
+        )
+    return DiscoveryResult(tuple(invocations), tuple(unsupported))
+
+
+def automatic_option_role(name: str) -> str | None:
+    """Return the closed leading-or-trailing input/output option role."""
+
+    name = name.lstrip("-")
+    matches = [role for role in ("input", "output") if _role_name(name, role)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def order_invocations(
+    documents: Sequence[Sequence[Invocation]],
+) -> tuple[Invocation, ...]:
+    """Assign global sequence from caller-supplied research-record order."""
+
+    ordered = [invocation for document in documents for invocation in document]
+    if len(ordered) > MAX_INVOCATIONS_PER_LOG:
+        _fail(
+            "provenance.resource.too_large",
+            "maintained log",
+            {"invocations": len(ordered), "limit": MAX_INVOCATIONS_PER_LOG},
+        )
+    return tuple(
+        replace(invocation, sequence=sequence)
+        for sequence, invocation in enumerate(ordered)
+    )
+
+
+def load_data_index(path: Path) -> dict[str, str]:
+    """Load the exact entry-local name-to-location surface used by commands."""
+
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != ["name", "type", "location"]:
+                _fail(
+                    "data_index.connection.missing",
+                    str(path),
+                    {"header": reader.fieldnames},
+                )
+            rows = list(reader)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        _fail("data_index.connection.missing", str(path), {"error": str(exc)})
+    result: dict[str, str] = {}
+    for number, row in enumerate(rows, 2):
+        name, location = row.get("name", ""), row.get("location", "")
+        if (
+            not name
+            or TARGET_RE.fullmatch(name) is None
+            or not location
+            or name in result
+        ):
+            _fail(
+                "data_index.connection.missing",
+                f"{path}:{number}",
+                {"name": name, "location": location},
+            )
+        result[name] = location
     return result
 
 
-def _argument_roles_from_ast(
-    tree: ast.AST, destinations: Iterable[str]
-) -> Dict[str, str]:
-    """Infer path roles from actual parsed-argument use in the entrypoint."""
+def _role_name(name: str, role: str) -> bool:
+    if name == role:
+        return True
+    atom = r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?"
+    return re.fullmatch(rf"(?:{role}[-_]{atom}|{atom}[-_]{role})", name) is not None
 
-    destination_set = set(destinations)
-    parents = {
-        child: parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
-    local_preservers = _local_path_preservers(tree)
-    aliases = _parsed_argument_aliases(
-        tree, destination_set, local_preservers=local_preservers
-    )
-    local_roles = _local_function_roles(tree, parents, local_preservers)
 
-    roles: Dict[str, set[str]] = {destination: set() for destination in destination_set}
-    for node in ast.walk(tree):
-        referenced = _argument_destinations(node, destination_set, aliases)
-        found = (
-            _path_roles_for_use(
-                node, parents, local_roles, local_preservers
+def _command_fences(
+    text: str, require_experimental_context: bool
+) -> list[tuple[str, tuple[str, ...]]]:
+    lines = text.splitlines()
+    eligible = _experimental_sections(lines)
+    result: list[tuple[str, tuple[str, ...]]] = []
+    index = 0
+    while index < len(lines):
+        opening = FENCE_RE.fullmatch(lines[index].strip())
+        if opening is None:
+            index += 1
+            continue
+        start = index
+        marker = opening.group("marker")
+        language = opening.group("info").strip().lower()
+        index += 1
+        body: list[str] = []
+        while (
+            index < len(lines)
+            and re.fullmatch(
+                rf"{re.escape(marker[0])}{{{len(marker)},}}\s*", lines[index].strip()
             )
-            if referenced
-            else set()
-        )
-        for destination in referenced:
-            roles[destination].update(found)
-    return {
-        destination: _role_from_uses(found)
-        for destination, found in roles.items()
+            is None
+        ):
+            body.append(lines[index])
+            index += 1
+        index += 1
+        annotations: list[str] = []
+        while index < len(lines) and lines[index].startswith("<!-- command"):
+            annotation = [lines[index]]
+            while "-->" not in annotation[-1] and index + 1 < len(lines):
+                index += 1
+                annotation.append(lines[index])
+            annotations.append("\n".join(annotation))
+            index += 1
+        if language in SHELL_LANGUAGES and (
+            not require_experimental_context or eligible[start]
+        ):
+            result.append(("\n".join(body), tuple(annotations)))
+    return result
+
+
+def _experimental_sections(lines: Sequence[str]) -> tuple[bool, ...]:
+    section = 0
+    line_sections: list[int] = []
+    labels: dict[int, set[str]] = {0: set()}
+    fence: str | None = None
+    for line in lines:
+        opening = FENCE_RE.fullmatch(line.strip()) if fence is None else None
+        if opening is not None:
+            fence = opening.group("marker")
+        elif fence is not None and re.fullmatch(
+            rf"{re.escape(fence[0])}{{{len(fence)},}}\s*", line.strip()
+        ):
+            fence = None
+        elif fence is None and HEADING_RE.fullmatch(line):
+            section += 1
+            labels[section] = set()
+        elif fence is None:
+            label = BLOCK_LABEL_RE.fullmatch(line)
+            if label is not None:
+                labels[section].add(label.group("label"))
+        line_sections.append(section)
+    experimental = {
+        number for number, found in labels.items() if {"Steps", "Results"} <= found
     }
+    return tuple(number in experimental for number in line_sections)
 
 
-def _command_lines(block: Dict[str, Any]) -> List[str]:
-    if block["kind"] != "command":
-        return []
-    logical: List[str] = []
-    buffer = ""
-    for raw in block["text"].splitlines():
+def _parse_fence(body: str) -> tuple[list[_ParsedCommand | None], list[str]]:
+    if len(body.encode("utf-8")) > MAX_FENCE_BYTES:
+        _fail(
+            "provenance.resource.too_large",
+            "command fence",
+            {"bytes": len(body.encode("utf-8")), "limit": MAX_FENCE_BYTES},
+        )
+    logical = re.sub(r"\\\r?\n", " ", body)
+    commands: list[_ParsedCommand | None] = []
+    failures: list[str] = []
+    for raw in logical.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("$"):
-            line = line[1:].lstrip()
-        buffer += (" " if buffer else "") + line.rstrip("\\").strip()
-        if not line.endswith("\\"):
-            logical.append(buffer)
-            buffer = ""
-    if buffer:
-        logical.append(buffer)
-    return logical
-
-
-def _path_argument_context(
-    interface: Optional[Dict[str, Any]],
-    entry_path: Path,
-    project_root: Path,
-    data_index: Dict[str, Any],
-) -> _PathArgumentContext:
-    workspace_roots = {
-        project_root.resolve(),
-        entry_path.parents[2].resolve(),
-        Path(tempfile.gettempdir()).resolve(),
-    }
-    system_temp_root = Path("/tmp")
-    if system_temp_root.exists():
-        workspace_roots.add(system_temp_root.resolve())
-    return _PathArgumentContext(
-        interface,
-        entry_path,
-        project_root,
-        data_index,
-        frozenset(workspace_roots),
-    )
-
-
-def _argument_values(
-    tokens: Sequence[str],
-    script_token: Optional[str],
-    positionals: Sequence[str] = (),
-) -> Iterable[tuple[int, Optional[str], str]]:
-    skip_next = False
-    positional_index = 0
-    for index, token in enumerate(tokens):
-        if skip_next:
-            skip_next = False
+        if line.startswith("$ "):
+            line = line[2:]
+        try:
+            segments = _split_semicolons(line)
+        except ValueError as exc:
+            commands.append(None)
+            failures.append(str(exc))
             continue
-        if index == 0 or token == script_token:
-            continue
-        option = None
-        value = token
-        if token.startswith("--") and "=" in token:
-            option, value = token.split("=", 1)
-        elif token.startswith("--"):
-            if index + 1 >= len(tokens) or tokens[index + 1].startswith("-"):
-                continue
-            option = token
-            value = tokens[index + 1]
-            skip_next = True
+        for segment in segments:
+            encoded_bytes = len(segment.encode("utf-8"))
+            if encoded_bytes > MAX_COMMAND_BYTES:
+                _fail(
+                    "provenance.resource.too_large",
+                    "command invocation",
+                    {"bytes": encoded_bytes, "limit": MAX_COMMAND_BYTES},
+                )
+            try:
+                commands.append(_parse_command(segment))
+            except ValueError as exc:
+                commands.append(None)
+                failures.append(str(exc))
+    if len(commands) > MAX_INVOCATIONS_PER_FENCE:
+        _fail(
+            "provenance.resource.too_large",
+            "command fence",
+            {"invocations": len(commands), "limit": MAX_INVOCATIONS_PER_FENCE},
+        )
+    return commands, failures
+
+
+def _split_semicolons(value: str) -> list[str]:
+    lexer = shlex.shlex(value, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    if any(token in {"&&", "||", "&"} for token in tokens):
+        raise ValueError("unsupported shell control flow")
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token == ";":
+            if not segments[-1]:
+                raise ValueError("empty shell invocation")
+            segments.append([])
         else:
-            if positional_index < len(positionals):
-                option = positionals[positional_index]
-            positional_index += 1
-        yield index, option, value
+            segments[-1].append(token)
+    if not segments[-1]:
+        raise ValueError("trailing shell separator")
+    return [shlex.join(segment) for segment in segments]
 
 
-def _path_argument_role(
-    path: Path,
-    previous: str,
-    option: Optional[str],
-    indexed_names: set[str],
-    context: _PathArgumentContext,
-) -> str:
-    if path in context.workspace_roots:
-        return "workspace"
-    if Path(previous).name == "tee" or previous in {">", ">>"}:
-        return "output"
-    parameter = (option or "").lstrip("-").replace("-", "_")
-    source_role = (
-        context.interface.get("argument_roles", {}).get(parameter, "unknown")
-        if context.interface
-        else "unknown"
+def _parse_command(value: str) -> _ParsedCommand:
+    if "$(" in value or "`" in value or "<(" in value or ">(" in value:
+        raise ValueError("unsupported shell substitution")
+    lexer = shlex.shlex(value, posix=True, punctuation_chars="|<>")
+    lexer.whitespace_split = True
+    tokens = tuple(lexer)
+    if not tokens or tokens.count("|") > 1:
+        raise ValueError("unsupported pipeline")
+    components = _pipeline_components(tokens)
+    principal = components[0]
+    executable_index = next(
+        (
+            index
+            for index, token in enumerate(principal)
+            if not ENVIRONMENT_RE.fullmatch(token)
+        ),
+        -1,
     )
-    if source_role != "unknown":
-        return str(source_role)
-    return "input" if indexed_names else "unknown"
+    if executable_index < 0:
+        raise ValueError("missing executable")
+    executable = Path(principal[executable_index]).name
+    script_index = (
+        executable_index + 1
+        if executable == "pyrun" or executable.startswith("python")
+        else None
+    )
+    redirections, ordinary = _redirections(principal)
+    options, positionals = _arguments(ordinary, executable_index, script_index)
+    tee_outputs: tuple[str, ...] = ()
+    if len(components) == 2:
+        tee_outputs = _terminal_tee(components[1])
+    return _ParsedCommand(
+        tokens,
+        executable_index,
+        script_index,
+        options,
+        positionals,
+        redirections,
+        tee_outputs,
+    )
 
 
-def _dependency_container_paths(
-    path: Path, path_value: str, entry_path: Path
-) -> List[str]:
-    paths = [path.resolve()]
-    raw_path = Path(path_value)
-    if not raw_path.is_absolute():
-        log_relative = (entry_path.parents[2] / raw_path).resolve()
-        if log_relative not in paths:
-            paths.append(log_relative)
-    return [item.as_posix() for item in paths if item.is_dir()]
+def _pipeline_components(tokens: Sequence[str]) -> list[list[str]]:
+    components: list[list[str]] = [[]]
+    for token in tokens:
+        if token == "|":
+            if not components[-1]:
+                raise ValueError("empty pipeline component")
+            components.append([])
+        else:
+            components[-1].append(token)
+    if not components[-1]:
+        raise ValueError("empty pipeline component")
+    return components
 
 
-def _path_arguments(
+def _redirections(
     tokens: Sequence[str],
-    script_token: Optional[str],
-    context: _PathArgumentContext,
-) -> List[Dict[str, Any]]:
-    results = []
-    positionals = (
-        context.interface.get("positionals", []) if context.interface else []
-    )
-    for index, option, value in _argument_values(
-        tokens, script_token, positionals
-    ):
-        path_value = value.split("=", 1)[1] if "=" in value else value
-        suffix = Path(path_value.split("#", 1)[0]).suffix.lower()
-        path = _expand_local_tokens(
-            path_value, context.entry_path, context.project_root, context.data_index
-        )
-        if path is None:
-            continue
-        previous = tokens[index - 1] if index else ""
-        indexed_names = {
-            name
-            for name in TOKEN_RE.findall(path_value)
-            if name not in {"project", "log"}
-        }
-        path_like = (
-            bool(TOKEN_RE.search(path_value))
-            or suffix in PATH_SUFFIXES
-            or "/" in path_value
-            or path.exists()
-            or Path(previous).name == "tee"
-            or previous in {">", ">>"}
-        )
-        if not path_like or any(character.isspace() for character in path_value):
-            continue
-        role_hint = _path_argument_role(
-            path, previous, option, indexed_names, context
-        )
-        result: Dict[str, Any] = {
-            "option": option,
-            "raw": value,
-            "path": path.as_posix(),
-            "exists": path.exists(),
-            "role_hint": role_hint,
-        }
-        if role_hint == "dependency-container":
-            result["dependency_paths"] = _dependency_container_paths(
-                path, path_value, context.entry_path
-            )
-        results.append(result)
-    return results
-
-
-def _invocation_tokens(tokens: Sequence[str]) -> List[str]:
-    """Remove leading shell environment assignments from one invocation."""
-
+) -> tuple[tuple[tuple[str, str], ...], list[str]]:
+    redirections: list[tuple[str, str]] = []
+    ordinary: list[str] = []
     index = 0
-    while index < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[index]):
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token.isdecimal()
+            and index + 2 < len(tokens)
+            and tokens[index + 1] in {">", ">>"}
+        ):
+            redirections.append(("output", tokens[index + 2]))
+            index += 3
+            continue
+        if token in {"<", ">", ">>"}:
+            if index + 1 >= len(tokens):
+                raise ValueError("redirection lacks target")
+            redirections.append(
+                ("input" if token == "<" else "output", tokens[index + 1])
+            )
+            index += 2
+            continue
+        ordinary.append(token)
         index += 1
-    return list(tokens[index:])
+    return tuple(redirections), ordinary
 
 
-def _option_values(
-    tokens: Sequence[str], script_token: Optional[str]
-) -> List[Dict[str, Optional[str]]]:
-    """Return explicit option and positional values from one invocation."""
+def _arguments(
+    tokens: Sequence[str], executable_index: int, script_index: int | None
+) -> tuple[tuple[_OptionOccurrence, ...], tuple[str, ...]]:
+    options: list[_OptionOccurrence] = []
+    positionals: list[str] = []
+    index = executable_index + 1
+    if script_index == index:
+        if index >= len(tokens):
+            raise ValueError("interpreter lacks script")
+        index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("-") and token not in {"-", "--"}:
+            if "=" in token:
+                name, value = token.lstrip("-").split("=", 1)
+                options.append(_OptionOccurrence(name, value))
+                index += 1
+                continue
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+                options.append(_OptionOccurrence(token.lstrip("-"), tokens[index + 1]))
+                index += 2
+                continue
+            index += 1
+            continue
+        positionals.append(token)
+        index += 1
+    return tuple(options), tuple(positionals)
 
-    return [
-        {"option": option, "value": value}
-        for _index, option, value in _argument_values(tokens, script_token)
+
+def _terminal_tee(tokens: Sequence[str]) -> tuple[str, ...]:
+    if not tokens or Path(tokens[0]).name != "tee" or len(tokens) < 2:
+        raise ValueError("unsupported terminal pipeline")
+    if any(token.startswith("-") for token in tokens[1:]):
+        raise ValueError("unsupported tee option")
+    return tuple(tokens[1:])
+
+
+def _parse_annotations(
+    values: Sequence[str], command_count: int, document: str
+) -> dict[int, _Annotation]:
+    result: dict[int, _Annotation] = {}
+    last = 0
+    for value in values:
+        match = ANNOTATION_RE.fullmatch(value)
+        if match is None:
+            _fail("invocation.annotation.invalid", document, {"annotation": value})
+        ordinal = int(match.group("ordinal")[1:]) if match.group("ordinal") else 1
+        if ordinal <= last or ordinal > command_count or ordinal in result:
+            _fail(
+                "invocation.annotation.invalid",
+                document,
+                {"ordinal": ordinal, "commands": command_count},
+            )
+        last = ordinal
+        result[ordinal] = _annotation_body(match.group("body"), ordinal, document)
+    return result
+
+
+def _annotation_body(body: str, ordinal: int, document: str) -> _Annotation:
+    clauses = re.split(r"\s*;\s*", body.strip())
+    roles: dict[str, str] = {}
+    command_type: str | None = None
+    for index, clause in enumerate(clauses):
+        assignment = ASSIGNMENT_RE.fullmatch(clause.strip())
+        if assignment is None:
+            _fail("invocation.annotation.invalid", document, {"clause": clause})
+        target, value = assignment.group("target"), assignment.group("value")
+        if target == "type":
+            if index or value not in {"model", "simulation"} or command_type:
+                _fail("invocation.annotation.invalid", document, {"clause": clause})
+            command_type = value
+        elif (
+            value not in ROLE_TOKENS
+            or target in roles
+            or TARGET_RE.fullmatch(target) is None
+            and POSITIONAL_RE.fullmatch(target) is None
+        ):
+            _fail("invocation.annotation.invalid", document, {"clause": clause})
+        else:
+            roles[target] = value
+    return _Annotation(ordinal, command_type, roles)
+
+
+def _build_invocation(
+    command: _ParsedCommand,
+    annotation: _Annotation | None,
+    context: CommandContext,
+    position: _InvocationPosition,
+) -> Invocation:
+    executable = command.tokens[command.executable_index]
+    script_token = (
+        command.tokens[command.script_index]
+        if command.script_index is not None
+        else None
+    )
+    workflow_token = script_token or _explicit_local_executable(executable, context)
+    script, script_identity = _resolve_script(workflow_token, context)
+    command_type = annotation.command_type if annotation else None
+    if command_type is None and _simulation_script(script or script_token):
+        command_type = "simulation"
+    relationships, collections, candidates = _relationships(
+        command, annotation, context
+    )
+    inputs = tuple(item for item in relationships if item.direction == "input")
+    outputs = tuple(item for item in relationships if item.direction == "output")
+    if len(inputs) > MAX_RELATIONSHIPS or len(outputs) > MAX_RELATIONSHIPS:
+        _fail(
+            "provenance.resource.too_large",
+            context.document,
+            {"inputs": len(inputs), "outputs": len(outputs)},
+        )
+    identity_payload = [
+        context.log_id,
+        context.entry,
+        context.document,
+        list(command.tokens),
+        script or script_token,
+        position.duplicate,
     ]
+    identity = hashlib.sha256(canonical_json(identity_payload).encode()).hexdigest()
+    return Invocation(
+        identity,
+        context.document,
+        context.entry,
+        position.fence,
+        position.ordinal,
+        position.sequence,
+        command.tokens,
+        executable,
+        script,
+        script_identity,
+        command_type,
+        inputs,
+        outputs,
+        collections,
+        candidates,
+    )
 
 
-def _script_token(invocation: Sequence[str]) -> Optional[str]:
-    executable = Path(invocation[0]).name
-    if len(invocation) > 1 and (
-        executable == "pyrun" or executable.startswith("python")
+def _resolve_script(
+    token: str | None, context: CommandContext
+) -> tuple[str | None, str | None]:
+    if token is None or any(character in token for character in "$`*?[]{}"):
+        return token, None
+    path = _expand_path(token, context)
+    if (
+        path is None
+        or not _within(path.resolve(), context.project_root)
+        or not path.is_file()
+        or path.is_symlink()
     ):
-        return invocation[1]
+        return token, None
+    canonical = path.resolve().as_posix()
+    if context.script_identity_cache is not None:
+        cached = context.script_identity_cache.get(canonical)
+        if cached is not None:
+            return canonical, cached
+    payload = path.read_bytes()
+    identity = hashlib.sha256(payload).hexdigest()
+    if context.script_identity_cache is not None:
+        context.script_identity_cache[canonical] = identity
+    return canonical, identity
+
+
+def _explicit_local_executable(executable: str, context: CommandContext) -> str | None:
+    if executable.startswith("./") or executable.startswith("../"):
+        return executable
+    path = Path(executable)
+    if path.is_absolute() and _within(path.resolve(), context.project_root):
+        return executable
     return None
 
 
-def _script_interface(
-    script_token: Optional[str],
-    entry_path: Path,
-    project_root: Path,
-    data_index: Dict[str, Any],
-) -> tuple[Optional[Path], Optional[Dict[str, Any]]]:
-    if script_token is None:
-        return None, None
-    path = _expand_local_tokens(script_token, entry_path, project_root, data_index)
-    interface = (
-        _argparse_flags(path)
-        if path and path.suffix == ".py" and path.is_file()
-        else None
+def _simulation_script(value: str | None) -> bool:
+    if value is None:
+        return False
+    stem = Path(value).stem
+    return stem in SIMULATION_STEMS or any(
+        stem.startswith(prefix + "_") for prefix in SIMULATION_STEMS
     )
-    return path, interface
 
 
-def _data_token_results(
-    command: str,
-    data_rows: Mapping[str, Mapping[str, Any]],
-    data_index: Mapping[str, Any],
-    entry_path: Path,
-    project_root: Path,
-) -> List[Dict[str, Any]]:
-    results = []
-    for name in TOKEN_RE.findall(command):
-        if name in {"project", "log"}:
-            path = project_root if name == "project" else entry_path.parents[2]
-            results.append(
-                {"name": name, "status": "resolved", "path": path.as_posix()}
+def _relationships(
+    command: _ParsedCommand,
+    annotation: _Annotation | None,
+    context: CommandContext,
+) -> tuple[
+    tuple[MaterialRelationship, ...], tuple[MaterialCollection, ...], tuple[str, ...]
+]:
+    relationships: list[MaterialRelationship] = []
+    collections: list[MaterialCollection] = []
+    state = _RoleState(context, relationships, collections)
+    candidates: list[str] = []
+    annotated = annotation.roles if annotation else {}
+    options = {occurrence.name for occurrence in command.options}
+    positionals = {f"@{index}" for index in range(1, len(command.positionals) + 1)}
+    missing = set(annotated) - options - positionals
+    if missing:
+        _fail(
+            "invocation.annotation.invalid",
+            context.document,
+            {"targets": sorted(missing)},
+        )
+    for direction, value in (
+        *command.redirections,
+        *(("output", item) for item in command.tee_outputs),
+    ):
+        relationships.append(
+            _relationship(
+                _RelationshipRequest(value, direction, "shell", None), context
             )
-        elif name in data_rows and name not in data_index["duplicates"]:
-            location = data_rows[name].get("location", "")
-            resolved = resolve_reference(
-                str(location), data_index_path(data_index, entry_path)
+        )
+    for occurrence in command.options:
+        role = annotated.get(occurrence.name, automatic_option_role(occurrence.name))
+        if role is None:
+            named = _named_input(occurrence.value, context)
+            if named is not None:
+                relationships.append(named)
+            else:
+                candidates.append(_candidate(occurrence.value, context))
+            continue
+        _apply_role(occurrence.value, role, occurrence.name, state)
+    for index, value in enumerate(command.positionals, 1):
+        target = f"@{index}"
+        role = annotated.get(target)
+        if role is None:
+            named = _named_input(value, context)
+            if named is not None:
+                relationships.append(named)
+            else:
+                candidates.append(_candidate(value, context))
+            continue
+        _apply_role(value, role, target, state)
+    collections.extend(_repeated_collections(relationships, context.document))
+    relationships = _deduplicate_relationships(relationships, context.document)
+    return tuple(relationships), tuple(collections), tuple(candidates)
+
+
+def _candidate(value: str, context: CommandContext) -> str:
+    path = _expand_path(value, context)
+    return path.resolve().as_posix() if path is not None else value
+
+
+def _repeated_collections(
+    relationships: Sequence[MaterialRelationship], subject: str
+) -> tuple[MaterialCollection, ...]:
+    groups: dict[tuple[str, str], list[str]] = {}
+    for relationship in relationships:
+        if relationship.proof != "option" or relationship.target is None:
+            continue
+        groups.setdefault((relationship.direction, relationship.target), []).append(
+            relationship.path
+        )
+    result: list[MaterialCollection] = []
+    for (direction, target), members in groups.items():
+        if len(members) < 2:
+            continue
+        _validate_members(members, subject)
+        result.append(MaterialCollection(direction, "repeated", target, tuple(members)))
+    return tuple(result)
+
+
+def _apply_role(
+    value: str,
+    role: str,
+    target: str,
+    state: _RoleState,
+) -> None:
+    context = state.context
+    if "=" in value:
+        _fail(
+            "invocation.path_value.embedded",
+            context.document,
+            {"target": target, "value": value},
+        )
+    direction = "input" if role.startswith("input") else "output"
+    if role.endswith("-directory"):
+        state.collections.append(
+            _directory_collection(value, direction, target, context)
+        )
+        state.relationships.extend(
+            _relationship(
+                _RelationshipRequest(
+                    member, direction, "directory", target, expanded=True
+                ),
+                context,
             )
-            results.append({"name": name, "status": "resolved", **resolved})
-        else:
-            status = "ambiguous" if name in data_index["duplicates"] else "unresolved"
-            results.append({"name": name, "status": status})
-    return results
+            for member in state.collections[-1].members
+        )
+        return
+    if role.endswith("-manifest"):
+        collection, manifest = _manifest_collection(value, direction, target, context)
+        state.collections.append(collection)
+        state.relationships.append(manifest)
+        state.relationships.extend(
+            _relationship(
+                _RelationshipRequest(
+                    member, direction, "manifest", target, expanded=True
+                ),
+                context,
+            )
+            for member in collection.members
+        )
+        return
+    named = _named_input(value, context) if direction == "input" else None
+    state.relationships.append(
+        named
+        or _relationship(
+            _RelationshipRequest(value, direction, "option", target), context
+        )
+    )
 
 
-def _command_record(
-    block: Mapping[str, Any],
-    command: str,
-    context: _CommandContext,
-) -> Optional[Dict[str, Any]]:
-    try:
-        tokens = shlex.split(command)
-    except ValueError as exc:
-        return {
-            "line": block["line"],
-            "section": block["section"],
-            "command": command,
-            "error": str(exc),
-        }
-    invocation = _invocation_tokens(tokens)
-    if not invocation:
+def _named_input(value: str, context: CommandContext) -> MaterialRelationship | None:
+    match = re.fullmatch(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
+    if match is None or match.group(1) in {"log", "project"}:
         return None
-    script_token = _script_token(invocation)
-    script_path, interface = _script_interface(
-        script_token, context.entry_path, context.project_root, context.data_index
+    name = match.group(1)
+    location = context.data_index.get(name)
+    if location is None:
+        _fail("data_index.connection.missing", context.document, {"name": name})
+    external = _external_location(location, context.entry_root, context.log_root)
+    path = (
+        location
+        if external and "://" in location
+        else _expanded_location(location, context)
     )
-    options = sorted(
-        {token.split("=", 1)[0] for token in tokens if token.startswith("--")}
+    return MaterialRelationship(path, "input", "named-input", name, name, external)
+
+
+def _relationship(
+    request: _RelationshipRequest,
+    context: CommandContext,
+) -> MaterialRelationship:
+    path = (
+        Path(request.value)
+        if request.expanded
+        else _expand_path(request.value, context)
     )
-    unknown = (
-        sorted(set(options) - set(interface["flags"]))
-        if interface and interface["parse"] == "ok"
-        else []
-    )
-    path_context = _path_argument_context(
-        interface, context.entry_path, context.project_root, context.data_index
-    )
-    return {
-        "line": block["line"],
-        "section": block["section"],
-        "command": command,
-        "script": script_path.as_posix() if script_path else script_token,
-        "script_token": script_token,
-        "script_interface": interface,
-        "options": options,
-        "option_values": _option_values(invocation, script_token),
-        "unknown_options": unknown,
-        "data_tokens": _data_token_results(
-            command,
-            context.data_rows,
-            context.data_index,
-            context.entry_path,
-            context.project_root,
-        ),
-        "path_arguments": _path_arguments(invocation, script_token, path_context),
-    }
-
-
-def _commands(
-    parsed: Dict[str, Any],
-    entry_path: Path,
-    project_root: Path,
-    script_inventory: Optional[set[Path]] = None,
-) -> List[Dict[str, Any]]:
-    commands: List[Dict[str, Any]] = []
-    data_index = _data_index(entry_path)
-    data_rows = {row.get("name", ""): row for row in data_index["rows"]}
-    context = _CommandContext(entry_path, project_root, data_index, data_rows)
-    for block in parsed["fenced_blocks"]:
-        if block["section_type"] != "experimental":
-            continue
-        for command in _command_lines(block):
-            record = _command_record(
-                block, command, context
-            )
-            if record is None:
-                continue
-            if script_inventory:
-                _extend_matlab_command_dependencies(
-                    record, entry_path, project_root, script_inventory
-                )
-            commands.append(record)
-    return commands
-
-
-def _script_inventory(root: Path) -> List[Path]:
-    """Return research scripts below one designated script root."""
-
-    if not root.is_dir():
-        return []
-    return sorted(
-        path.resolve()
-        for path in root.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() in SCRIPT_SUFFIXES
-        and not any(part in IGNORED_SCRIPT_PARTS for part in path.parts)
+    if path is None:
+        _fail("material.unresolved", context.document, {"value": request.value})
+    if not request.expanded and not _within(path.resolve(), context.log_root):
+        _fail("data_index.raw_external", context.document, {"value": request.value})
+    return MaterialRelationship(
+        path.resolve().as_posix(),
+        request.direction,
+        request.proof,
+        request.target,
     )
 
 
-def _log_owned_roots(log_root: Path) -> List[Path]:
-    """Return the log tree and targets reached through log-owned symlinks."""
-
-    roots = {log_root.resolve()}
-    for current, directories, files in os.walk(log_root, followlinks=False):
-        current_path = Path(current)
-        for name in [*directories, *files]:
-            candidate = current_path / name
-            if not candidate.is_symlink():
-                continue
-            try:
-                roots.add(candidate.resolve(strict=True))
-            except OSError:
-                continue
-    return sorted(roots)
+def _expand_path(value: str, context: CommandContext) -> Path | None:
+    if len(value.encode("utf-8")) > MAX_PATH_BYTES or any(
+        char in value for char in "$`*?[]{}"
+    ):
+        return None
+    expanded = value.replace("<project>", context.project_root.as_posix()).replace(
+        "<log>", context.log_root.as_posix()
+    )
+    if re.search(r"<[A-Za-z0-9_-]+>", expanded):
+        return None
+    path = Path(expanded)
+    return path if path.is_absolute() else context.entry_root / path
 
 
-def _path_is_log_owned(path: Path, owned_roots: Sequence[Path]) -> bool:
-    """Return whether a resolved path lies on the log's logical file surface."""
+def _expanded_location(value: str, context: CommandContext) -> str:
+    path = Path(value)
+    return (
+        (path if path.is_absolute() else context.entry_root / path).resolve().as_posix()
+    )
 
-    resolved = path.resolve()
-    for root in owned_roots:
-        if resolved == root:
-            return True
-        try:
-            resolved.relative_to(root)
-        except ValueError:
-            continue
+
+def _external_location(value: str, base: Path, log_root: Path) -> bool:
+    if "://" in value or Path(value).is_absolute():
         return True
+    try:
+        relative_base = base.relative_to(log_root)
+    except ValueError:
+        return True
+    parts: list[str] = list(relative_base.parts)
+    for part in PurePosixPath(value).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                return True
+            parts.pop()
+        else:
+            parts.append(part)
     return False
 
 
-def _python_local_dependencies(path: Path, inventory: set[Path]) -> List[Path]:
-    """Resolve statically identifiable local dependencies for one Python script."""
-
-    return python_local_dependencies(path, inventory)
-
-
-def _local_script_path(raw: str, parent: Path, inventory: set[Path]) -> Optional[Path]:
-    if any(char in raw for char in "$`*?[]{}"):
-        return None
-    candidate = Path(raw.strip("'\""))
-    if not candidate.is_absolute():
-        candidate = parent / candidate
-    candidate = candidate.resolve()
-    return candidate if candidate in inventory else None
-
-
-def _shell_line_dependencies(
-    line: str, parent: Path, inventory: set[Path]
-) -> set[Path]:
-    candidates = set()
-    source = re.match(r"^\s*(?:source|\.)\s+([^\s;&|]+)", line)
-    if source:
-        candidate = _local_script_path(source.group(1), parent, inventory)
-        if candidate is not None:
-            candidates.add(candidate)
+def _directory_collection(
+    value: str, direction: str, target: str, context: CommandContext
+) -> MaterialCollection:
+    root = _expand_path(value, context)
+    if root is None or root.is_symlink() or not root.is_dir():
+        _fail("collection.membership.invalid", context.document, {"directory": value})
     try:
-        tokens = _invocation_tokens(shlex.split(line))
+        root.resolve().relative_to(context.entry_root)
     except ValueError:
-        return candidates
-    if not tokens:
-        return candidates
-    interpreters = {"bash", "dash", "julia", "python", "python3", "rscript", "sh"}
-    script_index = 1 if Path(tokens[0]).name.lower() in interpreters else 0
-    if script_index < len(tokens):
-        candidate = _local_script_path(tokens[script_index], parent, inventory)
-        if candidate is not None:
-            candidates.add(candidate)
-    return candidates
+        _fail("collection.membership.invalid", context.document, {"directory": value})
+    members = tuple(
+        path.resolve().as_posix()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    )
+    _validate_members(members, context.document)
+    return MaterialCollection(
+        direction, "directory", target, members, root.resolve().as_posix()
+    )
 
 
-def _shell_local_dependencies(path: Path, inventory: set[Path]) -> List[Path]:
-    """Resolve literal source and interpreter dependencies for one shell script."""
-
+def _manifest_collection(
+    value: str, direction: str, target: str, context: CommandContext
+) -> tuple[MaterialCollection, MaterialRelationship]:
+    manifest = _expand_path(value, context)
+    if manifest is None or manifest.is_symlink() or not manifest.is_file():
+        _fail("collection.manifest.invalid", context.document, {"manifest": value})
     try:
-        text = _read_text(path)
-    except (OSError, UnicodeError):
-        return []
-    candidates = set().union(
-        *(
-            _shell_line_dependencies(line, path.parent, inventory)
-            for line in text.splitlines()
-        )
+        with manifest.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != ["path"]:
+                _fail(
+                    "collection.manifest.invalid",
+                    context.document,
+                    {"header": reader.fieldnames},
+                )
+            raw = [row.get("path", "") for row in reader]
+    except (OSError, UnicodeError, csv.Error) as exc:
+        _fail("collection.manifest.invalid", context.document, {"error": str(exc)})
+    if any(not _manifest_member(item) for item in raw) or len(raw) != len(set(raw)):
+        _fail("collection.manifest.invalid", context.document, {"paths": raw})
+    member_paths = tuple(manifest.parent / item for item in raw)
+    if any(
+        path.is_symlink()
+        or not path.is_file()
+        or not _within(path.resolve(), context.entry_root)
+        for path in member_paths
+    ):
+        _fail("collection.manifest.invalid", context.document, {"paths": raw})
+    members = tuple(path.resolve().as_posix() for path in member_paths)
+    _validate_members(members, context.document)
+    collection = MaterialCollection(
+        direction,
+        "manifest",
+        target,
+        members,
+        manifest.parent.resolve().as_posix(),
     )
-    return sorted(candidates)
+    relation = MaterialRelationship(
+        manifest.resolve().as_posix(), direction, "manifest-file", target
+    )
+    return collection, relation
 
 
-def _literal_source_dependencies(
-    path: Path, inventory: set[Path], patterns: Sequence[str]
-) -> List[Path]:
-    """Resolve quoted local source/include paths for a research script."""
+def _manifest_member(value: str) -> bool:
+    path = PurePosixPath(value)
+    return (
+        bool(value)
+        and not path.is_absolute()
+        and "\\" not in value
+        and "://" not in value
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
 
+
+def _validate_members(members: Sequence[str], subject: str) -> None:
+    if (
+        not members
+        or len(members) > MAX_COLLECTION_MEMBERS
+        or len(members) != len(set(members))
+    ):
+        _fail("collection.membership.invalid", subject, {"members": len(members)})
+
+
+def _within(path: Path, root: Path) -> bool:
     try:
-        text = _read_text(path)
-    except (OSError, UnicodeError):
-        return []
-    candidates = set()
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            candidate = Path(match.group(1))
-            if not candidate.is_absolute():
-                candidate = path.parent / candidate
-            candidate = candidate.resolve()
-            if candidate in inventory:
-                candidates.add(candidate)
-    return sorted(candidates)
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
-def _matlab_local_dependencies(path: Path, inventory: set[Path]) -> List[Path]:
-    """Resolve explicit local MATLAB file and same-folder function calls."""
+def _deduplicate_relationships(
+    values: Sequence[MaterialRelationship], subject: str
+) -> list[MaterialRelationship]:
+    by_path: dict[str, MaterialRelationship] = {}
+    for value in values:
+        previous = by_path.get(value.path)
+        if previous is not None and previous.direction != value.direction:
+            _fail("material.direction.conflict", subject, {"path": value.path})
+        by_path.setdefault(value.path, value)
+    return list(by_path.values())
 
-    dependencies = set(
-        _literal_source_dependencies(
-            path,
-            inventory,
-            (r"\brun\s*\(\s*['\"]([^'\"]+\.m)['\"]",),
-        )
+
+def _fail(code: str, subject: str, observed: object) -> NoReturn:
+    raise CommandV2Error(
+        code, subject, observed, "Recorded-Command Provenance And Material Graph"
     )
-    try:
-        text = _read_text(path)
-    except (OSError, UnicodeError):
-        return sorted(dependencies)
-    local_functions = {
-        candidate.stem: candidate
-        for candidate in inventory
-        if candidate.parent == path.parent and candidate.suffix.lower() == ".m"
-    }
-    code = "\n".join(line.split("%", 1)[0] for line in text.splitlines())
-    for name, candidate in local_functions.items():
-        if candidate != path and re.search(rf"\b{re.escape(name)}\s*\(", code):
-            dependencies.add(candidate)
-    return sorted(dependencies)
-
-
-def _split_matlab_arguments(value: str) -> List[str]:
-    """Split one static MATLAB call argument list without evaluating it."""
-
-    arguments = []
-    buffer = []
-    quote: Optional[str] = None
-    depth = 0
-    index = 0
-    while index < len(value):
-        character = value[index]
-        if quote:
-            buffer.append(character)
-            if character == quote:
-                if index + 1 < len(value) and value[index + 1] == quote:
-                    buffer.append(value[index + 1])
-                    index += 1
-                else:
-                    quote = None
-        elif character in {"'", '"'}:
-            quote = character
-            buffer.append(character)
-        elif character in "([{":
-            depth += 1
-            buffer.append(character)
-        elif character in ")]}" and depth:
-            depth -= 1
-            buffer.append(character)
-        elif character == "," and depth == 0:
-            arguments.append("".join(buffer).strip())
-            buffer = []
-        else:
-            buffer.append(character)
-        index += 1
-    if buffer or value.strip():
-        arguments.append("".join(buffer).strip())
-    return arguments
-
-
-def _matlab_function_argument_roles(
-    path: Path,
-) -> Tuple[Optional[str], List[Tuple[str, str]]]:
-    """Return one MATLAB function name and statically evident path roles."""
-
-    try:
-        text = _read_text(path)
-    except (OSError, UnicodeError):
-        return None, []
-    match = re.search(
-        r"^\s*function\s+(?:\[[^\]]*\]\s*=\s*|\w+\s*=\s*)?"
-        r"([A-Za-z]\w*)\s*\(([^)]*)\)",
-        text,
-        flags=re.MULTILINE,
-    )
-    if not match:
-        return None, []
-    code = "\n".join(line.split("%", 1)[0] for line in text.splitlines())
-    parameters = [item.strip() for item in match.group(2).split(",") if item.strip()]
-    roles = []
-    for parameter in parameters:
-        escaped = re.escape(parameter)
-        output = bool(
-            re.search(
-                rf"\b(?:resolve_output_path|writetable|writematrix|writecell|"
-                rf"save)\s*\([^;\n]*\b{escaped}\b",
-                code,
-                flags=re.IGNORECASE,
-            )
-        )
-        input_ = bool(
-            re.search(
-                rf"\b(?:resolve_existing_path|readtable|readmatrix|readcell|"
-                rf"load)\s*\(\s*\b{escaped}\b",
-                code,
-                flags=re.IGNORECASE,
-            )
-        )
-        role = "output" if output else "input" if input_ else "unknown"
-        roles.append((parameter, role))
-    return match.group(1), roles
-
-
-def _static_matlab_path_argument(
-    value: str, entry_path: Path, project_root: Path
-) -> Optional[Path]:
-    """Resolve one quoted static MATLAB path argument from a recorded command."""
-
-    value = value.strip()
-    if len(value) < 2 or value[0] not in {"'", '"'} or value[-1] != value[0]:
-        return None
-    raw = value[1:-1].replace(value[0] * 2, value[0])
-    raw = raw.replace("<project>", project_root.as_posix())
-    raw = raw.replace("<log>", entry_path.parents[2].as_posix())
-    if TOKEN_RE.search(raw):
-        return None
-    path = Path(raw)
-    if not path.is_absolute():
-        path = entry_path.parent / path
-    return path.resolve()
-
-
-def _matlab_container_roots(command: Mapping[str, Any]) -> List[Path]:
-    roots = []
-    for argument in command.get("path_arguments", []):
-        if argument.get("role_hint") != "dependency-container":
-            continue
-        for raw in argument.get("dependency_paths", [argument["path"]]):
-            root = Path(raw).resolve()
-            if root not in roots:
-                roots.append(root)
-    return roots
-
-
-def _matlab_call(
-    value: Any, roots: Sequence[Path], inventory: set[Path]
-) -> Optional[tuple[Path, Sequence[Tuple[str, str]], str]]:
-    if not isinstance(value, str):
-        return None
-    match = re.fullmatch(r"\s*([A-Za-z]\w*)\s*\((.*)\)\s*;?\s*", value, re.DOTALL)
-    if not match:
-        return None
-    name = match.group(1)
-    script = next(
-        (
-            candidate.resolve()
-            for root in roots
-            for candidate in [root / f"{name}.m"]
-            if candidate.resolve() in inventory
-        ),
-        None,
-    )
-    if script is None:
-        return None
-    function_name, parameters = _matlab_function_argument_roles(script)
-    return (script, parameters, match.group(2)) if function_name == name else None
-
-
-def _matlab_path_arguments(
-    option: Optional[str],
-    parameters: Sequence[Tuple[str, str]],
-    arguments: str,
-    entry_path: Path,
-    project_root: Path,
-) -> List[Dict[str, Any]]:
-    results = []
-    for (_, role), value in zip(parameters, _split_matlab_arguments(arguments)):
-        if role not in {"input", "output"}:
-            continue
-        path = _static_matlab_path_argument(value, entry_path, project_root)
-        if path is not None:
-            results.append(
-                {
-                    "option": option,
-                    "raw": value,
-                    "path": path.as_posix(),
-                    "exists": path.exists(),
-                    "role_hint": role,
-                    "source": "matlab-command",
-                }
-            )
-    return results
-
-
-def _extend_matlab_command_dependencies(
-    command: Dict[str, Any],
-    entry_path: Path,
-    project_root: Path,
-    script_inventory: set[Path],
-) -> None:
-    """Add static MATLAB producer and path dependencies from a wrapper command."""
-
-    container_roots = _matlab_container_roots(command)
-    if not container_roots:
-        return
-
-    matlab_scripts = []
-    added_arguments = []
-    for option_value in command.get("option_values", []):
-        call = _matlab_call(
-            option_value.get("value"), container_roots, script_inventory
-        )
-        if call is None:
-            continue
-        script, parameters, arguments = call
-        if script not in matlab_scripts:
-            matlab_scripts.append(script)
-        added_arguments.extend(
-            _matlab_path_arguments(
-                option_value.get("option"),
-                parameters,
-                arguments,
-                entry_path,
-                project_root,
-            )
-        )
-
-    command["matlab_scripts"] = [path.as_posix() for path in matlab_scripts]
-    existing = {
-        (argument.get("path"), argument.get("role_hint"))
-        for argument in command.get("path_arguments", [])
-    }
-    command["path_arguments"].extend(
-        argument
-        for argument in added_arguments
-        if (argument["path"], argument["role_hint"]) not in existing
-    )
-
-
-def _script_local_dependencies(path: Path, inventory: set[Path]) -> List[Path]:
-    """Resolve mechanically supported local dependency forms by script type."""
-
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        return _python_local_dependencies(path, inventory)
-    if suffix == ".sh":
-        return _shell_local_dependencies(path, inventory)
-    if suffix == ".m":
-        return _matlab_local_dependencies(path, inventory)
-    if suffix == ".r":
-        return _literal_source_dependencies(
-            path,
-            inventory,
-            (r"\b(?:source|sys\.source)\s*\(\s*['\"]([^'\"]+)['\"]",),
-        )
-    if suffix == ".jl":
-        return _literal_source_dependencies(
-            path, inventory, (r"\binclude\s*\(\s*['\"]([^'\"]+)['\"]",)
-        )
-    return []
-
-
-def _complete_script_dependency_graph(
-    inventory: set[Path],
-) -> Dict[Path, List[Path]]:
-    """Return all mechanically resolvable local code-dependency edges."""
-
-    return {
-        script: _script_local_dependencies(script, inventory)
-        for script in sorted(inventory)
-    }
-
-
-argparse_flags = _argparse_flags
-commands = _commands
-script_inventory = _script_inventory
-log_owned_roots = _log_owned_roots
-path_is_log_owned = _path_is_log_owned
-complete_script_dependency_graph = _complete_script_dependency_graph

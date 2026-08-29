@@ -6,9 +6,9 @@ from pathlib import Path
 
 from research_log_validation_test_support import unittest, write
 
-COMMAND = importlib.import_module("validation.command_v2")
-EVIDENCE = importlib.import_module("validation.evidence_v2")
-GRAPH = importlib.import_module("validation.material_graph_v2")
+COMMAND = importlib.import_module("validation.commands")
+EVIDENCE = importlib.import_module("validation.evidence")
+GRAPH = importlib.import_module("validation.material_graph")
 
 
 def _fixture(root: Path) -> tuple[Path, Path, object, object]:

@@ -12,7 +12,7 @@ import h5py
 import numpy as np
 from research_log_validation_test_support import write
 
-LOCATOR = importlib.import_module("validation.locator_v2")
+LOCATOR = importlib.import_module("validation.locator")
 
 
 class LocatorV2GrammarTests(unittest.TestCase):

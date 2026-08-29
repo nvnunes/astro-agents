@@ -1955,10 +1955,12 @@ Required keys are `id`, `kind`, and either `paths` or the pair `directory` and
 non-empty array of unique normalized POSIX paths relative to the entry root.
 `directory` is one normalized POSIX directory path relative to the entry root.
 Every target must remain beneath that root and must not be absolute, empty,
-aliased, symlinked, or contain `.`, `..`, a reverse solidus, or a URI scheme.
-The directory form covers every otherwise hygiene-eligible regular-file
-descendant observed beneath that directory. It must resolve to at least one
-such file.
+aliased, or contain `.`, `..`, a reverse solidus, or a URI scheme. A path may
+cross the exact entry-local `data` or `images` directory when that directory is
+a symlink; these are first-class entry material roots regardless of physical
+storage location. No other or nested symlink is permitted. The directory form
+covers every otherwise hygiene-eligible regular-file descendant observed
+beneath that directory. It must resolve to at least one such file.
 
 `reason` is the only optional key and, when present, must be a UTF-8 JSON string
 of at most 2,048 bytes. It records research-agent intent for later semantic
@@ -2779,6 +2781,16 @@ Hygiene inventories regular retained files beneath each entry root, excluding:
 - validation-owned generated paths; and
 - temporary paths excluded by the research-log contract.
 
+Entry-local `data` and `images` are first-class members of the entry when they
+are ordinary directories or directory symlinks. Hygiene follows those two
+exact symlinks, inventories their bounded regular-file descendants, and assigns
+the canonical targets to the owning entry. Evidence, command, collection,
+direct-artifact, and retention paths continue to use the natural entry-local
+names such as `data/results.csv` and `images/residuals.png`. Validation does not
+follow another entry symlink or a nested symlink beneath either material root;
+an unavailable first-class root or nested symlink makes the material
+observation unavailable rather than silently omitting part of the entry.
+
 A retained file is connected when it is an evidence source, direct artifact
 presentation, mechanically established command input or output, resolved local
 script, required collection member, or resolved material of a used named
@@ -3064,8 +3076,9 @@ The initial command-derived provenance profile permits at most:
 Readers and command parsers must be non-executing, path-safe, symlink-safe,
 and bounded. Validation does not execute commands, import scripts, deserialize
 unsafe formats, follow unrestricted external links, or enumerate outside the
-target maintained log and directly referenced external material. Crossing a
-stable bound is `fail`; temporary material access failure is `unavailable`.
+target maintained log except through the exact entry-local `data` and `images`
+material roots or directly referenced external material. Crossing a stable
+bound is `fail`; temporary material access failure is `unavailable`.
 
 ## Future Command-Discovery Expansion If Warranted
 

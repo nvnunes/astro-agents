@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
+from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
 from .json_codec import V2JsonError, canonical_json, decode_json
 
 EVIDENCE_SCHEMA = "research-log-evidence/v2"
@@ -991,28 +992,20 @@ def _retention_directory(value: object, subject: str, entry_root: Path) -> str:
     _reject_symlinked_target(resolved, entry_root, subject, path)
     if not resolved.is_dir():
         _invalid(subject, {"directory": path, "reason": "not_directory"})
-    eligible = [
-        child
-        for child in resolved.rglob("*")
-        if child.is_file() and not child.is_symlink()
-    ]
+    descendants = list(resolved.rglob("*"))
+    for child in descendants:
+        _reject_symlinked_target(child, entry_root, subject, path)
+    eligible = [child for child in descendants if child.is_file()]
     if not eligible:
         _invalid(subject, {"directory": path, "reason": "empty"})
-    for child in eligible:
-        _reject_symlinked_target(child, entry_root, subject, path)
     return path
 
 
 def _reject_symlinked_target(target: Path, root: Path, subject: str, path: str) -> None:
-    current = root
     try:
-        parts = target.relative_to(root).parts
-    except ValueError:
-        _invalid(subject, {"path": path, "reason": "outside_entry"})
-    for part in parts:
-        current /= part
-        if current.is_symlink():
-            _invalid(subject, {"path": path, "reason": "symlink"})
+        validate_entry_path_symlinks(target, root)
+    except EntryMaterialPathError as error:
+        _invalid(subject, {"path": path, "reason": error.reason})
 
 
 def _normalized_relative(value: object, subject: str) -> str:

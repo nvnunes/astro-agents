@@ -125,6 +125,52 @@ class EvidenceFileTests(unittest.TestCase):
             )
             self.assertEqual(len(evidence.identity), 64)
 
+    def test_retention_accepts_entry_material_directory_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root, entry_root, _ = v2_fixture(root)
+            retained = root / "output" / "entry" / "data"
+            retained.parent.mkdir(parents=True)
+            (entry_root / "data").rename(retained)
+            (entry_root / "data").symlink_to(retained, target_is_directory=True)
+            path = entry_root / "evidence.json"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    '"paths": ["data/debug.json"]',
+                    '"directory": "data", "membership": "all-descendants"',
+                ),
+                encoding="utf-8",
+            )
+
+            evidence = EVIDENCE_V2.load_evidence_file(
+                path, log_root=log_root, entry_root=entry_root
+            )
+
+            self.assertEqual(evidence.records[-1].directory, "data")
+
+    def test_retention_rejects_nested_symlink_in_material_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root, entry_root, _ = v2_fixture(root)
+            external = root / "external.json"
+            write(external, "{}\n")
+            (entry_root / "data" / "nested.json").symlink_to(external)
+            path = entry_root / "evidence.json"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    '"paths": ["data/debug.json"]',
+                    '"directory": "data", "membership": "all-descendants"',
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                EVIDENCE_V2.EvidenceV2Error, "evidence.declaration.invalid"
+            ):
+                EVIDENCE_V2.load_evidence_file(
+                    path, log_root=log_root, entry_root=entry_root
+                )
+
     def test_duplicate_keys_and_ids_fail_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = v2_fixture(Path(directory))

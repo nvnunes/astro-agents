@@ -392,6 +392,29 @@ tool --files manifest.csv
             self.assertEqual(manifest.collections[0].mechanism, "manifest")
             self.assertEqual(len(manifest.inputs), 3)
 
+    def test_symlinked_entry_material_root_remains_command_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            retained = root / "output" / "entry" / "data"
+            write(retained / "a.csv", "a\n")
+            write(retained / "b.csv", "b\n")
+            (context.entry_root / "data").symlink_to(
+                retained, target_is_directory=True
+            )
+            text = """```bash
+tool --target data
+```
+<!-- command target = output-directory -->
+"""
+
+            invocation = COMMAND.discover_commands(text, context).invocations[0]
+
+            self.assertEqual(len(invocation.outputs), 2)
+            self.assertEqual(
+                invocation.collections[0].root, retained.resolve().as_posix()
+            )
+
     def test_manifest_escape_and_missing_member_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -107,6 +108,29 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluation.metrics["source_reads"], 1)
             self.assertEqual(evaluation.metrics["script_hashes"], 1)
             self.assertEqual(evaluation.metrics["markdown_reads"], 2)
+
+    def test_symlinked_entry_material_root_is_mechanically_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            retained = root / "output" / "logs" / "study" / "e001" / "data"
+            retained.parent.mkdir(parents=True)
+            (entry.parent / "data").rename(retained)
+            relative_target = os.path.relpath(retained, entry.parent)
+            (entry.parent / "data").symlink_to(
+                relative_target, target_is_directory=True
+            )
+
+            evaluation = _evaluate(summary)
+
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+            scopes = {item.scope: item.status for item in evaluation.result.scopes}
+            self.assertEqual(
+                scopes[RESULTS.CheckScope.HYGIENE],
+                RESULTS.CheckStatus.PASS,
+            )
 
     def test_distinct_locators_share_one_stable_source_observation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

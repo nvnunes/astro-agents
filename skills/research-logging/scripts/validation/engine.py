@@ -17,6 +17,7 @@ from .commands import (
     load_data_index,
     order_invocations,
 )
+from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
 from .evidence import (
     MAX_PRESENTATIONS_PER_LOG,
     MAX_RECORDS_PER_LOG,
@@ -722,6 +723,7 @@ def _resolve_source(
         ):
             _fail("locator.path.unresolved", value, {"source": value})
         path = entry.root.joinpath(*pure.parts)
+    _validate_entry_source_path(path, entry, value)
     if path.is_symlink() or not path.is_file():
         _fail(
             "locator.path.unresolved",
@@ -729,6 +731,21 @@ def _resolve_source(
             {"path": path.resolve().as_posix(), "regular_file": False},
         )
     return _ResolvedSource(path.resolve(), external)
+
+
+def _validate_entry_source_path(path: Path, entry: _Entry, source: str) -> None:
+    try:
+        path.absolute().relative_to(entry.root.absolute())
+    except ValueError:
+        return
+    try:
+        validate_entry_path_symlinks(path, entry.root)
+    except EntryMaterialPathError as error:
+        _fail(
+            "locator.path.unresolved",
+            source,
+            {"path": path.as_posix(), "reason": error.reason},
+        )
 
 
 def _canonical_presentation(

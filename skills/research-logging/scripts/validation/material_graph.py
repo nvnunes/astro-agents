@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 from .commands import Invocation
+from .entry_materials import (
+    ENTRY_MATERIAL_DIRECTORY_NAMES,
+    EntryMaterialPathError,
+    entry_material_roots,
+)
 from .evidence import EvidenceFile, RetentionRecord
 from .json_codec import canonical_json
 
@@ -142,7 +147,7 @@ class MaterialGraphRequest:
 
 @dataclass
 class _GraphState:
-    roots: Mapping[str, Path]
+    roots: Mapping[str, tuple[Path, ...]]
     nodes: set[GraphNode]
     edges: set[GraphEdge]
     connected: set[str]
@@ -153,8 +158,9 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     """Compose only proved edges, then classify entry-owned hygiene material."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
+    connection_roots = _connection_roots(roots)
     _validate_material_classification(request.invocations)
-    state = _GraphState(roots, set(), set(), set(), [])
+    state = _GraphState(connection_roots, set(), set(), set(), [])
     graph_started = time.perf_counter()
     _add_evidence(request.evidence, state)
     _add_direct_artifacts(request.direct_artifacts, state)
@@ -338,11 +344,31 @@ def _material_node(
 
 
 def _connect_local(
-    connected: set[str], material: str, roots: Mapping[str, Path]
+    connected: set[str], material: str, roots: Mapping[str, tuple[Path, ...]]
 ) -> None:
     path = Path(material)
-    if any(_within(path, root) for root in roots.values()):
+    if any(
+        _within(path, root)
+        for owned_roots in roots.values()
+        for root in owned_roots
+    ):
         connected.add(path.resolve().as_posix())
+
+
+def _connection_roots(
+    roots: Mapping[str, Path],
+) -> dict[str, tuple[Path, ...]]:
+    result: dict[str, tuple[Path, ...]] = {}
+    for entry, root in roots.items():
+        try:
+            result[entry] = entry_material_roots(root)
+        except EntryMaterialPathError as error:
+            _fail(
+                "provenance.observation.unavailable",
+                str(error.path),
+                {"reason": error.reason},
+            )
+    return result
 
 
 def _inventory(roots: Mapping[str, Path]) -> set[str]:
@@ -355,6 +381,11 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
             if _excluded(relative):
                 continue
             if path.is_symlink():
+                if (
+                    len(relative.parts) == 1
+                    and relative.name in ENTRY_MATERIAL_DIRECTORY_NAMES
+                ):
+                    _inventory_material_root(path, relative, inventory)
                 continue
             if path.is_file():
                 inventory.add(path.resolve().as_posix())
@@ -365,6 +396,36 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
                         {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
                     )
     return inventory
+
+
+def _inventory_material_root(
+    root: Path, logical_root: Path, inventory: set[str]
+) -> None:
+    if not root.is_dir():
+        _fail(
+            "provenance.observation.unavailable",
+            str(root),
+            {"reason": "unavailable_material_root"},
+        )
+    canonical_root = root.resolve()
+    for path in canonical_root.rglob("*"):
+        relative = logical_root / path.relative_to(canonical_root)
+        if path.is_symlink():
+            _fail(
+                "provenance.observation.unavailable",
+                str(path),
+                {"reason": "nested_symlink"},
+            )
+        if _excluded(relative):
+            continue
+        if path.is_file():
+            inventory.add(path.resolve().as_posix())
+            if len(inventory) > MAX_GRAPH_NODES:
+                _fail(
+                    "provenance.resource.too_large",
+                    "hygiene inventory",
+                    {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
+                )
 
 
 def _excluded(relative: Path) -> bool:
@@ -420,7 +481,7 @@ def _retention_coverage(record: RetentionRecord, root: Path) -> set[str]:
         for path in directory.rglob("*")
         if path.is_file()
         and not path.is_symlink()
-        and not _excluded(path.relative_to(root))
+        and not _excluded(Path(record.directory) / path.relative_to(directory))
     }
 
 

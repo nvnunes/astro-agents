@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, MutableMapping, NoReturn, Sequence
 
+from .entry_materials import EntryMaterialPathError, is_entry_material_path
 from .json_codec import canonical_json
 
 MAX_INVOCATIONS_PER_FENCE = 64
@@ -855,7 +856,7 @@ def _relationship(
     )
     if path is None:
         _fail("material.unresolved", context.document, {"value": request.value})
-    if not request.expanded and not _within(path.resolve(), context.log_root):
+    if not request.expanded and not _command_path_in_scope(path, context):
         _fail("data_index.raw_external", context.document, {"value": request.value})
     return MaterialRelationship(
         path.resolve().as_posix(),
@@ -910,16 +911,21 @@ def _directory_collection(
     value: str, direction: str, target: str, context: CommandContext
 ) -> MaterialCollection:
     root = _expand_path(value, context)
-    if root is None or root.is_symlink() or not root.is_dir():
+    if root is None or not root.is_dir():
         _fail("collection.membership.invalid", context.document, {"directory": value})
-    try:
-        root.resolve().relative_to(context.entry_root)
-    except ValueError:
+    if not _command_path_in_scope(root, context, entry_only=True):
         _fail("collection.membership.invalid", context.document, {"directory": value})
+    descendants = sorted(root.rglob("*"))
+    if any(path.is_symlink() for path in descendants):
+        _fail(
+            "collection.membership.invalid",
+            context.document,
+            {"directory": value, "reason": "nested_symlink"},
+        )
     members = tuple(
         path.resolve().as_posix()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not path.is_symlink()
+        for path in descendants
+        if path.is_file()
     )
     _validate_members(members, context.document)
     return MaterialCollection(
@@ -951,7 +957,7 @@ def _manifest_collection(
     if any(
         path.is_symlink()
         or not path.is_file()
-        or not _within(path.resolve(), context.entry_root)
+        or not _command_path_in_scope(path, context, entry_only=True)
         for path in member_paths
     ):
         _fail("collection.manifest.invalid", context.document, {"paths": raw})
@@ -988,6 +994,22 @@ def _validate_members(members: Sequence[str], subject: str) -> None:
         or len(members) != len(set(members))
     ):
         _fail("collection.membership.invalid", subject, {"members": len(members)})
+
+
+def _command_path_in_scope(
+    path: Path, context: CommandContext, *, entry_only: bool = False
+) -> bool:
+    try:
+        if is_entry_material_path(path, context.entry_root):
+            return True
+    except EntryMaterialPathError as error:
+        _fail(
+            "material.unresolved",
+            context.document,
+            {"path": path.as_posix(), "reason": error.reason},
+        )
+    boundary = context.entry_root if entry_only else context.log_root
+    return _within(path.resolve(), boundary.resolve())
 
 
 def _within(path: Path, root: Path) -> bool:

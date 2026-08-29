@@ -113,6 +113,90 @@ class MaterialGraphV2Tests(unittest.TestCase):
             self.assertEqual(result.hygiene.unused_data_names, ("e001:unused",))
             self.assertTrue(result.dependency_projection)
 
+    def test_symlinked_data_and_images_are_first_class_entry_material(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root, entry_root, _, _ = _fixture(root)
+            retained_root = root / "output" / "entry"
+            retained_data = retained_root / "data"
+            retained_images = retained_root / "images"
+            retained_root.mkdir(parents=True)
+            (entry_root / "data").rename(retained_data)
+            write(retained_images / "orphan.png", "image\n")
+            (entry_root / "data").symlink_to(
+                retained_data, target_is_directory=True
+            )
+            (entry_root / "images").symlink_to(
+                retained_images, target_is_directory=True
+            )
+            context = COMMAND.CommandContext(
+                log_id="docs/log",
+                entry="e001",
+                document="entries/entry/entry.md",
+                entry_root=entry_root,
+                log_root=log_root,
+                project_root=root,
+                data_index={
+                    "catalog": "https://example.test/catalog.csv",
+                    "unused": "https://example.test/unused.csv",
+                },
+                require_experimental_context=False,
+            )
+            commands = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/model.py --catalog '<catalog>' --output-data data/source.csv
+```
+<!-- command type = model -->
+""",
+                context,
+            ).invocations
+            evidence_file = EVIDENCE.load_evidence_file(
+                entry_root / "evidence.json",
+                log_root=log_root,
+                entry_root=entry_root,
+            )
+
+            result = GRAPH.compose_material_graph(
+                GRAPH.MaterialGraphRequest(
+                    entry_roots={"e001": entry_root},
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001",
+                            "value",
+                            "entry.md:eid:value",
+                            (
+                                (entry_root / "data" / "source.csv")
+                                .resolve()
+                                .as_posix(),
+                            ),
+                        ),
+                    ),
+                    direct_artifacts=(),
+                    invocations=commands,
+                    evidence_files=(evidence_file,),
+                )
+            )
+
+            self.assertIn(
+                (retained_data / "source.csv").resolve().as_posix(),
+                result.hygiene.connected,
+            )
+            self.assertEqual(
+                result.hygiene.declared_retained,
+                ((retained_data / "debug.json").resolve().as_posix(),),
+            )
+            self.assertEqual(
+                result.hygiene.orphaned,
+                tuple(
+                    sorted(
+                        (
+                            (retained_data / "orphan.txt").resolve().as_posix(),
+                            (retained_images / "orphan.png").resolve().as_posix(),
+                        )
+                    )
+                ),
+            )
+
     def test_retention_cannot_overlap_or_hide_connected_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, commands, evidence_file = _fixture(Path(directory))

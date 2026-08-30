@@ -62,7 +62,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         entry,
         "# Entry e001\n\n"
         "## Trial\n\n"
-        "`Question:`\n\nWhat is the success rate?\n\n"
+        "`Background:`\n\nWhat is the success rate?\n\n"
         "`Steps:`\n\n"
         "```bash\n"
         "./pyrun scripts/model.py --catalog '<catalog>' "
@@ -276,6 +276,64 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluation.metrics["source_reads"], 1)
             self.assertEqual(evaluation.metrics["script_hashes"], 1)
             self.assertEqual(evaluation.metrics["markdown_reads"], 2)
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertIn(
+                {
+                    "context": {
+                        "classification": "experimental",
+                        "classifier_version": "entry-section-labels/1",
+                        "under_results": True,
+                    }
+                },
+                evidence.dependencies,
+            )
+
+    def test_invalid_section_is_reported_while_valid_section_evaluates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8")
+                + "\n## Incomplete appendix\n\n`Steps:`\n\nNo result was retained.\n",
+            )
+
+            evaluation = _evaluate(summary)
+
+            invalid = [
+                check
+                for check in evaluation.result.checks
+                if check.failure is not None
+                and check.failure.code == "association.context_invalid"
+            ]
+            self.assertEqual(len(invalid), 1)
+            self.assertEqual(invalid[0].scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(
+                invalid[0].failure.observed["heading"], "Incomplete appendix"
+            )
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+
+    def test_association_syntax_and_context_failures_are_conformance(self) -> None:
+        for code in (
+            "association.context_invalid",
+            "association.presentation.syntax_invalid",
+        ):
+            with self.subTest(code=code):
+                error = ENGINE.EngineV2Error(code, "entry", {}, "rule")
+                self.assertEqual(
+                    ENGINE._error_scope(error, RESULTS.CheckScope.EVIDENCE),
+                    RESULTS.CheckScope.CONFORMANCE,
+                )
 
     def test_symlinked_entry_material_root_is_mechanically_clear(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

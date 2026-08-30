@@ -20,7 +20,8 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
         document,
         "# Entry\n\n"
         "## Trial\n\n"
-        "`Question:`\n\nWhat happened?\n\n"
+        "`Background:`\n\nWhat happened?\n\n"
+        "`Steps:`\n\nRead the retained outputs.\n\n"
         "`Results:`\n\n"
         "The rate was `67.6%`<!-- eid:success-rate -->.\n\n"
         "<!-- eid:comparison-table -->\n"
@@ -251,6 +252,55 @@ class EvidenceFileTests(unittest.TestCase):
 
 
 class EvidenceV2AssociationTests(unittest.TestCase):
+    def test_section_classifier_uses_the_documented_label_contract(self) -> None:
+        text = (
+            "# Entry\n\n"
+            "## Experiment\n\n"
+            "`Background:`\n\nCompare results.\n\n"
+            "`Steps:`\n\nRead the retained output.\n\n"
+            "Value `1`<!-- eid:experimental -->.\n\n"
+            "`Results:`\n\nValue `2`<!-- eid:result -->.\n\n"
+            "## Synthesis\n\n"
+            "`Findings:`\n\nValue `3`<!-- eid:synthesis -->.\n\n"
+            "## Prose\n\nValue `4`<!-- eid:prose -->.\n\n"
+            "## Legacy assumption\n\n"
+            "`Question:`\n\nWhy?\n\n"
+            "`Steps:`\n\nRead output.\n\n"
+            "`Results:`\n\nValue `5`<!-- eid:legacy -->.\n\n"
+            "## Incomplete\n\n"
+            "`Steps:`\n\nValue `6`<!-- eid:incomplete -->.\n"
+        )
+
+        presentations = EVIDENCE_V2.index_entry_presentations(
+            text, document="entries/2026-08-28-e001-study/e001.md"
+        )
+        issues = EVIDENCE_V2.index_entry_section_issues(text)
+
+        by_id = {item.id: item for item in presentations}
+        self.assertTrue(by_id["experimental"].context_valid)
+        self.assertFalse(by_id["experimental"].under_results)
+        self.assertTrue(by_id["result"].context_valid)
+        self.assertTrue(by_id["result"].under_results)
+        self.assertEqual(by_id["synthesis"].section_classification, "synthesis")
+        self.assertEqual(by_id["prose"].section_classification, "prose")
+        self.assertEqual(by_id["legacy"].section_classification, "invalid")
+        self.assertEqual(by_id["incomplete"].section_classification, "invalid")
+        self.assertEqual(
+            [(issue.heading, issue.reason) for issue in issues],
+            [
+                ("Legacy assumption", "unknown_label"),
+                ("Incomplete", "invalid_label_combination"),
+            ],
+        )
+
+    def test_section_classifier_ignores_heading_and_labels_inside_fences(self) -> None:
+        text = (
+            "## Prose\n\n"
+            "```text\n## Not a section\n`Steps:`\n`Results:`\n```\n"
+        )
+
+        self.assertEqual(EVIDENCE_V2.index_entry_section_issues(text), ())
+
     def test_entry_markers_bind_all_three_presentation_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, document = v2_fixture(Path(directory))
@@ -309,6 +359,8 @@ class EvidenceV2AssociationTests(unittest.TestCase):
                     line=item.line,
                     section=item.section,
                     context_valid=True,
+                    section_classification=item.section_classification,
+                    under_results=item.under_results,
                 )
                 for item in EVIDENCE_V2.index_entry_presentations(
                     document.read_text(encoding="utf-8"),
@@ -381,9 +433,29 @@ class EvidenceV2AssociationTests(unittest.TestCase):
                 targets,
             )
 
+        unresolved = EVIDENCE_V2.index_summary_references(
+            "Value `1`<!-- ref entry = e001; eid = missing -->.\n"
+        )
+        with self.assertRaisesRegex(
+            EVIDENCE_V2.EvidenceV2Error, "summary.reference.unresolved"
+        ):
+            EVIDENCE_V2.resolve_summary_references(unresolved, {})
+
+        wrong_kind = EVIDENCE_V2.index_summary_references(
+            "Value `1`<!-- ref entry = e001; eid = output -->.\n"
+        )
+        with self.assertRaisesRegex(
+            EVIDENCE_V2.EvidenceV2Error, "summary.reference.target_invalid"
+        ):
+            EVIDENCE_V2.resolve_summary_references(
+                wrong_kind,
+                {("e001", "output"): EVIDENCE_V2.CanonicalPresentation("output")},
+            )
+
     def test_direct_artifacts_preserve_normalized_markdown_targets(self) -> None:
         text = (
-            "# Entry\n\n## Trial\n\n`Question:`\n\nQ\n\n`Results:`\n\n"
+            "# Entry\n\n## Trial\n\n`Background:`\n\nQ\n\n"
+            "`Steps:`\n\nRead the retained outputs.\n\n`Results:`\n\n"
             "![Figure](../images/result.png) and "
             "[table](<data/result.csv> \"download\").\n"
             "[navigation](notes.md) [external](https://example.com/a.csv)\n"

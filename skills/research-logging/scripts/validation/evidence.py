@@ -26,6 +26,27 @@ MAX_RETENTION_REASON_BYTES = 2048
 MAX_SOURCES = 32
 MAX_SUMMARY_REFERENCE_BYTES = 512
 MAX_PRESENTATION_BYTES = 1024 * 1024
+SECTION_CLASSIFIER_VERSION = "entry-section-labels/1"
+
+SECTION_LABEL_RE = re.compile(r"`(?P<label>[^`\r\n]+:)`\Z")
+SECTION_LABELS = frozenset(
+    {
+        "Background:",
+        "Steps:",
+        "Results:",
+        "Findings:",
+        "Observations:",
+        "Uncertainty:",
+        "Decisions:",
+        "Follow-up:",
+    }
+)
+EXPERIMENTAL_SECTION_LABELS = SECTION_LABELS - {"Findings:"}
+SYNTHESIS_SECTION_LABELS = SECTION_LABELS - {
+    "Steps:",
+    "Results:",
+    "Observations:",
+}
 
 RECORD_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 EID_COMMENT_RE = re.compile(r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*) -->")
@@ -176,6 +197,18 @@ class PresentedItem:
     line: int
     section: str | None
     context_valid: bool
+    section_classification: str
+    under_results: bool
+
+
+@dataclass(frozen=True)
+class EntrySectionIssue:
+    """One structurally invalid descriptive entry section."""
+
+    heading: str
+    line: int
+    labels: tuple[str, ...]
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -235,6 +268,25 @@ class _PresentationContext:
     document: str
     section: str | None
     context_valid: bool
+    section_classification: str
+    under_results: bool
+
+
+@dataclass(frozen=True)
+class _LineContext:
+    """Deterministic section classification at one Markdown source line."""
+
+    section: str | None
+    classification: str
+    under_results: bool
+
+
+@dataclass(frozen=True)
+class _SectionAnalysis:
+    """One complete section-classifier projection for an entry document."""
+
+    contexts: tuple[_LineContext, ...]
+    issues: tuple[EntrySectionIssue, ...]
 
 
 def active_evidence_version(summary: Path) -> str:
@@ -455,14 +507,21 @@ def index_entry_presentations(
     return tuple(items)
 
 
+def index_entry_section_issues(text: str) -> tuple[EntrySectionIssue, ...]:
+    """Return one precise issue for each structurally invalid ``##`` section."""
+
+    return _section_analysis(text.splitlines()).issues
+
+
 def _presentations_on_line(
     lines: Sequence[str],
-    contexts: Sequence[tuple[str | None, bool, bool]],
+    contexts: Sequence[_LineContext],
     number: int,
     line: str,
     document: str,
 ) -> tuple[list[PresentedItem], set[tuple[int, int]]]:
-    section, experimental, results = contexts[number - 1]
+    context = contexts[number - 1]
+    experimental = context.classification == "experimental"
     items = []
     for match in EID_LINE_RE.finditer(line):
         value = match.group("value")
@@ -474,8 +533,10 @@ def _presentations_on_line(
                 kind="statistic",
                 value=value,
                 line=number,
-                section=section,
+                section=context.section,
                 context_valid=experimental,
+                section_classification=context.classification,
+                under_results=context.under_results,
             )
         )
     consumed = {
@@ -490,7 +551,13 @@ def _presentations_on_line(
         lines,
         number,
         marker.group("id"),
-        _PresentationContext(document, section, experimental and results),
+        _PresentationContext(
+            document,
+            context.section,
+            experimental and context.under_results,
+            context.classification,
+            context.under_results,
+        ),
     )
     if block is not None:
         items.append(block)
@@ -516,6 +583,8 @@ def _block_presentation(
             line=number + 1,
             section=context.section,
             context_valid=context.context_valid,
+            section_classification=context.section_classification,
+            under_results=context.under_results,
         )
     fence = FENCE_RE.fullmatch(lines[number])
     if fence is None or fence.group("info") != "text":
@@ -530,6 +599,8 @@ def _block_presentation(
         line=number + 1,
         section=context.section,
         context_valid=context.context_valid,
+        section_classification=context.section_classification,
+        under_results=context.under_results,
     )
 
 
@@ -548,8 +619,11 @@ def index_direct_artifacts(
     for number, line in enumerate(lines, 1):
         if fenced[number - 1]:
             continue
-        section, experimental, results = contexts[number - 1]
-        if not experimental or not results:
+        context = contexts[number - 1]
+        if (
+            context.classification != "experimental"
+            or not context.under_results
+        ):
             continue
         for match in MARKDOWN_LINK_RE.finditer(line):
             raw_target = match.group("target")
@@ -578,7 +652,7 @@ def index_direct_artifacts(
                     normalized_target=normalized,
                     label=match.group("label"),
                     image=bool(match.group("image")),
-                    section=section,
+                    section=context.section,
                 )
             )
     return tuple(artifacts)
@@ -618,14 +692,15 @@ def index_entry_presentation_candidates(
     fenced = _fenced_lines(lines)
     candidates: list[PresentationCandidate] = []
     for index, line in enumerate(lines):
-        _, experimental, results = contexts[index]
+        context = contexts[index]
+        experimental = context.classification == "experimental"
         if not fenced[index] and experimental:
             candidates.extend(
                 PresentationCandidate("statistic", index + 1)
                 for match in INLINE_CODE_RE.finditer(line)
                 if _presented_numeric_expression(match.group(1))
             )
-        if not experimental or not results:
+        if not experimental or not context.under_results:
             continue
         if not fenced[index] and _looks_like_table(lines, index):
             candidates.append(PresentationCandidate("table", index + 1))
@@ -745,8 +820,16 @@ def associate_presentations(
         for record in evidence.records
         if isinstance(record, PresentationRecord)
     }
-    presented = {item.id: item for item in presentations}
-    for item in presentations:
+    skipped = {
+        item.id
+        for item in presentations
+        if item.section_classification == "invalid"
+    }
+    eligible = [
+        item for item in presentations if item.section_classification != "invalid"
+    ]
+    presented = {item.id: item for item in eligible}
+    for item in eligible:
         record = records.get(item.id)
         if record is None:
             _fail(
@@ -776,7 +859,7 @@ def associate_presentations(
                 {"section": item.section, "kind": item.kind},
                 "Eligible Presentation Context",
             )
-    missing = sorted(set(records) - set(presented))
+    missing = sorted(set(records) - set(presented) - skipped)
     if missing:
         _fail(
             "association.presentation_missing",
@@ -799,7 +882,7 @@ def resolve_summary_references(
         target = targets.get(identity)
         if target is None:
             _fail(
-                "summary.reference.target_missing",
+                "summary.reference.unresolved",
                 f"summary:{reference.line}",
                 {"entry": reference.entry, "eid": reference.evidence_id},
                 "Summary Association",
@@ -807,7 +890,7 @@ def resolve_summary_references(
         if reference.row is None:
             if target.kind != "statistic" or target.statistic is None:
                 _fail(
-                    "summary.reference.kind_mismatch",
+                    "summary.reference.target_invalid",
                     f"summary:{reference.line}",
                     {"kind": target.kind, "coordinates": False},
                     "V2 Summary Evidence References",
@@ -816,7 +899,7 @@ def resolve_summary_references(
         else:
             if target.kind != "table" or target.statistic is not None:
                 _fail(
-                    "summary.reference.kind_mismatch",
+                    "summary.reference.target_invalid",
                     f"summary:{reference.line}",
                     {"kind": target.kind, "coordinates": True},
                     "V2 Summary Evidence References",
@@ -1019,36 +1102,65 @@ def _normalized_relative(value: object, subject: str) -> str:
     return value
 
 
-def _line_contexts(lines: Sequence[str]) -> list[tuple[str | None, bool, bool]]:
-    contexts: list[tuple[str | None, bool, bool]] = []
-    section: str | None = None
-    experimental = False
-    results = False
-    section_lines: list[str] = []
-    section_start = 0
-    for index, line in enumerate(lines):
-        heading = HEADING_RE.match(line)
-        if heading and len(heading.group("marks")) == 2:
-            if section is not None:
-                is_experimental = any("Question:" in item for item in section_lines)
-                for number in range(section_start, index):
-                    old_section, _, old_results = contexts[number]
-                    contexts[number] = (old_section, is_experimental, old_results)
-            section = heading.group("title").strip()
-            experimental = False
-            results = False
-            section_lines = []
-            section_start = index
-        section_lines.append(line)
-        if line.strip() in {"`Results:`", "**Results:**", "Results:"}:
-            results = True
-        contexts.append((section, experimental, results))
-    if section is not None:
-        is_experimental = any("Question:" in item for item in section_lines)
-        for number in range(section_start, len(lines)):
-            old_section, _, old_results = contexts[number]
-            contexts[number] = (old_section, is_experimental, old_results)
-    return contexts
+def _line_contexts(lines: Sequence[str]) -> tuple[_LineContext, ...]:
+    return _section_analysis(lines).contexts
+
+
+def _section_analysis(lines: Sequence[str]) -> _SectionAnalysis:
+    fenced = _fenced_lines(lines)
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if not fenced[index]
+        and (heading_candidate := HEADING_RE.match(line)) is not None
+        and len(heading_candidate.group("marks")) == 2
+    ]
+    contexts = [_LineContext(None, "outside", False) for _ in lines]
+    issues: list[EntrySectionIssue] = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        heading_match = HEADING_RE.match(lines[start])
+        assert heading_match is not None
+        heading = heading_match.group("title").strip()
+        labels = tuple(
+            match.group("label")
+            for index in range(start + 1, end)
+            if not fenced[index]
+            and (match := SECTION_LABEL_RE.fullmatch(lines[index].strip())) is not None
+        )
+        classification, reason = _classify_section(labels)
+        under_results = False
+        for index in range(start, end):
+            if (
+                classification == "experimental"
+                and not fenced[index]
+                and lines[index].strip() == "`Results:`"
+            ):
+                under_results = True
+            contexts[index] = _LineContext(heading, classification, under_results)
+        if classification == "invalid":
+            issues.append(
+                EntrySectionIssue(heading, start + 1, labels, reason or "invalid")
+            )
+    return _SectionAnalysis(tuple(contexts), tuple(issues))
+
+
+def _classify_section(labels: Sequence[str]) -> tuple[str, str | None]:
+    if not labels:
+        return "prose", None
+    if len(labels) != len(set(labels)):
+        return "invalid", "duplicate_label"
+    if set(labels) - SECTION_LABELS:
+        return "invalid", "unknown_label"
+    observed = set(labels)
+    if (
+        {"Steps:", "Results:"} <= observed
+        and observed <= EXPERIMENTAL_SECTION_LABELS
+    ):
+        return "experimental", None
+    if "Findings:" in observed and observed <= SYNTHESIS_SECTION_LABELS:
+        return "synthesis", None
+    return "invalid", "invalid_label_combination"
 
 
 def _fenced_lines(lines: Sequence[str]) -> tuple[bool, ...]:

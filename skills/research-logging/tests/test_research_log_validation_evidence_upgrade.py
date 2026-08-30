@@ -25,7 +25,8 @@ def legacy_log(root: Path) -> tuple[Path, Path, Path]:
     )
     write(
         entry,
-        "# Entry\n\n## Trial\n\n`Question:`\n\nQ\n\n"
+        "# Entry\n\n## Trial\n\n`Background:`\n\nQ\n\n"
+        "`Steps:`\n\nRead the retained output.\n\n"
         "`Results:`\n\nThe result was `1.0`.\n",
     )
     write(

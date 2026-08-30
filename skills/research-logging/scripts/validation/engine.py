@@ -23,6 +23,7 @@ from .evidence import (
     MAX_PRESENTATIONS_PER_LOG,
     MAX_RECORDS_PER_LOG,
     MAX_SUMMARY_REFERENCES_PER_LOG,
+    SECTION_CLASSIFIER_VERSION,
     CanonicalPresentation,
     DirectArtifactPresentation,
     EvidenceFile,
@@ -36,6 +37,7 @@ from .evidence import (
     index_entry_documents,
     index_entry_presentation_candidates,
     index_entry_presentations,
+    index_entry_section_issues,
     index_summary_references,
     index_summary_statistic_candidates,
     load_evidence_file,
@@ -73,7 +75,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-static-shell-4"
+RULES_VERSION = "research-log-evidence/v2-static-shell-5"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
@@ -360,6 +362,8 @@ def _evaluate_entries(state: _ScanState) -> None:
                 else []
             )
             for record in records:
+                if record.id not in associated:
+                    continue
                 outcome = _evaluate_record(entry, record, associated[record.id], state)
                 state.records.append(outcome)
                 state.checks.extend((outcome.evidence_check, outcome.provenance_check))
@@ -380,6 +384,24 @@ def _entry_presentations(
     document = entry.document
     text = _read_text(document, state)
     relative = document.relative_to(state.log_root).as_posix()
+    for issue in index_entry_section_issues(text):
+        state.checks.append(
+            _failure_check(
+                f"entry:{entry.id}:section:{issue.line}",
+                CheckScope.CONFORMANCE,
+                _FailureSpec(
+                    "association.context_invalid",
+                    f"{relative}:{issue.line}",
+                    {
+                        "classifier_version": SECTION_CLASSIFIER_VERSION,
+                        "heading": issue.heading,
+                        "labels": list(issue.labels),
+                        "reason": issue.reason,
+                    },
+                    "Eligible Presentation Context",
+                ),
+            )
+        )
     indexed = index_entry_presentations(text, document=relative)
     _require_complete_markers(document, indexed, text, state)
     presented.extend(indexed)
@@ -882,6 +904,13 @@ def _record_dependencies(
                 "value": item.value,
             }
         },
+        {
+            "context": {
+                "classification": item.section_classification,
+                "classifier_version": SECTION_CLASSIFIER_VERSION,
+                "under_results": item.under_results,
+            }
+        },
         {"selections": [selection.dependency_projection for selection in selections]},
         {"transformation": transformed.dependency_projection},
     )
@@ -1053,6 +1082,8 @@ def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
         "transformation.syntax.",
     )
     conformance_codes = {
+        "association.context_invalid",
+        "association.presentation.syntax_invalid",
         "association.resource.too_large",
         "collection.manifest.invalid",
         "data_index.raw_external",

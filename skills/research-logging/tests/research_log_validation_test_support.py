@@ -75,7 +75,7 @@ def mechanical_log(
         entry,
         "# Entry e001\n\n"
         "## Trial\n\n"
-        "`Question:`\n\nWhat is the success rate?\n\n"
+        "`Background:`\n\nWhat is the success rate?\n\n"
         "`Steps:`\n\n"
         "```bash\n"
         "./pyrun scripts/model.py --catalog '<catalog>' "

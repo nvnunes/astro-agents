@@ -24,3 +24,8 @@ history for detailed change-by-change context.
   invocations receive normal identity, annotation, relationship, and
   resource-bound accounting; unsupported, dynamic, unbound, nested, or
   over-bound constructs remain fail-closed.
+- Aligned entry-section classification with the documented label contract:
+  experimental sections require `Steps:` and `Results:`, synthesis sections
+  require `Findings:`, structurally invalid combinations are reported and
+  skipped, and association and summary failures use their normative codes and
+  scopes.

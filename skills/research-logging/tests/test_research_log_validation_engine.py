@@ -292,6 +292,39 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evidence.dependencies,
             )
 
+    def test_decimal_locator_is_retained_exactly_in_record_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["locator"]["where"] = [
+                {
+                    "op": "eq",
+                    "parse": "decimal",
+                    "path": ["threshold"],
+                    "value": 0.676,
+                }
+            ]
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(
+                entry.parent / "data" / "results.csv",
+                "threshold,success_rate\n0.676,0.676\n",
+            )
+
+            evaluation = _evaluate(summary)
+
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+            evidence_check = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            record = evidence_check.dependencies[0]["record"]
+            self.assertIsInstance(record, str)
+            self.assertIn('"value":0.676', record)
+
     def test_invalid_section_is_reported_while_valid_section_evaluates(
         self,
     ) -> None:

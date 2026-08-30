@@ -28,4 +28,5 @@ history for detailed change-by-change context.
   experimental sections require `Steps:` and `Results:`, synthesis sections
   require `Findings:`, structurally invalid combinations are reported and
   skipped, and association and summary failures use their normative codes and
-  scopes.
+  scopes. Canonical record dependencies now preserve exact decimal locator
+  values while remaining valid generated-record JSON.

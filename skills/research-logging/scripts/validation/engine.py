@@ -75,7 +75,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-static-shell-5"
+RULES_VERSION = "research-log-evidence/v2-static-shell-6"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
@@ -896,7 +896,7 @@ def _record_dependencies(
     item: PresentedItem,
 ) -> tuple[Mapping[str, object], ...]:
     return (
-        {"record": record.as_dict()},
+        {"record": canonical_json(record.as_dict())},
         {
             "presentation": {
                 "document": item.document,

@@ -168,7 +168,7 @@ class MechanicalControllerTests(unittest.TestCase):
             b"{\n",
             b'{"checks":{},"rules_version":"old","schema":'
             b'"research-log-mechanical-cache/2"}\n',
-            b'{"checks":{},"rules_version":"research-log-evidence/v2-static-shell-5",'
+            b'{"checks":{},"rules_version":"research-log-evidence/v2-static-shell-6",'
             b'"schema":"unsupported"}\n',
         )
         for invalid in invalid_caches:

@@ -47,9 +47,10 @@ Tables, output fences, artifact links, and image embeds outside experimental
 experimental prose is separate evidence even when the same value appears in a
 table.
 
-Use one stable ID per presented statistic, table, or output. IDs use lowercase
-letters, digits, and internal hyphens, begin with a letter, and remain stable
-when wording, headings, or values change. The marker is exactly:
+Use one stable descriptive ID per presented statistic, table, or output. IDs
+use lowercase letters, digits, and internal hyphens, begin with a letter, and
+remain stable when wording, headings, or values change. The ID must not include
+the evidence value. The marker is exactly:
 
 ```html
 <!-- eid:descriptive-id -->

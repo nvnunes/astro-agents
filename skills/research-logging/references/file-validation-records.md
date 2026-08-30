@@ -21,9 +21,12 @@ independent conformance, evidence, provenance, and hygiene aggregates, the
 rules version, and the result date.
 
 `validation/.cache/mechanical.json` is a disposable reuse projection. It uses
-schema `research-log-mechanical-cache/1`, has an independent version history,
-and may be removed or rebuilt without changing a validation conclusion. Ignore
-`validation/.cache/` in source control.
+schema `research-log-mechanical-cache/2`, has an independent version history,
+and may be removed or rebuilt without changing a validation conclusion. It may
+reuse an artifact digest only when the project-relative regular file still has
+the recorded byte size, modification time, and change time. `--recompute`
+bypasses both check and artifact-identity reuse. Ignore `validation/.cache/` in
+source control.
 
 `validation.md` is the shared human-facing projection. Its Mechanical
 Validation section shows the completion state and date, counts by scope and

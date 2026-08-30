@@ -42,7 +42,8 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_clear")
             self.assertTrue(result["published"])
             self.assertEqual(record["schema"], "research-log-mechanical/1")
-            self.assertEqual(cache["schema"], "research-log-mechanical-cache/1")
+            self.assertEqual(cache["schema"], "research-log-mechanical-cache/2")
+            self.assertIn("artifact_identities", cache)
             self.assertIn("## Mechanical Validation", report)
             self.assertIn("## Reproduction", report)
             self.assertIn("Status: `not_yet_run`", report)
@@ -166,7 +167,7 @@ class MechanicalControllerTests(unittest.TestCase):
         invalid_caches = (
             b"{\n",
             b'{"checks":{},"rules_version":"old","schema":'
-            b'"research-log-mechanical-cache/1"}\n',
+            b'"research-log-mechanical-cache/2"}\n',
             b'{"checks":{},"rules_version":"research-log-evidence/v2-initial",'
             b'"schema":"unsupported"}\n',
         )
@@ -192,7 +193,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 self.assertEqual(result["metrics"]["checks_reused"], 0)
                 self.assertEqual(
                     json.loads(cache_path.read_text())["schema"],
-                    "research-log-mechanical-cache/1",
+                    "research-log-mechanical-cache/2",
                 )
 
     def test_unchanged_public_validation_reuses_the_published_cache(self) -> None:
@@ -215,7 +216,22 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(second["status"], "complete_clear")
             self.assertGreater(second["metrics"]["checks_reused"], 0)
+            self.assertGreater(second["metrics"]["source_hashes_reused"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+
+    def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(
+                summary, result_date="2026-08-29"
+            )
+            CONTROLLER.validate(request)
+            write(entry.parent / "data" / "results.csv", "success_rate\n0.675\n")
+
+            changed = CONTROLLER.validate(request)
+
+            self.assertEqual(changed["status"], "complete_findings")
+            self.assertEqual(changed["metrics"]["source_hashes_reused"], 0)
 
     def test_recompute_bypasses_cache_and_publishes_rebuilt_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -241,9 +257,10 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(recomputed["status"], "complete_clear")
             self.assertTrue(recomputed["published"])
             self.assertEqual(recomputed["metrics"]["checks_reused"], 0)
+            self.assertEqual(recomputed["metrics"]["source_hashes_reused"], 0)
             self.assertEqual(
                 json.loads(cache_path.read_text())["schema"],
-                "research-log-mechanical-cache/1",
+                "research-log-mechanical-cache/2",
             )
 
     def test_recompute_dry_run_neither_reads_cache_nor_publishes(self) -> None:
@@ -276,6 +293,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "complete_clear")
             self.assertFalse(result["published"])
+            self.assertEqual(result["metrics"]["source_hashes_reused"], 0)
             self.assertEqual(result["metrics"]["checks_reused"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
@@ -298,7 +316,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["metrics"]["checks_reused"], 0)
             self.assertEqual(
                 json.loads(cache_path.read_text())["schema"],
-                "research-log-mechanical-cache/1",
+                "research-log-mechanical-cache/2",
             )
 
         with tempfile.TemporaryDirectory() as directory:

@@ -981,9 +981,12 @@ failure payload when applicable, the independent scope aggregates, rules
 version, and result date.
 
 `validation/.cache/mechanical.json` is a disposable reuse projection with the
-independent `research-log-mechanical-cache/1` schema. Missing, corrupt, or
+independent `research-log-mechanical-cache/2` schema. In addition to reusable
+passing checks, it retains project-relative artifact identities so unchanged
+files do not need to be hashed again. Reuse requires an exact match of current
+file size, modification time, and change time. Missing, changed, corrupt, or
 unsupported cache state causes bounded recomputation and never changes the
-validation conclusion.
+validation conclusion. `--recompute` bypasses both forms of reuse.
 
 `validation.md` is the human projection. Its Mechanical Validation section
 shows completion and date, counts by scope and status, and every non-passing

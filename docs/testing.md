@@ -109,10 +109,12 @@ The research-log test gate must verify:
   continuation, reproduction, legacy target-record, or v1 evidence runtime;
 - `validation/mechanical.json` uses schema
   `research-log-mechanical/1`, while the disposable cache uses the independent
-  `research-log-mechanical-cache/1` schema;
+  `research-log-mechanical-cache/2` schema;
 - cache absence, corruption, or an unsupported cache schema causes bounded
   recomputation, and cached checks are reused only when the complete cache
   contract, rules version, dependency projection, and check content match;
+- cached artifact identities avoid rehashing only when the project-relative
+  regular file has the same byte size, modification time, and change time;
 - `--recompute` bypasses every existing cache entry, publishes a newly rebuilt
   cache after a completed run, and writes nothing when combined with
   `--dry-run`;

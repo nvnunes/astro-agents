@@ -33,7 +33,7 @@ def compose_validation_report(
         "",
         "## Mechanical Validation",
         "",
-        f"Completion: `{record.completion.value}`  ",
+        f"Completion: `{record.completion.value}`",
         f"Date: `{record.result_date}`",
         "",
         "### Counts",

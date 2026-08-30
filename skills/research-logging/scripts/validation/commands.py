@@ -144,6 +144,7 @@ class CommandContext:
     data_index: Mapping[str, str]
     require_experimental_context: bool = True
     script_identity_cache: MutableMapping[str, str] | None = None
+    script_identity_seeds: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,7 @@ def discover_commands(
         context.data_index,
         context.require_experimental_context,
         context.script_identity_cache,
+        context.script_identity_seeds,
     )
     invocations: list[Invocation] = []
     unsupported: list[Mapping[str, object]] = []
@@ -672,6 +674,12 @@ def _resolve_script(
         cached = context.script_identity_cache.get(canonical)
         if cached is not None:
             return canonical, cached
+    if context.script_identity_seeds is not None:
+        seeded = context.script_identity_seeds.get(canonical)
+        if seeded is not None:
+            if context.script_identity_cache is not None:
+                context.script_identity_cache[canonical] = seeded
+            return canonical, seeded
     payload = path.read_bytes()
     identity = hashlib.sha256(payload).hexdigest()
     if context.script_identity_cache is not None:

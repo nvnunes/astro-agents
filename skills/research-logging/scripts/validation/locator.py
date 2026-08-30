@@ -85,7 +85,8 @@ class SourceObservation:
     payload: bytes
     profile: str
     source_identity: str
-    file_observation: tuple[int, int, int, int]
+    file_observation: tuple[int, int, int, int, int]
+    identity_reused: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,10 @@ def evaluate_locator(
 
 
 def observe_source(
-    source: Path, *, declared_profile: str | None = None
+    source: Path,
+    *,
+    declared_profile: str | None = None,
+    trusted_identity: Mapping[str, object] | None = None,
 ) -> SourceObservation:
     """Read, classify, and identify one stable retained source exactly once."""
 
@@ -207,12 +211,18 @@ def observe_source(
             outcome="unavailable",
         )
     profile = _classify_source(source, payload, declared_profile)
+    reused_identity = _trusted_source_identity(trusted_identity, before)
     observation = SourceObservation(
         path=source,
         payload=payload,
         profile=profile,
-        source_identity=source_content_identity(payload),
+        source_identity=(
+            f"sha256:{reused_identity}"
+            if reused_identity is not None
+            else source_content_identity(payload)
+        ),
         file_observation=before,
+        identity_reused=reused_identity is not None,
     )
     _require_unchanged(observation)
     return observation
@@ -1431,7 +1441,7 @@ def _hdf_tree(group: Any) -> Mapping[str, object]:
     return result
 
 
-def _file_observation(source: Path) -> tuple[int, int, int, int]:
+def _file_observation(source: Path) -> tuple[int, int, int, int, int]:
     try:
         stat = source.stat()
     except OSError as exc:
@@ -1441,7 +1451,31 @@ def _file_observation(source: Path) -> tuple[int, int, int, int]:
             {"error": str(exc)},
             outcome="unavailable",
         )
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _trusted_source_identity(
+    value: Mapping[str, object] | None,
+    observation: tuple[int, int, int, int, int],
+) -> str | None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "ctime_ns",
+        "mtime_ns",
+        "sha256",
+        "size",
+    }:
+        return None
+    _device, _inode, size, mtime_ns, ctime_ns = observation
+    digest = value.get("sha256")
+    if (
+        value.get("size") != size
+        or value.get("mtime_ns") != mtime_ns
+        or value.get("ctime_ns") != ctime_ns
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    ):
+        return None
+    return digest
 
 
 def _require_unchanged(observation: SourceObservation) -> None:

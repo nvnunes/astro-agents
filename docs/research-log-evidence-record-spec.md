@@ -40,7 +40,7 @@ The complete specification owns:
 - the public validation operation, result envelope, completion and exit
   meanings;
 - generated mechanical-record, cache, lock, and human-report contracts; and
-- cutover preflight, publication, rollback, and recovery boundaries.
+- cutover preflight, Git-backed migration, and completed-validation boundaries.
 
 The legacy reference owns only the frozen v1 language used during explicit
 upgrade. No implementation, skill reference, test fixture, or shorter human
@@ -1861,18 +1861,19 @@ decision, session, or report conclusion. An unrelated file does not become
 legacy state merely because it is below a directory named `validation`.
 
 A nonempty, malformed, or symlinked
-`validation/.cache/upgrade-transactions` path indicates interrupted upgrade
-publication. Standard validation then fails operationally with
-`upgrade.recovery.required`, publishes nothing, and preserves the prior
-generated bundle. Recovery must finish before either the cutover preflight or
-mechanical evaluation can complete.
+`validation/.cache/upgrade-transactions` path remains a bounded operational
+rejection as `upgrade.recovery.required`. This recognizes unsupported residue
+from the isolated legacy upgrade implementation; it does not require Pass 9 to
+recover that transaction or create a current recovery protocol. Pass 9 removes
+the residue under the Git-backed migration boundary before current validation.
 
-The upgrade operation may parse v1 CSV rows and unmarked presentations in
-order to construct and verify the complete candidate v2 state. That temporary
-candidate state is not published validation state. The operation publishes
-entry-local `evidence.json`, entry markers, summary references, and removal of
-every `evidence.csv` as one target-log transition only after the complete
-candidate passes its upgrade checks.
+The upgrade operation may parse v1 CSV rows and unmarked presentations to
+inventory and author the corresponding current metadata. During that
+separately authorized research operation, the worktree may temporarily contain
+both formats. Standard validation continues to report
+`validation.upgrade_required` and writes nothing until the final
+`evidence.csv` and recognized legacy generated state have been removed. Git,
+not a validator-owned transaction system, provides the recovery boundary.
 
 The legacy reference defines the v1 CSV parser. V2 JSON records permit only v2
 locators and v2 transformations because they embed structured JSON objects
@@ -1987,6 +1988,15 @@ identity, id)`. The same short ID may occur in another entry because summary
 references and validator identities always include the entry identity. Moving
 a record to another entry changes its identity. Changing its presented value
 does not. Copying a record within the same entry requires a new ID.
+
+An ID names the evidence role, not its current observation. Use a concise
+description such as `candidate-success-rate` or
+`single-worker-baseline-wall-time`. A stable experimental condition, metric
+name, or structural ordinal may disambiguate repeated roles. Do not derive an
+ID from the presented expression, a selected retained value, a rounded value,
+or another measurement outcome. For example, `candidate-success-rate`, not
+`candidate-success-rate-67-6`; the same ID remains in place when a rerun
+changes `67.6%` to another result.
 
 `document` is a normalized POSIX path relative to the maintained-log root. It
 must name one regular UTF-8 Markdown file inside that root, with no absolute
@@ -2957,10 +2967,10 @@ condition. It contains no partial mechanical record.
 
 `complete_clear`, `complete_findings`, and `upgrade_required` exit zero because
 the requested evaluation or preflight completed. `incomplete` exits 3 and
-publishes nothing. Invalid inputs, interrupted-upgrade recovery requirements,
-observation failures outside the mechanical outcome contract, and publication
-failures are operational errors: they exit 2, write a precise message to
-standard error, and publish no result.
+publishes nothing. Invalid inputs, unsupported legacy upgrade-transaction
+residue, observation failures outside the mechanical outcome contract, and
+publication failures are operational errors: they exit 2, write a precise
+message to standard error, and publish no result.
 `--dry-run` returns the applicable mechanical envelope with
 `published:false` and writes no generated path. When combined with
 `--recompute`, it performs the complete cache-independent evaluation without
@@ -2986,15 +2996,23 @@ A completed published evaluation owns exactly these active generated paths:
 The record is canonical UTF-8 JSON with one trailing newline.
 
 `validation/.cache/mechanical.json` is disposable and uses the independent
-schema `research-log-mechanical-cache/1`. Its exact top-level fields are
-`schema`, `rules_version`, and `checks`. It retains only passing checks with a
-nonempty dependency projection, keyed by check identity; each value contains
-the exact check and its `dependency_projection`. Reuse requires the exact
-cache shape, current rules version, current dependency projection, and an
-identical current check. Absence, invalid JSON, excess size, extra or malformed
-fields, an unsupported schema or rules version, or mismatched content causes
-bounded recomputation. `--recompute` treats the cache as absent for reuse but
-does not delete or modify it unless the completed evaluation publishes the
+schema `research-log-mechanical-cache/2`. Its exact top-level fields are
+`schema`, `rules_version`, `checks`, and `artifact_identities`. `checks` retains
+only passing checks with a nonempty dependency projection, keyed by check
+identity; each value contains the exact check and its `dependency_projection`.
+`artifact_identities` maps project-relative regular-file paths to their exact
+byte size, modification time, change time, and SHA-256 digest. An artifact
+identity avoids recomputing its digest only when all three current filesystem
+observations match; it does not avoid reading the artifact when evaluating a
+locator. Changed, missing, external, symlinked, malformed, or ambiguous paths
+are not reused.
+
+Check reuse requires the exact cache shape, current rules version, current
+dependency projection, and an identical current check. Absence, invalid JSON,
+excess size, extra or malformed fields, an unsupported schema or rules
+version, or mismatched content causes bounded recomputation. `--recompute`
+treats both checks and artifact identities as absent for reuse but does not
+delete or modify the cache unless the completed evaluation publishes the
 replacement generated bundle. Cache state never changes a conclusion.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
@@ -3327,140 +3345,62 @@ Legacy v1 and active v2 have separate roles:
 ### Per-Log Upgrade Operation
 
 Upgrade is a separately authorized research operation performed against one
-target maintained log. It must:
+target maintained log in a version-controlled worktree with a known committed
+baseline. It must:
 
 1. inventory every location-appropriate `evidence.csv` and every eligible
    unmarked presentation in the target log;
 2. parse each legacy row under
    `docs/research-log-evidence-v1-upgrade-reference.md` and report every
    failure by stable code, exact row, observed state, and violated rule;
-3. let the research agent author any v2 locator, transformation, retention
-   record, command annotation, or presentation change that cannot be derived
-   mechanically;
-4. assign one entry-scoped v2 ID per entry presentation and add its exact hidden
-   marker;
-5. write the complete candidate entry-local `evidence.json` files and add one
-   exact inline reference to every eligible summary statistic, including
-   one-based row and column coordinates for table-cell references;
-6. evaluate the complete candidate log under the v2 evidence, association,
-   provenance, collection, hygiene, and resource contracts; and
-7. publish the candidate and remove every `evidence.csv` only after all upgrade
-   checks complete successfully.
+3. assign one explicit disposition to every legacy row: one entry evidence
+   record, one summary reference, one researcher-approved replacement, or one
+   deliberate removal;
+4. author every required v2 locator, transformation, retention record, command
+   annotation, presentation change, entry marker, and summary reference;
+5. remove the target log's `evidence.csv` files, superseded Validation blocks,
+   and recognized legacy generated state only after their useful information
+   has an explicit current disposition;
+6. run standard validation against the resulting log; and
+7. accept the cutover only when validation completes as `complete_clear` or
+   `complete_findings`.
 
-The upgrade is atomic from active validation's perspective. A failed,
-interrupted, or incomplete upgrade leaves the published legacy state unchanged
-and available to the upgrade tooling; it publishes no partial v2 validation
-state. Temporary candidate files must live outside the published target paths
-until commit.
+A completed finding does not block upgrade. It records an exact current
+mechanical condition for a later research-agent repair workflow. An
+`incomplete` or unavailable evaluation means the migration itself is not yet
+complete and must be debugged before the log is committed as upgraded.
 
-#### Upgrade Target And Snapshot
+#### Scope, Accounting, And Git Boundary
 
-One invocation targets exactly one maintained log: its canonical maintained
-summary, entry tree, log-owned evidence files, and log-owned retained material.
-It does not upgrade another log that is referenced by path, data index, or
-prose. Cross-log material remains external to the target transaction.
+One migration scope contains exactly one maintained summary, its entry tree,
+its log-owned evidence metadata, and its log-owned generated validation state.
+Cross-log material remains external to that scope even when an evidence source,
+data index, command, or prose reference names it.
 
-Before candidate construction, the upgrade operation acquires the same
-target-log exclusion used by validation and records a bounded snapshot of:
+Before editing, record the committed baseline and inspect the complete scoped
+diff. Keep an exact row-accounting ledger outside the maintained log until
+closure. The ledger must connect every legacy row to its current disposition
+and must distinguish exact deterministic conversion from authoring that
+requires research judgment. It also records every legacy Validation block whose
+retained-material intent must become a structured retention record.
 
-- every target entry and summary Markdown document;
-- every target `evidence.csv`, `evidence.json`, and `data.csv`;
-- every local script identity, recorded-command surface, and command
-  annotation used by the candidate;
-- every retained source or direct artifact used by candidate evidence or
-  provenance; and
-- the target's entry and section classification inputs.
+Migration edits the target worktree directly. It does not require a candidate
+tree, snapshot protocol, publication journal, byte-level rollback subsystem, or
+validator-owned recovery operation. The committed baseline and reviewable
+scoped Git diff provide recovery. Unrelated worktree changes must not enter the
+migration diff or commit.
 
-The snapshot uses canonical paths, content identities, and required structural
-metadata rather than timestamps alone. A target that already mixes legacy
-rows with v2 files, entry markers, or summary references fails preflight as an
-incomplete prior transition. A clean legacy target contains no active v2
-surface. A clean v2 target is already upgraded and is not an upgrade input.
+Standard validation never evaluates a mixed-format worktree. While any
+`evidence.csv` or recognized legacy generated state remains, the cutover
+preflight returns `validation.upgrade_required` and writes nothing. The cutover
+point is the completed current validation after the final legacy evidence and
+generated-state paths have been removed.
 
-#### Dry Run And Candidate Construction
-
-The dry run is read-only with respect to the target log. It reports:
-
-- target identity and snapshot identity;
-- the complete legacy evidence-file and row inventory;
-- every associated entry presentation and summary statistic;
-- every deterministic direct conversion, nontrivial summary-reference mapping,
-  table declaration still requiring proof, and research-agent repair;
-- every proposed entry-local evidence-file path, entry marker, summary
-  reference target, and table row/column coordinate; and
-- every precise failure code, exact subject, observed state, and violated
-  clause.
-
-Aggregate counts must form a complete, mutually exclusive partition of the
-legacy rows. Row-level traceability must connect every legacy row to its
-candidate entry record and marker, candidate summary reference, or unresolved
-failure. The CLI does not generate repair choices or author unsupported v2
-declarations. The research agent applies this specification and authors the
-candidate changes in a staging area outside published target paths.
-
-Candidate construction may modify the staged entry and summary Markdown,
-create staged entry-local `evidence.json`, and stage deletion of legacy
-`evidence.csv`. A research-agent repair may also stage an explicitly authorized
-research change needed to retain or present exact evidence. No candidate file
-is active validation state.
-
-#### Candidate Validation And Commit Gate
-
-Before publication, the candidate must pass the complete v2 evidence,
-association, provenance, collection, hygiene, conformance, and resource
-contracts against the captured retained state. In particular:
-
-- every entry presentation has one entry-local record and marker;
-- every summary statistic has one exact inline reference;
-- every table reference resolves its declared one-based body row and column;
-- every candidate `evidence.json` is located at its owning entry root;
-- no candidate `evidence.csv` remains; and
-- every required research-agent repair is present in the candidate rather than
-  deferred to validation.
-
-Immediately before commit, the operation reacquires or retains exclusive
-target-log access and compares the complete dependency snapshot. Any changed
-document, declaration, command surface, source, artifact, or classification
-input fails as `upgrade.snapshot.changed`; the candidate is not rebased or
-partially published.
-
-The commit publishes all staged Markdown, entry-local `evidence.json`, retained
-research repairs, and legacy-file removals as one target-log transaction. The
-implementation may use atomic directory exchange or a locked journal with
-byte-exact backups and recovery, but standard validation uses the same lock and
-must observe either the complete legacy state or the complete v2 state, never
-an intermediate mixture.
-
-The cutover point is the successful transaction that publishes every required
-entry marker and summary reference and removes the final target
-`evidence.csv`. Only then is the log v2. File-by-file completion, candidate
-validation, or the presence of one `evidence.json` does not cross the boundary.
-
-#### Rollback And Recovery
-
-If candidate validation, snapshot comparison, publication, or immediate
-post-publication verification fails, the operation restores the exact
-pre-upgrade published bytes and paths before releasing the target-log lock.
-Staged files and backups remain transaction-private and are not interpreted by
-standard validation.
-
-An interrupted publication must be recovered from its transaction journal
-before another upgrade or standard validation can inspect the target. Recovery
-either completes the already-validated transaction or restores the exact
-legacy snapshot; it never guesses from a partial file set. Failure to recover
-returns `upgrade.recovery.required` and leaves ordinary validation unavailable
-for that target rather than publishing mixed conclusions.
-
-Upgrade-operation failures use these stable codes:
-
-| Code | Condition |
-| --- | --- |
-| `upgrade.target.invalid` | The requested target is not exactly one clean legacy maintained log or is already v2. |
-| `upgrade.preflight.failed` | Legacy parsing, association inventory, resource bounds, or row accounting did not complete. |
-| `upgrade.candidate.invalid` | The staged candidate does not pass the complete v2 contract. |
-| `upgrade.snapshot.changed` | A captured target dependency changed before commit. |
-| `upgrade.publish.failed` | Transactional publication or immediate byte-level verification failed and rollback was initiated. |
-| `upgrade.recovery.required` | An interrupted transaction could not yet be completed or restored safely. |
+Migration may be assisted by deterministic code, but migration tooling is not
+a second public validation controller. It may parse frozen v1 rows, propose
+exact conversions, and report unresolved subjects. It must not guess research
+meaning, choose among plausible presentation targets, or manufacture retained
+relationships.
 
 No total automatic conversion is promised. A v1 locator converts only when its
 source profile, selection membership, typed values, and cardinality are known.
@@ -3469,11 +3409,11 @@ presentation satisfy the v2 identity contract. Every non-empty v1
 transformation requires research-agent authorship; semantic judgments do not
 make its phrase executable. V2 never accepts free-form transformation prose.
 
-The upgrade operation must identify failures precisely but must not generate
-repair choices or candidate v2 declarations. The research agent applies this
-specification. A transformation describing unsupported arithmetic migrates by
-retaining the derived value in a supported source, not by broadening the v2
-operation language.
+Migration diagnostics identify the exact row, presentation, source, or
+relationship that remains unresolved. The research agent applies this
+specification; the CLI does not need a repair-choice protocol. A transformation
+describing unsupported arithmetic migrates by retaining the derived value in a
+supported source, not by broadening the v2 operation language.
 
 Command-derived provenance requires no parallel provenance record. Recorded
 command surfaces, resolved script identities, `data.csv` tokens, and retained
@@ -3483,8 +3423,8 @@ free-form orphan or retention notes have no mechanical effect until the
 research agent replaces them with structured retention records during upgrade.
 
 After commit, the maintained log contains entry-local `evidence.json`, contains
-no `evidence.csv`, and validates summary evidence through inline references
-only. The v1 reader remains solely
+no `evidence.csv`, validates summary evidence through inline references only,
+and has one completed current mechanical result. The v1 reader remains solely
 in the upgrade path for other logs that have not yet crossed their own upgrade
 boundary.
 
@@ -3529,13 +3469,14 @@ hygiene, composed-outcome, generated-record, cache, report, and cutover
 contracts in this document. It reads no v1 evidence rows and imports no frozen
 v1 parser.
 
-The explicit upgrade tooling owns frozen v1 inventory, authored-candidate
-staging, snapshot protection, transactional publication, rollback, and
-recovery. It does not invent v2 declarations. Pass 9 remains responsible for
-authoring and executing the maintained-log conversions, replacing each log's
-legacy generated validation metadata, and then updating the remaining v1
-authoring guidance. Until that migration occurs, an unupgraded maintained log
-correctly returns `validation.upgrade_required` from standard validation.
+The explicit upgrade tooling owns frozen v1 parsing, bounded inventory, and
+deterministic conversion assistance. Git owns the recovery boundary. The
+upgrade tooling does not invent v2 declarations or orchestrate publication.
+Pass 9 remains responsible for authoring and executing the maintained-log
+conversions, replacing each log's legacy generated validation metadata, and
+then updating the remaining v1 migration guidance. Until that migration
+occurs, an unupgraded maintained log correctly returns
+`validation.upgrade_required` from standard validation.
 
 No downstream surface may define a competing evidence-record, locator,
 transformation, presentation, command-provenance, collection, hygiene, or

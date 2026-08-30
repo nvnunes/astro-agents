@@ -73,7 +73,7 @@ from .transformation import (
 )
 
 RULES_VERSION = "research-log-evidence/v2-initial"
-CACHE_SCHEMA = "research-log-mechanical-cache/1"
+CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
 
@@ -140,9 +140,13 @@ class _ScanState:
     selection_cache: dict[tuple[str, str], object] = field(default_factory=dict)
     source_cache: dict[str, SourceObservation] = field(default_factory=dict)
     script_cache: dict[str, str] = field(default_factory=dict)
+    script_identity_seeds: dict[str, str] = field(default_factory=dict)
+    artifact_identities: dict[str, Mapping[str, object]] = field(default_factory=dict)
+    artifact_identity_seeds: int = 0
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
+    source_hashes_reused: int = 0
     timings: dict[str, float] = field(default_factory=dict)
     text_cache: dict[Path, str] = field(default_factory=dict)
 
@@ -159,6 +163,14 @@ def _scan(
     started = time.perf_counter()
     summary = request.summary_path.resolve()
     state = _ScanState(summary, summary.with_suffix(""), _project_root(summary))
+    state.artifact_identities = _accepted_artifact_identities(
+        request.prior_cache, state.project_root
+    )
+    state.artifact_identity_seeds = len(state.artifact_identities)
+    state.script_identity_seeds = {
+        (state.project_root / relative).resolve().as_posix(): str(value["sha256"])
+        for relative, value in state.artifact_identities.items()
+    }
     try:
         active_evidence_version(summary)
         summary_text = _read_text(summary, state)
@@ -178,6 +190,7 @@ def _scan(
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
+        _record_script_identities(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except Exception as error:
         if not _contract_error(error):
@@ -203,7 +216,7 @@ def _scan(
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
         state.checks.append(_pass_check("conformance:log", CheckScope.CONFORMANCE))
     checks, reused = _reuse_checks(state.checks, request.prior_cache)
-    cache = _cache_projection(checks)
+    cache = _cache_projection(checks, state.artifact_identities)
     metrics = {
         "checks_reused": reused,
         "elapsed_seconds": time.perf_counter() - started,
@@ -212,8 +225,11 @@ def _scan(
         "invocations": len(state.invocations),
         "markdown_reads": state.markdown_reads,
         "script_hashes": len(state.script_cache),
+        "artifact_identities": len(state.artifact_identities),
+        "artifact_identity_seeds": state.artifact_identity_seeds,
         "source_evaluations": state.source_evaluations,
         "source_reads": len(state.source_cache),
+        "source_hashes_reused": state.source_hashes_reused,
         **state.timings,
         **(state.graph.metrics if state.graph else {}),
     }
@@ -291,6 +307,7 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 project_root=state.project_root,
                 data_index=entry.data_index,
                 script_identity_cache=state.script_cache,
+                script_identity_seeds=state.script_identity_seeds,
             )
             documents.append(discover_commands(text, context).invocations)
     return order_invocations(documents)
@@ -466,8 +483,17 @@ def _selection(source: EvidenceSource, path: Path, state: _ScanState) -> Any:
         started = time.perf_counter()
         observation = state.source_cache.get(source_key)
         if observation is None:
-            observation = observe_source(path)
+            relative = _project_relative(path, state.project_root)
+            trusted = state.artifact_identities.get(relative) if relative else None
+            observation = observe_source(path, trusted_identity=trusted)
             state.source_cache[source_key] = observation
+            if observation.identity_reused:
+                state.source_hashes_reused += 1
+            if relative is not None:
+                state.artifact_identities[relative] = _artifact_identity(
+                    observation.path,
+                    observation.source_identity.removeprefix("sha256:"),
+                )
         state.selection_cache[key] = evaluate_observed_locator(
             observation, source.locator
         )
@@ -1026,7 +1052,7 @@ def _reuse_checks(
     prior_checks = prior.get("checks") if isinstance(prior, Mapping) else None
     if (
         not isinstance(prior, Mapping)
-        or set(prior) != {"checks", "rules_version", "schema"}
+        or set(prior) != {"artifact_identities", "checks", "rules_version", "schema"}
         or prior.get("schema") != CACHE_SCHEMA
         or prior.get("rules_version") != RULES_VERSION
         or not isinstance(prior_checks, Mapping)
@@ -1055,8 +1081,12 @@ def _reuse_checks(
     return tuple(result), reused
 
 
-def _cache_projection(checks: Sequence[MechanicalCheck]) -> Mapping[str, object]:
+def _cache_projection(
+    checks: Sequence[MechanicalCheck],
+    artifact_identities: Mapping[str, Mapping[str, object]],
+) -> Mapping[str, object]:
     return {
+        "artifact_identities": dict(sorted(artifact_identities.items())),
         "checks": {
             check.identity: {
                 "check": check.as_dict(),
@@ -1068,6 +1098,69 @@ def _cache_projection(checks: Sequence[MechanicalCheck]) -> Mapping[str, object]
         "rules_version": RULES_VERSION,
         "schema": CACHE_SCHEMA,
     }
+
+
+def _accepted_artifact_identities(
+    prior: Mapping[str, Any] | None, project_root: Path
+) -> dict[str, Mapping[str, object]]:
+    if not isinstance(prior, Mapping) or prior.get("schema") != CACHE_SCHEMA:
+        return {}
+    candidates = prior.get("artifact_identities")
+    if not isinstance(candidates, Mapping):
+        return {}
+    accepted: dict[str, Mapping[str, object]] = {}
+    for relative, value in candidates.items():
+        if not isinstance(relative, str) or not isinstance(value, Mapping):
+            continue
+        path = PurePosixPath(relative)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            continue
+        target = project_root.joinpath(*path.parts)
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or not _within(target, project_root)
+        ):
+            continue
+        digest = value.get("sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            continue
+        try:
+            observed = _artifact_identity(target, digest)
+        except OSError:
+            continue
+        if observed == value:
+            accepted[relative] = dict(value)
+    return accepted
+
+
+def _artifact_identity(path: Path, digest: object) -> Mapping[str, object]:
+    stat = path.stat()
+    return {
+        "ctime_ns": stat.st_ctime_ns,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": digest,
+        "size": stat.st_size,
+    }
+
+
+def _project_relative(path: Path, project_root: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _record_script_identities(state: _ScanState) -> None:
+    for absolute, digest in state.script_cache.items():
+        path = Path(absolute)
+        relative = _project_relative(path, state.project_root)
+        if relative is not None and path.is_file() and not path.is_symlink():
+            state.artifact_identities[relative] = _artifact_identity(path, digest)
 
 
 def _check_dependency(check: MechanicalCheck) -> str:

@@ -80,9 +80,15 @@ An active script change loads script and command guidance. It loads data-index
 or presented-evidence guidance only when the changed workflow also matches
 those triggers, not merely because the entry contains older evidence.
 
-A presented computational result loads presented-evidence guidance together
-with each script, command, or data-index reference required by its actual
-workflow. It does not load citation guidance without citation work.
+A presented computational result loads the core presented-evidence guidance
+together with each script, command, or data-index reference required by its
+actual workflow. An entry evidence source also loads locator guidance. A
+non-identity statistic or output loads transformation guidance, while a table
+loads transformation and table guidance.
+
+A summary reference or direct artifact does not load locator, transformation,
+or table guidance merely because another item in the entry uses it. It does not
+load citation guidance without citation work.
 
 When `data.csv`, a `<name>` token, or a durable external input first becomes
 necessary after an investigation has begun, Record treats it as a new routing
@@ -323,7 +329,8 @@ choose a plausible alternative.
 Given a mechanical finding, the validation agent reports the exact code,
 subject, observed state, violated rule, and dependency cause from the generated
 record. The validation agent does not override the result or edit research
-material. A research agent resolves the issue separately and reruns Validate.
+material. A later, separately authorized Record operation resolves the issue
+before Validate is rerun.
 
 Given complete findings, the CLI exits zero and publishes
 `validation/mechanical.json`, its disposable cache, and `validation.md`.

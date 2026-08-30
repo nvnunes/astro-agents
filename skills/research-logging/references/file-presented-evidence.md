@@ -4,14 +4,15 @@ Use this file when recording, updating a summary, or reviewing computational
 evidence in a research log. These rules make intended evidence mechanically
 discoverable. They do not assess scientific interpretation.
 
-Use `docs/research-log-evidence-record-spec.md` as the normative contract for
-the exact evidence schema, locators, transformations, association rules, and
-failure behavior. This reference defines the authoring workflow.
-
 Entry evidence exists only in experimental sections. Synthesis and prose
 sections contain no mechanical evidence targets. Validation reports a
 structurally invalid section rather than guessing its type or partially
 validating it.
+
+For entry evidence, keep the retained source, locator, transformation, marker,
+and presentation consistent. Follow the routed locator, transformation, and
+table instructions for the applicable parts. Do not add metadata to a direct
+artifact presentation or originate evidence in a maintained summary.
 
 ## Presented Entry Evidence
 
@@ -48,9 +49,9 @@ experimental prose is separate evidence even when the same value appears in a
 table.
 
 Use one stable descriptive ID per presented statistic, table, or output. IDs
-use lowercase letters, digits, and internal hyphens, begin with a letter, and
-remain stable when wording, headings, or values change. The ID must not include
-the evidence value. The marker is exactly:
+use at most 96 ASCII lowercase letters, digits, and internal hyphens, begin
+with a letter, and remain stable when wording, headings, or values change. The
+ID must not include the evidence value. The marker is exactly:
 
 ```html
 <!-- eid:descriptive-id -->
@@ -63,12 +64,14 @@ or prose line between it and the target.
 
 ## Entry Evidence Records
 
-Store presentation records in `evidence.json` at the owning entry root. Use the
-exact top-level object defined by the evidence specification. The required
-schema identifier is `research-log-evidence/v2`; this is a data-format value,
+Store presentation records in `evidence.json` at the owning entry root. Its
+only top-level keys are `schema`, with value `research-log-evidence/v2`, and
+`records`, containing a non-empty array. Remove the file after removing its
+final record. Use UTF-8 JSON without comments, duplicate keys, non-finite
+numbers, or trailing content. The schema identifier is a data-format value,
 not an authoring-mode choice.
 
-Each presentation record contains:
+Each presentation record contains exactly:
 
 - `id`: the stable ID shared with one Markdown marker;
 - `document`: the entry document path relative to the maintained-log root;
@@ -77,14 +80,23 @@ Each presentation record contains:
 - `transformation`: `null` for supported identity presentation or one closed
   transformation object.
 
+Use 1–8 sources for a statistic, exactly one for an output, exactly one for a
+direct or structured table, and 1–32 for a summary table.
+
 Each source object contains exactly `source` and `locator`. `source` is an
 entry-relative path, a `<log>/...` path, or an exact `<name>` token from the
-entry-local `data.csv`. `locator` is a bounded structured selector that returns
-the precise retained values used by the transformation. Do not use an absolute
-path, URL, object-store URI, whole-artifact selection, or free-form selector
-prose in an evidence record.
+entry-local `data.csv`. Follow the routed locator instructions for `locator`.
+Do not use an absolute path, URL, object-store URI, whole-artifact selection,
+or free-form selector prose in an evidence record.
 
-Example:
+For retained `data/results.csv`:
+
+```csv
+case,success_rate
+candidate,0.676
+```
+
+the complete record and its presentation are:
 
 ```json
 {
@@ -125,34 +137,12 @@ agent reads but never edits them.
 
 ## Locators And Transformations
 
-Use locators to select retained values, not to describe how to present them.
-Prefer exact record identities, field paths, bounded conditions, structured
-key paths, array indexes or slices, and distinctive text selections. Include
-explicit identity and cardinality expectations when the selected structure
-could otherwise drift or become ambiguous. Do not use pickle as a mechanically
-inspected source; retain a safe CSV, JSON, NPZ, HDF5, or text projection.
-
-Use only the closed transformations defined by the evidence specification.
-They support natural but mechanically bounded presentation:
-
-- scalar values with controlled parsing, rounding, notation, sign, and unit;
-- proportions presented as percentages, with one decimal place by default;
-- ranges, value-with-uncertainty expressions, intervals, tuples, and exact
-  text; and
-- direct, structured, and summary tables with declared headings and cell
-  recipes.
-
-For example, the percentage form above converts retained `0.676` to `67.6%`.
-An interval may present `5.2 [4.8, 5.7] ms`; a tuple may present `(1024, 2048)
-px`; and a value with uncertainty may present either `3.4 +/- 0.2 ms` or
-`3.4 ± 0.2 ms` under the same `plus_minus` form.
-
-A transformation may select, reorder, assemble, scale, round, and format only
-as the closed grammar permits. It may not introduce aggregation, subtraction,
-ratios, fitting, classification, or another new calculation. Retain a derived
-value in a supported source and select it directly. An equivalent presentation
-outside the supported grammar fails and should be rewritten naturally using a
-supported form.
+Use locators only to select retained values and transformations only to shape
+their presentation. Every selected value must contribute exactly once to the
+presented item. If the required expression needs a new calculation or falls
+outside the supported forms, have the recorded research script retain the
+derived value or a bounded presentation-ready source. Do not calculate or copy
+the result while authoring metadata.
 
 ## Retained Material
 

@@ -4,7 +4,7 @@ Use this file when the user asks to find, view, create, or update references, cr
 
 `Reference` manages citation lookup, citation insertion, and `<log>/refs.bib`.
 
-Read `skills/research-logging/references/file-references.md` before adding or revising BibTeX or citations.
+Read `references/file-references.md` before adding or revising BibTeX or citations.
 
 ## Behavior
 
@@ -20,4 +20,7 @@ When asked to look up references, use current authoritative sources when local c
 
 ## Reference Viewing
 
-When the user asks to view a reference, find the reference URL from local citation context, `refs.bib`, or an authoritative online source, then open the browser to that URL. Viewing a reference does not by itself add BibTeX or citations to the log.
+When the user asks to view a reference, resolve and verify its authoritative URL
+from local citation context, `refs.bib`, or an authoritative online source. Open
+that URL when browser control is available; otherwise return the verified link.
+Viewing a reference does not by itself add BibTeX or citations to the log.

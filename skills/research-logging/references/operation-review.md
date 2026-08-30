@@ -19,10 +19,9 @@ Load only the references needed for that focus.
 
 ## Review Checks
 
-For writing, check `skills/research-logging/references/research-log-writing.md`,
-`skills/research-logging/references/file-entry-labels.md`,
-`skills/research-logging/references/file-summary.md`, and
-`skills/research-logging/references/file-summary-ai-use.md` as applicable. Look
+For writing, check `references/research-log-writing.md`,
+`references/file-entry-labels.md`, `references/file-summary.md`, and
+`references/file-summary-ai-use.md` as applicable. Look
 for evidence loss, status inflation, unsupported interpretation, stale
 synthesis, weak comparison structure, misplaced labels, invented validation,
 missing or empty summary-level AI use disclosures, disclosure wording changed
@@ -42,7 +41,7 @@ skip confirms only that the section was structurally ambiguous; it does not
 replace review or decide the intended repair.
 
 For evidence presentation, apply
-`skills/research-logging/references/file-presented-evidence.md`, including its
+`references/file-presented-evidence.md`, including its
 review boundary.
 
 Also check semantically that each substantive summary point is supported by an
@@ -54,14 +53,11 @@ references, artifacts, and evidence-association records are structurally
 present and correctly formatted; validation determines whether they establish
 the presented evidence and its provenance.
 
-For integrity, check the core shape in `skills/research-logging/SKILL.md` and
-the applicable `skills/research-logging/references/file-entry-naming.md`,
-`skills/research-logging/references/file-entry.md`,
-`skills/research-logging/references/file-summary.md`,
-`skills/research-logging/references/file-references.md`,
-`skills/research-logging/references/file-script.md`,
-`skills/research-logging/references/file-entry-commands.md`, and
-`skills/research-logging/references/file-data-index.md` references. Look for
+For integrity, check the core shape in this skill's `SKILL.md` and the
+applicable `references/file-entry-naming.md`, `references/file-entry.md`,
+`references/file-summary.md`, `references/file-references.md`,
+`references/file-script.md`, `references/file-entry-commands.md`, and
+`references/file-data-index.md`. Look for
 broken or stale links, unresolved citation keys, invalid entry paths or IDs,
 summary-entry inconsistency, unresolved `pyrun` or `data.csv` references, and
 missing required provenance declarations.

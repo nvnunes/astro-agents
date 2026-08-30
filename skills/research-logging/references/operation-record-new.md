@@ -10,9 +10,9 @@ the shared Record rules.
 
 1. Locate the log summary `<log>.md` and matching `<log>/entries/` folder.
 2. Choose the next stable log-local entry ID and descriptive topic slug using
-   `skills/research-logging/references/file-entry-naming.md`.
+   `references/file-entry-naming.md`.
 3. Create
    `<log>/entries/<start-date>-<entry-id>-<descriptive-topic-slug>/<entry-id>.md`
-   using `skills/research-logging/references/file-entry.md`.
-4. Apply `skills/research-logging/references/operation-record-content.md` to
+   using `references/file-entry.md`.
+4. Apply `references/operation-record-content.md` to
    perform and preserve the research.

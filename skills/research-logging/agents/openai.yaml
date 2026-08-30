@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Logging"
-  short_description: "Perform and record research-log investigations"
+  short_description: "Perform, maintain, review, and validate research logs"
   default_prompt: "Use $research-logging to investigate this question and record the work."

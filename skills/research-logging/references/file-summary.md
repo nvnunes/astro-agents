@@ -8,7 +8,7 @@ Its organization may use ordinary sections chosen by the researcher. It does
 not need to follow entry chronology.
 
 Immediately below the level-one title, include the stable report link defined
-in `skills/research-logging/references/file-summary-validation.md`. The
+in `references/file-summary-validation.md`. The
 maintained summary then starts with `## Contents`, followed by `## Entries` and
 `## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups`
 after `## Summary`. End with `## AI Use`.
@@ -35,8 +35,8 @@ after `## Summary`. End with `## AI Use`.
 ```
 
 When writing or revising summary prose, apply
-`skills/research-logging/references/research-log-writing.md` and
-`skills/research-logging/references/file-presented-evidence.md`.
+`references/research-log-writing.md` and
+`references/file-presented-evidence.md`.
 
 Use `## Summary` for current understanding, including observations, conclusions, decisions, and other synthesis organized by the researcher's topics.
 
@@ -46,11 +46,11 @@ during Record. Group follow-up items under topic headings when useful, and link
 each item back to the entry label that created it.
 
 Every maintained summary includes the fixed validation-report link defined in
-`skills/research-logging/references/file-summary-validation.md`. It never
+`references/file-summary-validation.md`. It never
 contains a generated validation-status section.
 
 Use `## AI Use` for the log-level disclosure defined in
-`skills/research-logging/references/file-summary-ai-use.md`. Every maintained
+`references/file-summary-ai-use.md`. Every maintained
 summary includes this final section. Preserve researcher-customized disclosure
 wording unless the researcher asks to revise it.
 

@@ -171,7 +171,7 @@ paths directly in commands or Markdown.
 
 For every active investigation with a Python command created or revised during
 Record, create an entry-root `pyrun` symlink to the resolved
-`skills/research-logging/scripts/pyrun` before running or recording the command.
+`scripts/pyrun` from this skill package before running or recording the command.
 Invoke those Python commands through `./pyrun`; do not record direct `python`
 commands or invoke the installed script directly. Do not copy or vendor
 `pyrun`. Use a relative symlink when practical. If symlinks are unavailable,

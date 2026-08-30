@@ -9,7 +9,7 @@ Use this file when continuing or revising an existing entry.
 1. Resolve the target entry from the entry ID, path, topic, date, chat context, log summary, entry folder names, search results, or existing links before editing.
 2. If the reference matches multiple entries, ask before editing.
 3. Append to an existing section when it clearly fits; otherwise create a new descriptive `##` section.
-4. Apply `skills/research-logging/references/operation-record-content.md` for
+4. Apply `references/operation-record-content.md` for
    shared content guidance.
 
 ## Edge Cases

@@ -9,8 +9,8 @@ require narrow changes to entry links; those changes do not authorize revisions
 to current understanding or `## Follow-ups`. Validation never edits the
 maintained summary.
 
-Read `skills/research-logging/references/file-summary.md` and
-`skills/research-logging/references/file-presented-evidence.md` for summary
+Read `references/file-summary.md` and
+`references/file-presented-evidence.md` for summary
 guidance.
 
 ## Behavior

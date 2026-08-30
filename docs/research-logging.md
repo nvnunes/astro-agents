@@ -1017,8 +1017,8 @@ publication failure restores the prior completed bundle.
 
 ### Resolving findings
 
-The validation agent reports generated findings but does not edit research
-material. A research agent resolves them in a separate task using the evidence
+Validate reports generated findings but does not edit research material. A
+later, separately authorized Record operation resolves them using the evidence
 specification, recorded-command conventions, and the exact code, subject,
 observed state, and violated rule in `mechanical.json`. The next validation
 confirms the correction.
@@ -1030,10 +1030,10 @@ ownership.
 
 ## Roles and keeping validation current
 
-Validation is performed in a fresh agent task that did not produce the work
-being checked. This separates the check from the earlier work session, but it
-is not a claim of organizational independence or independent scientific
-replication.
+Run Validate as a separate, read-only operation after Record. The same agent
+may invoke it, but while validating it cannot edit or repair research-owned
+material. This operation boundary is not a claim of organizational independence
+or independent scientific replication.
 
 Research changes and canonical validation are separate activities. Validation
 is observational: completed outcomes record the dependencies actually observed

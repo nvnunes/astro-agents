@@ -1,9 +1,11 @@
 # Validate Operation Instructions
 
 Use this operation for independent mechanical validation of one maintained
-research log. Run it as a validation agent, separate from the research agent
-that changes research-owned material. Successful execution or inspection
-during Record is not validation.
+research log. Run Validate as a separate, read-only operation after Record. The
+same agent may invoke it, but while validating it must not edit or repair
+research-owned material. Any repair requires a later, separately authorized
+Record operation. Successful execution or inspection during Record is not
+validation.
 
 Read `references/file-validation-records.md` before invoking the canonical
 tool.
@@ -63,11 +65,11 @@ before validation can safely inspect or publish the target log.
 ## Report
 
 Report the status, whether publication occurred, counts by mechanical scope and
-status, and each non-passing check. Point the research agent to
+status, and each non-passing check. Point any later repair operation to
 `validation/mechanical.json` for machine-readable details and
-`validation.md` for the human projection. Do not invent repair guidance; the
-research agent applies the evidence specification and resolves the identified
-condition in a separate task.
+`validation.md` for the human projection. Do not invent repair guidance. A
+separately authorized Record operation resolves the reported condition from the
+applicable bundled research-logging instructions.
 
 Mechanical validation does not continue into semantic review or reproduction.
 Those are separate workflows with separate ownership and are not implemented

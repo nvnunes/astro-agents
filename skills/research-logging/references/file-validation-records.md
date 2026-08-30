@@ -1,9 +1,8 @@
 # Generated Validation Record Instructions
 
-Use this file as the operational projection of the generated-state contract in
-`docs/research-log-evidence-record-spec.md`. It tells the validation agent what
-to do without redefining that normative specification. If the two ever
-conflict, stop and report the contradiction rather than choosing one.
+Use this file when mechanical validation reads research material and publishes
+its generated result. The paths, statuses, and boundaries below are the
+complete operating instructions for generated validation records.
 
 ## Ownership And Layout
 

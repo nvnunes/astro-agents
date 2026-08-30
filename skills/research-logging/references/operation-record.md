@@ -12,20 +12,19 @@ should be logged, or adding, revising, or reorganizing log material.
 ## Routing
 
 - Start a research log: read
-  `skills/research-logging/references/operation-record-start.md`.
+  `references/operation-record-start.md`.
 - Perform and record a new investigation: read
-  `skills/research-logging/references/operation-record-new.md`.
+  `references/operation-record-new.md`.
 - Continue an investigation: read
-  `skills/research-logging/references/operation-record-existing.md`.
+  `references/operation-record-existing.md`.
 - Reorganize the log only when the researcher requests it or approves a
   specific recommendation: preserve stable entry IDs and research meaning,
   update affected links, and use
-  `skills/research-logging/references/file-entry-naming.md` and
-  `skills/research-logging/references/file-entry.md` as needed. Obtain
-  researcher approval before changing document boundaries or deleting
+  `references/file-entry-naming.md` and `references/file-entry.md` as needed.
+  Obtain researcher approval before changing document boundaries or deleting
   research-log files. Preserve the summary's fixed validation-report link and
   every generated validation file exactly. Apply
-  `skills/research-logging/references/operation-record-content.md` to affected
+  `references/operation-record-content.md` to affected
   content, support material, or evidence rows. If removal would supersede
   experimental content, stop and request explicit Replace authorization rather
   than loading or applying Replace from the Reorganize request.
@@ -37,4 +36,4 @@ topics, or has an imperfect folder slug.
 If multiple existing entries could match, ask before editing. If the user asks
 to update current understanding or follow-ups in `<log>.md` rather than preserve
 dated work in an entry, use
-  `skills/research-logging/references/operation-update-summary.md` instead.
+  `references/operation-update-summary.md` instead.

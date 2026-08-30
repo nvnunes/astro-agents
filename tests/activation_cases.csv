@@ -36,6 +36,9 @@ implicit-research-log-start,research-logging,research-logging,true,implicit,Star
 implicit-research-log-reorganize,research-logging,research-logging,true,implicit,Reorganize these research log entries without changing their entry IDs
 implicit-research-log-replace,research-logging,research-logging,true,implicit,Replace the superseded calibration experiment in e003 and keep a durable backup of the old work
 implicit-research-log-update-summary,research-logging,research-logging,true,implicit,Update the current summary for this adaptive optics research log
+implicit-research-log-review,research-logging,research-logging,true,implicit,Review this adaptive optics research log for structure synthesis and writing issues
+implicit-research-log-validate,research-logging,research-logging,true,implicit,Run mechanical validation on this adaptive optics research log
+implicit-research-log-reference,research-logging,research-logging,true,implicit,Find and view the reference cited by e004 in this adaptive optics research log
 implicit-science,science-writing,science-writing,true,implicit,Revise this scientific manuscript introduction for clearer claims
 implicit-technical,technical-writing,technical-writing,true,implicit,Tighten this technical explanation without changing its meaning
 negative-agent-surface-vs-code-quality,agent-surface-review,code-quality-review,false,negative,Review this Python module for source-code quality issues
@@ -55,5 +58,8 @@ negative-readme-vs-project-docs,readme-writing,project-docs-writing,false,negati
 negative-research-log-vs-python-analysis,research-logging,python-code-writing,false,negative,Write a Python script to analyze calibration.csv and save a plot; do not create or update a research log
 negative-research-log-existing-project-ad-hoc,research-logging,python-code-writing,false,negative,This project has a research log but for now write a Python script that makes an exploratory plot of calibration.csv for discussion only; do not record or update the log
 negative-research-log-vs-science,research-logging,science-writing,false,negative,Revise this scientific manuscript introduction for clearer claims
+negative-research-log-review-vs-code-quality,research-logging,code-quality-review,false,negative,Review this Python validator for source-code quality issues; do not review the research log
+negative-research-log-review-vs-documentation-surface,research-logging,documentation-surface-review,false,negative,Review this project's documentation architecture; do not review the research log
+negative-research-log-reference-vs-science,research-logging,science-writing,false,negative,Find and summarize references for a manuscript literature review; do not update a research log
 negative-science-vs-research-log,science-writing,research-logging,false,negative,Capture these experiment notes in the adaptive optics research log
 negative-technical-vs-readme,technical-writing,readme-writing,false,negative,Rewrite this README.md introduction for new users

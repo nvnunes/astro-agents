@@ -375,11 +375,20 @@ def check_codex_discovery() -> None:
     serialized = json.dumps(prompt_input)
     missing: list[str] = []
     for skill in check_skill_frontmatter():
-        if f"- {skill.name}:" not in serialized or str(skill.path) not in serialized:
+        if not skill_is_discovered(serialized, skill, link):
             missing.append(skill.name)
 
     if missing:
         raise ValidationError(f"missing skills from prompt input: {', '.join(missing)}")
+
+
+def skill_is_discovered(serialized: str, skill: Skill, link: Path) -> bool:
+    """Return whether prompt input declares a skill through a valid local locator."""
+    relative_path = skill.path.relative_to(SKILLS)
+    valid_locators = (skill.path, link / relative_path)
+    return f"- {skill.name}:" in serialized and any(
+        str(locator) in serialized for locator in valid_locators
+    )
 
 
 def run_activation_case(case: dict[str, str]) -> dict[str, object]:

@@ -43,8 +43,12 @@ Use this Record routing map:
   `references/file-entry-labels.md` and `references/research-log-writing.md`.
 - Scripts, figures, or serialized artifacts: read `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
-- Presented results or evidence records: read
-  `references/file-presented-evidence.md`. A numerical result in experimental
+- Presented results, evidence records, summary references, or direct artifacts:
+  read `references/file-presented-evidence.md`. When adding or changing an
+  entry evidence source, also read `references/file-evidence-locators.md`.
+  For a non-identity statistic or output, also read
+  `references/file-evidence-transformations.md`; for a table, read that file
+  and `references/file-evidence-tables.md`. A numerical result in experimental
   prose is separate evidence even when the same value appears in a Results
   table.
 - `data.csv`, a `<name>` token, or a durable external input: always read

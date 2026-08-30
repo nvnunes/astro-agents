@@ -168,7 +168,7 @@ class MechanicalControllerTests(unittest.TestCase):
             b"{\n",
             b'{"checks":{},"rules_version":"old","schema":'
             b'"research-log-mechanical-cache/2"}\n',
-            b'{"checks":{},"rules_version":"research-log-evidence/v2-static-shell-6",'
+            b'{"checks":{},"rules_version":"irrelevant",'
             b'"schema":"unsupported"}\n',
         )
         for invalid in invalid_caches:
@@ -218,6 +218,26 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertGreater(second["metrics"]["checks_reused"], 0)
             self.assertGreater(second["metrics"]["source_hashes_reused"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+
+    def test_rules_change_invalidates_checks_but_preserves_artifact_identities(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(
+                summary, result_date="2026-08-29"
+            )
+            CONTROLLER.validate(request)
+            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
+            cache = json.loads(cache_path.read_text())
+            cache["rules_version"] = "superseded-rules"
+            write(cache_path, json.dumps(cache) + "\n")
+
+            rebuilt = CONTROLLER.validate(request)
+
+            self.assertEqual(rebuilt["metrics"]["checks_reused"], 0)
+            self.assertGreater(rebuilt["metrics"]["artifact_identity_seeds"], 0)
+            self.assertGreater(rebuilt["metrics"]["source_hashes_reused"], 0)
 
     def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

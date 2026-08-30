@@ -134,7 +134,7 @@ class PresentationRecord:
 
 @dataclass(frozen=True)
 class RetentionRecord:
-    """One entry-local hygiene-only retention declaration."""
+    """One entry-local retention declaration affecting orphan classification."""
 
     id: str
     paths: tuple[str, ...] = ()

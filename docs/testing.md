@@ -113,6 +113,8 @@ The research-log test gate must verify:
 - cache absence, corruption, or an unsupported cache schema causes bounded
   recomputation, and cached checks are reused only when the complete cache
   contract, rules version, dependency projection, and check content match;
+- a rules-version change invalidates cached checks while preserving artifact
+  identities whose cache entry and current file identity still match exactly;
 - cached artifact identities avoid rehashing only when the project-relative
   regular file has the same byte size, modification time, and change time;
 - `--recompute` bypasses every existing cache entry, publishes a newly rebuilt
@@ -131,8 +133,8 @@ The research-log test gate must verify:
   the prior generated bundle;
 - validation leaves all research-owned bytes unchanged and preserves the
   maintained summary's exact stable report link;
-- evidence comparison, provenance, summary forwarding, and unused-material
-  hygiene remain independent code-only scopes with precise failure payloads;
+- evidence comparison, provenance, summary forwarding, and orphan detection
+  remain independent code-only scopes with precise failure payloads;
 - external evidence is observed as a dependency of the current log without
   reading another log's validation state;
 - unchanged dependency projections reuse compatible passing checks, while

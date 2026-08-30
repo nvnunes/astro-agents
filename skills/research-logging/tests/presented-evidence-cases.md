@@ -355,7 +355,7 @@ to change orphan classification in the file's owning log.
 
 Given retained material not connected to evidence, a visible command
 relationship, a data-index input, or an explicit retention declaration,
-validation reports the exact residual path as a hygiene finding. Mechanical
+validation reports the exact residual path as an orphan finding. Mechanical
 validation never asks an agent to classify the orphan semantically.
 
 ## Data Index
@@ -366,5 +366,5 @@ it as input. Review reports an unused row, an entry-local script or image row,
 an unresolved token, or a raw external input path that should use `<name>`.
 
 A valid indexed input in a workflow branch that does not reach presented
-evidence is not an index-hygiene finding; it remains eligible for orphan
-validation.
+evidence does not make its index row orphaned; the workflow's retained material
+remains eligible for orphan detection.

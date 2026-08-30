@@ -172,7 +172,7 @@ Name exact paths or all descendants of one exact entry-local directory:
 
 The optional `reason` records research-agent intent for semantic review.
 Mechanical validation ignores its meaning. A retention record affects only
-unused-material hygiene; it does not create evidence, provenance, command, or
+orphan classification; it does not create evidence, provenance, command, or
 dependency relationships. Remove a declaration that becomes redundant.
 
 ## Summary Evidence
@@ -208,7 +208,7 @@ not decide whether selected evidence scientifically supports the surrounding
 claim.
 
 Mechanical validation uses code only. It checks exact association, source
-selection, transformation, presentation, command provenance, and retained-
-material hygiene. Missing, ambiguous, unsupported, or incorrect metadata is a
+selection, transformation, presentation, command provenance, and orphan
+detection. Missing, ambiguous, unsupported, or incorrect metadata is a
 completed finding. The validation agent reports it precisely and never edits
 research-owned material.

@@ -34,7 +34,7 @@ The complete specification owns:
 - evidence-rooted recorded-command discovery, producer and upstream lineage,
   trusted external and model/simulation roots, material collections, and
   named-input connection;
-- unused-material hygiene;
+- orphan detection for unused retained material and data-index names;
 - validation evaluation order, result scopes, failures, resource bounds, and
   currentness composition;
 - the public validation operation, result envelope, completion and exit
@@ -151,7 +151,7 @@ A locator does not decide:
 - producer, provenance, semantic-review, or reproduction conclusions.
 
 The locator is one evidence-record component. The presentation-transformation,
-evidence-association, command-provenance, material-graph, hygiene, and composed
+evidence-association, command-provenance, material-graph, orphan-detection, and composed
 outcome subcontracts below own the remaining stages.
 
 ## Active Version And Legacy Boundary
@@ -1834,7 +1834,7 @@ Active standard validation is v2-only. A bounded cutover preflight detects
 returns one `validation.upgrade_required` result listing every condition found.
 It writes nothing, does not route unmarked presentations to v1, and does not
 interpret legacy generated state. Retention records participate in entry-local
-ID uniqueness and hygiene, but not presentation association.
+ID uniqueness and orphan classification, but not presentation association.
 
 The cutover preflight recognizes v1 evidence by the exact filename
 `evidence.csv` anywhere below the maintained-log root, with a limit of 10,000
@@ -1960,7 +1960,7 @@ aliased, or contain `.`, `..`, a reverse solidus, or a URI scheme. A path may
 cross the exact entry-local `data` or `images` directory when that directory is
 a symlink; these are first-class entry material roots regardless of physical
 storage location. No other or nested symlink is permitted. The directory form
-covers every otherwise hygiene-eligible regular-file descendant observed
+covers every otherwise orphan-eligible regular-file descendant observed
 beneath that directory. It must resolve to at least one such file.
 
 `reason` is the only optional key and, when present, must be a UTF-8 JSON string
@@ -2373,9 +2373,9 @@ not a failure.
 There is no `provenance.json` in this contract. There are also no authored
 producer bindings, historical-limit declarations, free-form validation-block
 exceptions, ignored-material rules, or semantic provenance judgments.
-Structured retention records in entry-local `evidence.json` affect hygiene
-only. Missing, conflicting, ambiguous, or mechanically undiscoverable
-relationships are completed failures or hygiene findings as defined below.
+Structured retention records in entry-local `evidence.json` affect only orphan
+classification. Missing, conflicting, ambiguous, or mechanically undiscoverable
+relationships are completed failures or orphan findings as defined below.
 
 Validation is read-only and non-executing. It may lex and parse recorded shell
 commands and adjacent command annotations, resolve and hash project-local
@@ -2601,8 +2601,8 @@ the evidence-provenance closure.
 
 Commands, arguments, and candidate paths outside that closure receive no
 provenance result. The validator may reuse any positive relationship it
-discovers outside the closure for separate retained-material hygiene, but it
-does not require a complete role classification for the command. Command
+discovers outside the closure for separate retained-material orphan detection,
+but it does not require a complete role classification for the command. Command
 annotations and the option-name convention are therefore targeted proof
 mechanisms, not a requirement to describe every command argument.
 
@@ -2701,7 +2701,7 @@ validation does not inspect its producer, import an external provenance graph,
 or otherwise continue beyond it. A row resolving to generated local material
 retains the ordinary local producer and lineage requirements. Duplicate,
 missing, malformed, or unresolved rows fail. An unused `data.csv` row is a
-hygiene finding.
+orphan finding.
 
 External classification is lexical and closed. A `data.csv` location is
 external when it is an absolute path, a URI, or a relative location whose
@@ -2814,9 +2814,10 @@ Failure of one edge invalidates only provenance outcomes that depend on that
 edge and its downstream closure. It does not rewrite a successful
 evidence-value comparison as an association failure.
 
-### Unused-Material Hygiene
+### Orphan Detection
 
-Hygiene inventories regular retained files beneath each entry root, excluding:
+Orphan detection inventories regular retained files beneath each entry root,
+excluding:
 
 - entry Markdown documents;
 - `evidence.csv`, `evidence.json`, and `data.csv`;
@@ -2825,7 +2826,7 @@ Hygiene inventories regular retained files beneath each entry root, excluding:
 - temporary paths excluded by the research-log contract.
 
 Entry-local `data` and `images` are first-class members of the entry when they
-are ordinary directories or directory symlinks. Hygiene follows those two
+are ordinary directories or directory symlinks. Orphan detection follows those two
 exact symlinks, inventories their bounded regular-file descendants, and assigns
 the canonical targets to the owning entry. Evidence, command, collection,
 direct-artifact, and retention paths continue to use the natural entry-local
@@ -2839,22 +2840,22 @@ presentation, mechanically established command input or output, resolved local
 script, required collection member, or resolved material of a used named
 input. An otherwise unconnected file is `declared-retained` when exactly one
 valid entry-local retention record covers its canonical path. Every remaining
-candidate produces `hygiene.material.unused`. An unused data-index name
-produces `hygiene.data_index.unused`.
+candidate produces `orphan.material.unused`. An unused data-index name
+produces `orphan.data_index.unused`.
 
-Retention is a hygiene classification only. It does not establish evidence,
+Retention affects only orphan classification. It does not establish evidence,
 input, output, producer, lineage, collection, or currentness edges and cannot
 repair a failure in any of those relationships. Overlapping retention records,
 missing targets, targets outside the entry, malformed paths, empty directory
-membership, targets that are not otherwise hygiene-eligible, and targets that
+membership, targets that are not otherwise orphan-eligible, and targets that
 are already connected fail the retention declaration. A declaration that
 becomes redundant must be removed rather than silently retained. The optional
 `reason` remains available to Semantic
 Review but is ignored by mechanical validation beyond its basic JSON type and
 resource bound.
 
-Free-form `Validation:` blocks and similar prose do not suppress hygiene. A
-research agent may connect the material through an actual command or evidence
+Free-form `Validation:` blocks and similar prose do not suppress orphan
+findings. A research agent may connect the material through an actual command or evidence
 relationship, declare it through a valid retention record, or remove it when
 separately authorized. Validation may group residual findings by exact
 directory prefix for bounded reporting, but grouping does not create a
@@ -2920,7 +2921,7 @@ note names the governing result.
 | Missing or conflicting evidence declaration or exact presentation mismatch | Evidence | Fails evidence. |
 | Missing, ambiguous, conflicting, or incomplete producer, lineage, root, named-input, or collection relationship | Provenance | Fails provenance without changing the evidence-value result. |
 | Temporary access failure or material changing during observation | Owning check as unavailable | Makes the aggregate incomplete. |
-| Residual orphaned material or unused data-index name | Hygiene | Reports findings without changing evidence or provenance status. |
+| Residual orphaned material or unused data-index name | Orphan | Reports findings without changing evidence or provenance status. |
 | Scientific validity, interpretation, claim support, or summary meaning | Semantic Review | No mechanical result. |
 | Ability to rerun and reproduce a workflow | Reproduction | No standard-validation result. |
 
@@ -2959,7 +2960,7 @@ projections. Summary provenance depends on the referenced entry record's
 successful projection and, for a table, the declared cell coordinate.
 
 Unrelated commands and their unclassified arguments, files, evidence records,
-entry prose, collections, hygiene findings, other logs, and Git state do not
+entry prose, collections, orphan findings, other logs, and Git state do not
 reopen an outcome. Whole-file hashes
 may trigger parsing, but reusable results compare the narrower projections.
 
@@ -3041,12 +3042,15 @@ locator. Changed, missing, external, symlinked, malformed, or ambiguous paths
 are not reused.
 
 Check reuse requires the exact cache shape, current rules version, current
-dependency projection, and an identical current check. Absence, invalid JSON,
-excess size, extra or malformed fields, an unsupported schema or rules
-version, or mismatched content causes bounded recomputation. `--recompute`
-treats both checks and artifact identities as absent for reuse but does not
-delete or modify the cache unless the completed evaluation publishes the
-replacement generated bundle. Cache state never changes a conclusion.
+dependency projection, and an identical current check. A different rules
+version invalidates every cached check but does not invalidate an artifact
+identity whose cache schema, entry shape, project-relative regular-file path,
+size, modification time, and change time still match exactly. Absence, invalid
+JSON, excess size, extra or malformed fields, an unsupported schema, or
+mismatched content causes bounded recomputation. `--recompute` treats both
+checks and artifact identities as absent for reuse but does not delete or
+modify the cache unless the completed evaluation publishes the replacement
+generated bundle. Cache state never changes a conclusion.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, counts by every scope and
@@ -3069,7 +3073,7 @@ authoritative operation records under the same lock. Mechanical-record and
 cache schema versions evolve independently of evidence format v2 and of the
 future reproduction-record schema.
 
-### Command-Provenance And Hygiene Failures
+### Command-Provenance And Orphan-Detection Failures
 
 Every failure records the stable command, material, evidence-record, named-input,
 or collection identity when known; the observed command or path projection; the
@@ -3104,8 +3108,8 @@ failure.
 | `data_index.raw_external` | conformance | A recorded external input bypasses the required named-input form. |
 | `retention.declaration.invalid` | conformance | A retention record is malformed, overlapping, empty, escaping, aliased, or names an ineligible target. |
 | `retention.target.missing` | conformance | A syntactically valid retention record names material that is not retained. |
-| `hygiene.material.unused` | hygiene | Retained local material has no mechanically established graph connection. |
-| `hygiene.data_index.unused` | hygiene | A `data.csv` name is not consumed by a recorded invocation. |
+| `orphan.material.unused` | orphan | Retained local material has no mechanically established graph connection. |
+| `orphan.data_index.unused` | orphan | A `data.csv` name is not consumed by a recorded invocation. |
 | `provenance.observation.unavailable` | provenance | Stable observation is temporarily impossible because material is inaccessible or changes while read. |
 | `provenance.resource.too_large` | conformance | Command parsing, annotation parsing, graph expansion, or collection membership crosses a declared bound. |
 
@@ -3505,7 +3509,7 @@ command-discovery, or mechanical-validation contract version.
 
 Standard validation implements the active v2 locator, transformation,
 association, presentation, command-discovery, provenance, material-graph,
-hygiene, composed-outcome, generated-record, cache, report, and cutover
+orphan-detection, composed-outcome, generated-record, cache, report, and cutover
 contracts in this document. It reads no v1 evidence rows and imports no frozen
 v1 parser.
 
@@ -3519,6 +3523,6 @@ occurs, an unupgraded maintained log correctly returns
 `validation.upgrade_required` from standard validation.
 
 No downstream surface may define a competing evidence-record, locator,
-transformation, presentation, command-provenance, collection, hygiene, or
+transformation, presentation, command-provenance, collection, orphan-detection, or
 mechanical-outcome contract. Shorter examples may omit detail but must point
 here and must not contradict this specification.

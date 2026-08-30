@@ -937,7 +937,7 @@ The generated record keeps four conclusions independent:
   reproduces the exact supported presentation template.
 - **Provenance** checks that each evidence source is rooted in external data, a
   model, or a simulation through visible recorded-command relationships.
-- **Hygiene** reports retained local material and data-index names that are
+- **Orphan detection** reports retained local material and data-index names that are
   neither connected to evidence nor explicitly retained.
 
 A failure in one scope does not rewrite another scope's result. Missing,
@@ -1000,9 +1000,11 @@ version, and result date.
 independent `research-log-mechanical-cache/2` schema. In addition to reusable
 passing checks, it retains project-relative artifact identities so unchanged
 files do not need to be hashed again. Reuse requires an exact match of current
-file size, modification time, and change time. Missing, changed, corrupt, or
-unsupported cache state causes bounded recomputation and never changes the
-validation conclusion. `--recompute` bypasses both forms of reuse.
+file size, modification time, and change time. A rules-version change
+invalidates cached checks but preserves compatible artifact identities.
+Missing, changed, corrupt, or unsupported cache state causes bounded
+recomputation and never changes the validation conclusion. `--recompute`
+bypasses both forms of reuse.
 
 `validation.md` is the human projection. Its Mechanical Validation section
 shows completion and date, counts by scope and status, and every non-passing

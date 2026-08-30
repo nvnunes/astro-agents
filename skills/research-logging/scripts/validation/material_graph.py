@@ -1,4 +1,4 @@
-"""Mechanical-only v2 material graph, hygiene, and currentness projection."""
+"""Mechanical-only v2 material graph, orphan detection, and currentness."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ class DataIndexSurface:
 
 
 @dataclass(frozen=True)
-class HygieneResult:
+class OrphanResult:
     """Independent connected, retained, and residual material classes."""
 
     inventory: tuple[str, ...]
@@ -107,11 +107,11 @@ class HygieneResult:
 
 @dataclass(frozen=True)
 class MaterialGraphResult:
-    """Complete successful graph plus independent hygiene classification."""
+    """Complete successful graph plus independent orphan classification."""
 
     nodes: tuple[GraphNode, ...]
     edges: tuple[GraphEdge, ...]
-    hygiene: HygieneResult
+    orphan: OrphanResult
     dependency_projection: str
     metrics: Mapping[str, float | int]
 
@@ -155,7 +155,7 @@ class _GraphState:
 
 
 def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult:
-    """Compose only proved edges, then classify entry-owned hygiene material."""
+    """Compose only proved edges, then classify entry-owned material."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
     connection_roots = _connection_roots(roots)
@@ -167,19 +167,19 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     _add_invocations(request.invocations, state)
     _bound_graph(state.nodes, state.edges)
     graph_seconds = time.perf_counter() - graph_started
-    hygiene_started = time.perf_counter()
+    orphan_started = time.perf_counter()
     inventory = _inventory(roots)
     retained = _retained_material(
         request.evidence_files, roots, inventory, state.connected
     )
     unused_names = _unused_data_names(request.data_indexes, request.invocations)
-    hygiene = _hygiene_result(inventory, state.connected, retained, unused_names)
-    hygiene_seconds = time.perf_counter() - hygiene_started
+    orphan = _orphan_result(inventory, state.connected, retained, unused_names)
+    orphan_seconds = time.perf_counter() - orphan_started
     currentness_started = time.perf_counter()
     graph_projection = {
         "dependencies": state.dependencies,
         "edges": [_edge_projection(edge) for edge in sorted(state.edges)],
-        "hygiene": hygiene.dependency_projection,
+        "orphan": orphan.dependency_projection,
         "nodes": [_node_projection(node) for node in sorted(state.nodes)],
         "version": "v2-initial",
     }
@@ -188,12 +188,12 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     return MaterialGraphResult(
         tuple(sorted(state.nodes)),
         tuple(sorted(state.edges)),
-        hygiene,
+        orphan,
         dependency_projection,
         {
             "currentness_seconds": currentness_seconds,
             "graph_seconds": graph_seconds,
-            "hygiene_seconds": hygiene_seconds,
+            "orphan_seconds": orphan_seconds,
             "inventory_files": len(inventory),
         },
     )
@@ -289,27 +289,27 @@ def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> N
         state.dependencies.append(_invocation_projection(invocation))
 
 
-def _hygiene_result(
+def _orphan_result(
     inventory: set[str],
     connected: set[str],
     retained: set[str],
     unused_names: set[str],
-) -> HygieneResult:
+) -> OrphanResult:
     orphaned = inventory - connected - retained
-    hygiene_projection = {
+    orphan_projection = {
         "connected": sorted(inventory & connected),
         "declared_retained": sorted(retained),
         "inventory": sorted(inventory),
         "unused_data_names": sorted(unused_names),
         "version": "v2-initial",
     }
-    return HygieneResult(
+    return OrphanResult(
         tuple(sorted(inventory)),
         tuple(sorted(inventory & connected)),
         tuple(sorted(retained)),
         tuple(sorted(orphaned)),
         tuple(sorted(unused_names)),
-        _digest(hygiene_projection),
+        _digest(orphan_projection),
     )
 
 
@@ -393,7 +393,7 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
                 if len(inventory) > MAX_GRAPH_NODES:
                     _fail(
                         "provenance.resource.too_large",
-                        "hygiene inventory",
+                        "orphan inventory",
                         {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
                     )
     return inventory
@@ -424,7 +424,7 @@ def _inventory_material_root(
             if len(inventory) > MAX_GRAPH_NODES:
                 _fail(
                     "provenance.resource.too_large",
-                    "hygiene inventory",
+                    "orphan inventory",
                     {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
                 )
 
@@ -602,8 +602,8 @@ def _digest(value: object) -> str:
 
 def _fail(code: str, subject: str, observed: object) -> NoReturn:
     rule = (
-        "Unused-Material Hygiene"
-        if code.startswith("retention") or code.startswith("hygiene")
+        "Orphan Detection"
+        if code.startswith("retention") or code.startswith("orphan")
         else "Command-Provenance Resource And Safety Bounds"
     )
     raise MaterialGraphV2Error(code, subject, observed, rule)

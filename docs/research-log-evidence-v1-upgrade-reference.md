@@ -21,7 +21,7 @@ public `validation.upgrade_required` cutover result; it does not invoke this
 reader automatically.
 
 The active specification owns the upgrade operation, v2 `evidence.json`,
-presentation association, command-derived provenance, material hygiene,
+presentation association, command-derived provenance, orphan detection,
 result composition, shared value model, and resource and safety limits. If
 this reference and the active specification conflict outside the v1 parsing
 and evaluation surface named above, the active specification governs.

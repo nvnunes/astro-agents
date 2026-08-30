@@ -213,6 +213,23 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
             self.assertEqual(result.items[0].value.kind, "binary_float")
             self.assertEqual(result.items[0].value.value, "8000000000000000")
 
+    def test_npz_scalar_cannot_supply_an_aligned_first_axis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "scalar.npz"
+            np.savez(source, case_id=np.array(8), score=np.array(0.95))
+
+            with self.assertRaisesRegex(
+                LOCATOR.LocatorV2Error, "locator.type.mismatch"
+            ):
+                LOCATOR.evaluate_locator(
+                    source,
+                    {
+                        "path": [],
+                        "select": [["score"]],
+                        "where": [{"op": "eq", "path": ["case_id"], "value": 8}],
+                    },
+                )
+
     def test_npz_object_arrays_fail_as_unsafe(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "unsafe.npz"

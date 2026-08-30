@@ -159,7 +159,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 {"entries/2026-08-29-e001-study"},
             )
 
-    def test_split_entry_shares_data_index_usage_without_false_hygiene(self) -> None:
+    def test_split_entry_shares_data_index_usage_without_false_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary = root / "docs" / "study.md"
@@ -196,7 +196,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in evaluation.result.checks
                 if check.failure is not None
             ]
-            self.assertNotIn("hygiene.data_index.unused", failures)
+            self.assertNotIn("orphan.data_index.unused", failures)
             self.assertEqual(evaluation.metrics["invocations"], 2)
 
     def test_unlisted_split_document_evidence_is_reported(self) -> None:
@@ -270,7 +270,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 scopes[RESULTS.CheckScope.PROVENANCE], RESULTS.CheckStatus.PASS
             )
             self.assertEqual(
-                scopes[RESULTS.CheckScope.HYGIENE], RESULTS.CheckStatus.PASS
+                scopes[RESULTS.CheckScope.ORPHAN], RESULTS.CheckStatus.PASS
             )
             self.assertEqual(evaluation.metrics["source_evaluations"], 1)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
@@ -387,7 +387,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             scopes = {item.scope: item.status for item in evaluation.result.scopes}
             self.assertEqual(
-                scopes[RESULTS.CheckScope.HYGIENE],
+                scopes[RESULTS.CheckScope.ORPHAN],
                 RESULTS.CheckStatus.PASS,
             )
 

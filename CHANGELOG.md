@@ -30,3 +30,10 @@ history for detailed change-by-change context.
   skipped, and association and summary failures use their normative codes and
   scopes. Canonical record dependencies now preserve exact decimal locator
   values while remaining valid generated-record JSON.
+- Renamed the mechanical validation `hygiene` scope to `orphan`, including its
+  check identities, failure codes, cache projections, reports, and authoring
+  guidance. Generated records retain schema 1 and are rebuilt under the new
+  rules version rather than supporting the retired vocabulary. Rules-version
+  changes invalidate cached checks while preserving compatible artifact
+  identities, and zero-dimensional NPZ members requested as aligned arrays now
+  produce a precise type-mismatch finding instead of terminating validation.

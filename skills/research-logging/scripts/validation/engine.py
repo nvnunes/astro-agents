@@ -75,7 +75,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-static-shell-6"
+RULES_VERSION = "research-log-evidence/v2-orphan-7"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
@@ -759,40 +759,40 @@ def _compose_graph(state: _ScanState) -> None:
             _error_check("graph:log", _error_scope(error, CheckScope.PROVENANCE), error)
         )
         return
-    hygiene = state.graph.hygiene
-    for path in hygiene.orphaned:
+    orphan = state.graph.orphan
+    for path in orphan.orphaned:
         state.checks.append(
             _failure_check(
-                f"hygiene:material:{path}",
-                CheckScope.HYGIENE,
+                f"orphan:material:{path}",
+                CheckScope.ORPHAN,
                 _FailureSpec(
-                    "hygiene.material.unused",
+                    "orphan.material.unused",
                     path,
                     {"classification": "orphaned"},
-                    "Unused-Material Hygiene",
+                    "Orphan Detection",
                 ),
             )
         )
-    for name in hygiene.unused_data_names:
+    for name in orphan.unused_data_names:
         state.checks.append(
             _failure_check(
-                f"hygiene:data-name:{name}",
-                CheckScope.HYGIENE,
+                f"orphan:data-name:{name}",
+                CheckScope.ORPHAN,
                 _FailureSpec(
-                    "hygiene.data_index.unused",
+                    "orphan.data_index.unused",
                     name,
                     {"classification": "unused"},
-                    "Unused-Material Hygiene",
+                    "Orphan Detection",
                 ),
             )
         )
-    if not hygiene.orphaned and not hygiene.unused_data_names:
+    if not orphan.orphaned and not orphan.unused_data_names:
         state.checks.append(
             _pass_check(
-                "hygiene:log",
-                CheckScope.HYGIENE,
+                "orphan:log",
+                CheckScope.ORPHAN,
                 dependencies=(
-                    {"dependency_projection": hygiene.dependency_projection},
+                    {"dependency_projection": orphan.dependency_projection},
                 ),
             )
         )

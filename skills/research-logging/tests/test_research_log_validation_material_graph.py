@@ -73,7 +73,7 @@ def _fixture(root: Path) -> tuple[Path, Path, object, object]:
 
 
 class MaterialGraphV2Tests(unittest.TestCase):
-    def test_graph_and_hygiene_are_composed_from_successful_edges(self) -> None:
+    def test_graph_and_orphan_are_composed_from_successful_edges(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, commands, evidence_file = _fixture(Path(directory))
 
@@ -102,18 +102,18 @@ class MaterialGraphV2Tests(unittest.TestCase):
 
             self.assertIn(
                 (entry_root / "data" / "source.csv").resolve().as_posix(),
-                result.hygiene.connected,
+                result.orphan.connected,
             )
             self.assertEqual(
-                result.hygiene.declared_retained,
+                result.orphan.declared_retained,
                 ((entry_root / "data" / "debug.json").resolve().as_posix(),),
             )
             self.assertEqual(
-                result.hygiene.orphaned,
+                result.orphan.orphaned,
                 ((entry_root / "data" / "orphan.txt").resolve().as_posix(),),
             )
             self.assertEqual(
-                result.hygiene.unused_data_names, ("entries/entry:unused",)
+                result.orphan.unused_data_names, ("entries/entry:unused",)
             )
             self.assertTrue(result.dependency_projection)
 
@@ -183,14 +183,14 @@ class MaterialGraphV2Tests(unittest.TestCase):
 
             self.assertIn(
                 (retained_data / "source.csv").resolve().as_posix(),
-                result.hygiene.connected,
+                result.orphan.connected,
             )
             self.assertEqual(
-                result.hygiene.declared_retained,
+                result.orphan.declared_retained,
                 ((retained_data / "debug.json").resolve().as_posix(),),
             )
             self.assertEqual(
-                result.hygiene.orphaned,
+                result.orphan.orphaned,
                 tuple(
                     sorted(
                         (

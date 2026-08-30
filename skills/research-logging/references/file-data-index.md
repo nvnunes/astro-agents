@@ -52,4 +52,5 @@ indexed as an external resource.
 During research-log review, report duplicate names, unused rows, unresolved
 tokens, inappropriate script or image rows, and raw absolute or external input
 paths that should use `<name>`. A valid indexed resource used by an otherwise
-orphaned workflow is a validation concern, not an index-hygiene finding.
+orphaned workflow is a validation concern; the unused index row itself is not
+an orphan finding.

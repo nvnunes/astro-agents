@@ -1001,6 +1001,15 @@ def _aligned_candidates(
             "aligned arrays",
             {"fields": sorted(top_fields - set(arrays))},
         )
+    scalar_fields = sorted(
+        field for field, value in arrays.items() if _native_shape(value) == ()
+    )
+    if scalar_fields:
+        _fail(
+            "locator.type.mismatch",
+            "aligned arrays",
+            {"fields_without_first_axis": scalar_fields},
+        )
     lengths = {len(value) for value in arrays.values()}
     if len(lengths) != 1:
         _fail(

@@ -34,7 +34,7 @@ class CheckScope(str, Enum):
     CONFORMANCE = "conformance"
     EVIDENCE = "evidence"
     PROVENANCE = "provenance"
-    HYGIENE = "hygiene"
+    ORPHAN = "orphan"
 
 
 class CompletionState(str, Enum):

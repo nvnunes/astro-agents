@@ -27,6 +27,23 @@ Write commands from the entry root as the working directory. Put every
 recorded executable command in a `bash` fence under the applicable `Steps:`
 label. Ordinary shell commands can be written directly inside that fence.
 
+When repeated commands are clearer as a finite shell abstraction, validation
+can mechanically account for a closed static subset: literal `for` loops;
+locally defined functions of any valid name invoked with one or more literal
+arguments and using `$1`, `shift`, and `$@`; and loop-local literal `case`
+branches that assign a scalar or literal array. Those constructs may substitute
+`$name`, `${name}`, or `${array[@]}` only from a binding established in the
+same supported construct. A trailing `&` and standalone `wait` may express
+scheduling. Prefer an explicit command for a one-off invocation.
+
+This is not general Bash interpretation. Do not rely on environment variables,
+globs, command or process substitution, arithmetic, dynamic value lists or case
+selection, or nested control flow to make evidence relationships visible. The
+validator does not execute shell. An unsupported or unbound construct is
+fail-closed and establishes no relationship; its body is not mined for likely
+commands. Command annotations count the concrete invocation order after a
+supported expansion.
+
 For Python commands, use `./pyrun` to simplify recorded syntax. Verify any
 project-declared environment is available before running it. `pyrun` uses
 `<project>/.conda/bin/python` when present; otherwise it uses the interpreter

@@ -2410,19 +2410,52 @@ to apply that metadata; otherwise the annotation is invalid. If no supported
 surface proves a required evidence producer, `producer.missing` owns the
 provenance failure.
 
+Before ordinary invocation discovery, the validator may statically expand this
+closed, non-executing shell grammar:
+
+- `for <name> in <literal>...; do ... done`, with a finite literal value list;
+- a locally defined function of any valid shell name, invoked with one or more
+  literal arguments, whose body uses only literal calls, `$1`, `shift`, and
+  `$@`;
+- a loop-local `case` on a bound scalar whose literal branches assign one
+  scalar or one literal array;
+- `$name`, `${name}`, and `${array[@]}` when the value is established by the
+  same supported construct; and
+- a trailing background `&` and standalone `wait`, which affect scheduling but
+  establish no material relationship by themselves.
+
+Expansion never executes shell, reads an environment variable, selects a
+dynamic branch, expands a glob, or performs command, process, or arithmetic
+substitution. Function and variable names are generic; no helper name, script
+name, or entry path receives special behavior. Unsupported nesting, unbound
+values, nonliteral arguments, or expansion beyond an existing resource bound
+consumes the affected control surface without exposing its body as independent
+commands. The unsupported surface establishes no relationship.
+
 The validator constructs the invocation identity from:
 
 1. maintained-log identity;
 2. entry identity;
 3. entry-relative command document path;
-4. the canonical shell-token and operator sequence; and
-5. the zero-based ordinal among identical canonical commands in that document.
+4. the canonical shell-token and operator sequence;
+5. for an expanded invocation, the normalized visible control structure and
+   literal binding projection; and
+6. the zero-based ordinal among identical canonical commands and projections
+   in that document.
 
 Shell quoting that yields the same token has no identity meaning. Operators,
 redirections, argument order, option values, environment assignments, and the
 resolved executable or script token do. Line number, heading spelling, fence
 delimiter length, and surrounding prose do not. Changing the command changes
-its identity and reopens its dependent provenance outcomes.
+its identity and reopens its dependent provenance outcomes. Changing a static
+value list, helper call, function body, selected case assignment, or other
+result-affecting part of the supported expansion likewise changes identity,
+even when one expanded command's final tokens happen to remain the same.
+
+Command annotation ordinals count the concrete invocation order after static
+expansion. A function definition and `wait` are not invocations. Each expanded
+loop iteration or supported helper-body command is an ordinary invocation for
+annotation, identity, relationship, and resource-bound purposes.
 
 For supported invocations, discovery returns:
 
@@ -3080,7 +3113,13 @@ failure.
 
 The initial command-derived provenance profile permits at most:
 
-- 64 top-level invocations in one eligible command fence;
+- 64 concrete invocations after static expansion in one eligible command
+  fence;
+- 256 literal loop-iteration bindings in one eligible command fence;
+- 4,096 parsed static-shell tokens in one eligible command fence;
+- 4,096 static parser work items in one eligible command fence, where one work
+  item is one logical source line or one function-body, loop-body, or case-branch
+  line examined in an expansion context;
 - 1,000 recorded invocations per maintained log;
 - 128 mechanically established inputs and 128 outputs per invocation;
 - 100,000 members in one required collection;
@@ -3100,21 +3139,22 @@ bound is `fail`; temporary material access failure is `unavailable`.
 
 ## Future Command-Discovery Expansion If Warranted
 
-The initial contract intentionally stops at shell direction, named inputs, the
-closed leading-or-trailing `input`/`output` option-name convention, optional
-adjacent command annotations, the `model` and `simulation` root types, the
-closed simulation filename convention, and the three finite collection forms
-those roles enable. A missing or ambiguous result fails regardless of whether
-one relationship appears likely.
+The contract intentionally stops at bounded static expansion, shell direction,
+named inputs, the closed leading-or-trailing `input`/`output` option-name
+convention, optional adjacent command annotations, the `model` and `simulation`
+root types, the closed simulation filename convention, and the three finite
+collection forms those roles enable. A missing or ambiguous result fails
+regardless of whether one relationship appears likely.
 
 Additional automatic role words or command types, internal-token matching,
-glob grammars, range-to-filename expansion, output templates, selector
-languages, per-command plugins, and evidence-record provenance hints remain deferred until several
-concrete cases show that the initial forms make natural research authoring
-materially awkward. A proposed addition requires retained-corpus evidence and
-explicit researcher approval. It must be closed, independently checkable from
-recorded state, bounded, and simpler overall than renaming the option or
-repairing the command surface with an adjacent annotation or manifest.
+glob grammars, range-to-filename expansion, dynamic output templates, selector
+languages, per-command plugins, and evidence-record provenance hints remain
+deferred until several concrete cases show that the initial forms make natural
+research authoring materially awkward. A proposed addition requires
+retained-corpus evidence and explicit researcher approval. It must be closed,
+independently checkable from recorded state, bounded, and simpler overall than
+renaming the option or repairing the command surface with an adjacent
+annotation or manifest.
 
 No future mechanism may select a merely plausible producer, suppress an orphan
 without a retention record, invent missing historical lineage, override shell

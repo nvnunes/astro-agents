@@ -461,6 +461,22 @@ not follow these conventions. Do not replace them with an invented command or
 rerun them merely to make the record conform. State any missing information or
 material as a limit on later reconstruction.
 
+Use an explicit command for a one-off invocation. For genuinely repeated
+commands, mechanical validation can expand a closed static shell subset:
+literal `for` loops; locally defined functions of any valid name invoked with
+one or more literal arguments whose bodies use only literal calls, `$1`,
+`shift`, and `$@`; and loop-local literal `case` branches that assign a scalar
+or literal array. `$name`, `${name}`, and `${array[@]}` must resolve from a
+binding established by the same supported construct. A trailing `&` and
+standalone `wait` may express scheduling.
+
+Validation does not execute or generally interpret Bash. Environment reads,
+globs, command or process substitution, arithmetic, dynamic value lists or
+branch selection, and nested control flow cannot establish evidence
+relationships. Unsupported blocks are fail-closed: their bodies are not
+treated as independent commands. Hidden command annotations count concrete
+invocations after a supported expansion.
+
 For Python, use the entry-root `./pyrun` launcher. It uses
 `<project>/.conda/bin/python` when that environment exists; otherwise it uses
 the interpreter that runs `pyrun`. It also expands these path tokens:

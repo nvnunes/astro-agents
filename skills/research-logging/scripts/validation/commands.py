@@ -5,16 +5,26 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
-import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, MutableMapping, NoReturn, Sequence
 
 from .entry_materials import EntryMaterialPathError, is_entry_material_path
 from .json_codec import canonical_json
+from .static_shell import (
+    StaticCommand,
+    StaticFailure,
+    StaticGroup,
+    StaticShellResourceError,
+    StaticToken,
+    expand_static_shell,
+)
 
 MAX_INVOCATIONS_PER_FENCE = 64
 MAX_INVOCATIONS_PER_LOG = 1000
+MAX_STATIC_BINDINGS_PER_FENCE = 256
+MAX_STATIC_TOKENS_PER_FENCE = 4096
+MAX_STATIC_WORK_ITEMS_PER_FENCE = 4096
 MAX_RELATIONSHIPS = 128
 MAX_COLLECTION_MEMBERS = 100_000
 MAX_COMMAND_BYTES = 1024 * 1024
@@ -99,6 +109,7 @@ class Invocation:
     outputs: tuple[MaterialRelationship, ...]
     collections: tuple[MaterialCollection, ...]
     candidates: tuple[str, ...]
+    material_owner: str
 
 
 @dataclass(frozen=True)
@@ -124,6 +135,7 @@ class _ParsedCommand:
     positionals: tuple[str, ...]
     redirections: tuple[tuple[str, str], ...]
     tee_outputs: tuple[str, ...]
+    static_projection: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,20 +211,26 @@ def discover_commands(
         unsupported.extend(
             {"fence": fence_number, "reason": failure} for failure in failures
         )
+        concrete_count = sum(command is not None for command in parsed)
+        if annotation_texts and not concrete_count:
+            _fail(
+                "invocation.command.unsupported",
+                f"{context.document}:fence-{fence_number}",
+                {"annotation": True},
+            )
         decoded_annotations = _parse_annotations(
-            annotation_texts, len(parsed), context.document
+            annotation_texts, concrete_count, context.document
         )
-        for ordinal, command in enumerate(parsed, 1):
-            annotation = decoded_annotations.get(ordinal)
+        concrete_ordinal = 0
+        for command in parsed:
             if command is None:
-                if annotation is not None:
-                    _fail(
-                        "invocation.command.unsupported",
-                        f"{context.document}:fence-{fence_number}:command-{ordinal}",
-                        {"annotation": True},
-                    )
                 continue
-            canonical = canonical_json(list(command.tokens))
+            concrete_ordinal += 1
+            annotation = decoded_annotations.get(concrete_ordinal)
+            canonical_value: object = list(command.tokens)
+            if command.static_projection:
+                canonical_value = [canonical_value, list(command.static_projection)]
+            canonical = canonical_json(canonical_value)
             duplicate = duplicate_counts.get(canonical, 0)
             duplicate_counts[canonical] = duplicate + 1
             invocations.append(
@@ -221,7 +239,10 @@ def discover_commands(
                     annotation,
                     context,
                     _InvocationPosition(
-                        fence_number, ordinal, len(invocations), duplicate
+                        fence_number,
+                        concrete_ordinal,
+                        len(invocations),
+                        duplicate,
                     ),
                 )
             )
@@ -377,82 +398,114 @@ def _parse_fence(body: str) -> tuple[list[_ParsedCommand | None], list[str]]:
             {"bytes": len(body.encode("utf-8")), "limit": MAX_FENCE_BYTES},
         )
     logical = re.sub(r"\\\r?\n", " ", body)
+    longest_line = max(
+        (len(line.encode("utf-8")) for line in logical.splitlines()), default=0
+    )
+    if longest_line > MAX_COMMAND_BYTES:
+        _fail(
+            "provenance.resource.too_large",
+            "static shell line",
+            {"bytes": longest_line, "limit": MAX_COMMAND_BYTES},
+        )
     commands: list[_ParsedCommand | None] = []
     failures: list[str] = []
-    for raw in logical.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("$ "):
-            line = line[2:]
-        try:
-            segments = _split_semicolons(line)
-        except ValueError as exc:
-            commands.append(None)
-            failures.append(str(exc))
-            continue
-        for segment in segments:
-            encoded_bytes = len(segment.encode("utf-8"))
-            if encoded_bytes > MAX_COMMAND_BYTES:
-                _fail(
-                    "provenance.resource.too_large",
-                    "command invocation",
-                    {"bytes": encoded_bytes, "limit": MAX_COMMAND_BYTES},
-                )
-            try:
-                commands.append(_parse_command(segment))
-            except ValueError as exc:
-                commands.append(None)
-                failures.append(str(exc))
-    if len(commands) > MAX_INVOCATIONS_PER_FENCE:
+    try:
+        expanded = expand_static_shell(
+            body,
+            maximum_bindings=MAX_STATIC_BINDINGS_PER_FENCE,
+            maximum_tokens=MAX_STATIC_TOKENS_PER_FENCE,
+            maximum_work=MAX_STATIC_WORK_ITEMS_PER_FENCE,
+        )
+    except StaticShellResourceError as exc:
+        _fail(
+            "provenance.resource.too_large",
+            f"static shell {exc.resource}",
+            {exc.resource: exc.observed, "limit": exc.limit},
+        )
+    except ValueError as exc:
+        return [None], [str(exc)]
+    for item in expanded:
+        parsed, unsupported = _parse_static_item(item)
+        commands.extend(parsed)
+        failures.extend(unsupported)
+    invocation_count = sum(command is not None for command in commands)
+    if invocation_count > MAX_INVOCATIONS_PER_FENCE:
         _fail(
             "provenance.resource.too_large",
             "command fence",
-            {"invocations": len(commands), "limit": MAX_INVOCATIONS_PER_FENCE},
+            {
+                "invocations": invocation_count,
+                "limit": MAX_INVOCATIONS_PER_FENCE,
+            },
         )
     return commands, failures
 
 
-def _split_semicolons(value: str) -> list[str]:
-    lexer = shlex.shlex(value, posix=True, punctuation_chars=";&|<>")
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-    if any(token in {"&&", "||", "&"} for token in tokens):
-        raise ValueError("unsupported shell control flow")
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token == ";":
-            if not segments[-1]:
-                raise ValueError("empty shell invocation")
-            segments.append([])
-        else:
-            segments[-1].append(token)
-    if not segments[-1]:
-        raise ValueError("trailing shell separator")
-    return [shlex.join(segment) for segment in segments]
+def _parse_static_item(
+    item: StaticCommand | StaticFailure | StaticGroup,
+) -> tuple[list[_ParsedCommand | None], list[str]]:
+    if isinstance(item, StaticFailure):
+        return [None], [item.reason]
+    if isinstance(item, StaticGroup):
+        commands: list[_ParsedCommand | None] = []
+        for command in item.commands:
+            parsed, failures = _parse_static_item(command)
+            if failures:
+                return [None], [failures[0]]
+            commands.extend(parsed)
+        return commands, []
+    _require_command_bound(item.text)
+    try:
+        return [_parse_command(item.tokens, item.projection)], []
+    except ValueError as exc:
+        return [None], [str(exc)]
 
 
-def _parse_command(value: str) -> _ParsedCommand:
-    if "$(" in value or "`" in value or "<(" in value or ">(" in value:
-        raise ValueError("unsupported shell substitution")
-    lexer = shlex.shlex(value, posix=True, punctuation_chars="|<>")
-    lexer.whitespace_split = True
-    tokens = tuple(lexer)
-    if not tokens or tokens.count("|") > 1:
+def _require_command_bound(segment: str) -> None:
+    encoded_bytes = len(segment.encode("utf-8"))
+    if encoded_bytes > MAX_COMMAND_BYTES:
+        _fail(
+            "provenance.resource.too_large",
+            "command invocation",
+            {"bytes": encoded_bytes, "limit": MAX_COMMAND_BYTES},
+        )
+
+
+def _parse_command(
+    parsed_tokens: Sequence[StaticToken], static_projection: tuple[str, ...] = ()
+) -> _ParsedCommand:
+    tokens = tuple(token.value for token in parsed_tokens)
+    operators = tuple(
+        index for index, token in enumerate(parsed_tokens) if token.operator
+    )
+    pipeline_indexes = tuple(
+        index for index in operators if tokens[index] == "|"
+    )
+    if not tokens or len(pipeline_indexes) > 1:
         raise ValueError("unsupported pipeline")
-    components = _pipeline_components(tokens)
+    unsupported = {"&&", "||", ";"}
+    if any(tokens[index] in unsupported for index in operators):
+        raise ValueError("unsupported shell control flow")
+    background_indexes = tuple(
+        index for index in operators if tokens[index] == "&"
+    )
+    if background_indexes and background_indexes != (len(tokens) - 1,):
+        raise ValueError("unsupported shell control flow")
+    command_end = len(tokens) - 1 if background_indexes else len(tokens)
+    command_tokens = tuple(parsed_tokens[:command_end])
+    components = _pipeline_components(command_tokens)
     principal = components[0]
     executable_index = next(
         (
             index
             for index, token in enumerate(principal)
-            if not ENVIRONMENT_RE.fullmatch(token)
+            if not ENVIRONMENT_RE.fullmatch(token.value)
         ),
         -1,
     )
     if executable_index < 0:
         raise ValueError("missing executable")
-    executable = Path(principal[executable_index]).name
+    executable = Path(principal[executable_index].value).name
     script_index = (
         executable_index + 1
         if executable == "pyrun" or executable.startswith("python")
@@ -462,7 +515,7 @@ def _parse_command(value: str) -> _ParsedCommand:
     options, positionals = _arguments(ordinary, executable_index, script_index)
     tee_outputs: tuple[str, ...] = ()
     if len(components) == 2:
-        tee_outputs = _terminal_tee(components[1])
+        tee_outputs = _terminal_tee(tuple(token.value for token in components[1]))
     return _ParsedCommand(
         tokens,
         executable_index,
@@ -471,13 +524,14 @@ def _parse_command(value: str) -> _ParsedCommand:
         positionals,
         redirections,
         tee_outputs,
+        static_projection,
     )
 
 
-def _pipeline_components(tokens: Sequence[str]) -> list[list[str]]:
-    components: list[list[str]] = [[]]
+def _pipeline_components(tokens: Sequence[StaticToken]) -> list[list[StaticToken]]:
+    components: list[list[StaticToken]] = [[]]
     for token in tokens:
-        if token == "|":
+        if token == StaticToken("|", True):
             if not components[-1]:
                 raise ValueError("empty pipeline component")
             components.append([])
@@ -489,7 +543,7 @@ def _pipeline_components(tokens: Sequence[str]) -> list[list[str]]:
 
 
 def _redirections(
-    tokens: Sequence[str],
+    tokens: Sequence[StaticToken],
 ) -> tuple[tuple[tuple[str, str], ...], list[str]]:
     redirections: list[tuple[str, str]] = []
     ordinary: list[str] = []
@@ -497,22 +551,29 @@ def _redirections(
     while index < len(tokens):
         token = tokens[index]
         if (
-            token.isdecimal()
+            not token.operator
+            and token.value.isdecimal()
             and index + 2 < len(tokens)
-            and tokens[index + 1] in {">", ">>"}
+            and tokens[index + 1].operator
+            and tokens[index + 1].value in {">", ">>"}
         ):
-            redirections.append(("output", tokens[index + 2]))
+            redirections.append(("output", tokens[index + 2].value))
             index += 3
             continue
-        if token in {"<", ">", ">>"}:
+        if token.operator and token.value in {"<", ">", ">>"}:
             if index + 1 >= len(tokens):
                 raise ValueError("redirection lacks target")
             redirections.append(
-                ("input" if token == "<" else "output", tokens[index + 1])
+                (
+                    "input" if token.value == "<" else "output",
+                    tokens[index + 1].value,
+                )
             )
             index += 2
             continue
-        ordinary.append(token)
+        if token.operator:
+            raise ValueError("unsupported shell operator")
+        ordinary.append(token.value)
         index += 1
     return tuple(redirections), ordinary
 
@@ -628,14 +689,15 @@ def _build_invocation(
             context.document,
             {"inputs": len(inputs), "outputs": len(outputs)},
         )
-    identity_payload = [
+    identity_payload: list[object] = [
         context.log_id,
         context.entry,
         context.document,
         list(command.tokens),
-        script or script_token,
-        position.duplicate,
     ]
+    if command.static_projection:
+        identity_payload.append(list(command.static_projection))
+    identity_payload.extend((script or script_token, position.duplicate))
     identity = hashlib.sha256(canonical_json(identity_payload).encode()).hexdigest()
     return Invocation(
         identity,
@@ -653,7 +715,22 @@ def _build_invocation(
         outputs,
         collections,
         candidates,
+        _material_owner(context),
     )
+
+
+def _material_owner(context: CommandContext) -> str:
+    try:
+        return context.entry_root.relative_to(context.log_root).as_posix()
+    except ValueError:
+        _fail(
+            "material.unresolved",
+            context.document,
+            {
+                "entry_root": context.entry_root.as_posix(),
+                "log_root": context.log_root.as_posix(),
+            },
+        )
 
 
 def _resolve_script(

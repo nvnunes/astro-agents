@@ -85,6 +85,174 @@ def _evaluate(summary: Path, *, prior_cache: object = None) -> object:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_split_entry_loads_shared_root_surfaces_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            summary = project_root / "docs" / "study.md"
+            log_root = project_root / "docs" / "study"
+            entry_root = log_root / "entries" / "2026-08-29-e001-study"
+            first = entry_root / "e001a.md"
+            second = entry_root / "e001b.md"
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [First](study/entries/2026-08-29-e001-study/e001a.md)\n"
+                "- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
+            )
+            write(first, "# First\n")
+            write(second, "# Second\n")
+            write(entry_root / "evidence.json", "{}\n")
+            write(entry_root / "data.csv", "name,type,location\n")
+            state = ENGINE._ScanState(summary, log_root, project_root)
+            evidence = object()
+            data_index = {"catalog": "https://example.test/catalog.csv"}
+
+            with mock.patch.object(
+                ENGINE, "load_evidence_file", return_value=evidence
+            ) as evidence_loader, mock.patch.object(
+                ENGINE, "load_data_index", return_value=data_index
+            ) as data_loader:
+                entries = ENGINE._entries(summary.read_text(), state)
+
+            evidence_loader.assert_called_once()
+            data_loader.assert_called_once()
+            self.assertIs(entries[0].evidence_file, entries[1].evidence_file)
+            self.assertIs(entries[0].data_index, entries[1].data_index)
+
+    def test_split_entry_commands_are_discovered_once_per_listed_document(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            log_root = project_root / "docs" / "study"
+            entry_root = log_root / "entries" / "2026-08-29-e001-study"
+            first = entry_root / "e001a.md"
+            second = entry_root / "e001b.md"
+            command = (
+                "## Trial\n\n"
+                "`Steps:`\n\n"
+                "```bash\ntool --output-data data/result.csv\n```\n\n"
+                "`Results:`\n\nDone.\n"
+            )
+            write(first, command)
+            write(second, command)
+            entries = [
+                ENGINE._Entry("e001a", first, entry_root, None, {}),
+                ENGINE._Entry("e001b", second, entry_root, None, {}),
+            ]
+            state = ENGINE._ScanState(
+                project_root / "docs" / "study.md", log_root, project_root
+            )
+            state.entries = entries
+
+            invocations = ENGINE._discover_invocations(state)
+
+            self.assertEqual(len(invocations), 2)
+            self.assertEqual([item.entry for item in invocations], ["e001a", "e001b"])
+            self.assertEqual(
+                [item.document for item in invocations],
+                [
+                    "entries/2026-08-29-e001-study/e001a.md",
+                    "entries/2026-08-29-e001-study/e001b.md",
+                ],
+            )
+            self.assertEqual(
+                {item.material_owner for item in invocations},
+                {"entries/2026-08-29-e001-study"},
+            )
+
+    def test_split_entry_shares_data_index_usage_without_false_hygiene(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs" / "study.md"
+            log_root = root / "docs" / "study"
+            entry_root = log_root / "entries" / "2026-08-29-e001-study"
+            first = entry_root / "e001a.md"
+            second = entry_root / "e001b.md"
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [First](study/entries/2026-08-29-e001-study/e001a.md)\n"
+                "- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
+            )
+            write(
+                entry_root / "data.csv",
+                "name,type,location\ncatalog,csv,https://example.test/catalog.csv\n",
+            )
+            write(
+                first,
+                "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
+                "`Results:`\n\nDone.\n",
+            )
+            write(
+                second,
+                "## Trial\n\n`Steps:`\n\n"
+                "```bash\ntool --catalog '<catalog>'\n```\n\n"
+                "`Results:`\n\nDone.\n",
+            )
+
+            evaluation = _evaluate(summary)
+
+            failures = [
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            ]
+            self.assertNotIn("hygiene.data_index.unused", failures)
+            self.assertEqual(evaluation.metrics["invocations"], 2)
+
+    def test_unlisted_split_document_evidence_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs" / "study.md"
+            log_root = root / "docs" / "study"
+            entry_root = log_root / "entries" / "2026-08-29-e001-study"
+            listed = entry_root / "e001a.md"
+            unlisted = entry_root / "e001b.md"
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Listed](study/entries/2026-08-29-e001-study/e001a.md)\n",
+            )
+            write(
+                listed,
+                "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
+                "`Results:`\n\nDone.\n",
+            )
+            write(
+                unlisted,
+                "## Trial\n\n`Steps:`\n\nNo command.\n\n`Results:`\n\n"
+                "Value: `1`<!-- eid:unlisted-value -->.\n",
+            )
+            write(entry_root / "data" / "result.csv", "value\n1\n")
+            write(
+                entry_root / "evidence.json",
+                """{
+  "schema": "research-log-evidence/v2",
+  "records": [
+    {
+      "id": "unlisted-value",
+      "document": "entries/2026-08-29-e001-study/e001b.md",
+      "kind": "statistic",
+      "sources": [
+        {"source": "data/result.csv", "locator": {"select": [["value"]]}}
+      ],
+      "transformation": null
+    }
+  ]
+}
+""",
+            )
+
+            evaluation = _evaluate(summary)
+
+            failures = [
+                check.failure
+                for check in evaluation.result.checks
+                if check.failure is not None
+                and check.failure.code == "association.presentation_missing"
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0].observed["ids"], ["unlisted-value"])
+
     def test_complete_log_is_mechanically_clear(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

@@ -8,6 +8,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, Mapping, NoReturn, Sequence
 
 from .commands import (
@@ -72,7 +73,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-initial"
+RULES_VERSION = "research-log-evidence/v2-static-shell-4"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
@@ -93,7 +94,12 @@ class _Entry:
     id: str
     document: Path
     root: Path
-    documents: tuple[Path, ...]
+    evidence_file: EvidenceFile | None
+    data_index: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _EntrySurface:
     evidence_file: EvidenceFile | None
     data_index: Mapping[str, str]
 
@@ -177,9 +183,8 @@ def _scan(
         phase = time.perf_counter()
         state.entries = _entries(summary_text, state)
         record_count = sum(
-            len(entry.evidence_file.records)
-            for entry in state.entries
-            if entry.evidence_file is not None
+            len(evidence_file.records)
+            for evidence_file in _unique_evidence_files(state.entries)
         )
         if record_count > MAX_RECORDS_PER_LOG:
             _fail(
@@ -253,6 +258,7 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
     if not listed:
         _fail("association.declaration_missing", str(state.summary), {"entries": 0})
     entries: list[_Entry] = []
+    surfaces: dict[Path, _EntrySurface] = {}
     for document in listed:
         if not document.is_file() or ENTRY_ID_RE.fullmatch(document.stem) is None:
             _fail(
@@ -261,23 +267,28 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
                 {"entry": document.stem, "exists": document.is_file()},
             )
         root = document.parent.resolve()
-        documents = tuple(sorted(root.glob("*.md")))
-        evidence_path = root / "evidence.json"
-        evidence_file = (
-            load_evidence_file(evidence_path, log_root=state.log_root, entry_root=root)
-            if evidence_path.is_file()
-            else None
-        )
-        data_path = root / "data.csv"
-        data_index = load_data_index(data_path) if data_path.is_file() else {}
+        if root not in surfaces:
+            evidence_path = root / "evidence.json"
+            evidence_file = (
+                load_evidence_file(
+                    evidence_path, log_root=state.log_root, entry_root=root
+                )
+                if evidence_path.is_file()
+                else None
+            )
+            data_path = root / "data.csv"
+            data_index = MappingProxyType(
+                load_data_index(data_path) if data_path.is_file() else {}
+            )
+            surfaces[root] = _EntrySurface(evidence_file, data_index)
+        surface = surfaces[root]
         entries.append(
             _Entry(
                 document.stem,
                 document.resolve(),
                 root,
-                documents,
-                evidence_file,
-                data_index,
+                surface.evidence_file,
+                surface.data_index,
             )
         )
     return entries
@@ -295,25 +306,26 @@ def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
 def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
     documents: list[tuple[Invocation, ...]] = []
     for entry in state.entries:
-        for document in entry.documents:
-            text = _read_text(document, state)
-            relative = document.relative_to(state.log_root).as_posix()
-            context = CommandContext(
-                log_id=state.log_root.as_posix(),
-                entry=entry.id,
-                document=relative,
-                entry_root=entry.root,
-                log_root=state.log_root,
-                project_root=state.project_root,
-                data_index=entry.data_index,
-                script_identity_cache=state.script_cache,
-                script_identity_seeds=state.script_identity_seeds,
-            )
-            documents.append(discover_commands(text, context).invocations)
+        document = entry.document
+        text = _read_text(document, state)
+        relative = document.relative_to(state.log_root).as_posix()
+        context = CommandContext(
+            log_id=state.log_root.as_posix(),
+            entry=entry.id,
+            document=relative,
+            entry_root=entry.root,
+            log_root=state.log_root,
+            project_root=state.project_root,
+            data_index=entry.data_index,
+            script_identity_cache=state.script_cache,
+            script_identity_seeds=state.script_identity_seeds,
+        )
+        documents.append(discover_commands(text, context).invocations)
     return order_invocations(documents)
 
 
 def _evaluate_entries(state: _ScanState) -> None:
+    _record_unowned_evidence(state)
     for entry in state.entries:
         try:
             presentations, direct = _entry_presentations(entry, state)
@@ -327,7 +339,8 @@ def _evaluate_entries(state: _ScanState) -> None:
                         "limit": MAX_PRESENTATIONS_PER_LOG,
                     },
                 )
-            if entry.evidence_file is None:
+            evidence_file = _document_evidence_file(entry, state)
+            if evidence_file is None:
                 if presentations:
                     _fail(
                         "association.declaration_missing",
@@ -336,14 +349,14 @@ def _evaluate_entries(state: _ScanState) -> None:
                     )
                 associated: Mapping[str, PresentedItem] = {}
             else:
-                associated = associate_presentations(entry.evidence_file, presentations)
+                associated = associate_presentations(evidence_file, presentations)
             records = (
                 [
                     record
-                    for record in entry.evidence_file.records
+                    for record in evidence_file.records
                     if isinstance(record, PresentationRecord)
                 ]
-                if entry.evidence_file is not None
+                if evidence_file is not None
                 else []
             )
             for record in records:
@@ -364,14 +377,75 @@ def _entry_presentations(
 ) -> tuple[tuple[PresentedItem, ...], tuple[DirectArtifactPresentation, ...]]:
     presented: list[PresentedItem] = []
     direct: list[DirectArtifactPresentation] = []
-    for document in entry.documents:
-        text = _read_text(document, state)
-        relative = document.relative_to(state.log_root).as_posix()
-        indexed = index_entry_presentations(text, document=relative)
-        _require_complete_markers(document, indexed, text, state)
-        presented.extend(indexed)
-        direct.extend(index_direct_artifacts(text, document=relative))
+    document = entry.document
+    text = _read_text(document, state)
+    relative = document.relative_to(state.log_root).as_posix()
+    indexed = index_entry_presentations(text, document=relative)
+    _require_complete_markers(document, indexed, text, state)
+    presented.extend(indexed)
+    direct.extend(index_direct_artifacts(text, document=relative))
     return tuple(presented), tuple(direct)
+
+
+def _document_evidence_file(
+    entry: _Entry, state: _ScanState
+) -> EvidenceFile | None:
+    evidence_file = entry.evidence_file
+    if evidence_file is None:
+        return None
+    document = entry.document.relative_to(state.log_root).as_posix()
+    records = tuple(
+        record
+        for record in evidence_file.records
+        if not isinstance(record, PresentationRecord) or record.document == document
+    )
+    return EvidenceFile(evidence_file.path, evidence_file.entry_root, records)
+
+
+def _unique_evidence_files(entries: Sequence[_Entry]) -> tuple[EvidenceFile, ...]:
+    files: dict[Path, EvidenceFile] = {}
+    for entry in entries:
+        if entry.evidence_file is not None:
+            files.setdefault(entry.evidence_file.path, entry.evidence_file)
+    return tuple(files.values())
+
+
+def _record_unowned_evidence(state: _ScanState) -> None:
+    listed_by_file: dict[Path, set[str]] = {}
+    for entry in state.entries:
+        if entry.evidence_file is None:
+            continue
+        listed_by_file.setdefault(entry.evidence_file.path, set()).add(
+            entry.document.relative_to(state.log_root).as_posix()
+        )
+    for evidence_file in _unique_evidence_files(state.entries):
+        listed = listed_by_file[evidence_file.path]
+        missing = [
+            record
+            for record in evidence_file.records
+            if isinstance(record, PresentationRecord) and record.document not in listed
+        ]
+        if not missing:
+            continue
+        state.checks.append(
+            _failure_check(
+                f"evidence:{evidence_file.path}:document-ownership",
+                CheckScope.EVIDENCE,
+                _FailureSpec(
+                    "association.presentation_missing",
+                    str(evidence_file.path),
+                    {
+                        "documents": sorted({record.document for record in missing}),
+                        "ids": sorted(record.id for record in missing),
+                    },
+                    "Association Completeness And Conflict Rules",
+                ),
+            )
+        )
+
+
+def _material_owner(entry: _Entry, state: _ScanState) -> str:
+    return entry.root.relative_to(state.log_root).as_posix()
 
 
 def _require_complete_markers(
@@ -651,15 +725,8 @@ def _compose_graph(state: _ScanState) -> None:
         evidence=connections,
         direct_artifacts=tuple(state.direct),
         invocations=state.invocations,
-        evidence_files=tuple(
-            entry.evidence_file
-            for entry in state.entries
-            if entry.evidence_file is not None
-        ),
-        data_indexes=tuple(
-            DataIndexSurface(entry.id, tuple(sorted(entry.data_index)))
-            for entry in state.entries
-        ),
+        evidence_files=_unique_evidence_files(state.entries),
+        data_indexes=_data_index_surfaces(state),
     )
     try:
         state.graph = compose_material_graph(request)
@@ -707,6 +774,18 @@ def _compose_graph(state: _ScanState) -> None:
                 ),
             )
         )
+
+
+def _data_index_surfaces(state: _ScanState) -> tuple[DataIndexSurface, ...]:
+    names_by_owner: dict[str, set[str]] = {}
+    for entry in state.entries:
+        names_by_owner.setdefault(_material_owner(entry, state), set()).update(
+            entry.data_index
+        )
+    return tuple(
+        DataIndexSurface(owner, tuple(sorted(names)))
+        for owner, names in sorted(names_by_owner.items())
+    )
 
 
 def _resolve_source(

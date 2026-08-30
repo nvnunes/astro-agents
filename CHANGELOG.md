@@ -17,3 +17,10 @@ history for detailed change-by-change context.
   `validation.upgrade_required` result. The legacy semantic continuation,
   adjudication, integrated reproduction, and sharded validation-state surfaces
   have been removed.
+- Expanded research-log command discovery over a bounded, non-executing static
+  shell subset: finite literal `for` loops, locally defined functions invoked
+  with literal arguments, loop-local literal `case` assignments, supported
+  local substitutions, and scheduling-only `&` and `wait`. Concrete expanded
+  invocations receive normal identity, annotation, relationship, and
+  resource-bound accounting; unsupported, dynamic, unbound, nested, or
+  over-bound constructs remain fail-closed.

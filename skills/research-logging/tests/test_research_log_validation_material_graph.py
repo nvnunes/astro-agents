@@ -93,7 +93,9 @@ class MaterialGraphV2Tests(unittest.TestCase):
                     invocations=commands,
                     evidence_files=(evidence_file,),
                     data_indexes=(
-                        GRAPH.DataIndexSurface("e001", ("catalog", "unused")),
+                        GRAPH.DataIndexSurface(
+                            "entries/entry", ("catalog", "unused")
+                        ),
                     ),
                 )
             )
@@ -110,7 +112,9 @@ class MaterialGraphV2Tests(unittest.TestCase):
                 result.hygiene.orphaned,
                 ((entry_root / "data" / "orphan.txt").resolve().as_posix(),),
             )
-            self.assertEqual(result.hygiene.unused_data_names, ("e001:unused",))
+            self.assertEqual(
+                result.hygiene.unused_data_names, ("entries/entry:unused",)
+            )
             self.assertTrue(result.dependency_projection)
 
     def test_symlinked_data_and_images_are_first_class_entry_material(self) -> None:

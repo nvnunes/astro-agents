@@ -87,9 +87,9 @@ class DirectArtifactConnection:
 
 @dataclass(frozen=True)
 class DataIndexSurface:
-    """One entry-local set of declared data-index names."""
+    """One material-owner-local set of declared data-index names."""
 
-    entry: str
+    owner: str
     names: tuple[str, ...]
 
 
@@ -253,7 +253,8 @@ def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> N
                 name = _node(
                     state.nodes,
                     "data-name",
-                    f"{invocation.entry}:{relationship.named_input}",
+                    f"{invocation.material_owner}:"
+                    f"{relationship.named_input}",
                 )
                 state.edges.add(GraphEdge("named-input", name, material))
         for relationship in invocation.outputs:
@@ -489,13 +490,13 @@ def _unused_data_names(
     surfaces: Sequence[DataIndexSurface], invocations: Sequence[Invocation]
 ) -> set[str]:
     used = {
-        f"{invocation.entry}:{relationship.named_input}"
+        f"{invocation.material_owner}:{relationship.named_input}"
         for invocation in invocations
         for relationship in invocation.inputs
         if relationship.named_input is not None
     }
     declared = {
-        f"{surface.entry}:{name}" for surface in surfaces for name in surface.names
+        f"{surface.owner}:{name}" for surface in surfaces for name in surface.names
     }
     return declared - used
 

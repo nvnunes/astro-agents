@@ -253,6 +253,555 @@ tool --input-data data/source.csv | tee data/capture.log
             self.assertEqual(second.outputs[0].proof, "shell")
             self.assertTrue(second.outputs[0].path.endswith("data/capture.log"))
 
+    def test_literal_function_expands_positional_arguments_and_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+fit_variant () {
+  architecture=$1
+  shift
+  ./pyrun scripts/train.py \\
+    --output-dir "data/models/${architecture}" \\
+    --hidden-units "$@"
+}
+fit_variant compact 32 16 &
+fit_variant wide 64 32 &
+wait
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(len(result.invocations), 2)
+            compact, wide = result.invocations
+            self.assertNotIn("&", compact.tokens)
+            self.assertIn("data/models/compact", compact.tokens)
+            self.assertEqual(compact.tokens[-2:], ("32", "16"))
+            self.assertIn("data/models/wide", wide.tokens)
+
+    def test_background_function_call_changes_identity_not_body_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+run_one () {
+  tool --label "$1"
+}
+run_one alpha
+run_one alpha &
+wait
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            foreground, background = result.invocations
+            self.assertEqual(foreground.tokens, background.tokens)
+            self.assertNotEqual(foreground.identity, background.identity)
+            self.assertNotIn("&", background.tokens)
+
+    def test_literal_for_loop_expands_scalar_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for fraction in 025 050 075; do
+  ./pyrun scripts/train.py \\
+    --input-data "data/mean-${fraction}-membership.csv" \\
+    --output-dir "data/models/mean-${fraction}"
+done
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(len(result.invocations), 3)
+            self.assertEqual(
+                [item.inputs[0].path.rsplit("/", 1)[-1] for item in result.invocations],
+                [
+                    "mean-025-membership.csv",
+                    "mean-050-membership.csv",
+                    "mean-075-membership.csv",
+                ],
+            )
+            self.assertTrue(
+                all(
+                    "${fraction}" not in token
+                    for item in result.invocations
+                    for token in item.tokens
+                )
+            )
+
+    def test_literal_case_expands_architecture_specific_array(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for architecture in compact deep; do
+  case "$architecture" in
+    compact) hidden_units=(64 32) ;;
+    deep) hidden_units=(128 64 32) ;;
+  esac
+  ./pyrun scripts/train.py \\
+    --output-data "data/${architecture}.csv" \\
+    --hidden-units "${hidden_units[@]}"
+done
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(len(result.invocations), 2)
+            self.assertEqual(result.invocations[0].tokens[-2:], ("64", "32"))
+            self.assertEqual(result.invocations[1].tokens[-3:], ("128", "64", "32"))
+            self.assertTrue(result.invocations[0].outputs[0].path.endswith("compact.csv"))
+            self.assertTrue(result.invocations[1].outputs[0].path.endswith("deep.csv"))
+
+    def test_static_projection_changes_identity_without_changing_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            first = COMMAND.discover_commands(
+                "```bash\nfor case in alpha; do\ntool --label fixed\ndone\n```\n",
+                context,
+            ).invocations[0]
+            second = COMMAND.discover_commands(
+                "```bash\nfor case in alpha beta; do\ntool --label fixed\ndone\n```\n",
+                context,
+            ).invocations[0]
+
+            self.assertEqual(first.tokens, second.tokens)
+            self.assertNotEqual(first.identity, second.identity)
+
+    def test_static_projection_canonicalizes_quotes_and_spacing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            first = COMMAND.discover_commands(
+                "```bash\nfor x in alpha; do\ntool --label \"$x\"\ndone\n```\n",
+                context,
+            ).invocations[0]
+            second = COMMAND.discover_commands(
+                "```bash\nfor   x   in alpha ; do\ntool   --label   ${x}\ndone\n```\n",
+                context,
+            ).invocations[0]
+
+            self.assertEqual(first.tokens, second.tokens)
+            self.assertEqual(first.identity, second.identity)
+
+            first_function = COMMAND.discover_commands(
+                "```bash\nrun_one () {\ntool --label \"$1\"\n}\n"
+                "run_one alpha\n```\n",
+                context,
+            ).invocations[0]
+            second_function = COMMAND.discover_commands(
+                "```bash\nrun_one()   {\ntool   --label   $1\n}\n"
+                "run_one   alpha\n```\n",
+                context,
+            ).invocations[0]
+
+            self.assertEqual(first_function.tokens, second_function.tokens)
+            self.assertEqual(first_function.identity, second_function.identity)
+
+    def test_static_projection_retains_result_affecting_source_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            literal = COMMAND.discover_commands(
+                "```bash\nfor x in fixed; do\ntool --label fixed\ndone\n```\n",
+                context,
+            ).invocations[0]
+            bound = COMMAND.discover_commands(
+                "```bash\nfor x in fixed; do\ntool --label \"$x\"\ndone\n```\n",
+                context,
+            ).invocations[0]
+
+            self.assertEqual(literal.tokens, bound.tokens)
+            self.assertNotEqual(literal.identity, bound.identity)
+
+    def test_standalone_wait_is_not_an_invocation_inside_supported_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+run_one () {
+  tool --label "$1"
+  wait
+}
+run_one function &
+for value in loop; do
+  tool --label "$value"
+  wait
+done
+wait
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(len(result.invocations), 2)
+            self.assertEqual(
+                [item.tokens[-1] for item in result.invocations],
+                ["function", "loop"],
+            )
+            self.assertEqual([item.ordinal for item in result.invocations], [1, 2])
+
+    def test_unsupported_composite_commands_fail_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            cases = {
+                "function-operator": """run_one () {
+  tool --output-data data/leaked.csv
+  tool && other
+}
+run_one alpha""",
+                "loop-operator": """for value in alpha; do
+  tool --output-data data/leaked.csv
+  tool && other
+done""",
+                "loop-glob": """for value in alpha; do
+  tool --output-data data/leaked.csv
+  tool --input-data data/*.csv
+done""",
+            }
+            for name, body in cases.items():
+                with self.subTest(name=name):
+                    result = COMMAND.discover_commands(
+                        f"```bash\n{body}\n```\n", context
+                    )
+
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(len(result.unsupported), 1)
+
+    def test_escaped_characters_remain_literal_inside_static_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = r"""```bash
+for value in result; do
+  tool --label \${value} --operator \& --pattern \*.csv
+done
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(
+                result.invocations[0].tokens[-6:],
+                ("--label", "${value}", "--operator", "&", "--pattern", "*.csv"),
+            )
+
+    def test_escaped_output_variable_cannot_create_false_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = r"""```bash
+for value in result; do
+  tool --output-data data/\${value}.csv
+done
+```
+"""
+
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "material.unresolved"
+            ):
+                COMMAND.discover_commands(text, context)
+
+    def test_zero_argument_static_function_is_outside_the_closed_grammar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+prepare () {
+  tool --output-data data/result.csv
+}
+prepare
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 1)
+            self.assertEqual(
+                result.unsupported[0]["reason"],
+                "static shell function requires literal arguments",
+            )
+
+    def test_dynamic_static_shell_forms_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            cases = {
+                "unbound": 'tool --output-data "$HOME/result.csv"',
+                "command-substitution": 'tool --value "$(other)"',
+                "process-substitution": "tool --input-data <(other)",
+                "arithmetic": 'tool --value "$((1 + 1))"',
+                "glob": "tool --input-data data/*.csv",
+                "dynamic-loop": "for value in $VALUES; do\ntool $value\ndone",
+                "nested-loop": (
+                    "for outer in one; do\n"
+                    "for inner in two; do\n"
+                    "tool --value $inner\n"
+                    "done\n"
+                    "done"
+                ),
+                "dynamic-case": (
+                    "for value in one; do\n"
+                    "case \"$other\" in\n"
+                    "one) selected=literal ;;\n"
+                    "esac\n"
+                    "tool --value $selected\n"
+                    "done"
+                ),
+            }
+            for name, body in cases.items():
+                with self.subTest(name=name):
+                    result = COMMAND.discover_commands(
+                        f"```bash\n{body}\n```\n", context
+                    )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(len(result.unsupported), 1)
+
+    def test_unsupported_control_block_does_not_leak_body_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+if test -f data/source.csv; then
+  tool --output-data data/result.csv
+fi
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 1)
+
+    def test_single_quoted_expansions_and_operators_remain_literal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+tool --label '$(other)' --operator '&' --pattern '*.csv'
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(len(result.invocations), 1)
+            self.assertEqual(
+                result.invocations[0].tokens[-6:],
+                ("--label", "$(other)", "--operator", "&", "--pattern", "*.csv"),
+            )
+
+    def test_single_quoted_loop_variable_is_not_substituted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for value in alpha; do
+  tool --label '${value}'
+done
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.unsupported)
+            self.assertEqual(result.invocations[0].tokens[-1], "${value}")
+
+    def test_single_quoted_loop_output_cannot_create_false_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for value in alpha; do
+  tool --output-data 'data/${value}.csv'
+done
+```
+"""
+
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "material.unresolved"
+            ):
+                COMMAND.discover_commands(text, context)
+
+    def test_invalid_function_call_is_consumed_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+fit () {
+  tool --output-data "data/${1}.csv"
+}
+fit alpha; other --output-data data/leaked.csv
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 1)
+
+    def test_invalid_and_duplicate_functions_poison_later_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            cases = (
+                """fit () {
+  if true; then
+    tool --value "$1"
+  fi
+}
+fit alpha""",
+                """fit () {
+  tool --value "$1"
+}
+fit () {
+  tool --value "$1"
+}
+fit alpha""",
+            )
+            for body in cases:
+                with self.subTest(body=body):
+                    result = COMMAND.discover_commands(
+                        f"```bash\n{body}\n```\n", context
+                    )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(len(result.unsupported), 2)
+
+    def test_malformed_function_definition_poison_later_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+fit () { unexpected
+  tool --output-data data/leaked.csv
+}
+fit alpha
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 2)
+
+    def test_nested_unsupported_control_does_not_leak_after_inner_close(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+if true; then
+  if true; then
+    ignored
+  fi
+  tool --output-data data/leaked.csv
+fi
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 1)
+
+    def test_tab_separated_unsupported_control_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            result = COMMAND.discover_commands(
+                "```bash\nif\ttrue; then\n"
+                "tool --output-data data/leaked.csv\nfi\n```\n",
+                context,
+            )
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.unsupported), 1)
+
+    def test_annotation_ordinals_count_only_concrete_invocations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+if true; then
+  ignored
+fi
+tool data/result.csv
+```
+<!-- command-1 @1 = output -->
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.unsupported), 1)
+            self.assertEqual(len(result.invocations), 1)
+            self.assertTrue(result.invocations[0].outputs[0].path.endswith("result.csv"))
+            self.assertEqual(result.invocations[0].ordinal, 1)
+
+    def test_static_expansion_obeys_invocation_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for value in one two three; do
+  tool --value "$value"
+done
+```
+"""
+
+            with mock.patch.object(COMMAND, "MAX_INVOCATIONS_PER_FENCE", 2):
+                with self.assertRaisesRegex(
+                    COMMAND.CommandV2Error, "provenance.resource.too_large"
+                ):
+                    COMMAND.discover_commands(text, context)
+
+    def test_static_token_and_work_bounds_report_the_exact_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            with mock.patch.object(COMMAND, "MAX_STATIC_TOKENS_PER_FENCE", 2):
+                with self.assertRaises(COMMAND.CommandV2Error) as tokens:
+                    COMMAND.discover_commands(
+                        "```bash\ntool one two\n```\n", context
+                    )
+            self.assertEqual(tokens.exception.observed, {"tokens": 3, "limit": 2})
+
+            repeated = """```bash
+for value in one two; do
+  # scanned for every binding
+  tool --label "$value"
+done
+```
+"""
+            with mock.patch.object(COMMAND, "MAX_STATIC_WORK_ITEMS_PER_FENCE", 6):
+                with self.assertRaises(COMMAND.CommandV2Error) as work:
+                    COMMAND.discover_commands(repeated, context)
+            self.assertEqual(
+                work.exception.observed, {"work_items": 7, "limit": 6}
+            )
+
+    def test_unsupported_surfaces_do_not_consume_invocation_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            bodies = (
+                'tool "$HOME/one"\ntool "$HOME/two"\ntool "$HOME/three"',
+                "tool && one\ntool && two\ntool && three",
+            )
+            for body in bodies:
+                with self.subTest(body=body), mock.patch.object(
+                    COMMAND, "MAX_INVOCATIONS_PER_FENCE", 1
+                ):
+                    result = COMMAND.discover_commands(
+                        f"```bash\n{body}\n```\n", context
+                    )
+
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(len(result.unsupported), 3)
+
+    def test_static_expansion_bounds_empty_loop_iterations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+for value in one two three; do
+  # no invocation
+done
+```
+"""
+
+            with mock.patch.object(COMMAND, "MAX_STATIC_BINDINGS_PER_FENCE", 2):
+                with self.assertRaisesRegex(
+                    COMMAND.CommandV2Error, "provenance.resource.too_large"
+                ) as caught:
+                    COMMAND.discover_commands(text, context)
+
+            self.assertEqual(caught.exception.observed, {"bindings": 3, "limit": 2})
+
     def test_physical_continuation_and_file_descriptor_redirection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))

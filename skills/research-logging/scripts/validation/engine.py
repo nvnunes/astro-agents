@@ -74,7 +74,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-orphan-9"
+RULES_VERSION = "research-log-evidence/v2-orphan-10"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 
@@ -369,7 +369,19 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 script_identity_cache=state.script_cache,
                 script_identity_seeds=state.script_identity_seeds,
             )
-            documents.append(discover_commands(text, context).invocations)
+            discovery = discover_commands(text, context)
+            documents.append(discovery.invocations)
+            for failure in discovery.failures:
+                state.checks.append(
+                    _error_check(
+                        (
+                            f"entry:{entry.id}:command:"
+                            f"{failure.fence}:{failure.ordinal}"
+                        ),
+                        _error_scope(failure.error, CheckScope.PROVENANCE),
+                        failure.error,
+                    )
+                )
         except Exception as error:
             if not _contract_error(error):
                 raise
@@ -664,8 +676,11 @@ def _record_provenance(
     state: _ScanState,
 ) -> MechanicalCheck:
     identity = f"provenance:{entry.id}:{record.id}"
+    artifact_dependency = {
+        "artifacts": sorted(material.path.as_posix() for material in materials)
+    }
     try:
-        dependencies: list[Mapping[str, object]] = []
+        dependencies: list[Mapping[str, object]] = [artifact_dependency]
         for material in materials:
             if material.external:
                 dependencies.append(
@@ -684,7 +699,12 @@ def _record_provenance(
     except Exception as error:
         if not _contract_error(error):
             raise
-        return _error_check(identity, CheckScope.PROVENANCE, error)
+        return _error_check(
+            identity,
+            CheckScope.PROVENANCE,
+            error,
+            dependencies=(artifact_dependency,),
+        )
 
 
 def _evaluate_direct_artifacts(
@@ -705,6 +725,7 @@ def _evaluate_direct_artifacts(
                     f"provenance:{identity}",
                     CheckScope.PROVENANCE,
                     dependencies=(
+                        {"artifacts": [target.resolve().as_posix()]},
                         {"dependency_projection": result.dependency_projection},
                     ),
                 )
@@ -713,7 +734,14 @@ def _evaluate_direct_artifacts(
             if not _contract_error(error):
                 raise
             state.checks.append(
-                _error_check(f"provenance:{identity}", CheckScope.PROVENANCE, error)
+                _error_check(
+                    f"provenance:{identity}",
+                    CheckScope.PROVENANCE,
+                    error,
+                    dependencies=(
+                        {"artifacts": [target.resolve().as_posix()]},
+                    ),
+                )
             )
 
 
@@ -1071,7 +1099,13 @@ def _dependent_check(
     )
 
 
-def _error_check(identity: str, scope: CheckScope, error: Exception) -> MechanicalCheck:
+def _error_check(
+    identity: str,
+    scope: CheckScope,
+    error: Exception,
+    *,
+    dependencies: Sequence[Mapping[str, object]] = (),
+) -> MechanicalCheck:
     code = str(getattr(error, "code"))
     subject = str(getattr(error, "subject"))
     observed = getattr(error, "observed")
@@ -1092,6 +1126,7 @@ def _error_check(identity: str, scope: CheckScope, error: Exception) -> Mechanic
             rule,
             status=status,
         ),
+        dependencies=dependencies,
     )
 
 
@@ -1099,12 +1134,15 @@ def _failure_check(
     identity: str,
     scope: CheckScope,
     failure: _FailureSpec,
+    *,
+    dependencies: Sequence[Mapping[str, object]] = (),
 ) -> MechanicalCheck:
     return MechanicalCheck(
         identity,
         scope,
         failure.status,
         failure.subject,
+        tuple(dependencies),
         failure=FailurePayload(
             failure.code,
             failure.subject,

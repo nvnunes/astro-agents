@@ -47,8 +47,68 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn("| evidence |  | 0 | 0 | 0 | 0 | 0 |", report)
-        self.assertNotIn("| evidence | `not_applicable`", report)
+        self.assertIn("| evidence | checks |  | 0 | 0 | 0 | 0 | 0 |", report)
+        self.assertNotIn("| evidence | checks | `not_applicable`", report)
+
+    def test_report_counts_unique_provenance_artifacts_not_evidence_checks(
+        self,
+    ) -> None:
+        artifact = "/project/data/result.csv"
+        second = "/project/data/second.csv"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:first",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.PASS,
+                    "first",
+                    ({"artifacts": [artifact]},),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:second",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "second",
+                    ({"artifacts": [artifact]},),
+                    RESULTS.FailurePayload(
+                        "producer.missing",
+                        "second",
+                        {"material": artifact},
+                        "Provenance Starting Points And Traversal",
+                    ),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:third",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.PASS,
+                    "third",
+                    ({"artifacts": [second]},),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:summary:1",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "summary:1",
+                    ({"target": "provenance:e001:second"},),
+                    RESULTS.FailurePayload(
+                        "summary.reference.target_invalid",
+                        "summary:1",
+                        {"target_status": "fail"},
+                        "Summary Association",
+                    ),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `fail` | 1 | 1 | 0 | 0 | 2 |",
+            report,
+        )
 
     def test_completed_result_publishes_public_bundle_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

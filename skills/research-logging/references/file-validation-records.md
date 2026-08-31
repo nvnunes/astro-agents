@@ -29,9 +29,12 @@ invalidates cached checks but not otherwise compatible artifact identities.
 Ignore `validation/.cache/` in source control.
 
 `validation.md` is the shared human-facing projection. Its Mechanical
-Validation section shows the completion state and date, counts by scope and
-status, and every non-passing check grouped by entry. Passing check details
-remain in `mechanical.json`. Its independent Reproduction section shows
+Validation section shows the completion state and date, check counts for
+Conformance, Evidence, and Orphan, unique starting-artifact counts for
+Provenance, and every non-passing check grouped by entry. The Provenance row's
+status remains the aggregate status of all provenance checks, including
+command-level findings without an artifact. Passing check details remain in
+`mechanical.json`. Its independent Reproduction section shows
 `not_yet_run` when no reproduction result exists. The report never combines
 the two operations into one pass/fail conclusion and is never authoritative.
 

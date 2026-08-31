@@ -100,10 +100,13 @@ tool --output-data source.csv
 tool --output-data label=data/result.csv
 ```
 """
-            with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "invocation.path_value.embedded"
-            ):
-                COMMAND.discover_commands(embedded, context)
+            embedded_result = COMMAND.discover_commands(embedded, context)
+            self.assertFalse(embedded_result.invocations)
+            self.assertEqual(len(embedded_result.failures), 1)
+            self.assertEqual(
+                embedded_result.failures[0].error.code,
+                "invocation.path_value.embedded",
+            )
 
     def test_data_index_loader_requires_one_exact_unique_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +143,30 @@ tool --output-data label=data/result.csv
                 COMMAND.CommandV2Error, "data_index.connection.missing"
             ):
                 COMMAND.load_data_index(path)
+
+    def test_raw_external_rule_applies_only_to_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            external = root / "output" / "result.csv"
+            text = f"""```bash
+tool --input-data {external}
+tool --output-data {external}
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(
+                result.failures[0].error.code,
+                "data_index.raw_external",
+            )
+            self.assertEqual(len(result.invocations), 1)
+            self.assertEqual(
+                result.invocations[0].outputs[0].path,
+                external.resolve().as_posix(),
+            )
 
     def test_simulation_filename_convention_is_exact_and_overridable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -498,10 +525,11 @@ done
 ```
 """
 
-            with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "material.unresolved"
-            ):
-                COMMAND.discover_commands(text, context)
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(result.failures[0].error.code, "material.unresolved")
 
     def test_zero_argument_static_function_is_outside_the_closed_grammar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -614,10 +642,45 @@ done
 ```
 """
 
-            with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "material.unresolved"
-            ):
-                COMMAND.discover_commands(text, context)
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(result.failures[0].error.code, "material.unresolved")
+
+    def test_failed_command_does_not_discard_later_valid_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+tool --output-data 'data/${missing}.csv'
+tool --output-data data/result.csv
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(result.failures[0].fence, 1)
+            self.assertEqual(result.failures[0].ordinal, 1)
+            self.assertEqual(len(result.invocations), 1)
+            self.assertTrue(
+                result.invocations[0].outputs[0].path.endswith("data/result.csv")
+            )
+
+    def test_failed_commands_still_consume_the_invocation_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+tool --output-data 'data/${first}.csv'
+tool --output-data 'data/${second}.csv'
+```
+"""
+
+            with mock.patch.object(COMMAND, "MAX_INVOCATIONS_PER_LOG", 1):
+                with self.assertRaisesRegex(
+                    COMMAND.CommandV2Error, "provenance.resource.too_large"
+                ):
+                    COMMAND.discover_commands(text, context)
 
     def test_invalid_function_call_is_consumed_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -973,10 +1036,13 @@ tool --files manifest.csv
 ```
 <!-- command files = input-manifest -->
 """
-            with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "collection.manifest.invalid"
-            ):
-                COMMAND.discover_commands(text, context)
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.invocations)
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(
+                result.failures[0].error.code, "collection.manifest.invalid"
+            )
 
 
 if __name__ == "__main__":

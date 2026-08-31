@@ -20,13 +20,17 @@ from .json_codec import canonical_json
 MAX_GRAPH_NODES = 1_000_000
 MAX_GRAPH_EDGES = 4_000_000
 VALIDATION_OWNED_PARTS = frozenset({".cache", "validation"})
-IGNORED_NAMES = frozenset(
+IGNORED_DIRECTORY_NAMES = frozenset(
     {
-        ".DS_Store",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
         "__pycache__",
+    }
+)
+IGNORED_FILE_NAMES = frozenset(
+    {
+        ".DS_Store",
         "data.csv",
         "evidence.json",
         "pyrun",
@@ -431,7 +435,8 @@ def _inventory_material_root(
 def _excluded(relative: Path) -> bool:
     return (
         relative.suffix.lower() == ".md"
-        or relative.name in IGNORED_NAMES
+        or relative.name in IGNORED_FILE_NAMES
+        or any(part in IGNORED_DIRECTORY_NAMES for part in relative.parts)
         or any(part in VALIDATION_OWNED_PARTS for part in relative.parts)
     )
 

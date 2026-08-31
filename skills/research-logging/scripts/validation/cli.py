@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .controller import ValidationControllerError, ValidationRequest, validate
+from .discovery import discover_summaries
 
 COMPLETED_STATUSES = frozenset(
     {"complete_clear", "complete_findings", "unsupported_metadata"}
@@ -17,12 +18,16 @@ COMPLETED_STATUSES = frozenset(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the single supported validation operation."""
+    """Build the supported validation and summary-discovery operations."""
 
     parser = argparse.ArgumentParser(
-        description="Mechanically validate one maintained research log."
+        description="Discover or mechanically validate maintained research logs."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    discover_parser = subparsers.add_parser(
+        "discover", help="discover maintained summaries below one project root"
+    )
+    discover_parser.add_argument("--root", required=True, type=Path)
     validate_parser = subparsers.add_parser(
         "validate", help="mechanically validate one maintained summary"
     )
@@ -58,11 +63,18 @@ def _run_validate(args: argparse.Namespace) -> int:
     return 0 if result["status"] in COMPLETED_STATUSES else 3
 
 
+def _run_discover(args: argparse.Namespace) -> int:
+    print(json.dumps(discover_summaries(args.root), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run mechanical validation and return its process exit status."""
 
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "discover":
+            return _run_discover(args)
         return _run_validate(args)
     except (OSError, ValidationControllerError, ValueError) as exc:
         print(

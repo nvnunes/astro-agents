@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 
 from .mechanical_results import (
+    CheckScope,
     CheckStatus,
     MechanicalCheck,
     MechanicalGeneratedRecord,
@@ -38,10 +39,18 @@ def compose_validation_report(
         "",
         "### Counts",
         "",
-        "| Scope | Status | Pass | Fail | Unavailable | Not applicable | Total |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Scope | Unit | Status | Pass | Fail | Unavailable | "
+        "Not applicable | Total |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for scope in record.scopes:
+        counts = scope.counts
+        total = scope.checks
+        unit = "checks"
+        if scope.scope is CheckScope.PROVENANCE:
+            counts = provenance_artifact_counts(record)
+            total = sum(counts.values())
+            unit = "artifacts"
         displayed_status = (
             f"`{scope.status.value}`" if scope.checks else ""
         )
@@ -50,12 +59,13 @@ def compose_validation_report(
             + " | ".join(
                 (
                     scope.scope.value,
+                    unit,
                     displayed_status,
-                    str(scope.counts[CheckStatus.PASS.value]),
-                    str(scope.counts[CheckStatus.FAIL.value]),
-                    str(scope.counts[CheckStatus.UNAVAILABLE.value]),
-                    str(scope.counts[CheckStatus.NOT_APPLICABLE.value]),
-                    str(scope.checks),
+                    str(counts[CheckStatus.PASS.value]),
+                    str(counts[CheckStatus.FAIL.value]),
+                    str(counts[CheckStatus.UNAVAILABLE.value]),
+                    str(counts[CheckStatus.NOT_APPLICABLE.value]),
+                    str(total),
                 )
             )
             + " |"
@@ -85,6 +95,45 @@ def compose_validation_report(
     else:
         lines.append(reproduction_section.strip())
     return "\n".join(lines).rstrip() + "\n"
+
+
+def provenance_artifact_counts(
+    record: MechanicalGeneratedRecord,
+) -> dict[str, int]:
+    """Count unique provenance starting artifacts by their worst check status."""
+
+    artifacts: dict[str, set[CheckStatus]] = defaultdict(set)
+    for check in record.checks:
+        if check.scope is not CheckScope.PROVENANCE:
+            continue
+        for artifact in _check_artifacts(check):
+            artifacts[artifact].add(check.status)
+    counts = {status.value: 0 for status in CheckStatus}
+    for statuses in artifacts.values():
+        counts[_aggregate_status(statuses).value] += 1
+    return counts
+
+
+def _check_artifacts(check: MechanicalCheck) -> set[str]:
+    artifacts: set[str] = set()
+    for dependency in check.dependencies:
+        values = dependency.get("artifacts")
+        if isinstance(values, list):
+            artifacts.update(
+                value for value in values if isinstance(value, str) and value
+            )
+    return artifacts
+
+
+def _aggregate_status(statuses: set[CheckStatus]) -> CheckStatus:
+    for status in (
+        CheckStatus.UNAVAILABLE,
+        CheckStatus.FAIL,
+        CheckStatus.PASS,
+    ):
+        if status in statuses:
+            return status
+    return CheckStatus.NOT_APPLICABLE
 
 
 def _entry_group(check: MechanicalCheck) -> str:

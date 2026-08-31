@@ -1,7 +1,7 @@
 # Validate Operation Instructions
 
-Use this operation for independent mechanical validation of one maintained
-research log. Run Validate as a separate, read-only operation after Record. The
+Use this operation for independent mechanical validation of one or more
+maintained research logs. Run Validate as a separate, read-only operation after Record. The
 same agent may invoke it, but while validating it must not edit or repair
 research-owned material. A research-owned finding requires a later, separately
 authorized Record operation. `unsupported_metadata` is instead a
@@ -39,6 +39,17 @@ Resolve `scripts/research_log_validation.py` from this skill package and run:
   --summary <log-summary>
 ```
 
+For repo-wide or multi-log validation, first run canonical discovery:
+
+```bash
+<project-python> <validation-tool> discover --root <project-root>
+```
+
+Validate every path in the returned `summaries` array. Do not build that set
+with filename globs, and do not exclude a candidate because its basename is
+`validation.md`; discovery recognizes maintained summaries by their stable
+navigation line and sibling log root, so generated reports are not candidates.
+
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--jobs N` to change the positive worker bound. Use `--dry-run` to evaluate
 without writing generated files. Use `--recompute` when a cache-independent
@@ -68,6 +79,8 @@ Report according to the returned status:
 
 - For `complete_clear` or `complete_findings`, report whether publication
   occurred, counts by mechanical scope and status, and each non-passing check.
+  Use the human report's unique-artifact counts for Provenance; the
+  machine-readable scope aggregate remains a count of internal checks.
   When publication occurred, point any later repair operation to
   `validation/mechanical.json` for machine-readable details and
   `validation.md` for the human projection. A dry run publishes neither file.
@@ -88,10 +101,14 @@ When summarizing several completed logs in a Markdown table:
   when all applicable checks pass; otherwise they are shown as
   passed/applicable. Orphan findings are counts. Not-applicable checks are
   excluded from applicable denominators and reported separately.`
-- Render Conformance, Evidence, and Provenance with one or more applicable
-  checks as `Pass` when every applicable check passes. When a scope has a
-  failing check, render it as `passed/applicable`, where
-  `applicable = pass + fail`.
+- Render Conformance and Evidence with one or more applicable checks as `Pass`
+  when every applicable check passes. When either scope has a failing check,
+  render it as `passed/applicable`, where `applicable = pass + fail`.
+- Render Provenance from the unique-artifact row in `validation.md`, not from
+  the number of provenance checks. Use `Pass` only when all counted artifacts
+  pass and the scope status is `pass`; otherwise render
+  `passed/applicable artifacts`. If the scope fails without a failed counted
+  artifact, append ` (scope findings)` so command-level findings remain visible.
 - Append `(+N N/A)` only when a scope with applicable checks contains `N`
   actual `not_applicable` checks. When a scope has no applicable checks and
   only `N` not-applicable checks, render it as `N N/A`. Exclude
@@ -110,7 +127,7 @@ Use this shape:
 ```md
 | Research log | Conformance | Evidence | Provenance | Orphan findings | Reports |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Example findings | Pass | 3/5 | 4/5 (+2 N/A) | 7 | [Human](...) · [JSON](...) |
+| Example findings | Pass | 3/5 | 4/5 artifacts | 7 | [Human](...) · [JSON](...) |
 | Passing scopes | Pass | Pass | Pass (+2 N/A) | 0 | [Human](...) · [JSON](...) |
 | No evidence checks | Pass |  |  | 0 | [Human](...) · [JSON](...) |
 | Orphan classification not run | 0/1 | 0/1 |  |  | [Human](...) · [JSON](...) |

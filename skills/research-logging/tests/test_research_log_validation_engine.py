@@ -645,6 +645,33 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ]
             self.assertIn("producer.missing", failures)
 
+    def test_failed_command_does_not_hide_later_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "```bash\n./pyrun",
+                    "```bash\ntool --output-data 'data/${missing}.csv'\n./pyrun",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            command_failure = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:command:1:1"
+            )
+            provenance = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(command_failure.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(command_failure.failure.code, "material.unresolved")
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+
     def test_adjacent_annotation_is_a_complete_mechanical_correction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory), output_option="results")

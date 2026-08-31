@@ -123,9 +123,12 @@ The research-log test gate must verify:
 - `validation.md` contains separate Mechanical Validation and Reproduction
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;
-- the mechanical report shows completion and date, counts by scope and status,
-  and every non-passing check grouped by entry without rendering individual
-  passing checks;
+- the mechanical report shows completion and date, check counts for
+  conformance, evidence, and orphan, unique starting-artifact counts for
+  provenance, and every non-passing check grouped by entry without rendering
+  individual passing checks;
+- canonical discovery finds maintained summaries from their stable navigation
+  contract without filename-based exclusions;
 - dry-run writes nothing, incomplete evaluation publishes nothing, and an
   ordinary publication failure restores the prior generated bundle;
 - validation leaves all research-owned bytes unchanged and preserves the

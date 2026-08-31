@@ -118,6 +118,16 @@ class DiscoveryResult:
 
     invocations: tuple[Invocation, ...]
     unsupported: tuple[Mapping[str, object], ...]
+    failures: tuple[CommandDiscoveryFailure, ...]
+
+
+@dataclass(frozen=True)
+class CommandDiscoveryFailure:
+    """One failed concrete command that does not invalidate its peers."""
+
+    fence: int
+    ordinal: int
+    error: CommandV2Error
 
 
 @dataclass(frozen=True)
@@ -203,7 +213,9 @@ def discover_commands(
     )
     invocations: list[Invocation] = []
     unsupported: list[Mapping[str, object]] = []
+    command_failures: list[CommandDiscoveryFailure] = []
     duplicate_counts: dict[str, int] = {}
+    concrete_invocations = 0
     for fence_number, (body, annotation_texts) in enumerate(
         _command_fences(text, context.require_experimental_context), 1
     ):
@@ -226,15 +238,24 @@ def discover_commands(
             if command is None:
                 continue
             concrete_ordinal += 1
+            concrete_invocations += 1
+            if concrete_invocations > MAX_INVOCATIONS_PER_LOG:
+                _fail(
+                    "provenance.resource.too_large",
+                    context.document,
+                    {
+                        "invocations": concrete_invocations,
+                        "limit": MAX_INVOCATIONS_PER_LOG,
+                    },
+                )
             annotation = decoded_annotations.get(concrete_ordinal)
             canonical_value: object = list(command.tokens)
             if command.static_projection:
                 canonical_value = [canonical_value, list(command.static_projection)]
             canonical = canonical_json(canonical_value)
             duplicate = duplicate_counts.get(canonical, 0)
-            duplicate_counts[canonical] = duplicate + 1
-            invocations.append(
-                _build_invocation(
+            try:
+                invocation = _build_invocation(
                     command,
                     annotation,
                     context,
@@ -245,14 +266,18 @@ def discover_commands(
                         duplicate,
                     ),
                 )
-            )
-    if len(invocations) > MAX_INVOCATIONS_PER_LOG:
-        _fail(
-            "provenance.resource.too_large",
-            context.document,
-            {"invocations": len(invocations), "limit": MAX_INVOCATIONS_PER_LOG},
-        )
-    return DiscoveryResult(tuple(invocations), tuple(unsupported))
+            except CommandV2Error as error:
+                command_failures.append(
+                    CommandDiscoveryFailure(
+                        fence_number, concrete_ordinal, error
+                    )
+                )
+                continue
+            duplicate_counts[canonical] = duplicate + 1
+            invocations.append(invocation)
+    return DiscoveryResult(
+        tuple(invocations), tuple(unsupported), tuple(command_failures)
+    )
 
 
 def automatic_option_role(name: str) -> str | None:
@@ -941,7 +966,11 @@ def _relationship(
     )
     if path is None:
         _fail("material.unresolved", context.document, {"value": request.value})
-    if not request.expanded and not _command_path_in_scope(path, context):
+    if (
+        request.direction == "input"
+        and not request.expanded
+        and not _command_path_in_scope(path, context)
+    ):
         _fail("data_index.raw_external", context.document, {"value": request.value})
     return MaterialRelationship(
         path.resolve().as_posix(),

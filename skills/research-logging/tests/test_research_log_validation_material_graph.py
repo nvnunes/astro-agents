@@ -117,6 +117,44 @@ class MaterialGraphV2Tests(unittest.TestCase):
             )
             self.assertTrue(result.dependency_projection)
 
+    def test_runtime_cache_descendants_are_excluded_from_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, commands, evidence_file = _fixture(Path(directory))
+            cache_files = (
+                entry_root / ".mypy_cache" / "3.12" / "state.json",
+                entry_root / ".pytest_cache" / "v" / "cache" / "nodeids",
+                entry_root / ".ruff_cache" / "0.15.1" / "cache-entry",
+                entry_root / "scripts" / "__pycache__" / "model.pyc",
+            )
+            for path in cache_files:
+                write(path, "runtime cache\n")
+
+            result = GRAPH.compose_material_graph(
+                GRAPH.MaterialGraphRequest(
+                    entry_roots={"e001": entry_root},
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001",
+                            "value",
+                            "entry.md:eid:value",
+                            ((entry_root / "data" / "source.csv").as_posix(),),
+                        ),
+                    ),
+                    direct_artifacts=(),
+                    invocations=commands,
+                    evidence_files=(evidence_file,),
+                    data_indexes=(
+                        GRAPH.DataIndexSurface(
+                            "entries/entry", ("catalog", "unused")
+                        ),
+                    ),
+                )
+            )
+
+            retained = set(result.orphan.inventory)
+            for path in cache_files:
+                self.assertNotIn(path.resolve().as_posix(), retained)
+
     def test_symlinked_data_and_images_are_first_class_entry_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -20,6 +20,40 @@ CLI = importlib.import_module("validation.cli")
 
 
 class ValidationCliTests(unittest.TestCase):
+    def test_discovery_uses_summary_contract_not_filename_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ordinary, _ = mechanical_log(root)
+            named_validation = root / "docs" / "validation.md"
+            (root / "docs" / "validation").mkdir()
+            write(
+                named_validation,
+                "# Validation study\n\n"
+                "Validation: [latest completed report](validation/validation.md)\n",
+            )
+            write(
+                ordinary.with_suffix("") / "validation.md",
+                "# Validation\n\n## Mechanical Validation\n"
+                + ("generated finding\n" * 10_000),
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                exit_code = CLI.main(["discover", "--root", str(root)])
+
+            result = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["schema"], "research-log-discovery-result/1")
+            self.assertEqual(
+                result["summaries"],
+                sorted(
+                    (
+                        ordinary.resolve().as_posix(),
+                        named_validation.resolve().as_posix(),
+                    )
+                ),
+            )
+
     def test_only_mechanical_validation_arguments_are_public(self) -> None:
         args = CLI.build_parser().parse_args(
             [

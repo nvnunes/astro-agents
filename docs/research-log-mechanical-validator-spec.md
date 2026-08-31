@@ -2449,6 +2449,12 @@ For supported invocations, discovery returns:
 - bounded collection selections when completely determined; and
 - stable failures and unresolved candidates that did not establish an edge.
 
+A stable failure while resolving one concrete invocation invalidates only that
+invocation. The validator records the failure using its command fence and
+concrete ordinal, omits that invocation's unproved edges, and continues
+discovering other invocations in the document. A command-local failure never
+discards successfully discovered earlier or later invocations.
+
 A path or token merely mentioned by a command is a candidate, not a provenance
 edge. Direction and coverage must be proven by the rules below.
 
@@ -2804,7 +2810,9 @@ excluding:
 - `evidence.json` and `data.csv`;
 - the `pyrun` symlink;
 - validation-owned generated paths; and
-- temporary paths excluded by the research-log contract.
+- temporary paths excluded by the research-log contract; and
+- descendants of `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, and
+  `__pycache__` runtime-cache directories.
 
 Entry-local `data` and `images` are first-class members of the entry when they
 are ordinary directories or directory symlinks. Orphan detection follows those two
@@ -2956,9 +2964,20 @@ may trigger parsing, but reusable results compare the narrower projections.
 The public operation is:
 
 ```text
+research_log_validation.py discover --root PATH
+
 research_log_validation.py validate --summary PATH
   [--date YYYY-MM-DD] [--jobs N] [--recompute] [--dry-run]
 ```
+
+`discover --root` performs bounded, read-only maintained-summary discovery
+beneath one regular non-symlink project root. It recognizes a summary by its
+H1-adjacent stable `Validation: [latest completed report](<log>/validation.md)`
+navigation line and regular sibling log root. It does not include or exclude a
+candidate based on the candidate's basename. It emits
+`research-log-discovery-result/1` with the resolved `root` and a sorted
+`summaries` array. This is the canonical starting point for repo-wide or
+multi-log validation.
 
 `--summary` names one regular non-symlink maintained summary whose sibling log
 root is a regular directory. `--date` defaults to the local calendar date and,
@@ -3039,9 +3058,13 @@ modify the cache unless the completed evaluation publishes the replacement
 generated bundle. Cache state never changes a conclusion.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
-Validation section contains completion, result date, counts by every scope and
-status, and every non-passing check grouped by entry with its status, identity,
-subject, and dependencies. Failed and unavailable checks additionally show
+Validation section contains completion, result date, check counts for
+conformance, evidence, and orphan, and unique provenance starting-artifact
+counts by their worst dependent provenance-check status. The Provenance row's
+displayed aggregate status remains the status of the complete provenance scope,
+including command-level checks that do not yet identify a starting artifact.
+The section also contains every non-passing check grouped by entry with its
+status, identity, subject, and dependencies. Failed and unavailable checks additionally show
 their code, observed state, and violated rule. It does not list individual
 passing checks or provide repair instructions. A scope with zero checks has a
 blank displayed aggregate status; the report does not present absent checks as

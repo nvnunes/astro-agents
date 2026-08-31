@@ -59,8 +59,8 @@ not authorize recording or summary changes.
 
 ## Record Reference Routing
 
-A new-log Record loads summary-validation guidance to initialize the fixed
-pre-validation section. Later Record operations preserve that section without
+A new-log Record loads summary-validation guidance to initialize the stable
+validation-report link. Later Record operations preserve that link without
 loading validation guidance solely to assess freshness.
 
 At each researcher turn, Record resolves the operation and authorized scope
@@ -134,7 +134,8 @@ Replace requires an explicit intention to remove superseded experimental work
 from the active log.
 
 Given an authorized experimental section, Replace may revise `Background:`,
-`Steps:`, `Results:`, and `Observations:`, the section's evidence rows, and its
+`Steps:`, `Results:`, and `Observations:`, the section's evidence records and
+presentation markers, and its
 exclusively owned scripts or artifacts. Other labels, sections, shared
 material, summary content, the fixed validation-report link, and every generated
 validation file remain unchanged. A separately authorized Update Summary may

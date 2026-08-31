@@ -17,15 +17,14 @@ from .report import compose_validation_report
 
 RESULT_SCHEMA = "research-log-validation-result/1"
 MAX_CACHE_BYTES = 32 * 1024 * 1024
-MAX_UPGRADE_PATHS = 10_000
-UPGRADE_TRANSACTION_DIRECTORY = "validation/.cache/upgrade-transactions"
-LEGACY_PATHS = (
+UNSUPPORTED_GENERATED_PATHS = (
     "validation/manifest.json",
     "validation/outcomes",
     "validation/judgments",
     "validation/failures",
     "validation/.cache/cache.json",
     "validation/.cache/subject-index.json",
+    "validation/.cache/upgrade-transactions",
     "validation/.cache/index-deltas",
     "validation/.cache/work",
     "validation/.cache/validation.log",
@@ -37,7 +36,7 @@ LEGACY_PATHS = (
     "validation-state",
     ".research-log-validation.lock",
 )
-LEGACY_REPORT_MARKERS = (
+UNSUPPORTED_REPORT_MARKERS = (
     "| Entry | Date | Checked | Reproducibility |",
     "## Status Summary",
 )
@@ -75,9 +74,9 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         )
     summary = request.summary.resolve()
     _validate_request(summary, request.jobs)
-    cutover = _cutover_state(summary)
-    if cutover is not None:
-        return cutover
+    unsupported = _unsupported_metadata_state(summary)
+    if unsupported is not None:
+        return unsupported
     result_date = _result_date(request.result_date)
     log_root = summary.with_suffix("")
     prior_cache = (
@@ -112,7 +111,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         publish_validation_outputs(
             log_root,
             outputs,
-            validate_current=lambda: _require_cutover_clear(summary),
+            validate_current=lambda: _require_unsupported_metadata_clear(summary),
         )
     except (OSError, RecordPublicationError) as exc:
         raise ValidationControllerError(str(exc)) from exc
@@ -149,12 +148,12 @@ def _result_date(value: str | None) -> str:
     return value
 
 
-def _cutover_state(summary: Path) -> dict[str, Any] | None:
+def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
     log_root = summary.with_suffix("")
-    _require_no_pending_upgrade(log_root)
-    evidence_csv = _bounded_legacy_evidence(log_root)
-    legacy_state = [
-        relative for relative in LEGACY_PATHS if (log_root / relative).exists()
+    unsupported_state = [
+        relative
+        for relative in UNSUPPORTED_GENERATED_PATHS
+        if (log_root / relative).is_symlink() or (log_root / relative).exists()
     ]
     report = log_root / "validation.md"
     if report.is_file() and not (log_root / "validation/mechanical.json").is_file():
@@ -166,62 +165,26 @@ def _cutover_state(summary: Path) -> dict[str, Any] | None:
             raise ValidationControllerError(
                 f"could not inspect existing validation report: {exc}"
             ) from exc
-        if any(marker in prefix for marker in LEGACY_REPORT_MARKERS):
-            legacy_state.append("validation.md")
-    legacy_state = sorted(set(legacy_state))
-    if not evidence_csv and not legacy_state:
+        if any(marker in prefix for marker in UNSUPPORTED_REPORT_MARKERS):
+            unsupported_state.append("validation.md")
+    unsupported_state = sorted(set(unsupported_state))
+    if not unsupported_state:
         return None
     return {
-        "code": "validation.upgrade_required",
-        "observed": {
-            "evidence_csv": evidence_csv,
-            "legacy_generated_state": legacy_state,
-        },
+        "code": "validation.unsupported_metadata",
+        "observed": {"paths": unsupported_state},
         "published": False,
         "schema": RESULT_SCHEMA,
-        "status": "upgrade_required",
+        "status": "unsupported_metadata",
         "summary": summary.as_posix(),
     }
 
 
-def _require_no_pending_upgrade(log_root: Path) -> None:
-    pending = log_root / UPGRADE_TRANSACTION_DIRECTORY
-    try:
-        blocked = pending.is_symlink() or (
-            pending.exists()
-            and (
-                not pending.is_dir()
-                or next(pending.iterdir(), None) is not None
-            )
-        )
-    except OSError as exc:
-        raise ValidationControllerError(
-            f"upgrade.recovery.required: could not inspect {pending}: {exc}"
-        ) from exc
-    if blocked:
-        raise ValidationControllerError(
-            f"upgrade.recovery.required: recover the interrupted transaction "
-            f"under {pending} before validation"
-        )
-
-
-def _bounded_legacy_evidence(log_root: Path) -> list[str]:
-    paths: list[str] = []
-    for path in log_root.rglob("evidence.csv"):
-        if path.is_file():
-            paths.append(path.relative_to(log_root).as_posix())
-            if len(paths) > MAX_UPGRADE_PATHS:
-                raise ValidationControllerError(
-                    f"legacy evidence inventory exceeds {MAX_UPGRADE_PATHS} paths"
-                )
-    return sorted(paths)
-
-
-def _require_cutover_clear(summary: Path) -> None:
-    state = _cutover_state(summary)
+def _require_unsupported_metadata_clear(summary: Path) -> None:
+    state = _unsupported_metadata_state(summary)
     if state is not None:
         raise ValidationControllerError(
-            "research log became upgrade-required during validation: "
+            "research log acquired unsupported metadata during validation: "
             + json.dumps(state["observed"], sort_keys=True)
         )
 

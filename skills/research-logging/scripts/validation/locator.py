@@ -1508,6 +1508,6 @@ def _fail(
         code,
         subject,
         observed,
-        "V2 Expanded Mechanical Locator Language",
+        "V2: Expanded Mechanical Locator Language",
         outcome=outcome,
     )

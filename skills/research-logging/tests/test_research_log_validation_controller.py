@@ -345,7 +345,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 "locator.reader.unavailable",
                 "data/results.csv",
                 {"error": "unavailable"},
-                "V2 Expanded Mechanical Locator Language",
+                "V2: Expanded Mechanical Locator Language",
                 outcome="unavailable",
             )
             with mock.patch.object(ENGINE, "observe_source", side_effect=unavailable):
@@ -356,76 +356,28 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertFalse(result["published"])
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
 
-    def test_upgrade_preflight_reports_both_conditions_and_writes_nothing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            log_root = summary.with_suffix("")
-            write(entry.parent / "evidence.csv", "entry\n")
-            write(log_root / "validation" / "manifest.json", "{\"schema_version\":2}\n")
-            write(log_root / "validation.md", "legacy report\n")
-            before = {
-                path: path.read_bytes()
-                for path in (
-                    entry.parent / "evidence.csv",
-                    log_root / "validation" / "manifest.json",
-                    log_root / "validation.md",
-                )
-            }
-
-            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-
-            self.assertEqual(result["status"], "upgrade_required")
-            self.assertEqual(result["code"], "validation.upgrade_required")
-            self.assertEqual(
-                result["observed"]["evidence_csv"],
-                ["entries/2026-08-29-e001-study/evidence.csv"],
-            )
-            self.assertIn(
-                "validation/manifest.json",
-                result["observed"]["legacy_generated_state"],
-            )
-            self.assertFalse(result["published"])
-            self.assertFalse((log_root / "validation" / "mechanical.json").exists())
-            self.assertEqual({path: path.read_bytes() for path in before}, before)
-
-    def test_upgrade_preflight_reports_each_condition_independently(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            write(entry.parent / "evidence.csv", "entry\n")
-            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            self.assertTrue(result["observed"]["evidence_csv"])
-            self.assertFalse(result["observed"]["legacy_generated_state"])
-
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            write(summary.with_suffix("") / "validation" / "manifest.json", "{}\n")
-            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            self.assertFalse(result["observed"]["evidence_csv"])
-            self.assertTrue(result["observed"]["legacy_generated_state"])
-
-    def test_each_exact_legacy_path_is_recognized_without_decoding(self) -> None:
-        for relative in CONTROLLER.LEGACY_PATHS:
+    def test_each_exact_unsupported_path_is_recognized_without_decoding(self) -> None:
+        for relative in CONTROLLER.UNSUPPORTED_GENERATED_PATHS:
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as (
                 directory
             ):
                 summary, _ = _log(Path(directory))
                 log_root = summary.with_suffix("")
                 path = log_root / relative
-                write(path, "not valid legacy content\n")
+                write(path, "not valid unsupported content\n")
                 before = path.read_bytes()
 
                 result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-                self.assertEqual(result["status"], "upgrade_required")
-                self.assertEqual(
-                    result["observed"]["legacy_generated_state"], [relative]
-                )
+                self.assertEqual(result["status"], "unsupported_metadata")
+                self.assertEqual(result["code"], "validation.unsupported_metadata")
+                self.assertEqual(result["observed"]["paths"], [relative])
                 self.assertEqual(path.read_bytes(), before)
                 self.assertFalse(
                     (log_root / "validation/mechanical.json").exists()
                 )
 
-    def test_unrecognized_validation_file_does_not_trigger_cutover(self) -> None:
+    def test_unrecognized_validation_file_does_not_trigger_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             write(summary.with_suffix("") / "validation/unrelated.json", "{}\n")
@@ -437,7 +389,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_clear")
             self.assertTrue(result["published"])
 
-    def test_legacy_report_marker_is_a_precise_cutover_condition(self) -> None:
+    def test_unsupported_report_marker_is_a_precise_preflight_condition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
@@ -452,33 +404,12 @@ class MechanicalControllerTests(unittest.TestCase):
 
             result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            self.assertEqual(result["status"], "upgrade_required")
-            self.assertEqual(
-                result["observed"]["legacy_generated_state"], ["validation.md"]
-            )
+            self.assertEqual(result["status"], "unsupported_metadata")
+            self.assertEqual(result["observed"]["paths"], ["validation.md"])
             self.assertEqual(report.read_bytes(), before)
             self.assertFalse((log_root / "validation/mechanical.json").exists())
 
-    def test_cutover_inventory_is_bounded_and_writes_nothing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            write(entry.parent / "evidence.csv", "entry\n")
-            write(entry.parent.parent / "evidence.csv", "entry\n")
-
-            with mock.patch.object(CONTROLLER, "MAX_UPGRADE_PATHS", 1):
-                with self.assertRaisesRegex(
-                    CONTROLLER.ValidationControllerError,
-                    "legacy evidence inventory exceeds 1 paths",
-                ):
-                    CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-
-            self.assertFalse(
-                (summary.with_suffix("") / "validation/mechanical.json").exists()
-            )
-
-    def test_pending_upgrade_transaction_blocks_and_preserves_prior_bundle(
-        self,
-    ) -> None:
+    def test_unsupported_transaction_state_is_reported_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
@@ -497,15 +428,16 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             before = {path: path.read_bytes() for path in tracked}
 
-            with self.assertRaisesRegex(
-                CONTROLLER.ValidationControllerError,
-                "upgrade.recovery.required",
-            ):
-                CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
+            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+            self.assertEqual(result["status"], "unsupported_metadata")
+            self.assertEqual(
+                result["observed"]["paths"],
+                ["validation/.cache/upgrade-transactions"],
+            )
 
-    def test_dangling_upgrade_transaction_symlink_blocks_publication(self) -> None:
+    def test_dangling_unsupported_state_symlink_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             pending = (
@@ -515,12 +447,13 @@ class MechanicalControllerTests(unittest.TestCase):
             pending.parent.mkdir(parents=True)
             pending.symlink_to("missing-transaction-directory")
 
-            with self.assertRaisesRegex(
-                CONTROLLER.ValidationControllerError,
-                "upgrade.recovery.required",
-            ):
-                CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
+            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
+            self.assertEqual(result["status"], "unsupported_metadata")
+            self.assertEqual(
+                result["observed"]["paths"],
+                ["validation/.cache/upgrade-transactions"],
+            )
             self.assertFalse(
                 (summary.with_suffix("") / "validation/mechanical.json").exists()
             )
@@ -625,9 +558,9 @@ class MechanicalControllerTests(unittest.TestCase):
 
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
-    def test_cutover_change_during_publication_restores_prior_bundle(self) -> None:
+    def test_metadata_preflight_during_publication_restores_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
+            summary, _ = _log(Path(directory))
             request = CONTROLLER.ValidationRequest(
                 summary, result_date="2026-08-29"
             )
@@ -642,23 +575,27 @@ class MechanicalControllerTests(unittest.TestCase):
             original = RECORDS._atomic_write_bytes
             introduced = False
 
-            def introduce_v1(path: Path, payload: bytes) -> None:
+            unsupported = log_root / "validation/manifest.json"
+
+            def introduce_unsupported_metadata(path: Path, payload: bytes) -> None:
                 nonlocal introduced
                 original(path, payload)
                 if path.name == "validation.md" and not introduced:
                     introduced = True
-                    write(entry.parent / "evidence.csv", "entry\n")
+                    write(unsupported, "{}\n")
 
             with mock.patch.object(
-                RECORDS, "_atomic_write_bytes", side_effect=introduce_v1
+                RECORDS,
+                "_atomic_write_bytes",
+                side_effect=introduce_unsupported_metadata,
             ):
                 with self.assertRaisesRegex(
                     CONTROLLER.ValidationControllerError,
-                    "became upgrade-required",
+                    "acquired unsupported metadata",
                 ):
                     CONTROLLER.validate(request)
 
-            self.assertTrue((entry.parent / "evidence.csv").is_file())
+            self.assertTrue(unsupported.is_file())
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
 

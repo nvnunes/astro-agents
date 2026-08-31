@@ -31,7 +31,6 @@ from .evidence import (
     PresentationRecord,
     PresentedItem,
     SummaryReference,
-    active_evidence_version,
     associate_presentations,
     index_direct_artifacts,
     index_entry_documents,
@@ -180,7 +179,6 @@ def _scan(
         for relative, value in state.artifact_identities.items()
     }
     try:
-        active_evidence_version(summary)
         summary_text = _read_text(summary, state)
         phase = time.perf_counter()
         state.entries = _entries(summary_text, state)
@@ -1088,7 +1086,6 @@ def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
         "collection.manifest.invalid",
         "data_index.raw_external",
         "evidence.declaration.invalid",
-        "validation.upgrade_required",
         "provenance.resource.too_large",
         "retention.declaration.invalid",
         "retention.target.missing",

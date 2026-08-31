@@ -25,7 +25,8 @@ should be logged, or adding, revising, or reorganizing log material.
   research-log files. Preserve the summary's fixed validation-report link and
   every generated validation file exactly. Apply
   `references/operation-record-content.md` to affected
-  content, support material, or evidence rows. If removal would supersede
+  content, support material, evidence records, or presentation markers. If
+  removal would supersede
   experimental content, stop and request explicit Replace authorization rather
   than loading or applying Replace from the Reorganize request.
 

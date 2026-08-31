@@ -8,7 +8,8 @@ Do not infer Replace from Continue, correction, rerun, Review, or Reorganize.
 
 Resolve one exact experimental section before editing. Replace may revise that
 section's `Background:`, `Steps:`, `Results:`, and `Observations:`, its
-corresponding evidence rows, and the exclusively owned scripts or artifacts
+corresponding evidence records and presentation markers, and the exclusively
+owned scripts or artifacts
 needed for the replacement. Leave all other labels, sections, shared material,
 and summary content unchanged. If the request also authorizes Update Summary,
 complete Replace before starting that separate operation.

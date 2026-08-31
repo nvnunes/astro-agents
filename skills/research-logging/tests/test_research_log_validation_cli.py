@@ -49,7 +49,7 @@ class ValidationCliTests(unittest.TestCase):
         for status, expected in (
             ("complete_clear", 0),
             ("complete_findings", 0),
-            ("upgrade_required", 0),
+            ("unsupported_metadata", 0),
             ("incomplete", 3),
         ):
             with self.subTest(status=status):
@@ -74,33 +74,6 @@ class ValidationCliTests(unittest.TestCase):
             exit_code = CLI.main(["validate", "--summary", "mini.md"])
         self.assertEqual(exit_code, 2)
         self.assertIn("ValidationControllerError: cannot complete", stderr.getvalue())
-
-    def test_executable_returns_zero_upgrade_result_without_writes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary = root / "docs" / "legacy.md"
-            log_root = root / "docs" / "legacy"
-            write(summary, "# Legacy\n")
-            write(log_root / "entries" / "e001" / "evidence.csv", "entry\n")
-
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPT),
-                    "validate",
-                    "--summary",
-                    str(summary),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-            result = json.loads(completed.stdout)
-            self.assertEqual(completed.returncode, 0)
-            self.assertEqual(result["code"], "validation.upgrade_required")
-            self.assertFalse(result["published"])
-            self.assertFalse((log_root / "validation" / "mechanical.json").exists())
 
     def test_executable_returns_zero_for_clear_and_finding_results(self) -> None:
         for output_option, expected in (
@@ -155,7 +128,7 @@ class ValidationCliTests(unittest.TestCase):
             self.assertIn("YYYY-MM-DD", completed.stderr)
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
 
-    def test_executable_pending_upgrade_is_a_nonzero_operational_error(self) -> None:
+    def test_executable_unsupported_metadata_returns_preflight_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = mechanical_log(Path(directory))
             write(
@@ -177,8 +150,15 @@ class ValidationCliTests(unittest.TestCase):
                 text=True,
             )
 
-            self.assertEqual(completed.returncode, 2)
-            self.assertIn("upgrade.recovery.required", completed.stderr)
+            self.assertEqual(completed.returncode, 0)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["status"], "unsupported_metadata")
+            self.assertEqual(result["code"], "validation.unsupported_metadata")
+            self.assertEqual(
+                result["observed"]["paths"],
+                ["validation/.cache/upgrade-transactions"],
+            )
+            self.assertEqual(completed.stderr, "")
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
 
 

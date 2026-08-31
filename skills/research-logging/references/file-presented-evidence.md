@@ -103,7 +103,7 @@ the complete record and its presentation are:
   "schema": "research-log-evidence/v2",
   "records": [{
     "id": "candidate-success-rate",
-    "document": "entries/2026-08-27-e001-study/entry.md",
+    "document": "entries/2026-08-27-e001-study/e001.md",
     "kind": "statistic",
     "sources": [{
       "source": "data/results.csv",

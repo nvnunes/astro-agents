@@ -12,9 +12,9 @@ history for detailed change-by-change context.
 
 - Cut research-log validation over to the code-only mechanical engine. The
   public CLI now publishes schema-1 `mechanical.json`, its independent
-  disposable cache, and the shared `validation.md` report; logs containing v1
-  evidence or recognized legacy generated state receive a no-write
-  `validation.upgrade_required` result. The legacy semantic continuation,
+  disposable cache, and the shared `validation.md` report. Recognized
+  unsupported generated metadata produces a no-write
+  `validation.unsupported_metadata` result. The legacy semantic continuation,
   adjudication, integrated reproduction, and sharded validation-state surfaces
   have been removed.
 - Expanded research-log command discovery over a bounded, non-executing static

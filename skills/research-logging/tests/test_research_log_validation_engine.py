@@ -459,7 +459,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "locator.reader.unavailable",
                 "data/results.csv",
                 {"error": "temporarily unavailable"},
-                "V2 Expanded Mechanical Locator Language",
+                "V2: Expanded Mechanical Locator Language",
                 outcome="unavailable",
             )
             with mock.patch.object(ENGINE, "observe_source", side_effect=unavailable):
@@ -553,20 +553,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
 
-    def test_upgrade_boundary_and_missing_summary_reference_are_precise(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            write(entry.parent / "evidence.csv", "entry\n")
-
-            legacy = _evaluate(summary)
-
-            legacy_failures = [
-                check.failure.code
-                for check in legacy.result.checks
-                if check.failure is not None
-            ]
-            self.assertEqual(legacy_failures, ["validation.upgrade_required"])
-
+    def test_missing_summary_reference_is_precise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             write(

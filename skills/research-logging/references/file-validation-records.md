@@ -57,6 +57,12 @@ Validation never adds, removes, or rewrites this line.
 A correctly identified finding is not a tool error. Both exit zero and publish
 the generated bundle unless `--dry-run` is active.
 
+`unsupported_metadata` is a completed preflight, not a mechanical evaluation.
+It exits zero, lists the exact incompatible generated paths, and publishes
+nothing. Validate reports the paths and stops. It does not remove them. Before
+rerunning, archive them outside the active log or remove them through a
+separately user-authorized maintenance action, not Record.
+
 `incomplete` means at least one required observation was unavailable. It exits
 nonzero and publishes no new bundle. A tool or publication failure also exits
 nonzero. `--dry-run` evaluates and returns the result without acquiring the

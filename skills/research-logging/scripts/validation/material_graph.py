@@ -28,7 +28,6 @@ IGNORED_NAMES = frozenset(
         ".ruff_cache",
         "__pycache__",
         "data.csv",
-        "evidence.csv",
         "evidence.json",
         "pyrun",
     }

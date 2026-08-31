@@ -5,10 +5,11 @@ how to organize a log, record work, retain the material needed to reproduce
 results, present evidence, keep the summary current, review the record, and
 check its integrity.
 
-The `research-logging` skill independently implements the same workflow for AI
-agents. It does not read or refer to this document, and this document does not
-rely on the skill for missing guidance. Their agreement is checked whenever
-either one changes.
+The `research-logging` skill implements the detailed authoring and maintenance
+rules used by AI agents. This document stays at the researcher-facing level:
+it explains the workflow, research responsibilities, and visible record without
+duplicating the skill's schemas or exact metadata grammar. Their conceptual
+agreement is checked whenever either one changes.
 
 ## Workflow at a glance
 
@@ -20,7 +21,8 @@ A research log uses five core operations:
    longer intend to retain the superseded work in the active log.
 3. **Update Summary** when you want the current research state and follow-ups
    brought up to date.
-4. **Review** structure, presentation, associations, and scientific meaning.
+4. **Review** structure, presentation, associations, synthesis, and visible
+   evidentiary support.
 5. **Validate** mechanically that presented computational results match their
    declared sources, have visible provenance, and leave no unexplained retained
    material.
@@ -47,12 +49,6 @@ supporting material, evidence records that connect results to sources, and
 generated validation records. The summary describes the current state; entries
 and their saved material preserve the detailed research record.
 
-This document temporarily retains v1 `evidence.csv` authoring guidance until
-Pass 9 upgrades maintained logs and their authoring surface. The active
-validator is already v2-only: a pre-upgrade log returns
-`validation.upgrade_required` and receives no new generated files. Therefore,
-v1 evidence and the new mechanical bundle are never a supported mixed state.
-
 The minimum structure is:
 
 ```text
@@ -61,42 +57,17 @@ The minimum structure is:
   entries/
 ```
 
-A populated pre-upgrade log may contain:
+A populated log may contain:
 
 ```text
 <log>.md
 <log>/
   refs.bib
   scripts/
-  evidence.csv
-  entries/
-    2026-05-01-e001-calibration-drift-check/
-      e001.md
-      data.csv
-      pyrun -> <installed launcher>
-      data/
-      images/
-      scripts/
-      evidence.csv
-```
-
-After its Pass 9 upgrade, the same log instead uses entry-local
-`evidence.json`, hidden presentation IDs and summary references, and the active
-generated bundle:
-
-```text
-<log>.md
-<log>/
   validation.md
-  validation/
-    mechanical.json
-    .cache/
-      mechanical.json
-      lock
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
-      evidence.json
       data.csv
       pyrun -> <installed launcher>
       data/
@@ -117,7 +88,8 @@ During an active investigation, this is one integrated loop: implement or
 revise scripts, run the research, retain and analyze its outputs, document the
 evidence, and draft observations grounded in those results. Recording updates
 all directly affected material together, including prose, commands, saved
-results, source links, citations, `data.csv`, and `evidence.csv`. It preserves
+results, source links, citations, input indexes, and supporting evidence
+metadata. It preserves
 the fixed report link and every generated validation file. Check outputs as they are produced;
 these checks are part of doing the research and do not establish validation
 status.
@@ -200,7 +172,8 @@ folder and use suffixes such as `e002a.md` and `e002b.md`.
 
 Approve renames, splits, and merges before they change document boundaries.
 Keep shared entry material in the parent entry folder and update affected
-summary links, citations, commands, and evidence rows together.
+summary links, citations, commands, evidence records, and presentation markers
+together.
 
 If removal would replace experimental content, request Replace explicitly
 instead.
@@ -210,8 +183,9 @@ instead.
 Use Replace only when you explicitly want a named experimental section and its
 owned material to supersede work you no longer intend to retain in the active
 log. The section you name may change in its `Background:`, `Steps:`,
-`Results:`, and `Observations:`, together with the corresponding evidence rows
-and exclusively owned scripts or artifacts needed for the replacement. Leave
+`Results:`, and `Observations:`, together with the corresponding evidence
+records and presentation markers and the exclusively owned scripts or artifacts
+needed for the replacement. Leave
 other labels unchanged unless you include them in the request.
 
 Preserve every decision exactly. If the replacement removes or contradicts the
@@ -305,11 +279,12 @@ contains both `Steps:` and `Results:` and generates new evidence. A synthesis
 section contains `Findings:` without experimental labels and records
 inspection, comparison, audit, or synthesis of existing material whose
 scientific content you validate. A prose section contains no block labels and
-provides contextual or connective information. Only experimental sections
-enter automated validation.
+provides contextual or connective information. Only experimental sections can
+contain entry evidence targets.
 
-Synthesis and prose sections add no validation results or `evidence.csv` rows,
-and changes confined to them do not make validation out of date. A synthesis
+Synthesis and prose sections add no mechanically presented evidence or evidence
+records, and changes confined to them do not make validation out of date. A
+synthesis
 may preserve external evidence or selected findings from discarded internal
 investigations whose experimental records and supporting files are not
 preserved. You remain responsible for validating this non-primary material. If
@@ -345,10 +320,8 @@ Experimental sections require `Steps:` and `Results:` and may also use
 `Findings:` and may use `Background:`, `Decisions:`, `Uncertainty:`, and
 `Follow-up:`. Prose sections use no labels.
 
-Do not add a `Validation:` label. Active mechanical metadata belongs in the
-applicable evidence record or adjacent hidden annotation, while generated
-status belongs only in validation-owned files. Historical `Validation:` prose
-has no authority in active mechanical validation.
+Do not add a `Validation:` label to an entry. Validation status belongs only in
+the generated validation report.
 
 ### Compact examples
 
@@ -461,21 +434,11 @@ not follow these conventions. Do not replace them with an invented command or
 rerun them merely to make the record conform. State any missing information or
 material as a limit on later reconstruction.
 
-Use an explicit command for a one-off invocation. For genuinely repeated
-commands, mechanical validation can expand a closed static shell subset:
-literal `for` loops; locally defined functions of any valid name invoked with
-one or more literal arguments whose bodies use only literal calls, `$1`,
-`shift`, and `$@`; and loop-local literal `case` branches that assign a scalar
-or literal array. `$name`, `${name}`, and `${array[@]}` must resolve from a
-binding established by the same supported construct. A trailing `&` and
-standalone `wait` may express scheduling.
-
-Validation does not execute or generally interpret Bash. Environment reads,
-globs, command or process substitution, arithmetic, dynamic value lists or
-branch selection, and nested control flow cannot establish evidence
-relationships. Unsupported blocks are fail-closed: their bodies are not
-treated as independent commands. Hidden command annotations count concrete
-invocations after a supported expansion.
+Use an explicit command for a one-off invocation. Finite repeated commands may
+use simple literal shell structure, but keep the values and material paths
+needed to understand each invocation mechanically visible. Validation does not
+execute shell or guess through dynamic shell behavior; it reports unsupported
+command structure rather than inferring relationships from it.
 
 For Python, use the entry-root `./pyrun` launcher. It uses
 `<project>/.conda/bin/python` when that environment exists; otherwise it uses
@@ -502,13 +465,19 @@ nontrivial command:
 
 ```bash
 ./pyrun scripts/run_study.py \
-  --dataset "<development_set>" \
+  --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
   --seed 123 \
   --samples 500 \
-  --summary-csv data/study-summary.csv
+  --output-summary-csv data/study-summary.csv
 ```
+
+Make evidence-relevant input and output relationships mechanically visible.
+Prefer natural option names that make input and output paths obvious. When the
+real command cannot do that naturally, the research-logging workflow maintains
+the additional metadata needed for validation. Researchers should not have to
+reshape a natural command merely to satisfy validation.
 
 Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results. Save
@@ -593,184 +562,57 @@ it matters in the entry, not in `refs.bib`.
 
 ## Results and supporting evidence
 
-Computational evidence is treated as a presented result when it appears in one
-of four recognizable forms:
+Computational results belong in experimental sections and must be supported by
+retained material from the recorded research workflow. Common presentations
+include numerical results in prose, Markdown tables, excerpts of saved command
+output, figures, and links to retained artifacts.
 
-- an explicitly presented saved file or collection, including structured data,
-  textual output, or a figure;
-- a Markdown table;
-- a `text` code block containing an excerpt from saved command output; or
-- an explicitly marked numerical statistic, including a derived comparison.
+Present the result naturally. Keep the quantity, units, uncertainty, and
+comparison clear enough that another researcher can understand what was
+measured or derived. A derived value must already exist in retained output; do
+not calculate a new result only while drafting the entry.
 
-A link to a saved file, an embedded image, a Markdown table, or an excerpt of
-saved command output in a `text` code block is presented evidence only under
-`Results:`. Tables elsewhere remain available for non-evidential information.
-A linked or embedded file must be identifiable either as a `data.csv` resource
-resolved by a recorded command or as an output path resolved from a value in a
-recorded command or a file written with `tee` or redirection. The value's role
-follows from command and code context; it does not require a particular
-parameter name. Merely naming a file in prose does not present it directly.
+Retain the source material needed to check the presentation. One source may
+support several results, and one result may draw on several sources. Structured
+results should retain structured data when practical rather than only formatted
+text. Figures and linked artifacts must connect to the recorded command that
+produced or used them.
 
-Prefer tables, figures, and marked statistics to direct links to output files.
-Link an output file only when direct inspection or reuse of the file is itself
-important; do not list output files merely to report that a command created
-them.
+The research-logging workflow maintains supporting evidence metadata alongside
+the entry. That metadata connects each presented result to its retained sources
+and records permitted presentation steps such as selection, rounding, units,
+uncertainty, or table assembly. Researchers do not need to author or inspect its
+technical syntax during normal work. Review and validation report when the
+connection is missing, ambiguous, unsupported, or inconsistent.
 
-A numerical statistic in an experimental entry section or summary is presented
-evidence when its value and units are enclosed in inline code formatting. Keep
-the quantity name and connective comparison wording outside the formatting:
-write “Error fell from `0.292%` to `0.286%`.” A derived comparison such as
-`14.3% lower` is one evidence item only when that derived value exists in a
-saved output. Inline code that clearly contains text, an identifier, or a
-parameter is not evidence. Numerical content that is not evidence must avoid
-inline code formatting when it could be mistaken for a marked result. Unmarked
-numerical prose is not checked. A Markdown table is one presented item, not a
-collection of statistics: use plain formatting for numerical cells and reserve
-backticks in tables for visibly textual identifiers or code labels. Formatting
-inside synthesis and prose sections has no validation meaning.
+Every presented project-generated result must trace through the recorded
+workflow until it reaches an external data source or a model or simulation that
+originated the data. External data is trusted as a provenance boundary;
+scientific review, rather than mechanical validation, determines whether it is
+appropriate and persuasive.
 
-If you discuss a table value again as a numerical claim in experimental prose,
-mark and index that prose claim separately; the table does not stand in for it.
+Material may also be retained intentionally for later investigation even when
+it is not used by a current result. Tell the research-logging agent why it is
+being kept so that it can be distinguished from an accidental orphan. This
+does not turn the material into evidence.
 
-Presented results and supporting files have a many-to-many relationship. One
-file may support several results, and one result may draw on several files. A
-table does not need a separate file for every cell. Each marked statistic,
-Markdown table, and block showing saved command output has one row in the entry
-folder's `evidence.csv`, which records its saved source or sources. File links,
-image embeds, and collections do not use this record because they must connect
-directly to their recorded workflow.
+### Summary evidence
 
-An association must establish that the source and presented result have the
-same meaning in context; finding the same numeral in an unrelated field is not
-sufficient. Rounding, reformatting, equivalent numeric notation, and lossless
-selection or ordering are permitted. A derived result must itself come from a
-saved workflow output rather than an ad hoc calculation made while drafting.
+The maintained summary reports current understanding; it does not originate new
+computational evidence. A numerical result in the summary must already be
+supported in an experimental entry. If the summary needs a differently rounded
+value, different units, or another derived comparison, establish that
+presentation in an entry first.
 
-For structured files, a locator may select particular rows, fields, arrays,
-datasets, or properties such as shape and size. Validation reads only the
-needed portion. It does not open pickle files as evidence; retain a CSV or JSON
-summary from an explicit command instead.
+The research-logging workflow maintains the association between a summary
+result and its supporting entry evidence. Researchers should review
+whether the summary wording preserves the meaning and limitations of the entry;
+mechanical validation checks only that the recorded values and associations
+remain consistent.
 
-Every presented project-generated item must trace to saved output produced
-by an identified workflow and through its code, configuration, direct inputs,
-and upstream generated inputs until it reaches the original source inputs.
-
-### Connecting results to source files
-
-`data.csv` indexes command inputs; `evidence.csv` maps presented evidence to
-its immediate saved sources.
-
-An entry folder uses `evidence.csv` when an experimental section presents at
-least one marked statistic, Markdown table, or block showing saved command
-output. Use one row per presented item and this exact header:
-
-```csv
-entry,section,kind,evidence,sources,transformation
-```
-
-`entry` is the owning entry document ID and distinguishes documents in a split
-entry folder. `section` is the exact preceding Markdown heading. `kind` is
-`statistic`, `table`, or `output`. `evidence` is a short description copied
-from the presented content: use the marked numerical expression for a
-statistic, the ordered column headings for a table, or the first distinctive
-non-empty line of saved command output. Add minimal surrounding wording or an
-occurrence number only when otherwise identical items occur in the same
-section.
-
-`sources` names the immediate saved source or sources. Use paths relative to
-the entry folder, `<log>/...` for material in the log directory, or an exact
-`<name>` token from the entry's `data.csv`. Do not place absolute paths, web addresses, or
-remote-storage addresses directly in this record. Separate several sources with
-` | ` and separate a source from its optional locator with ` :: `. A statistic
-names exactly one saved source file, an output block names exactly one saved
-command log, and a table names one or more saved source files.
-
-Omit the locator only when the whole file clearly supports the result. Otherwise
-add a stable source selector, called a locator, that identifies the relevant
-part of the file. Prefer row keys and fields, structured key paths, datasets,
-records, or distinctive text over line numbers. Use `transformation` only when
-needed to describe selection, ordering, table assembly, rounding, or equivalent
-formatting. It may not describe a new calculation; a derived result must
-already exist in its saved source.
-
-Use this closed locator format after ` :: `:
-
-- For CSV, TSV, and other tables, filter exact values with `column=value`,
-  separate filters with `; `, and select the result with `field=name` or
-  `fields=name|name`. Use `value1|value2` for alternatives in one filter. If a
-  source column is itself named `field`, `fields`, `path`, `property`, or
-  `text`, prefix the filter with `where.`.
-- For JSON, NPZ, HDF5, and similar structured files, use `path=`. Separate keys
-  with `.`, use `[n]` for an item, `[start:stop]` for a slice, and `path=$` for
-  the file root. Add filters and `field=` or `fields=` when the selected object
-  contains records or aligned arrays. HDF5 dataset paths may use `/`. Use
-  `property=shape`,
-  `property=shape[n]`, or `property=size` only when the presented result is
-  structural information about an array or dataset.
-- For text and command logs, use `text=` followed by a distinctive literal
-  fragment.
-
-Use `; ` only between clauses and `|` only between alternative exact values or
-field names. Do not put either separator inside a value; choose a different
-stable key or text fragment. Commas are literal data, although the surrounding
-CSV cell still follows normal CSV quoting.
-
-Examples:
-
-```text
-data/comparison.csv :: case=baseline; field=error_percent
-data/comparison.csv :: case_id=8|15; fields=case_id|error_percent
-data/comparison.csv :: where.field=validation_error; candidate=trial; field=difference
-data/results.json :: path=simulation[0].throughput_pix_per_s
-data/run.npz :: path=$; labels=base; field=wind_delta_deg
-<training_pool> :: path=status/state; property=shape[0]
-data/run.log :: text=completed 49152 outer pixels
-```
-
-A complete entry record can then use those locators:
-
-```csv
-entry,section,kind,evidence,sources,transformation
-e004,Model comparison,statistic,14.3% lower,"data/comparison.csv :: row=standardized; field=mse_reduction_percent",
-e004,Model comparison,table,"model,mse,relative change","data/comparison.csv :: row=baseline|standardized; fields=model|mse|relative_change","Rows selected and values rounded to three decimals"
-```
-
-The `evidence.csv` in the log directory maps every presented summary statistic
-to exactly one supporting entry and section. `statistic` uses the same rule for
-choosing identifying text as an entry statistic. Use this exact header:
-
-```csv
-statistic,entry,section,transformation
-```
-
-For example:
-
-```csv
-statistic,entry,section,transformation
-14% lower,e004,Model comparison,Rounded from 14.3% to a whole percentage
-```
-
-Update an evidence row whenever its presented item, identifying text, section,
-source, locator, or transformation changes. Record and Replace maintain entry
-rows with their presented evidence; Replace remains within its approved scope.
-Update Summary maintains log-level rows with presented summary statistics.
-
-When values change inside the same source but the presented item, section,
-source, locator, and transformation remain correct, leave the evidence row
-unchanged. Validation detects the changed source when it next runs.
-
-Reorganize may repair only an `entry` or `section` value in a log-level row
-made stale by an approved move or heading change. It does not change the
-statistic, transformation, summary wording, or set of summary evidence rows.
-
-These records are part of the research record, not validation results. Review
-reports problems and Validate reads and verifies rows; neither changes them. A
-requested repair uses Record or Replace for an entry row and Update Summary for
-a log-level row. Delete a header-only file after removing its last required
-row. Report any result-to-source link that cannot be established confidently
-rather than guessing. Missing, malformed, ambiguous, out-of-date, or incorrect
-required rows fail the source-tracing check called Provenance. Validation
-reports the issue rather than repairing it.
+Record and Replace maintain entry evidence within their authorized scope.
+Update Summary maintains summary associations. Review and Validate report
+problems but do not change the research record.
 
 ## The current summary
 
@@ -824,10 +666,10 @@ explicitly, and do not invent follow-ups from general discussion.
 
 A current summary may present marked statistics but does not originate new
 statistics. Each presented summary statistic must match the meaning of evidence
-in one experimental entry section. The `evidence.csv` in the log directory
-records this link. Research-log review determines whether qualitative summary
-points are supported by entries. Summaries do not contain tables, images,
-blocks showing saved command output, or links to saved files.
+in one experimental entry section. The research-logging workflow maintains that
+association. Research-log review determines whether qualitative summary points
+are supported by entries. Summaries do not contain tables, images, blocks
+showing saved command output, or links to saved files.
 
 ### AI-use disclosure
 
@@ -894,10 +736,10 @@ Check the requested area against these questions:
   question rather than run chronology? Does the entry avoid agent activity,
   routine checks, housekeeping, and task progress that do not bear on the
   research evidence?
-- **Evidence:** Does each presented statistic, table, or command-output excerpt
-  have exactly one valid `evidence.csv` row? Are file links and images connected
-  to recorded commands? Report missing, duplicate, extra, malformed, or
-  out-of-date rows, but do not decide whether the scientific claim is correct.
+- **Evidence:** Can each presented statistic, table, command-output excerpt,
+  file, or image be traced to retained supporting material and its recorded
+  workflow? Report missing, ambiguous, or stale connections, but do not decide
+  whether the scientific claim is correct.
 - **Reconstructing the work:** For active investigations, do recorded commands
   use the expected environment, `./pyrun`, named inputs, explicit settings, and
   saved outputs? Are scripts in the right location, figure-generation code and
@@ -908,8 +750,8 @@ Check the requested area against these questions:
   `data.csv` avoid duplicate or unused names, unresolved tokens, and script or
   image rows?
 - **Summary:** Is every substantive point supported by an entry? Does the
-  summary describe current understanding, preserve the dated validation
-  record, include explicit follow-ups, and end with the AI-use disclosure?
+  summary describe current understanding, preserve the stable validation-report
+  link, include explicit follow-ups, and end with the AI-use disclosure?
 - **References:** Do citation keys resolve to authoritative metadata in
   `refs.bib`, and are references cited where they are used?
 
@@ -917,147 +759,67 @@ Review checks the structure and support of the record. Validation separately
 checks whether declared sources resolve, presented results match their sources,
 and the computational history is complete. You retain authority over methods,
 interpretation, conclusions, accepted synthesis, and research direction.
+
 ## Validating a research log
 
-Mechanical validation is a code-only check of one maintained research log. It
-does not execute research commands, inspect script internals for hidden
-relationships, judge scientific meaning, or perform reproduction.
+Mechanical validation is a code-only check of the recorded research log. It
+does not rerun the research, judge scientific meaning, or decide whether a
+result is persuasive. Those questions belong to reproduction and scientific
+review.
 
-`docs/research-log-evidence-record-spec.md` is the normative source of truth
-for evidence, mechanical evaluation, generated state, and the explicit upgrade
-boundary. This section is its researcher-facing operational summary.
+At a high level, validation checks four things:
 
-### Mechanical scopes
+- the research log and its supporting metadata are structurally consistent;
+- presented computational results match their declared retained sources;
+- generated evidence can be traced through recorded commands to external data,
+  a model, or a simulation; and
+- retained files are connected to the recorded work or intentionally kept.
 
-The generated record keeps four conclusions independent:
-
-- **Conformance** checks the active evidence-file, locator, transformation,
-  presentation-marker, command-annotation, and resource-bound contracts.
-- **Evidence** checks that each declared source selection and transformation
-  reproduces the exact supported presentation template.
-- **Provenance** checks that each evidence source is rooted in external data, a
-  model, or a simulation through visible recorded-command relationships.
-- **Orphan detection** reports retained local material and data-index names that are
-  neither connected to evidence nor explicitly retained.
-
-A failure in one scope does not rewrite another scope's result. Missing,
-ambiguous, changing, unsafe, or unavailable observations remain explicit.
-Mechanical validation never asks an agent to choose a plausible interpretation.
+These checks are intentionally strict. A missing or ambiguous relationship is
+reported as a concrete finding instead of being guessed. Findings in one area
+do not erase valid results in another.
 
 ### Running validation
 
-Use the research project's required Python environment:
+Use the research project's validation command:
 
 ```bash
 <project-python> <validation-tool> validate \
   --summary <log-summary>
 ```
 
-Use `--date YYYY-MM-DD` when an explicit result date is required,
-`--jobs N` to set the positive worker bound, and `--dry-run` to evaluate
-without writing generated files.
+A mechanical evaluation reports either that no findings were found or that one
+or more findings need attention. A preliminary validator-state check may
+instead stop before evaluation when it finds incompatible generated validation
+files; this publishes no validation result. These files are not research
+findings. Before validation can run, a researcher or maintainer must separately
+archive them outside the active log or remove them. If the validator cannot
+complete a required observation, it reports an incomplete run rather than
+treating the unchecked area as valid. A reported finding is a successful
+validation result, not a tool failure.
 
-The structured status is one of:
+A completed published mechanical evaluation writes the human-facing
+`<log>/validation.md` report. It shows when mechanical validation last
+completed, summarizes the four check areas, and lists non-passing checks by
+entry. Its separate Reproduction section remains independent and shows that
+reproduction has not yet run until that workflow produces its own result.
 
-- `complete_clear`: evaluation completed without findings;
-- `complete_findings`: evaluation completed and found one or more precise
-  mechanical problems;
-- `upgrade_required`: the cutover preflight found v1 evidence, recognized
-  legacy generated validation metadata, or both;
-- `incomplete`: at least one required mechanical observation was unavailable.
-
-Complete-clear, complete-findings, and upgrade-required results exit zero.
-Incomplete evaluation and tool failure exit nonzero. A correctly reported
-finding is a completed result, not a tool error.
-
-The active validator accepts the v2 evidence contract. During the temporary
-cutover interval before the maintained-log upgrade, a log that still contains
-`evidence.csv` or legacy generated validation metadata returns one
-`validation.upgrade_required` result identifying every detected condition.
-It writes nothing, does not interpret legacy semantic state, and does not fall
-back to the retired validator.
-
-### Generated records
-
-A completed mechanical evaluation may publish:
-
-```text
-<log>/
-  validation.md
-  validation/
-    mechanical.json
-    .cache/
-      mechanical.json
-      lock
-```
-
-`validation/mechanical.json` is the authoritative machine-readable record and
-uses schema `research-log-mechanical/1`. It contains every check, its precise
-failure payload when applicable, the independent scope aggregates, rules
-version, and result date.
-
-`validation/.cache/mechanical.json` is a disposable reuse projection with the
-independent `research-log-mechanical-cache/2` schema. In addition to reusable
-passing checks, it retains project-relative artifact identities so unchanged
-files do not need to be hashed again. Reuse requires an exact match of current
-file size, modification time, and change time. A rules-version change
-invalidates cached checks but preserves compatible artifact identities.
-Missing, changed, corrupt, or unsupported cache state causes bounded
-recomputation and never changes the validation conclusion. `--recompute`
-bypasses both forms of reuse.
-
-`validation.md` is the human projection. Its Mechanical Validation section
-shows completion and date, counts by scope and status, and every non-passing
-check grouped by entry. Passing check details remain in `mechanical.json`.
-Its separate Reproduction section states `not_yet_run` until reproduction has
-its own generated result. The report never combines the two operations into one
-pass/fail conclusion.
-
-Validation publishes under one per-log lock and leaves research-owned files
-unchanged. Dry-run and incomplete evaluation publish nothing. An ordinary
-publication failure restores the prior completed bundle.
+The adjacent `<log>/validation/` directory contains machine-readable results
+and reusable state maintained by the validator. Researchers and research agents
+should not edit those generated files directly. Validation reads the research
+record but changes only its own generated output.
 
 ### Resolving findings
 
-Validate reports generated findings but does not edit research material. A
-later, separately authorized Record operation resolves them using the evidence
-specification, recorded-command conventions, and the exact code, subject,
-observed state, and violated rule in `mechanical.json`. The next validation
-confirms the correction.
+Validation identifies problems; it does not repair the research record. A
+separate research operation reviews the report, corrects the relevant evidence,
+command, source, or retained-material relationship, and then requests another
+validation run. When incompatible generated metadata stops evaluation before a
+report is published, use the paths identified by the validation command for a
+separately authorized archival or removal action; a research operation must not
+modify them.
 
-Do not hand-edit generated records, invoke retired semantic validation code, or
-treat report existence as proof of currentness. Mechanical validation does not
-continue into semantic review or reproduction; those workflows have separate
-ownership.
-
-## Roles and keeping validation current
-
-Run Validate as a separate, read-only operation after Record. The same agent
-may invoke it, but while validating it cannot edit or repair research-owned
-material. This operation boundary is not a claim of organizational independence
-or independent scientific replication.
-
-Research changes and canonical validation are separate activities. Validation
-is observational: completed outcomes record the dependencies actually observed
-for those checks, while an input that changes during observation remains
-unresolved. Unrelated concurrent changes do not discard compatible completed
-work. Different logs may validate concurrently, while the validation tool
-safely coordinates writes to the same log.
-
-The validation agent may read maintained summaries, entries, visible recorded
-commands, scripts as identified artifacts, saved evidence, `data.csv`, and
-evidence records, but it cannot change them or inspect script internals to
-invent associations. It records results only in generated validation files and
-reports problems without repairing the research record.
-
-The research agent may edit the research record and maintain its evidence and
-command-association metadata. It never edits, deletes, repairs, or normalizes
-generated validation files and cannot assign a completed validation result.
-
-Research changes do not trigger validation, semantic review, reproduction, or
-summary update. Perform only the production check needed to keep changed
-presentation consistent with its retained source. The next Validate request
-compares outcome dependencies with saved observations, reuses compatible work,
-and updates only validation-owned artifacts. Missing or changing evidence
-affects only the outcomes that depend on it. Validation does not inspect or
-report version-control status.
+Research changes do not automatically trigger validation, semantic review,
+reproduction, or summary updates. The report represents the latest completed
+validation run, while the next run determines which prior checks remain current
+and which must be evaluated again.

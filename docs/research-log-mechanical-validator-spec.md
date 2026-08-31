@@ -1,18 +1,22 @@
-# Research-Log Mechanical Validation Specification
+# Research-Log Mechanical Validator Specification
 
 ## Status And Authority
 
-Status: active Phase 1 mechanical-validation specification as of 2026-08-29.
-The Pass 8 public cutover, generated-state contract, stable runtime, and legacy
-rejection boundary implement this specification. Pass 9 still owns conversion
-of maintained v1 research metadata and replacement of each log's legacy
-generated state.
+Status: active mechanical-validator implementation specification as of
+2026-08-30.
 
-This document is the single source of truth for active research-log mechanical
-validation and the explicit v1-to-v2 upgrade boundary. The frozen v1
-`evidence.csv` input contract is defined separately in
-`docs/research-log-evidence-v1-upgrade-reference.md` and is imported only by
-explicit upgrade tooling. Active standard validation is v2-only.
+This document is the normative implementation contract for the code-only
+research-log mechanical validator, its tests, generated records, cache,
+diagnostics, and public operation. It defines the evidence-record, association,
+provenance, orphan-detection, and generated-state contracts that validator code
+implements.
+
+The specification includes `evidence.json`, presentation-marker, locator,
+transformation, and command-discovery syntax because these are inputs to the
+validator. The self-contained research-logging skill carries the bounded
+authoring and operational rules agents need to produce compatible research
+logs; ordinary research-agent work does not load this implementation
+specification.
 
 The provenance audit is rooted in evidence and direct artifact presentations,
 not in complete validation of every recorded command. Recorded command
@@ -40,11 +44,10 @@ The complete specification owns:
 - the public validation operation, result envelope, completion and exit
   meanings;
 - generated mechanical-record, cache, lock, and human-report contracts; and
-- cutover preflight, Git-backed migration, and completed-validation boundaries.
+- unsupported-metadata preflight and completed-validation boundaries.
 
-The legacy reference owns only the frozen v1 language used during explicit
-upgrade. No implementation, skill reference, test fixture, or shorter human
-guide may define a competing evidence, locator, transformation, association,
+No implementation, skill reference, test fixture, or shorter human guide may
+define a competing evidence, locator, transformation, association,
 command-provenance, outcome, or generated-state contract. A feature is added
 only when a concrete specification contradiction or retained-corpus case
 passes the natural-authoring gate.
@@ -103,8 +106,8 @@ not ask an LLM to infer the connection or require a parallel provenance record.
 
 This specification owns:
 
-- the explicit legacy-upgrade boundary and active entry-local v2
-  `evidence.json` serialization, schema, and record-level constraints;
+- active entry-local v2 `evidence.json` serialization, schema, and record-level
+  constraints;
 - stable presentation and evidence-record identities;
 - exact presentation-to-record association;
 - exact summary-reference syntax, resolution, table coordinates, and
@@ -154,7 +157,7 @@ The locator is one evidence-record component. The presentation-transformation,
 evidence-association, command-provenance, material-graph, orphan-detection, and composed
 outcome subcontracts below own the remaining stages.
 
-## Active Version And Legacy Boundary
+## Active Version
 
 V2 is the only active locator language.
 
@@ -163,12 +166,8 @@ V2 is the only active locator language.
   prefix.
 - A locator with any other `v<integer>:` prefix fails as unsupported.
 - Version selection occurs before version-specific parsing.
-- A v2 parse or evaluation failure is a mechanical failure and never falls
-  back to v1 or another interpretation path.
-- The explicitly invoked upgrade operation may evaluate frozen v1 input only
-  through `docs/research-log-evidence-v1-upgrade-reference.md`.
-
-The v1 language does not constrain v2 and is not a standard-validation mode.
+- A v2 parse or evaluation failure is a mechanical failure and is not retried
+  under another interpretation.
 
 ## V2 Evidence Source Objects
 
@@ -192,7 +191,8 @@ embedded source-list or locator delimiter grammar.
 `locator` is the JSON object portion of an explicit v2 locator. It must not
 contain a `v2:` string prefix. The evaluator treats it as v2 before parsing and
 uses `v2:` followed by its canonical JSON serialization as the locator
-identity. A v2 source object cannot contain a v1 locator or omit `locator`.
+identity. A v2 source object cannot contain a serialized locator string or omit
+`locator`.
 
 Array order defines transformation input slots. There is no outer source-list
 parser, mixed locator version, or CSV escaping in this host form.
@@ -251,8 +251,7 @@ A failed locator is a completed mechanical result with no semantic fallback.
 
 ## Common Selection Result
 
-The active v2 evaluator and the legacy upgrade reader return the same ordered
-selection shape:
+The active v2 evaluator returns this ordered selection shape:
 
 - the declared and effective locator version;
 - the canonical locator identity;
@@ -328,9 +327,7 @@ belongs to the transformation contract.
 
 ### V2 Purpose
 
-V2 is a clean-sheet language for maximizing deterministic, bounded mechanical
-selection. It has no syntax or behavior compatibility requirement with the
-legacy language.
+V2 maximizes deterministic, bounded mechanical selection.
 
 V2 adds:
 
@@ -833,15 +830,13 @@ below are closed grammar discriminants, not extensible presentation profiles.
 - Identity has canonical identity `identity`.
 - An embedded v2 transformation object's canonical identity is `v2:` followed
   by its canonical JSON serialization, matching the standalone prefixed form.
-- A string, array, number, or Boolean in a v2 JSON `transformation` field fails;
-  legacy transformations cannot be embedded in `evidence.json`.
-- A v2 parse or evaluation failure never falls back to v1.
+- A string, array, number, or Boolean in a v2 JSON `transformation` field fails.
+- A v2 parse or evaluation failure is not retried under another
+  interpretation.
 - Locator and transformation objects retain independent grammars and canonical
   identities within the v2 record.
 
-V2 is the only active mechanically executable transformation language. The
-frozen legacy transformation contract belongs to
-`docs/research-log-evidence-v1-upgrade-reference.md`.
+V2 is the only active mechanically executable transformation language.
 
 ### Transformation Input Bundle
 
@@ -1657,8 +1652,7 @@ canonical form.
 
 ## Resource And Safety Bounds
 
-Active v2 evaluation and legacy upgrade evaluation are bounded by the same
-required default limit profile:
+Active v2 evaluation uses this required default limit profile:
 
 | Resource | Limit |
 | --- | ---: |
@@ -1808,43 +1802,41 @@ read surrounding prose to decide whether a relationship is plausible. A
 missing, conflicting, or unsupported declaration is a completed mechanical
 failure.
 
-### Evidence-File Versions And Upgrade Boundary
+### Evidence Files And Unsupported Metadata
 
-The versions have separate files and roles:
+The active association surfaces have these roles:
 
 | Role | File | Association |
 | --- | --- | --- |
-| Legacy v1 entry migration input | Entry-root `evidence.csv` | Content-derived selector for an unmarked entry presentation |
-| Legacy v1 summary migration input | Maintained-log-root `evidence.csv` | Content-derived selector for an unmarked summary statistic |
 | Active v2 entry presentation | Entry-root `evidence.json` | Entry-scoped stable ID shared with one hidden Markdown marker |
 | Active v2 summary reference | Maintained summary Markdown | Hidden reference to one entry ID and entry evidence ID, plus a table coordinate when applicable |
 | Active v2 retention | Entry-root `evidence.json` | Entry-owned declaration; no Markdown marker |
 
-One published log is wholly on one side of the upgrade boundary. Before
-upgrade, its legacy evidence declarations are in `evidence.csv` and are read
-only by the upgrade operation. After upgrade, all evidence declarations are in
-entry-local `evidence.json`, every eligible entry presentation uses its
-required v2 marker, every eligible summary statistic uses its required v2
-reference, and no `evidence.csv` remains anywhere in that maintained log. Every
-v2 `evidence.json` belongs to the root of the entry whose records it owns; any
-other placement fails as `evidence.file.location_invalid`.
+All evidence declarations are in entry-local `evidence.json`. Every eligible
+entry presentation uses its required v2 marker, and every eligible summary
+statistic uses its required v2 reference. Every v2 `evidence.json` belongs to
+the root of the entry whose records it owns; any other placement fails as
+`evidence.file.location_invalid`.
 
-Active standard validation is v2-only. A bounded cutover preflight detects
-`evidence.csv`, recognized legacy generated validation metadata, or both and
-returns one `validation.upgrade_required` result listing every condition found.
-It writes nothing, does not route unmarked presentations to v1, and does not
-interpret legacy generated state. Retention records participate in entry-local
-ID uniqueness and orphan classification, but not presentation association.
+The bounded unsupported-metadata preflight detects recognized unsupported
+generated validation metadata and returns one
+`validation.unsupported_metadata` result listing every path found. It writes
+nothing and does not interpret the unsupported content. Retention records
+participate in entry-local ID uniqueness and orphan classification, but not
+presentation association.
 
-The cutover preflight recognizes v1 evidence by the exact filename
-`evidence.csv` anywhere below the maintained-log root, with a limit of 10,000
-matching files. It recognizes legacy generated state only at these exact paths,
+The standard validation operation never removes these paths. They must be
+archived outside the active log or removed through a separately authorized
+maintenance action before validation is rerun.
+
+The preflight recognizes unsupported generated state only at these exact paths,
 relative to the maintained-log root:
 
 - `validation/manifest.json`;
 - `validation/outcomes`, `validation/judgments`, or `validation/failures`;
 - `validation/.cache/cache.json` or
   `validation/.cache/subject-index.json`;
+- `validation/.cache/upgrade-transactions`;
 - `validation/.cache/index-deltas`, `validation/.cache/work`, or
   `validation/.cache/validation.log`;
 - `validation-decisions.json`, `validation-state.json`,
@@ -1854,31 +1846,14 @@ relative to the maintained-log root:
 - `.research-log-validation.lock`.
 
 When no active `validation/mechanical.json` exists, the preflight also treats
-`validation.md` as legacy generated state if its bounded prefix contains the
-old `| Entry | Date | Checked | Reproducibility |` table header or the
-`## Status Summary` marker. It does not parse any legacy JSON, shard, cache,
+`validation.md` as unsupported generated state if its bounded prefix contains
+the `| Entry | Date | Checked | Reproducibility |` table header or the
+`## Status Summary` marker. It does not parse any obsolete JSON, shard, cache,
 decision, session, or report conclusion. An unrelated file does not become
-legacy state merely because it is below a directory named `validation`.
+obsolete state merely because it is below a directory named `validation`.
 
-A nonempty, malformed, or symlinked
-`validation/.cache/upgrade-transactions` path remains a bounded operational
-rejection as `upgrade.recovery.required`. This recognizes unsupported residue
-from the isolated legacy upgrade implementation; it does not require Pass 9 to
-recover that transaction or create a current recovery protocol. Pass 9 removes
-the residue under the Git-backed migration boundary before current validation.
-
-The upgrade operation may parse v1 CSV rows and unmarked presentations to
-inventory and author the corresponding current metadata. During that
-separately authorized research operation, the worktree may temporarily contain
-both formats. Standard validation continues to report
-`validation.upgrade_required` and writes nothing until the final
-`evidence.csv` and recognized legacy generated state have been removed. Git,
-not a validator-owned transaction system, provides the recovery boundary.
-
-The legacy reference defines the v1 CSV parser. V2 JSON records permit only v2
-locators and v2 transformations because they embed structured JSON objects
-directly. Neither parser imports or falls back to the other version's
-behavior.
+V2 JSON records permit only v2 locators and v2 transformations because they
+embed structured JSON objects directly.
 
 Direct artifact presentations use their Markdown target and the provenance
 contract rather than `evidence.json`.
@@ -1905,7 +1880,7 @@ An entry-root presentation record has exactly:
 ```json
 {
   "id": "candidate-success-rate",
-  "document": "entries/2026-08-27-e001-study/entry.md",
+  "document": "entries/2026-08-27-e001-study/e001.md",
   "kind": "statistic",
   "sources": [
     {
@@ -2117,13 +2092,13 @@ The deterministic section classifier remains outside this specification but
 its declared classifier version and classification result are association
 dependencies. A marker cannot override an ineligible context.
 
-In an upgraded log, every eligible entry statistic, table, or `text` output
-block must have one valid v2 entry marker, and every eligible summary statistic
+Every eligible entry statistic, table, or `text` output block must have one
+valid v2 entry marker, and every eligible summary statistic
 must have one valid v2 summary reference. A missing entry marker fails
 `association.declaration_missing`; a missing summary reference fails
-`summary.reference.missing`. Neither is routed to v1. Other unmarked prose is
-not promoted to evidence by validation. Semantic Review may report an
-apparently evidential claim that uses no supported presentation form.
+`summary.reference.missing`. Other unmarked prose is not promoted to evidence
+by validation. Semantic Review may report an apparently evidential claim that
+uses no supported presentation form.
 
 Artifact links and image embeds in experimental `Results:` remain direct
 artifact presentations. They do not use evidence-record files or evidence markers.
@@ -2219,10 +2194,10 @@ evidence, or leave it as ordinary synthesis prose rather than marked summary
 evidence.
 
 A reference cannot chain through another summary, cross a maintained-log
-boundary, refer to v1, combine records, or target an output or retention
-record. It inherits the referenced entry record's completed evidence and
-provenance projections but not the supporting sentence, heading,
-interpretation, or semantic claim. Whether surrounding summary prose faithfully
+boundary, combine records, or target an output or retention record. It inherits
+the referenced entry record's completed evidence and provenance projections but
+not the supporting sentence, heading, interpretation, or semantic claim.
+Whether surrounding summary prose faithfully
 synthesizes the entry belongs to the Summary Fidelity review lens.
 
 ### Association Completeness And Conflict Rules
@@ -2277,8 +2252,8 @@ Entry-local `evidence.json`, entry markers, and summary references participate
 in active association currentness. Adding, removing, or changing a marker
 reopens its attached v2 presentation and dependent summary references. Adding,
 removing, or changing a summary reference reopens that summary association. A
-newly observed `evidence.csv` makes the log upgrade-required under the public
-cutover preflight; its row contents are not merged into v2 currentness.
+newly observed unsupported generated-state path causes the preflight to return
+`validation.unsupported_metadata`; its contents do not enter currentness.
 
 The validator may use whole-file hashes to detect a need for parsing but must
 persist and compare the narrower association projection for outcome reuse.
@@ -2286,13 +2261,12 @@ persist and compare the narrower association projection for outcome reuse.
 ### Association Failures
 
 Every failure records the v2 record identity when known, document, kind,
-observed marker or presentation, and violated clause. Upgrade-only v1 failures
-are defined by `docs/research-log-evidence-v1-upgrade-reference.md`. Reserved
-active-validation codes are:
+observed marker or presentation, and violated clause. Reserved active-validation
+codes are:
 
 | Code | Scope | Condition |
 | --- | --- | --- |
-| `validation.upgrade_required` | cutover preflight | Active validation encountered v1 `evidence.csv`, recognized legacy generated validation metadata, or both. The result lists every detected condition and writes nothing. |
+| `validation.unsupported_metadata` | unsupported-metadata preflight | Active validation encountered recognized unsupported generated validation metadata. The result lists every detected path and writes nothing. |
 | `evidence.json.schema_invalid` | conformance | A v2 JSON file has an invalid top-level schema, shape, or JSON encoding. |
 | `evidence.file.encoding_invalid` | conformance | A v2 JSON file is not permitted UTF-8. |
 | `evidence.file.empty` | conformance | A v2 JSON file has no records. |
@@ -2313,7 +2287,7 @@ active-validation codes are:
 | `summary.reference.missing` | evidence | An eligible summary statistic has no adjacent v2 summary reference. |
 | `summary.reference.invalid` | conformance | A summary reference violates its exact syntax, fields, ordering, spacing, target cardinality, or placement. |
 | `summary.reference.unresolved` | evidence | The declared entry or evidence ID does not resolve exactly once in the current maintained log. |
-| `summary.reference.target_invalid` | evidence | The target is v1, cross-log, unavailable, failed, or has a kind prohibited by the selected reference form. |
+| `summary.reference.target_invalid` | evidence | The target is cross-log, unavailable, failed, or has a kind prohibited by the selected reference form. |
 | `summary.reference.coordinate_invalid` | evidence | A table reference omits a coordinate, supplies a prohibited or out-of-bounds coordinate, or selects a heading, label, or non-numerical cell. |
 | `summary.reference.mismatch` | evidence | The summary expression differs from the referenced statistic or exact table-cell presentation. |
 
@@ -2820,7 +2794,7 @@ Orphan detection inventories regular retained files beneath each entry root,
 excluding:
 
 - entry Markdown documents;
-- `evidence.csv`, `evidence.json`, and `data.csv`;
+- `evidence.json` and `data.csv`;
 - the `pyrun` symlink;
 - validation-owned generated paths; and
 - temporary paths excluded by the research-log contract.
@@ -2985,26 +2959,25 @@ public standard-validation inputs; there is no mode, decisions, review,
 semantic, or reproduction input.
 
 The CLI writes one JSON result envelope to standard output when evaluation or
-cutover preflight completes:
+the unsupported-metadata preflight completes:
 
 - `schema` is `research-log-validation-result/1`;
 - `summary` is the resolved maintained-summary path;
 - `status` is `complete_clear`, `complete_findings`, `incomplete`, or
-  `upgrade_required`; and
+  `unsupported_metadata`; and
 - `published` states whether a new generated bundle was installed.
 
 A mechanical evaluation envelope also contains its complete `record` and
-non-authoritative bounded `metrics`. An upgrade-required envelope instead
-contains `code:"validation.upgrade_required"` and `observed`, whose
-`evidence_csv` and `legacy_generated_state` arrays list every detected cutover
-condition. It contains no partial mechanical record.
+non-authoritative bounded `metrics`. An unsupported-metadata envelope instead
+contains `code:"validation.unsupported_metadata"` and `observed.paths`, which
+lists every detected unsupported path. It contains no partial mechanical
+record.
 
-`complete_clear`, `complete_findings`, and `upgrade_required` exit zero because
-the requested evaluation or preflight completed. `incomplete` exits 3 and
-publishes nothing. Invalid inputs, unsupported legacy upgrade-transaction
-residue, observation failures outside the mechanical outcome contract, and
-publication failures are operational errors: they exit 2, write a precise
-message to standard error, and publish no result.
+`complete_clear`, `complete_findings`, and `unsupported_metadata` exit zero
+because the requested evaluation or preflight completed. `incomplete` exits 3 and
+publishes nothing. Invalid inputs, observation failures outside the mechanical
+outcome contract, and publication failures are operational errors: they exit
+2, write a precise message to standard error, and publish no result.
 `--dry-run` returns the applicable mechanical envelope with
 `published:false` and writes no generated path. When combined with
 `--recompute`, it performs the complete cache-independent evaluation without
@@ -3064,7 +3037,7 @@ conclusion, and standard mechanical validation reads or writes no reproduction
 record.
 
 Publication holds `validation/.cache/lock`, rejects symlinks in generated
-destinations, rechecks the cutover boundary under the lock, and atomically
+destinations, rechecks the unsupported-metadata boundary under the lock, and atomically
 replaces each destination. An ordinary error restores every replaced path to
 the prior completed bundle before releasing the lock. Process termination is
 subject to the per-destination atomicity boundary; a later invocation must not
@@ -3185,7 +3158,7 @@ Its entry-local `evidence.json` contains:
   "schema": "research-log-evidence/v2",
   "records": [{
     "id": "candidate-success-rate",
-    "document": "entries/2026-08-27-e001-study/entry.md",
+    "document": "entries/2026-08-27-e001-study/e001.md",
     "kind": "statistic",
     "sources": [{
       "source": "data/results.csv",
@@ -3361,7 +3334,7 @@ data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 | Numeric equality against a CSV lexical string without `parse` | `locator.type.mismatch`. |
 | Explicit CSV decimal parsing encounters `1,25` | `locator.predicate.parse_failed`. |
 | HDF5 external link leaves the retained file | `locator.source.unsafe`. |
-| V2 JSON is malformed | `locator.syntax.invalid`; never retry as v1. |
+| V2 JSON is malformed | `locator.syntax.invalid`; do not retry under another interpretation. |
 | Wildcard selects more than the configured bound | `locator.selection.too_large`. |
 | Summary `label` occurs outside the first column or is its row's only cell | `transformation.table.label_invalid`. |
 | Boolean cell declares `style:"Yes/No"` | `transformation.boolean.invalid`; use `yes_no`. |
@@ -3369,114 +3342,9 @@ data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 | Binary-float input is not IEEE binary16, binary32, or binary64 | `transformation.type.mismatch`. |
 | Numeric renderer declares `sign:"optional"` | `transformation.render.invalid`; use omission or `always`. |
 
-## Compatibility And Explicit Upgrade
-
-Legacy v1 and active v2 have separate roles:
-
-- `evidence.csv`, v1 locators, v1 transformations, and content-derived
-  association are legacy migration input only, as defined by
-  `docs/research-log-evidence-v1-upgrade-reference.md`.
-- entry-local `evidence.json`, v2 locators, v2 transformations, stable entry
-  markers, and exact inline summary references are the active
-  standard-validation contract.
-- V2 is not backward compatible with v1 and never falls back to it.
-- Unprefixed legacy locators are interpreted as implicit v1 only inside the
-  upgrade path.
-- No published maintained log may contain both evidence-file versions.
-- Active validation never merges v1 and v2 declarations or validates a
-  partially upgraded log.
-
-### Per-Log Upgrade Operation
-
-Upgrade is a separately authorized research operation performed against one
-target maintained log in a version-controlled worktree with a known committed
-baseline. It must:
-
-1. inventory every location-appropriate `evidence.csv` and every eligible
-   unmarked presentation in the target log;
-2. parse each legacy row under
-   `docs/research-log-evidence-v1-upgrade-reference.md` and report every
-   failure by stable code, exact row, observed state, and violated rule;
-3. assign one explicit disposition to every legacy row: one entry evidence
-   record, one summary reference, one researcher-approved replacement, or one
-   deliberate removal;
-4. author every required v2 locator, transformation, retention record, command
-   annotation, presentation change, entry marker, and summary reference;
-5. remove the target log's `evidence.csv` files, superseded Validation blocks,
-   and recognized legacy generated state only after their useful information
-   has an explicit current disposition;
-6. run standard validation against the resulting log; and
-7. accept the cutover only when validation completes as `complete_clear` or
-   `complete_findings`.
-
-A completed finding does not block upgrade. It records an exact current
-mechanical condition for a later research-agent repair workflow. An
-`incomplete` or unavailable evaluation means the migration itself is not yet
-complete and must be debugged before the log is committed as upgraded.
-
-#### Scope, Accounting, And Git Boundary
-
-One migration scope contains exactly one maintained summary, its entry tree,
-its log-owned evidence metadata, and its log-owned generated validation state.
-Cross-log material remains external to that scope even when an evidence source,
-data index, command, or prose reference names it.
-
-Before editing, record the committed baseline and inspect the complete scoped
-diff. Keep an exact row-accounting ledger outside the maintained log until
-closure. The ledger must connect every legacy row to its current disposition
-and must distinguish exact deterministic conversion from authoring that
-requires research judgment. It also records every legacy Validation block whose
-retained-material intent must become a structured retention record.
-
-Migration edits the target worktree directly. It does not require a candidate
-tree, snapshot protocol, publication journal, byte-level rollback subsystem, or
-validator-owned recovery operation. The committed baseline and reviewable
-scoped Git diff provide recovery. Unrelated worktree changes must not enter the
-migration diff or commit.
-
-Standard validation never evaluates a mixed-format worktree. While any
-`evidence.csv` or recognized legacy generated state remains, the cutover
-preflight returns `validation.upgrade_required` and writes nothing. The cutover
-point is the completed current validation after the final legacy evidence and
-generated-state paths have been removed.
-
-Migration may be assisted by deterministic code, but migration tooling is not
-a second public validation controller. It may parse frozen v1 rows, propose
-exact conversions, and report unresolved subjects. It must not guess research
-meaning, choose among plausible presentation targets, or manufacture retained
-relationships.
-
-No total automatic conversion is promised. A v1 locator converts only when its
-source profile, selection membership, typed values, and cardinality are known.
-An empty v1 transformation maps to v2 identity only when the selected value and
-presentation satisfy the v2 identity contract. Every non-empty v1
-transformation requires research-agent authorship; semantic judgments do not
-make its phrase executable. V2 never accepts free-form transformation prose.
-
-Migration diagnostics identify the exact row, presentation, source, or
-relationship that remains unresolved. The research agent applies this
-specification; the CLI does not need a repair-choice protocol. A transformation
-describing unsupported arithmetic migrates by retaining the derived value in a
-supported source, not by broadening the v2 operation language.
-
-Command-derived provenance requires no parallel provenance record. Recorded
-command surfaces, resolved script identities, `data.csv` tokens, and retained
-material remain the input surface. Prior semantic producer, upstream-producer,
-or collection-scope decisions do not become mechanical declarations. Prior
-free-form orphan or retention notes have no mechanical effect until the
-research agent replaces them with structured retention records during upgrade.
-
-After commit, the maintained log contains entry-local `evidence.json`, contains
-no `evidence.csv`, validates summary evidence through inline references only,
-and has one completed current mechanical result. The v1 reader remains solely
-in the upgrade path for other logs that have not yet crossed their own upgrade
-boundary.
-
 ## Version Evolution
 
-The legacy v1 upgrade-input contract is frozen in
-`docs/research-log-evidence-v1-upgrade-reference.md`. The active v2 contract
-uses the following evolution rules:
+The active v2 contract uses the following evolution rules:
 
 - any change that alters the parsing or meaning of an existing valid v2 locator
   requires a new locator version;
@@ -3509,20 +3377,14 @@ command-discovery, or mechanical-validation contract version.
 
 Standard validation implements the active v2 locator, transformation,
 association, presentation, command-discovery, provenance, material-graph,
-orphan-detection, composed-outcome, generated-record, cache, report, and cutover
-contracts in this document. It reads no v1 evidence rows and imports no frozen
-v1 parser.
-
-The explicit upgrade tooling owns frozen v1 parsing, bounded inventory, and
-deterministic conversion assistance. Git owns the recovery boundary. The
-upgrade tooling does not invent v2 declarations or orchestrate publication.
-Pass 9 remains responsible for authoring and executing the maintained-log
-conversions, replacing each log's legacy generated validation metadata, and
-then updating the remaining v1 migration guidance. Until that migration
-occurs, an unupgraded maintained log correctly returns
-`validation.upgrade_required` from standard validation.
+orphan-detection, composed-outcome, generated-record, cache, report, and
+unsupported-metadata preflight contracts in this document. It does not parse
+unsupported generated validation metadata.
 
 No downstream surface may define a competing evidence-record, locator,
-transformation, presentation, command-provenance, collection, orphan-detection, or
-mechanical-outcome contract. Shorter examples may omit detail but must point
+transformation, presentation, command-provenance, collection, orphan-detection,
+or mechanical-outcome contract. Self-contained runtime agent surfaces may
+carry the bounded authoring and operational subset they need without loading or
+linking to this specification, but they must remain compatible with it.
+Maintainer-facing implementation documentation may omit detail by pointing
 here and must not contradict this specification.

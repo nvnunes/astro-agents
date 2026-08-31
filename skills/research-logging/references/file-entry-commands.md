@@ -134,13 +134,13 @@ Example:
 
 ```bash
 ./pyrun scripts/run_study.py \
-  --dataset "<development_set>" \
+  --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
   --seed 123 \
   --samples 500 \
-  --manifest-json data/study-manifest.json \
-  --summary-csv data/study-summary.csv
+  --output-manifest-json data/study-manifest.json \
+  --output-summary-csv data/study-summary.csv
 ```
 
 In recorded commands, keep entry-local script and output paths relative to the entry root, such as `scripts/plot_residuals.py` and `images/residuals.png`. Use `<log>` only for true log-level shared resources, and use `<name>` tokens for indexed data inputs or durable external data locations.

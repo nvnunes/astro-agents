@@ -87,21 +87,6 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
-    def test_active_dispatch_is_v2_only(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary = root / "docs" / "study.md"
-            log_root, entry_root, _ = v2_fixture(root)
-            write(summary, "# Study\n")
-
-            self.assertEqual(EVIDENCE_V2.active_evidence_version(summary), "v2")
-            write(entry_root / "evidence.csv", "entry\n")
-            with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "validation.upgrade_required"
-            ):
-                EVIDENCE_V2.active_evidence_version(summary)
-            self.assertEqual(log_root, summary.with_suffix(""))
-
     def test_strict_file_decodes_presentations_and_retention(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = v2_fixture(Path(directory))

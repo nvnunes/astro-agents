@@ -100,13 +100,13 @@ The research-log test gate must verify:
 
 - the public CLI accepts only `validate`, `--summary`, `--date`, `--jobs`,
   `--recompute`, and `--dry-run`;
-- complete-clear, complete-findings, and upgrade-required results exit zero,
+- complete-clear, complete-findings, and unsupported-metadata results exit zero,
   while incomplete evaluation and tool failure exit nonzero;
-- v1 evidence and recognized legacy generated state produce one precise
-  `validation.upgrade_required` result, report every detected condition, and
-  write nothing;
+- recognized unsupported generated state produces one precise
+  `validation.unsupported_metadata` result, reports every detected path, and
+  writes nothing;
 - the active standard route imports no semantic review, decision,
-  continuation, reproduction, legacy target-record, or v1 evidence runtime;
+  continuation, reproduction, or unsupported evidence runtime;
 - `validation/mechanical.json` uses schema
   `research-log-mechanical/1`, while the disposable cache uses the independent
   `research-log-mechanical-cache/2` schema;
@@ -128,9 +128,6 @@ The research-log test gate must verify:
   passing checks;
 - dry-run writes nothing, incomplete evaluation publishes nothing, and an
   ordinary publication failure restores the prior generated bundle;
-- a pending evidence-upgrade transaction returns the nonzero
-  `upgrade.recovery.required` operational error, writes nothing, and preserves
-  the prior generated bundle;
 - validation leaves all research-owned bytes unchanged and preserves the
   maintained summary's exact stable report link;
 - evidence comparison, provenance, summary forwarding, and orphan detection
@@ -143,11 +140,11 @@ The research-log test gate must verify:
   discovery stay bounded and shared within one invocation; and
 - active implementation, test, fixture, command, and source-of-truth filenames
   use stable version-neutral names. Version labels remain only in data formats,
-  schema identifiers, explicit v1 upgrade modules, and historical records.
+  schema identifiers, and unsupported-metadata observations.
 
 Run the complete research-logging tool gate after any validator change. Use the
 focused controller, engine, evidence, command, locator, transformation,
-provenance, material-graph, publication, and upgrade tests during iteration.
+provenance, material-graph, and publication tests during iteration.
 
 Wall time is diagnostic rather than an objective gate. Require bounded
 complexity, no avoidable repeated reads or hashes, correct cache reuse, and no

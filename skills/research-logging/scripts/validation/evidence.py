@@ -18,7 +18,6 @@ MAX_RECORDS_PER_FILE = 1000
 MAX_RECORDS_PER_LOG = 10_000
 MAX_PRESENTATIONS_PER_LOG = 10_000
 MAX_SUMMARY_REFERENCES_PER_LOG = 10_000
-MAX_EVIDENCE_FILES_PER_LOG = 10_000
 MAX_RECORD_ID_BYTES = 96
 MAX_DOCUMENT_BYTES = 512
 MAX_RETENTION_PATHS = 10_000
@@ -289,71 +288,6 @@ class _SectionAnalysis:
     issues: tuple[EntrySectionIssue, ...]
 
 
-def active_evidence_version(summary: Path) -> str:
-    """Enforce the active v2-only standard-validation dispatch boundary."""
-
-    summary = summary.resolve()
-    log_root = summary.with_suffix("")
-    pending_root = log_root / "validation" / ".cache" / "upgrade-transactions"
-    if pending_root.is_symlink() or (
-        pending_root.exists()
-        and (
-            not pending_root.is_dir()
-            or next(pending_root.iterdir(), None) is not None
-        )
-    ):
-        _fail(
-            "upgrade.recovery.required",
-            str(summary),
-            {"transactions": str(pending_root)},
-            "Rollback And Recovery",
-        )
-    legacy: list[Path] = []
-    if log_root.is_dir():
-        for path in log_root.rglob("evidence.csv"):
-            if path.is_file():
-                legacy.append(path)
-                if len(legacy) > MAX_EVIDENCE_FILES_PER_LOG:
-                    _fail(
-                        "association.resource.too_large",
-                        str(log_root),
-                        {
-                            "evidence_files": len(legacy),
-                            "limit": MAX_EVIDENCE_FILES_PER_LOG,
-                        },
-                        "Association Resource Bounds",
-                    )
-    legacy.sort()
-    if legacy:
-        v2_count = 0
-        for path in log_root.rglob("evidence.json"):
-            if not path.is_file():
-                continue
-            v2_count += 1
-            if v2_count > MAX_EVIDENCE_FILES_PER_LOG:
-                _fail(
-                    "association.resource.too_large",
-                    str(log_root),
-                    {
-                        "evidence_files": v2_count,
-                        "limit": MAX_EVIDENCE_FILES_PER_LOG,
-                    },
-                    "Association Resource Bounds",
-                )
-        _fail(
-            "validation.upgrade_required",
-            str(summary),
-            {
-                "evidence_csv": [
-                    path.relative_to(log_root).as_posix() for path in legacy
-                ],
-                "evidence_json": v2_count,
-            },
-            "Evidence-File Versions And Upgrade Boundary",
-        )
-    return "v2"
-
-
 def load_evidence_file(
     path: Path,
     *,
@@ -371,7 +305,7 @@ def load_evidence_file(
             "evidence.file.location_invalid",
             str(path),
             {"expected": str(expected)},
-            "Evidence-File Versions And Upgrade Boundary",
+            "Evidence Files And Unsupported Metadata",
         )
     value = _read_evidence_json(path)
     if not isinstance(value, Mapping) or set(value) != {"schema", "records"}:

@@ -626,7 +626,7 @@ class TransformationV1UpgradeTests(unittest.TestCase):
         identity = TRANSFORM.evaluate_v1_upgrade_transformation(
             "",
             [source],
-            row_identity="entry/evidence.csv:2",
+            row_identity="entry/evidence.json#record-2",
             presented_kind="statistic",
             presented="1.0",
         )
@@ -636,13 +636,13 @@ class TransformationV1UpgradeTests(unittest.TestCase):
             TRANSFORM.evaluate_v1_upgrade_transformation(
                 "v1:round to one decimal place",
                 [source],
-                row_identity="entry/evidence.csv:3",
+                row_identity="entry/evidence.json#record-3",
                 presented_kind="statistic",
                 presented="1.0",
             )
         error = caught.exception
         self.assertEqual(error.code, "transformation.v1.nonmechanical")
-        self.assertEqual(error.subject, "entry/evidence.csv:3")
+        self.assertEqual(error.subject, "entry/evidence.json#record-3")
         self.assertEqual(error.observed["phrase"], "v1:round to one decimal place")
         self.assertEqual(error.observed["presentation"]["text"], "1.0")
         self.assertEqual(

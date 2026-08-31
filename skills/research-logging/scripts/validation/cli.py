@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 from .controller import ValidationControllerError, ValidationRequest, validate
 
 COMPLETED_STATUSES = frozenset(
-    {"complete_clear", "complete_findings", "upgrade_required"}
+    {"complete_clear", "complete_findings", "unsupported_metadata"}
 )
 
 

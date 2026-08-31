@@ -42,13 +42,25 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
-Research logging has two parallel operational surfaces.
-`docs/research-logging.md` is the independently complete researcher-facing
-workflow guide; `skills/research-logging/` is the independently complete agent
-implementation. `docs/research-log-evidence-record-spec.md` is the shared
-normative owner for evidence and mechanical-validation contracts. The
-operational surfaces summarize that contract without redefining it. Reviews
-and focused tests maintain their alignment explicitly.
+Research logging has three complementary surfaces with distinct audiences and
+ownership:
+
+- `docs/research-logging.md` explains the workflow, responsibilities, and
+  visible research record for researchers. It does not duplicate technical
+  metadata syntax or agent procedures.
+- `skills/research-logging/` is the self-contained runtime surface containing
+  the detailed operational and authoring instructions used by agents. It
+  implements the current evidence contract without importing the maintainer
+  specification into agent context.
+- `docs/research-log-mechanical-validator-spec.md` is the normative
+  implementation contract for the code-only validator, its tests, generated
+  state, cache, and diagnostics. It specifies evidence metadata because that
+  metadata is validator input, not because agents load the specification.
+
+The human guide and agent skill remain conceptually aligned, but they do not
+need to repeat the same level of detail. The skill carries the bounded
+operational rules agents need; the specification resolves implementation and
+maintenance questions and must describe only the current system.
 
 ## AGENTS.md As Project Brief
 
@@ -96,10 +108,9 @@ At the project root:
 - `docs/testing.md`
   - validation requirements for changes inside `astro-agents`
 - `docs/research-logging.md`
-  - researcher-facing source of truth for the complete research-log workflow
-- `docs/research-log-evidence-record-spec.md`
-  - normative evidence, mechanical-validation, generated-state, and upgrade
-    contract
+  - researcher-facing research-log workflow and responsibilities
+- `docs/research-log-mechanical-validator-spec.md`
+  - normative mechanical-validator implementation contract
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`
@@ -187,7 +198,9 @@ This section defines the architectural invariants that constrain future
 research-log validation development. It does not describe the validation
 workflow or its implementation. Use `docs/research-logging.md` for the
 researcher-facing behavior, and use the `research-logging` skill for the
-operational procedure and generated-artifact contract.
+validation-agent operational procedure. Use
+`docs/research-log-mechanical-validator-spec.md` for the normative validator
+implementation and generated-artifact contract.
 
 Future validation changes must preserve these invariants:
 

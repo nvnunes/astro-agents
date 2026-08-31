@@ -74,13 +74,25 @@ frontmatter is the source of truth for exact activation wording.
 
 ## Start Here
 
+### Research logging
+
+Research logging has three complementary surfaces with different audiences:
+
+- `docs/research-logging.md` explains the workflow, responsibilities, and
+  visible research record for researchers.
+- `skills/research-logging/` is the self-contained runtime surface containing
+  the detailed operational and authoring instructions used by agents. It
+  implements the current evidence contract without loading the maintainer
+  specification into agent context.
+- `docs/research-log-mechanical-validator-spec.md` is the normative
+  implementation contract for the code-only validator, its tests, generated
+  state, cache, and diagnostics. It specifies evidence metadata as validator
+  input rather than as ordinary research-agent context.
+
+### Other starting points
+
 - `docs/usage.md`
   - concrete adoption path for downstream projects and user-global bootstrap
-- `docs/research-logging.md`
-  - complete researcher-facing workflow for research logs
-- `docs/research-log-evidence-record-spec.md`
-  - normative evidence, mechanical-validation, generated-state, and upgrade
-    contract
 - `docs/architecture.md`
   - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
 - `skills/`

@@ -1069,12 +1069,13 @@ def _section_analysis(lines: Sequence[str]) -> _SectionAnalysis:
         classification, reason = _classify_section(labels)
         under_results = False
         for index in range(start, end):
-            if (
-                classification == "experimental"
-                and not fenced[index]
-                and lines[index].strip() == "`Results:`"
-            ):
-                under_results = True
+            label = (
+                None
+                if fenced[index]
+                else SECTION_LABEL_RE.fullmatch(lines[index].strip())
+            )
+            if classification == "experimental" and label is not None:
+                under_results = label.group("label") == "Results:"
             contexts[index] = _LineContext(heading, classification, under_results)
         if classification == "invalid":
             issues.append(

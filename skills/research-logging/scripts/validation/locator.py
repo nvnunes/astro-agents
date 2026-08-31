@@ -111,6 +111,32 @@ class _EvaluationContext:
     inherent_identity: bool
 
 
+class _HdfGroup(Mapping[str, object]):
+    """Expose one HDF5 group without materializing unrelated datasets."""
+
+    def __init__(self, group: Any):
+        self._group = group
+
+    def __getitem__(self, key: str) -> object:
+        import h5py
+
+        link = self._group.get(key, getlink=True)
+        if isinstance(link, (h5py.ExternalLink, h5py.SoftLink)):
+            _fail("locator.source.unsafe", key, {"link": type(link).__name__})
+        item = self._group.get(key)
+        if item is None:
+            raise KeyError(key)
+        if isinstance(item, h5py.Group):
+            return _HdfGroup(item)
+        return _hdf_dataset_value(item)
+
+    def __iter__(self):
+        return iter(sorted(self._group.keys()))
+
+    def __len__(self) -> int:
+        return len(self._group)
+
+
 def parse_locator(locator: Mapping[str, Any]) -> ParsedLocator:
     """Validate and canonicalize one embedded v2 locator object."""
 
@@ -701,12 +727,13 @@ def _evaluate_hdf5(
     try:
         with h5py.File(io.BytesIO(payload), "r") as handle:
             _reject_hdf_links(handle)
-            root = _hdf_tree(handle)
+            return _evaluate_array_container(
+                _HdfGroup(handle), locator, "hdf5", source_identity
+            )
     except LocatorV2Error:
         raise
     except (OSError, ValueError) as exc:
         _fail("locator.source.format_mismatch", str(source), {"error": str(exc)})
-    return _evaluate_array_container(root, locator, "hdf5", source_identity)
 
 
 def _evaluate_array_container(
@@ -910,6 +937,8 @@ def _resolve_nodes(
         for node in current:
             try:
                 expanded.extend(_segment(node, segment))
+            except LocatorV2Error:
+                raise
             except (IndexError, KeyError, TypeError, ValueError):
                 _fail(code, canonical_json(list(node.coordinate)), {"segment": segment})
         current = expanded
@@ -981,6 +1010,8 @@ def _aligned_candidates(
 ) -> list[_Candidate]:
     if len(nodes) != 1 or not isinstance(nodes[0].value, Mapping):
         return _candidate_nodes(nodes, locator)
+    if "property" in locator:
+        return _candidate_nodes(nodes, locator)
     mapping = nodes[0].value
     paths = [
         *locator.get("select", []),
@@ -1005,6 +1036,14 @@ def _aligned_candidates(
         field for field, value in arrays.items() if _native_shape(value) == ()
     )
     if scalar_fields:
+        if len(scalar_fields) == len(arrays):
+            row = {field: value[()] for field, value in arrays.items()}
+            return [
+                _Candidate(
+                    _Node((*nodes[0].coordinate, 0), row, True),
+                    0,
+                )
+            ]
         _fail(
             "locator.type.mismatch",
             "aligned arrays",
@@ -1227,10 +1266,30 @@ def _numpy_source_value(value: object) -> CanonicalValue | None:
     np = _numpy_module()
     if np is None:
         return None
+    scalar = _numpy_scalar_source_value(value, np)
+    if scalar is not None:
+        return scalar
+    if isinstance(value, np.ndarray):
+        if value.dtype.hasobject:
+            _fail("locator.source.unsafe", "array", {"dtype": str(value.dtype)})
+        if value.shape == ():
+            return canonical_source_value(value[()])
+        values = tuple(canonical_source_value(item) for item in value.reshape(-1))
+        return array_value(values, shape=value.shape, dtype=str(value.dtype))
+    return None
+
+
+def _numpy_scalar_source_value(value: object, np: Any) -> CanonicalValue | None:
     if isinstance(value, np.bool_):
         return boolean_value(bool(value))
     if isinstance(value, np.integer):
         return integer_value(int(value))
+    if isinstance(value, (np.str_, np.bytes_)):
+        return (
+            string_value(str(value))
+            if isinstance(value, np.str_)
+            else bytes_value(bytes(value))
+        )
     if isinstance(value, np.floating):
         dtype = value.dtype
         raw = value.tobytes()
@@ -1241,11 +1300,6 @@ def _numpy_source_value(value: object) -> CanonicalValue | None:
         ):
             raw = raw[::-1]
         return binary_float_value(dtype.itemsize * 8, raw)
-    if isinstance(value, np.ndarray):
-        if value.dtype.hasobject:
-            _fail("locator.source.unsafe", "array", {"dtype": str(value.dtype)})
-        values = tuple(canonical_source_value(item) for item in value.reshape(-1))
-        return array_value(values, shape=value.shape, dtype=str(value.dtype))
     return None
 
 
@@ -1429,25 +1483,37 @@ def _reject_hdf_links(
             _reject_hdf_links(item, seen_groups, nodes)
 
 
-def _hdf_tree(group: Any) -> Mapping[str, object]:
+def _hdf_dataset_value(dataset: Any) -> object:
+    """Read one selected bounded HDF5 dataset into a canonicalizable value."""
+
     import h5py
 
-    result: dict[str, object] = {}
-    for name in sorted(group.keys()):
-        item = group[name]
-        if isinstance(item, h5py.Group):
-            result[name] = _hdf_tree(item)
-        else:
-            if item.size * item.dtype.itemsize > MAX_BINARY_MEMBER_BYTES:
-                _fail(
-                    "locator.source.too_large",
-                    item.name,
-                    {"bytes": item.size * item.dtype.itemsize},
-                )
-            if item.dtype.hasobject:
-                _fail("locator.source.unsafe", item.name, {"dtype": str(item.dtype)})
-            result[name] = item[()]
-    return result
+    observed_bytes = dataset.size * dataset.dtype.itemsize
+    if observed_bytes > MAX_BINARY_MEMBER_BYTES:
+        _fail(
+            "locator.source.too_large",
+            dataset.name,
+            {"bytes": observed_bytes},
+        )
+    if not dataset.dtype.hasobject:
+        return dataset[()]
+    if h5py.check_string_dtype(dataset.dtype) is None:
+        _fail("locator.source.unsafe", dataset.name, {"dtype": str(dataset.dtype)})
+    value = dataset.asstr()[()]
+    if isinstance(value, str):
+        observed_bytes = len(value.encode("utf-8"))
+    else:
+        observed_bytes = sum(
+            len(str(item).encode("utf-8")) for item in value.reshape(-1)
+        )
+        value = value.astype(str)
+    if observed_bytes > MAX_BINARY_MEMBER_BYTES:
+        _fail(
+            "locator.source.too_large",
+            dataset.name,
+            {"bytes": observed_bytes},
+        )
+    return value
 
 
 def _file_observation(source: Path) -> tuple[int, int, int, int, int]:

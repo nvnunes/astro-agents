@@ -213,10 +213,75 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
             self.assertEqual(result.items[0].value.kind, "binary_float")
             self.assertEqual(result.items[0].value.value, "8000000000000000")
 
-    def test_npz_scalar_cannot_supply_an_aligned_first_axis(self) -> None:
+    def test_npz_unicode_members_support_filters_and_selected_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "results.npz"
+            np.savez(
+                source,
+                case=np.array(["base", "candidate"]),
+                label=np.array(["first", "second"]),
+            )
+
+            result = LOCATOR.evaluate_locator(
+                source,
+                {
+                    "path": [],
+                    "select": [["label"]],
+                    "where": [{"op": "eq", "path": ["case"], "value": "base"}],
+                },
+            )
+
+            self.assertEqual(result.items[0].value.kind, "string")
+            self.assertEqual(result.items[0].value.value, "first")
+
+    def test_npz_zero_dimensional_fields_supply_one_aligned_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "scalar.npz"
             np.savez(source, case_id=np.array(8), score=np.array(0.95))
+
+            result = LOCATOR.evaluate_locator(
+                source,
+                {
+                    "path": [],
+                    "select": [["score"]],
+                    "where": [{"op": "eq", "path": ["case_id"], "value": 8}],
+                    "expect": {"matches": 1, "items": 1},
+                },
+            )
+
+            self.assertEqual(result.items[0].value.kind, "binary_float")
+
+    def test_npz_zero_dimensional_value_is_scalar_but_keeps_shape_property(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "scalar.npz"
+            np.savez(source, score=np.array(8, dtype=np.int64))
+
+            selected = LOCATOR.evaluate_locator(source, {"path": ["score"]})
+            shape = LOCATOR.evaluate_locator(
+                source, {"path": ["score"], "property": "shape"}
+            )
+
+            self.assertEqual(selected.items[0].value.kind, "integer")
+            self.assertEqual(selected.items[0].value.value, "8")
+            self.assertEqual(shape.items[0].value.kind, "array")
+            self.assertEqual(dict(shape.items[0].value.metadata)["shape"], [0])
+
+    def test_npz_one_element_array_remains_an_array(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "one.npz"
+            np.savez(source, score=np.array([8], dtype=np.int64))
+
+            result = LOCATOR.evaluate_locator(source, {"path": ["score"]})
+
+            self.assertEqual(result.items[0].value.kind, "array")
+            self.assertEqual(dict(result.items[0].value.metadata)["shape"], [1])
+
+    def test_npz_mixed_scalar_and_vector_fields_cannot_align(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mixed.npz"
+            np.savez(source, case_id=np.array(8), score=np.array([0.95]))
 
             with self.assertRaisesRegex(
                 LOCATOR.LocatorV2Error, "locator.type.mismatch"
@@ -247,12 +312,37 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
             with h5py.File(source, "w") as handle:
                 group = handle.create_group("metrics")
                 group.create_dataset("score", data=np.array([0.9, 0.95]))
+                group.create_dataset("matrix", data=np.ones((2, 3)))
+                handle.create_dataset(
+                    "unrelated_name",
+                    data="retained metadata",
+                    dtype=h5py.string_dtype(encoding="utf-8"),
+                )
 
             result = LOCATOR.evaluate_locator(
                 source,
                 {"path": ["metrics", "score"], "property": "shape[0]"},
             )
             self.assertEqual(result.items[0].value.value, "2")
+
+            selected_shapes = LOCATOR.evaluate_locator(
+                source,
+                {
+                    "path": [],
+                    "select": [["metrics", "score"], ["metrics", "matrix"]],
+                    "property": "shape",
+                },
+            )
+            self.assertEqual(
+                [dict(item.value.metadata)["shape"] for item in selected_shapes.items],
+                [[1], [2]],
+            )
+
+            selected_text = LOCATOR.evaluate_locator(
+                source, {"path": ["unrelated_name"]}
+            )
+            self.assertEqual(selected_text.items[0].value.kind, "string")
+            self.assertEqual(selected_text.items[0].value.value, "retained metadata")
 
             external = root / "external.h5"
             with h5py.File(external, "w") as handle:

@@ -286,6 +286,24 @@ class EvidenceV2AssociationTests(unittest.TestCase):
 
         self.assertEqual(EVIDENCE_V2.index_entry_section_issues(text), ())
 
+    def test_block_candidates_stop_at_the_next_experimental_label(self) -> None:
+        text = (
+            "## Trial\n\n"
+            "`Steps:`\n\nRun the experiment.\n\n"
+            "`Results:`\n\n"
+            "| Result | Value |\n| --- | ---: |\n| candidate | 1 |\n\n"
+            "`Observations:`\n\n"
+            "```text\ncontext only\n```\n\n"
+            "| Observation | Value |\n| --- | ---: |\n| contextual | 2 |\n"
+        )
+
+        candidates = EVIDENCE_V2.index_entry_presentation_candidates(text)
+
+        self.assertEqual(
+            [(candidate.kind, candidate.line) for candidate in candidates],
+            [("table", 9)],
+        )
+
     def test_entry_markers_bind_all_three_presentation_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, document = v2_fixture(Path(directory))

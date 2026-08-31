@@ -85,6 +85,115 @@ def _evaluate(summary: Path, *, prior_cache: object = None) -> object:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_cross_log_summary_link_is_not_an_owned_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = _log(root)
+            external_entry = (
+                root
+                / "docs/other/entries/2026-08-29-e005-other-study/e005.md"
+            )
+            write(external_entry, "# External entry\n")
+            write(external_entry.parent / "evidence.json", "{}\n")
+            write(
+                summary,
+                summary.read_text().replace(
+                    "## Entries",
+                    "See [external evidence]"
+                    "(other/entries/2026-08-29-e005-other-study/e005.md).\n\n"
+                    "## Entries",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertFalse(
+                any("e005" in check.identity for check in evaluation.result.checks)
+            )
+
+    def test_invalid_entry_evidence_does_not_block_valid_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = _log(root)
+            bad_root = root / "docs/study/entries/2026-08-30-e002-invalid"
+            bad_entry = bad_root / "e002.md"
+            write(bad_entry, "# Invalid entry\n")
+            write(bad_root / "evidence.json", "{\n")
+            write(
+                summary,
+                summary.read_text().replace(
+                    "- [Study trial]",
+                    "- [Invalid entry]"
+                    "(study/entries/2026-08-30-e002-invalid/e002.md)\n"
+                    "- [Study trial]",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            invalid = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e002:declaration"
+            )
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(
+                invalid.failure.code, "evidence.json.schema_invalid"
+            )
+
+    def test_invalid_entry_command_does_not_block_valid_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = _log(root)
+            bad_root = root / "docs/study/entries/2026-08-30-e002-invalid"
+            bad_entry = bad_root / "e002.md"
+            write(
+                bad_entry,
+                "# Invalid entry\n\n## Trial\n\n`Steps:`\n\n"
+                "```bash\ntool --output-data data/result.csv\n```\n"
+                "<!-- command type=model -->\n\n`Results:`\n\nDone.\n",
+            )
+            write(
+                summary,
+                summary.read_text().replace(
+                    "- [Study trial]",
+                    "- [Invalid entry]"
+                    "(study/entries/2026-08-30-e002-invalid/e002.md)\n"
+                    "- [Study trial]",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            invalid = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e002:command"
+            )
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(invalid.failure.code, "invocation.annotation.invalid")
+
     def test_split_entry_loads_shared_root_surfaces_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project_root = Path(directory)

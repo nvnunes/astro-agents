@@ -42,12 +42,15 @@ def compose_validation_report(
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for scope in record.scopes:
+        displayed_status = (
+            f"`{scope.status.value}`" if scope.checks else ""
+        )
         lines.append(
             "| "
             + " | ".join(
                 (
                     scope.scope.value,
-                    f"`{scope.status.value}`",
+                    displayed_status,
                     str(scope.counts[CheckStatus.PASS.value]),
                     str(scope.counts[CheckStatus.FAIL.value]),
                     str(scope.counts[CheckStatus.UNAVAILABLE.value]),

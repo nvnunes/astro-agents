@@ -80,6 +80,42 @@ Report according to the returned status:
   returned record and state that no new generated bundle was published. For a
   tool failure, report the precise operational error from standard error.
 
+When summarizing several completed logs in a Markdown table:
+
+- Use separate `Research log`, `Conformance`, `Evidence`, `Provenance`,
+  `Orphan findings`, and `Reports` columns with a valid Markdown header row.
+- Introduce the table with: `Conformance, Evidence, and Provenance show Pass
+  when all applicable checks pass; otherwise they are shown as
+  passed/applicable. Orphan findings are counts. Not-applicable checks are
+  excluded from applicable denominators and reported separately.`
+- Render Conformance, Evidence, and Provenance with one or more applicable
+  checks as `Pass` when every applicable check passes. When a scope has a
+  failing check, render it as `passed/applicable`, where
+  `applicable = pass + fail`.
+- Append `(+N N/A)` only when a scope with applicable checks contains `N`
+  actual `not_applicable` checks. When a scope has no applicable checks and
+  only `N` not-applicable checks, render it as `N N/A`. Exclude
+  not-applicable checks from the applicable denominator.
+- Render Orphan findings as the number of failed orphan-scope checks. Render
+  `0` when orphan classification ran without a finding.
+- Leave the scope cell blank when its total check count is zero. Do not render
+  an empty scope as `0/0`, `NA`, `N/A`, or `not applicable`.
+- Count `not_applicable` checks separately from failures in both per-log and
+  aggregate totals.
+- Describe the failure total as `failing checks` or `findings`, not
+  `non-passing checks`, when `not_applicable` checks are excluded.
+
+Use this shape:
+
+```md
+| Research log | Conformance | Evidence | Provenance | Orphan findings | Reports |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Example findings | Pass | 3/5 | 4/5 (+2 N/A) | 7 | [Human](...) · [JSON](...) |
+| Passing scopes | Pass | Pass | Pass (+2 N/A) | 0 | [Human](...) · [JSON](...) |
+| No evidence checks | Pass |  |  | 0 | [Human](...) · [JSON](...) |
+| Orphan classification not run | 0/1 | 0/1 |  |  | [Human](...) · [JSON](...) |
+```
+
 Do not invent item-specific repair guidance. A separately authorized Record
 operation resolves a reported research-owned condition from the applicable
 bundled research-logging instructions.

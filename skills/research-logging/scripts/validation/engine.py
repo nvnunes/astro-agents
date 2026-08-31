@@ -259,29 +259,14 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
         _fail("association.declaration_missing", str(state.summary), {"entries": 0})
     entries: list[_Entry] = []
     surfaces: dict[Path, _EntrySurface] = {}
+    surface_errors: dict[Path, Exception] = {}
     for document in listed:
-        if not document.is_file() or ENTRY_ID_RE.fullmatch(document.stem) is None:
-            _fail(
-                "association.declaration_missing",
-                str(document),
-                {"entry": document.stem, "exists": document.is_file()},
-            )
+        surface = _load_entry_surface(
+            document, state, surfaces=surfaces, errors=surface_errors
+        )
+        if surface is None:
+            continue
         root = document.parent.resolve()
-        if root not in surfaces:
-            evidence_path = root / "evidence.json"
-            evidence_file = (
-                load_evidence_file(
-                    evidence_path, log_root=state.log_root, entry_root=root
-                )
-                if evidence_path.is_file()
-                else None
-            )
-            data_path = root / "data.csv"
-            data_index = MappingProxyType(
-                load_data_index(data_path) if data_path.is_file() else {}
-            )
-            surfaces[root] = _EntrySurface(evidence_file, data_index)
-        surface = surfaces[root]
         entries.append(
             _Entry(
                 document.stem,
@@ -292,6 +277,69 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
             )
         )
     return entries
+
+
+def _load_entry_surface(
+    document: Path,
+    state: _ScanState,
+    *,
+    surfaces: dict[Path, _EntrySurface],
+    errors: dict[Path, Exception],
+) -> _EntrySurface | None:
+    """Load one owned entry surface while preserving sibling evaluation."""
+
+    root = document.parent.resolve()
+    try:
+        _validate_owned_entry(document, root, state)
+        if root in errors:
+            raise errors[root]
+        if root not in surfaces:
+            surfaces[root] = _read_entry_surface(root, state)
+    except Exception as error:
+        if not _contract_error(error):
+            raise
+        errors[root] = error
+        state.checks.append(
+            _error_check(
+                f"entry:{document.stem}:declaration",
+                CheckScope.CONFORMANCE,
+                error,
+            )
+        )
+        return None
+    return surfaces[root]
+
+
+def _validate_owned_entry(document: Path, root: Path, state: _ScanState) -> None:
+    if not document.is_file() or ENTRY_ID_RE.fullmatch(document.stem) is None:
+        _fail(
+            "association.declaration_missing",
+            str(document),
+            {"entry": document.stem, "exists": document.is_file()},
+        )
+    try:
+        root.relative_to((state.log_root / "entries").resolve())
+    except ValueError as error:
+        raise EngineV2Error(
+            "evidence.declaration.invalid",
+            "entry root",
+            {"path": str(root), "root": str(state.log_root)},
+            "V2 JSON File Schema",
+        ) from error
+
+
+def _read_entry_surface(root: Path, state: _ScanState) -> _EntrySurface:
+    evidence_path = root / "evidence.json"
+    evidence_file = (
+        load_evidence_file(evidence_path, log_root=state.log_root, entry_root=root)
+        if evidence_path.is_file()
+        else None
+    )
+    data_path = root / "data.csv"
+    data_index = MappingProxyType(
+        load_data_index(data_path) if data_path.is_file() else {}
+    )
+    return _EntrySurface(evidence_file, data_index)
 
 
 def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
@@ -306,21 +354,32 @@ def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
 def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
     documents: list[tuple[Invocation, ...]] = []
     for entry in state.entries:
-        document = entry.document
-        text = _read_text(document, state)
-        relative = document.relative_to(state.log_root).as_posix()
-        context = CommandContext(
-            log_id=state.log_root.as_posix(),
-            entry=entry.id,
-            document=relative,
-            entry_root=entry.root,
-            log_root=state.log_root,
-            project_root=state.project_root,
-            data_index=entry.data_index,
-            script_identity_cache=state.script_cache,
-            script_identity_seeds=state.script_identity_seeds,
-        )
-        documents.append(discover_commands(text, context).invocations)
+        try:
+            document = entry.document
+            text = _read_text(document, state)
+            relative = document.relative_to(state.log_root).as_posix()
+            context = CommandContext(
+                log_id=state.log_root.as_posix(),
+                entry=entry.id,
+                document=relative,
+                entry_root=entry.root,
+                log_root=state.log_root,
+                project_root=state.project_root,
+                data_index=entry.data_index,
+                script_identity_cache=state.script_cache,
+                script_identity_seeds=state.script_identity_seeds,
+            )
+            documents.append(discover_commands(text, context).invocations)
+        except Exception as error:
+            if not _contract_error(error):
+                raise
+            state.checks.append(
+                _error_check(
+                    f"entry:{entry.id}:command",
+                    _error_scope(error, CheckScope.PROVENANCE),
+                    error,
+                )
+            )
     return order_invocations(documents)
 
 

@@ -16,12 +16,40 @@ CONTROLLER = importlib.import_module("validation.controller")
 ENGINE = importlib.import_module("validation.engine")
 LOCATOR = importlib.import_module("validation.locator")
 RECORDS = importlib.import_module("validation.records")
+REPORT = importlib.import_module("validation.report")
+RESULTS = importlib.import_module("validation.mechanical_results")
 
 
 _log = mechanical_log
 
 
 class MechanicalControllerTests(unittest.TestCase):
+    def test_report_leaves_zero_check_scope_status_blank(self) -> None:
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    "conformance:log",
+                    RESULTS.CheckScope.CONFORMANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "summary",
+                    failure=RESULTS.FailurePayload(
+                        "association.declaration_missing",
+                        "summary",
+                        {"entries": 0},
+                        "Evidence Files And Unsupported Metadata",
+                    ),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn("| evidence |  | 0 | 0 | 0 | 0 | 0 |", report)
+        self.assertNotIn("| evidence | `not_applicable`", report)
+
     def test_completed_result_publishes_public_bundle_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

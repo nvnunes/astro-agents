@@ -1818,6 +1818,13 @@ statistic uses its required v2 reference. Every v2 `evidence.json` belongs to
 the root of the entry whose records it owns; any other placement fails as
 `evidence.file.location_invalid`.
 
+The maintained summary's `## Entries` inventory is the only owner-discovery
+surface for the target log. Entry links elsewhere in summary prose are ordinary
+navigation, including links to another maintained log, and do not import those
+entries. Every owned entry resolves beneath the target log's `entries/`
+directory. A directly referenced cross-log artifact remains an external input
+under the command-provenance contract.
+
 The bounded unsupported-metadata preflight detects recognized unsupported
 generated validation metadata and returns one
 `validation.unsupported_metadata` result listing every path found. It writes
@@ -2882,6 +2889,12 @@ Standard validation evaluates one target maintained log in this order:
 7. classify connected, declared-retained, and orphaned material over the
    completed graph.
 
+A malformed owned entry or entry-local command surface produces an entry-scoped
+conformance finding and does not prevent unaffected entries from continuing
+through evidence, provenance, and orphan evaluation. Validation stops the
+whole log only when the maintained summary or another log-wide structure
+cannot be read or interpreted safely.
+
 A failed prerequisite is not restated as several speculative mismatches. A
 dependent result is `not_applicable` when a stable prerequisite failed and
 `unavailable` when its prerequisite is temporarily unavailable. The dependency
@@ -3030,7 +3043,9 @@ Validation section contains completion, result date, counts by every scope and
 status, and every non-passing check grouped by entry with its status, identity,
 subject, and dependencies. Failed and unavailable checks additionally show
 their code, observed state, and violated rule. It does not list individual
-passing checks or provide repair instructions. Its separate Reproduction
+passing checks or provide repair instructions. A scope with zero checks has a
+blank displayed aggregate status; the report does not present absent checks as
+`not_applicable`. Its separate Reproduction
 section is visibly `not_yet_run` until Phase 3 defines and publishes
 `validation/reproduction.json`. The report has no combined pass/fail
 conclusion, and standard mechanical validation reads or writes no reproduction

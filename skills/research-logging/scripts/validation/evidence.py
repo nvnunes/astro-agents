@@ -593,12 +593,16 @@ def index_direct_artifacts(
 
 
 def index_entry_documents(text: str) -> tuple[str, ...]:
-    """Return unique Markdown entry targets linked by one summary."""
+    """Return unique owned-entry targets from the summary entry inventory."""
 
     targets: list[str] = []
-    fenced = _fenced_lines(text.splitlines())
-    for number, line in enumerate(text.splitlines()):
+    lines = text.splitlines()
+    fenced = _fenced_lines(lines)
+    contexts = _line_contexts(lines)
+    for number, line in enumerate(lines):
         if fenced[number]:
+            continue
+        if contexts[number].section != "Entries":
             continue
         for match in MARKDOWN_LINK_RE.finditer(line):
             if match.group("image"):

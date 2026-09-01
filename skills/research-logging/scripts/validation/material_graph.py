@@ -162,7 +162,6 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
     connection_roots = _connection_roots(roots)
-    _validate_material_classification(request.invocations)
     state = _GraphState(connection_roots, set(), set(), set(), [])
     graph_started = time.perf_counter()
     _add_evidence(request.evidence, state)
@@ -240,6 +239,7 @@ def _add_direct_artifacts(
 
 
 def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> None:
+    generated: set[str] = set()
     for invocation in invocations:
         command = _node(state.nodes, "invocation", invocation.identity)
         if invocation.script is not None and invocation.script_identity is not None:
@@ -248,7 +248,9 @@ def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> N
             _connect_local(state.connected, script.identity, state.roots)
         for relationship in invocation.inputs:
             material = _material_node(
-                state.nodes, relationship.path, external=relationship.external
+                state.nodes,
+                relationship.path,
+                external=relationship.external and relationship.path not in generated,
             )
             state.edges.add(GraphEdge("input", material, command))
             _connect_local(state.connected, material.identity, state.roots)
@@ -264,6 +266,7 @@ def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> N
             material = _material_node(state.nodes, relationship.path)
             state.edges.add(GraphEdge("output", command, material))
             _connect_local(state.connected, material.identity, state.roots)
+            generated.add(relationship.path)
         for collection in invocation.collections:
             identity = hashlib.sha256(
                 canonical_json(
@@ -503,27 +506,6 @@ def _unused_data_names(
         f"{surface.owner}:{name}" for surface in surfaces for name in surface.names
     }
     return declared - used
-
-
-def _validate_material_classification(invocations: Sequence[Invocation]) -> None:
-    external = {
-        relationship.path
-        for invocation in invocations
-        for relationship in invocation.inputs
-        if relationship.external
-    }
-    generated = {
-        relationship.path
-        for invocation in invocations
-        for relationship in invocation.outputs
-    }
-    conflicts = external & generated
-    if conflicts:
-        _fail(
-            "material.direction.conflict",
-            sorted(conflicts)[0],
-            {"classifications": ["external", "locally-generated"]},
-        )
 
 
 def _evidence_projection(connection: EvidenceConnection) -> object:

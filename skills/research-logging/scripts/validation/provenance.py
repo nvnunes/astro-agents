@@ -158,7 +158,12 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
             )
         return
     for relationship in invocation.inputs:
-        if relationship.external:
+        prior_producers = tuple(
+            producer
+            for producer in state.outputs.get(relationship.path, ())
+            if producer.sequence < invocation.sequence
+        )
+        if relationship.external and not prior_producers:
             state.roots.add(
                 ProvenanceRoot(
                     "external",

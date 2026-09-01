@@ -42,8 +42,11 @@ artifact or script inventory.
 
 A generated data output may be indexed only when a later recorded command
 consumes it through its `<name>` token. The generating command still exposes
-the entry-local output through a relative path value. Do not index an output
-merely because it exists, is linked, or is presented.
+the output through a relative path value for entry-local material or an
+explicit raw path for material outside the log. A later indexed input at that
+same canonical path traces to the earlier producer instead of becoming an
+external root. Do not index an output merely because it exists, is linked, or
+is presented.
 
 Never index entry-local scripts or images. Keep their paths relative in
 commands or Markdown. A durable external image used as command input may be

@@ -334,7 +334,7 @@ class MaterialGraphV2Tests(unittest.TestCase):
 
             self.assertEqual(first.dependency_projection, second.dependency_projection)
 
-    def test_external_and_locally_generated_classification_conflict(self) -> None:
+    def test_external_material_can_be_generated_later_in_the_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _, entry_root, _, evidence_file = _fixture(root)
@@ -359,18 +359,66 @@ tool --output-data data/source.csv
                 context,
             ).invocations
 
-            with self.assertRaisesRegex(
-                GRAPH.MaterialGraphV2Error, "material.direction.conflict"
-            ):
-                GRAPH.compose_material_graph(
-                    GRAPH.MaterialGraphRequest(
-                        entry_roots={"e001": entry_root},
-                        evidence=(),
-                        direct_artifacts=(),
-                        invocations=commands,
-                        evidence_files=(evidence_file,),
-                    )
+            result = GRAPH.compose_material_graph(
+                GRAPH.MaterialGraphRequest(
+                    entry_roots={"e001": entry_root},
+                    evidence=(),
+                    direct_artifacts=(),
+                    invocations=commands,
+                    evidence_files=(evidence_file,),
                 )
+            )
+
+            self.assertIn(GRAPH.GraphNode("external-material", target), result.nodes)
+            self.assertIn(GRAPH.GraphNode("material", target), result.nodes)
+
+    def test_generated_external_material_is_local_after_its_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, entry_root, _, evidence_file = _fixture(root)
+            target = (root / "outside" / "source.csv").resolve()
+            target.parent.mkdir()
+            target.write_text("value\n1\n")
+            context = COMMAND.CommandContext(
+                log_id="docs/log",
+                entry="e001",
+                document="entries/entry/entry.md",
+                entry_root=entry_root,
+                log_root=root / "docs" / "log",
+                project_root=root,
+                data_index={"absolute": target.as_posix()},
+                require_experimental_context=False,
+            )
+            commands = COMMAND.order_invocations(
+                (
+                    COMMAND.discover_commands(
+                        f"""```bash
+tool --output-data {target}
+tool --source '<absolute>' --output-data data/result.csv
+```
+<!-- command-1 type = model -->
+""",
+                        context,
+                    ).invocations,
+                )
+            )
+
+            result = GRAPH.compose_material_graph(
+                GRAPH.MaterialGraphRequest(
+                    entry_roots={"e001": entry_root},
+                    evidence=(),
+                    direct_artifacts=(),
+                    invocations=commands,
+                    evidence_files=(evidence_file,),
+                )
+            )
+
+            self.assertIn(
+                GRAPH.GraphNode("material", target.as_posix()), result.nodes
+            )
+            self.assertNotIn(
+                GRAPH.GraphNode("external-material", target.as_posix()), result.nodes
+            )
 
     def test_cache_reuse_requires_exact_dependency(self) -> None:
         prior = (

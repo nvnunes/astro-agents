@@ -3,7 +3,7 @@
 ## Status And Authority
 
 Status: active mechanical-validator implementation specification as of
-2026-08-30.
+2026-08-31.
 
 This document is the normative implementation contract for the code-only
 research-log mechanical validator, its tests, generated records, cache,
@@ -2639,13 +2639,17 @@ A selected producing invocation has upstream lineage when one of its
 mechanically established inputs has the same canonical material identity as
 exactly one earlier invocation output in the maintained log. That identity
 match creates the lineage edge and brings the input into the evidence-
-provenance closure. No separate upstream declaration is required. An
+provenance closure, including when the input uses a named `data.csv` location
+outside the maintained log. No separate upstream declaration is required. An
 unclassified argument establishes no input edge and therefore makes no claim
 about lineage completeness.
 
 The producer must precede the consumer in the research record. Cycles fail. A
-local generated input with no matching producer fails as `lineage.missing`. An
-input that resolves as trusted external data does not require a local producer.
+local generated input with no matching producer fails as `lineage.missing`. A
+named external input with no earlier producer is a trusted external root. If
+the same external location has an earlier recorded producer, the input instead
+traces to that producer. A later producer does not retroactively change an
+earlier external input.
 
 Validation of one maintained log never reads another log's validation state or
 uses another log's producer graph. A directly referenced cross-log file is an
@@ -2683,12 +2687,14 @@ both types satisfy the same mechanical root requirement.
 An exact `<name>` token in a recorded command resolves through the entry-local
 `data.csv` contract. The token, its unique row, normalized location, and
 observed material identity form one input connection. When the resolved row is
-classified as external, it also forms a trusted terminal provenance root;
-validation does not inspect its producer, import an external provenance graph,
-or otherwise continue beyond it. A row resolving to generated local material
-retains the ordinary local producer and lineage requirements. Duplicate,
-missing, malformed, or unresolved rows fail. An unused `data.csv` row is a
-orphan finding.
+classified as external and has no earlier producer in the maintained log, it
+forms a trusted terminal provenance root; validation does not inspect an
+external producer graph or import another log's validation state. If an
+earlier recorded invocation produced the same canonical external location,
+ordinary local producer and lineage traversal takes precedence. A row
+resolving to generated local material always retains the ordinary local
+producer and lineage requirements. Duplicate, missing, malformed, or
+unresolved rows fail. An unused `data.csv` row is an orphan finding.
 
 External classification is lexical and closed. A `data.csv` location is
 external when it is an absolute path, a URI, or a relative location whose
@@ -2698,11 +2704,11 @@ including a path in the current entry or another entry of that log. Lexical
 containment is decided before following a permitted entry-local directory
 symlink; the resolved target is still observed and canonicalized under the
 ordinary path and safety rules. The `type` column, file extension, source
-contents, command prose, and presence or absence of a visible producer do not
-change this classification. A generated local output indexed for a later
-command therefore remains local and must have its producer lineage, while an
-external row is trusted at the declared boundary even if another project could
-in principle explain how it was created.
+contents, and command prose do not change this lexical classification. A
+generated local output indexed for a later command remains local and must have
+its producer lineage. A lexically external row is trusted at the declared
+boundary only until the maintained record contains an earlier producer for the
+same canonical path.
 
 External material used by a recorded command should use a named token rather
 than a raw absolute path, URL, or object-store location. Raw external locations
@@ -2794,8 +2800,8 @@ The graph must satisfy:
 6. every required collection has one exact non-empty membership;
 7. every collection member remains within its permitted root;
 8. every used data-index token resolves once; and
-9. no canonical material is both external and locally generated in the same
-   maintained log.
+9. each named external input either terminates at its declared boundary or
+   traces to exactly one earlier recorded producer of the same canonical path.
 
 Failure of one edge invalidates only provenance outcomes that depend on that
 edge and its downstream closure. It does not rewrite a successful
@@ -3103,7 +3109,7 @@ failure.
 | `invocation.annotation.invalid` | conformance | An adjacent command annotation violates its closed grammar, placement, ordinal, type, option-reference, or role rules. |
 | `invocation.path_value.embedded` | conformance | A role-bearing command value embeds a path in a `label=path`, `key=path`, or other unsupported compound argument. |
 | `material.unresolved` | provenance | A required local path or named material does not resolve exactly once. |
-| `material.direction.conflict` | provenance | Mechanically established relationships assign incompatible directions to one canonical material. |
+| `material.direction.conflict` | provenance | One invocation mechanically assigns incompatible directions to one canonical material without a supported in-place form. |
 | `producer.missing` | provenance | Generated evidence material or a direct artifact has no mechanically proven producer. |
 | `producer.ambiguous` | provenance | Several recorded invocations mechanically qualify as producer of one material. |
 | `producer.output_mismatch` | provenance | A candidate invocation does not prove output coverage of the required material. |

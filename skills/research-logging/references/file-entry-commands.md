@@ -114,7 +114,9 @@ A model or simulation type establishes a generated provenance root; it does
 not hide the command's mechanically visible inputs. Those inputs must still
 trace to earlier generated outputs or to named external data. A resolved
 external `data.csv` input is trusted at that boundary, and validation does not
-attempt to reconstruct its earlier provenance.
+attempt to reconstruct provenance outside the maintained log. When an earlier
+recorded command in the same log produced the identical canonical external
+path, the input instead traces to that producer.
 
 Annotations classify material already visible in the selected command. They do
 not bind a producer by name, extract a path from an opaque `label=path` value,

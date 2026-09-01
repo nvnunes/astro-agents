@@ -74,7 +74,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-orphan-10"
+RULES_VERSION = "research-log-evidence/v2-orphan-11"
 CACHE_SCHEMA = "research-log-mechanical-cache/2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 

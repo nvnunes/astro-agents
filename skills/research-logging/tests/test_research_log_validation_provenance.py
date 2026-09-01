@@ -69,6 +69,29 @@ tool --dataset '<catalog>' --output-data data/final.csv
                 [("external", "catalog")],
             )
 
+    def test_named_external_path_traces_to_an_earlier_local_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = root / "outside" / "generated.csv"
+            context = _context(root, {"generated": external.as_posix()})
+            write(external, "generated\n")
+            write(context.entry_root / "data" / "final.csv", "final\n")
+            text = f"""```bash
+tool --output-data {external}
+tool --input-data '<generated>' --output-data data/final.csv
+```
+<!-- command-1 type = model -->
+"""
+            commands = COMMAND.discover_commands(text, context).invocations
+
+            result = PROVENANCE.evaluate_provenance(
+                context.entry_root / "data" / "final.csv", commands
+            )
+
+            self.assertEqual([root.kind for root in result.roots], ["model"])
+            self.assertEqual(len(result.producers), 2)
+            self.assertEqual(len(result.lineage), 1)
+
     def test_multiple_model_and_simulation_roots_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))

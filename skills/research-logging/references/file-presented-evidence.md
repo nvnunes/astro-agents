@@ -85,7 +85,8 @@ direct or structured table, and 1–32 for a summary table.
 
 Each source object contains exactly `source` and `locator`. `source` is an
 entry-relative path, a `<log>/...` path, or an exact `<name>` token from the
-entry-local `data.csv`. Follow the routed locator instructions for `locator`.
+entry-root `data.json` when that item is also a recorded command input. Follow
+the routed locator instructions for `locator`.
 Do not use an absolute path, URL, object-store URI, whole-artifact selection,
 or free-form selector prose in an evidence record.
 
@@ -146,34 +147,10 @@ the result while authoring metadata.
 
 ## Retained Material
 
-Use an entry-local `retention` record only for retained material that is
-intentionally kept but is not connected through evidence, a direct artifact
-presentation, a recorded command relationship, or a used `data.csv` input.
-Name exact paths or all descendants of one exact entry-local directory:
-
-```json
-{
-  "id": "optimizer-debug-traces",
-  "kind": "retention",
-  "paths": ["data/debug-trace.json"],
-  "reason": "Diagnostic output retained for later investigation."
-}
-```
-
-```json
-{
-  "id": "intermediate-wavefronts",
-  "kind": "retention",
-  "directory": "data/intermediate-wavefronts",
-  "membership": "all-descendants",
-  "reason": "Intermediate states retained for later comparison."
-}
-```
-
-The optional `reason` records research-agent intent for semantic review.
-Mechanical validation ignores its meaning. A retention record affects only
-orphan classification; it does not create evidence, provenance, command, or
-dependency relationships. Remove a declaration that becomes redundant.
+`evidence.json` contains presentation records only. Put intentional
+disconnected retention in entry-root `retention.json` and follow
+`file-retention.md`. Retention affects only orphan classification and cannot
+create or repair evidence, provenance, command, or dependency relationships.
 
 ## Summary Evidence
 

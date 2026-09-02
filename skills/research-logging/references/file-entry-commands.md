@@ -55,9 +55,13 @@ with full paths and recognizes:
 - `<project>/...` resolves to a path under the project root.
 - `<log>` resolves to the research-log folder.
 - `<log>/...` resolves to a path under the research-log folder.
-- `<name>` resolves to the matching `location` in the nearest entry-local `data.csv`.
+- `<name>` resolves to one exact file or directory input in the owning
+  entry-root `data.json`.
+- `<directory-name>/member` resolves one exact regular-file member of a
+  declared directory input.
 
-Tokens may appear as a whole argument or inside an argument, such as `static=<calibration_series>/file.npz`. Quote arguments that contain angle tokens.
+Data tokens occupy the complete input argument. Quote arguments that contain
+angle tokens. Do not embed a token in `label=<name>` or another opaque value.
 
 Treat each recorded command as a compact specification of the run. Expose
 result-defining values through named CLI options, including the dataset or
@@ -68,8 +72,9 @@ options would be unwieldy, retain a manifest of resolved settings and expose
 its path in the command.
 
 Expose every retained entry-local output through a stable relative path value
-in the command. A collection may use a directory or manifest path value. A
-retained command log may instead use an explicit shell capture target.
+in the command. A collection may use a directory path value. A retained
+command log may instead use an explicit shell capture target. A retained
+manifest is an ordinary named file input and never expands other relationships.
 
 Make evidence-relevant input and output relationships mechanically visible.
 Prefer a natural option name whose complete leading or trailing token is
@@ -79,12 +84,12 @@ argument only. Do not rename an option merely in the recorded Markdown; the
 recorded command must continue to match the real interface and the command
 actually run.
 
-When natural naming is unavailable or a command needs a type, positional role,
-directory role, manifest role, or explicit override, put one hidden annotation
-immediately after its command fence:
+When natural naming is unavailable or a command needs a positional role,
+directory role, or explicit override, put one hidden annotation immediately
+after its command fence:
 
 ```html
-<!-- command type = model; catalog = input; results = output -->
+<!-- command catalog = input; results = output -->
 ```
 
 For a fence containing several independent commands, add the one-based command
@@ -92,31 +97,25 @@ number only where an annotation is needed:
 
 ```html
 <!-- command-1 results = output -->
-<!-- command-3 type = simulation; summary-csv = input; @2 = output -->
+<!-- command-3 summary-csv = input; @2 = output -->
 ```
 
 Option targets omit leading hyphens. Positional targets use `@N`, counting
 positional arguments after the executable or script token. Supported roles are
-`input`, `output`, `input-directory`, `output-directory`, `input-manifest`, and
-`output-manifest`. Use directory roles only when the entire non-empty directory
-has one direction and an output directory belongs to one producer. A manifest
-is a UTF-8 CSV with the exact header `path` and paths relative to the manifest's
-parent directory.
+`input`, `output`, `input-directory`, and `output-directory`. Use directory
+roles only when the entire non-empty directory has one direction and an output
+directory belongs exclusively to one producer.
 
-Use `type = model` for a command that originates data by evaluating or sampling
-a model or mathematical relationship. Use `type = simulation` for a command
-that originates data through a simulated process. A project-local script named
-`simulate`, `simulation`, `simulate_*`, or `simulation_*` is recognized as a
-simulation without an annotation. Code is never inspected to infer these
-relationships.
+A whole-directory role counts as one authored command relationship even though
+the validator records every bounded regular-file descendant as an artifact
+relationship.
 
-A model or simulation type establishes a generated provenance root; it does
-not hide the command's mechanically visible inputs. Those inputs must still
-trace to earlier generated outputs or to named external data. A resolved
-external `data.csv` input is trusted at that boundary, and validation does not
-attempt to reconstruct provenance outside the maintained log. When an earlier
-recorded command in the same log produced the identical canonical external
-path, the input instead traces to that producer.
+There are no command types, generated roots, or simulation filename rules. A
+producer with no material inputs terminates lineage at its artifact-output
+relationship. A producerless declared input terminates lineage only through
+its explicit `data.json` external boundary. A generated input must omit that
+boundary and trace to its unique earlier producer regardless of storage
+location.
 
 Annotations classify material already visible in the selected command. They do
 not bind a producer by name, extract a path from an opaque `label=path` value,
@@ -156,20 +155,22 @@ redirection. Never create the retained log later from output held only in agent
 context. Do not create a CSV merely to transfer formatted text into an entry;
 retain structured data when it supports analysis, reuse, or provenance.
 
-When a command uses a non-image data input or durable external resource that is
-not already in `data.csv`, ask whether it should be copied into the entry or
-referenced externally. Then add it with
-`./pyrun data add <name> <type> <location>`, and record the command with the
-`<name>` token instead of the raw path. A generated data output enters
-`data.csv` only when a later recorded command consumes it as an input.
+Every material command input must already have one matching item in the owning
+entry-root `data.json`. When adding a producerless input, ask whether it should
+be copied into the entry or referenced at its current location and obtain the
+exact external source and version identity. Add the item with
+`./pyrun data add <name> <file|directory> <location>`, declare its boundary,
+and record the command with its token instead of the raw path. A generated
+output enters `data.json` only when a later recorded command consumes it; it
+has no external boundary.
 
-Never add entry-local scripts or images to `data.csv`. Keep their relative
-paths directly in commands or Markdown.
+Never add output-only results, scripts, command logs, or images to `data.json`.
+Keep script and output paths directly in commands or Markdown. An image that is
+actually consumed by a later command is an input and follows the same registry
+rule.
 
-`pyrun` searches for an entry-local data index in this order:
-
-- `./data.csv`
-- `../data.csv`
+`pyrun` reads only `./data.json` at the current owning entry root. It does not
+search a parent entry or the log root.
 
 For every active investigation with a Python command created or revised during
 Record, create an entry-root `pyrun` symlink to the resolved
@@ -181,7 +182,7 @@ report that and get researcher approval before invoking the installed script
 directly. Record the approved exception beside the command; do not copy
 `pyrun` as a fallback.
 
-After creating or changing an entry Python script, `data.csv`, `pyrun` symlink,
+After creating or changing an entry Python script, `data.json`, `pyrun` symlink,
 or recorded command, run the command from the entry root and confirm its saved
 outputs can be read before presenting them.
 

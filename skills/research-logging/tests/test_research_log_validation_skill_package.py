@@ -9,9 +9,7 @@ REPOSITORY_PATH = re.compile(
     r"`((?:docs|examples|skills)/[^`\n]+|(?:AGENTS|CHANGELOG|README)\.md)`"
 )
 PACKAGE_REFERENCE_PATH = re.compile(r"`(references/[^`\n]+)`")
-BUNDLED_SCRIPT_PATH = re.compile(
-    r"`(scripts/(?:pyrun|research_log_validation\.py))`"
-)
+BUNDLED_SCRIPT_PATH = re.compile(r"`(scripts/(?:pyrun|research_log_validation\.py))`")
 
 
 class ResearchLogSkillPackageTests(unittest.TestCase):

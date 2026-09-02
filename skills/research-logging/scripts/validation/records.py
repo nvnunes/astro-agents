@@ -76,6 +76,110 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _atomic_copy_file(path: Path, source: Path, mode: int) -> None:
+    """Atomically replace ``path`` from a disk-backed snapshot."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        with source.open("rb") as snapshot:
+            while chunk := snapshot.read(1024 * 1024):
+                handle.write(chunk)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    try:
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _snapshot_file(path: Path, snapshot: Path) -> int:
+    """Copy one stable prior destination to disk and return its file mode."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise RecordPublicationError(
+                f"validation publication destination is not a file: {path}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            with snapshot.open("xb") as target:
+                while chunk := source.read(1024 * 1024):
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+        after = os.fstat(descriptor)
+        current = path.stat()
+    finally:
+        os.close(descriptor)
+    before_identity = _file_identity(before)
+    if before_identity != _file_identity(after) or before_identity != _file_identity(
+        current
+    ):
+        raise RecordPublicationError(
+            f"validation publication destination changed during snapshot: {path}"
+        )
+    return stat.S_IMODE(before.st_mode)
+
+
+def _file_identity(observation: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        observation.st_dev,
+        observation.st_ino,
+        observation.st_size,
+        observation.st_mtime_ns,
+        observation.st_ctime_ns,
+    )
+
+
+def _snapshot_publication(
+    resolved: tuple[tuple[str, Path, bytes], ...], snapshot_root: Path
+) -> dict[str, tuple[Path, int] | None]:
+    prior: dict[str, tuple[Path, int] | None] = {}
+    for index, (relative, path, _) in enumerate(resolved):
+        if path.is_file():
+            snapshot = snapshot_root / str(index)
+            prior[relative] = (snapshot, _snapshot_file(path, snapshot))
+        else:
+            prior[relative] = None
+    return prior
+
+
+def _restore_publication(
+    attempted: list[tuple[str, Path]],
+    prior: Mapping[str, tuple[Path, int] | None],
+) -> list[str]:
+    errors: list[str] = []
+    for relative, path in reversed(attempted):
+        try:
+            prior_file = prior[relative]
+            if prior_file is None:
+                path.unlink(missing_ok=True)
+                _fsync_directory(path.parent)
+            else:
+                snapshot, mode = prior_file
+                _atomic_copy_file(path, snapshot, mode)
+        except Exception as error:  # pragma: no cover - exercised by fault injection
+            errors.append(f"{relative}: {error}")
+    return errors
+
+
+def _publication_failure_message(error: Exception, rollback_errors: list[str]) -> str:
+    if rollback_errors:
+        return (
+            "validation publication failed and rollback was incomplete: "
+            f"{error}; rollback failed for {rollback_errors}"
+        )
+    return (
+        "validation publication failed and the prior publication bundle was "
+        f"restored: {error}"
+    )
+
+
 def _publication_paths(
     log_root: Path, outputs: Mapping[str, bytes]
 ) -> tuple[tuple[str, Path, bytes], ...]:
@@ -125,33 +229,19 @@ def publish_validation_outputs(
         resolved = _publication_paths(log_root, outputs)
         if validate_current is not None:
             validate_current()
-        prior = {
-            relative: path.read_bytes() if path.is_file() else None
-            for relative, path, _ in resolved
-        }
-        attempted: list[tuple[str, Path]] = []
-        try:
-            for relative, path, payload in resolved:
-                attempted.append((relative, path))
-                _atomic_write_bytes(path, payload)
-            if validate_current is not None:
-                validate_current()
-        except Exception as exc:
-            rollback_errors: list[str] = []
-            for relative, path in reversed(attempted):
-                try:
-                    prior_payload = prior[relative]
-                    if prior_payload is None:
-                        path.unlink(missing_ok=True)
-                        _fsync_directory(path.parent)
-                    else:
-                        _atomic_write_bytes(path, prior_payload)
-                except Exception as rollback_error:  # pragma: no cover
-                    rollback_errors.append(f"{relative}: {rollback_error}")
-            detail = (
-                f"; rollback failed for {rollback_errors}" if rollback_errors else ""
-            )
-            raise RecordPublicationError(
-                "validation publication failed and prior state was restored: "
-                f"{exc}{detail}"
-            ) from exc
+        with tempfile.TemporaryDirectory(
+            prefix="research-log-validation-publication-"
+        ) as snapshot_directory:
+            prior = _snapshot_publication(resolved, Path(snapshot_directory))
+            attempted: list[tuple[str, Path]] = []
+            try:
+                for relative, path, payload in resolved:
+                    attempted.append((relative, path))
+                    _atomic_write_bytes(path, payload)
+                if validate_current is not None:
+                    validate_current()
+            except Exception as exc:
+                rollback_errors = _restore_publication(attempted, prior)
+                raise RecordPublicationError(
+                    _publication_failure_message(exc, rollback_errors)
+                ) from exc

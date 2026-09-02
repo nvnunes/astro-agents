@@ -1,4 +1,4 @@
-"""Mechanical-only v2 material graph, orphan detection, and currentness."""
+"""Evidence-rooted material graph, artifact orphans, and currentness."""
 
 from __future__ import annotations
 
@@ -8,45 +8,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from .commands import Invocation
+from research_log_data import DataFile
+
+from .commands import Invocation, MaterialRelationship
 from .entry_materials import (
     ENTRY_MATERIAL_DIRECTORY_NAMES,
     EntryMaterialPathError,
     entry_material_roots,
 )
-from .evidence import EvidenceFile, RetentionRecord
+from .errors import MechanicalContractError
+from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
+from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
 
 MAX_GRAPH_NODES = 1_000_000
 MAX_GRAPH_EDGES = 4_000_000
-VALIDATION_OWNED_PARTS = frozenset({".cache", "validation"})
-IGNORED_DIRECTORY_NAMES = frozenset(
-    {
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "__pycache__",
-    }
+MAX_GRAPH_DEPTH = 64
+RUNTIME_CACHE_DIRECTORY_NAMES = frozenset(
+    {".cache", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__"}
 )
 IGNORED_FILE_NAMES = frozenset(
     {
         ".DS_Store",
         "data.csv",
+        "data.json",
         "evidence.json",
         "pyrun",
+        "retention.json",
     }
 )
 
 
-class MaterialGraphV2Error(ValueError):
+class MaterialGraphV2Error(MechanicalContractError):
     """One precise material-graph or retention conformance failure."""
-
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
 
 
 @dataclass(frozen=True, order=True)
@@ -89,11 +83,11 @@ class DirectArtifactConnection:
 
 
 @dataclass(frozen=True)
-class DataIndexSurface:
-    """One material-owner-local set of declared data-index names."""
+class InputRegistrySurface:
+    """One material-owner-local input registry."""
 
     owner: str
-    names: tuple[str, ...]
+    data_file: DataFile
 
 
 @dataclass(frozen=True)
@@ -104,7 +98,7 @@ class OrphanResult:
     connected: tuple[str, ...]
     declared_retained: tuple[str, ...]
     orphaned: tuple[str, ...]
-    unused_data_names: tuple[str, ...]
+    unused_input_names: tuple[str, ...]
     dependency_projection: str
 
 
@@ -120,23 +114,6 @@ class MaterialGraphResult:
 
 
 @dataclass(frozen=True)
-class CacheEntry:
-    """One dependency-keyed reusable generated result."""
-
-    identity: str
-    dependency_projection: str
-    result: Mapping[str, object]
-
-
-@dataclass(frozen=True)
-class CacheReuse:
-    """Exact reusable and reopened outcomes for one evaluation."""
-
-    reused: Mapping[str, Mapping[str, object]]
-    reopened: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class MaterialGraphRequest:
     """Complete bounded inputs for one material-graph composition."""
 
@@ -144,46 +121,60 @@ class MaterialGraphRequest:
     evidence: Sequence[EvidenceConnection]
     direct_artifacts: Sequence[DirectArtifactConnection]
     invocations: Sequence[Invocation]
-    evidence_files: Sequence[EvidenceFile]
-    data_indexes: Sequence[DataIndexSurface] = ()
+    retention_files: Sequence[RetentionFile]
+    input_registries: Sequence[InputRegistrySurface] = ()
 
 
 @dataclass
 class _GraphState:
     roots: Mapping[str, tuple[Path, ...]]
+    invocations: Sequence[Invocation]
+    outputs: Mapping[str, tuple[Invocation, ...]]
     nodes: set[GraphNode]
     edges: set[GraphEdge]
     connected: set[str]
     dependencies: list[object]
+    expanded_invocations: set[str]
+    visiting: set[str]
 
 
 def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult:
-    """Compose only proved edges, then classify entry-owned material."""
+    """Compose the evidence closure, then classify entry-owned material."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
-    connection_roots = _connection_roots(roots)
-    state = _GraphState(connection_roots, set(), set(), set(), [])
+    state = _GraphState(
+        _connection_roots(roots),
+        request.invocations,
+        _output_index(request.invocations),
+        set(),
+        set(),
+        set(),
+        [],
+        set(),
+        set(),
+    )
     graph_started = time.perf_counter()
     _add_evidence(request.evidence, state)
     _add_direct_artifacts(request.direct_artifacts, state)
-    _add_invocations(request.invocations, state)
     _bound_graph(state.nodes, state.edges)
     graph_seconds = time.perf_counter() - graph_started
+
     orphan_started = time.perf_counter()
     inventory = _inventory(roots)
     retained = _retained_material(
-        request.evidence_files, roots, inventory, state.connected
+        request.retention_files, roots, inventory, state.connected
     )
-    unused_names = _unused_data_names(request.data_indexes, request.invocations)
+    unused_names = _unused_input_names(request.input_registries, request.invocations)
     orphan = _orphan_result(inventory, state.connected, retained, unused_names)
     orphan_seconds = time.perf_counter() - orphan_started
+
     currentness_started = time.perf_counter()
     graph_projection = {
         "dependencies": state.dependencies,
         "edges": [_edge_projection(edge) for edge in sorted(state.edges)],
-        "orphan": orphan.dependency_projection,
         "nodes": [_node_projection(node) for node in sorted(state.nodes)],
-        "version": "v2-initial",
+        "orphan": orphan.dependency_projection,
+        "version": "input-registry-1",
     }
     dependency_projection = _digest(graph_projection)
     currentness_seconds = time.perf_counter() - currentness_started
@@ -197,6 +188,7 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
             "graph_seconds": graph_seconds,
             "orphan_seconds": orphan_seconds,
             "inventory_files": len(inventory),
+            "orphan_artifacts": len(orphan.orphaned),
         },
     )
 
@@ -204,95 +196,158 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
 def _add_evidence(
     connections: Sequence[EvidenceConnection], state: _GraphState
 ) -> None:
-    for evidence_connection in connections:
+    for connection in connections:
         record = _node(
-            state.nodes,
-            "evidence",
-            f"{evidence_connection.entry}:{evidence_connection.record}",
+            state.nodes, "evidence", f"{connection.entry}:{connection.record}"
         )
-        presentation = _node(
-            state.nodes, "presentation", evidence_connection.presentation
-        )
+        presentation = _node(state.nodes, "presentation", connection.presentation)
         state.edges.add(GraphEdge("presentation", record, presentation))
-        for raw in evidence_connection.materials:
-            material = _material_node(
-                state.nodes,
-                raw,
-                external=raw in evidence_connection.external_materials,
-            )
+        for raw in connection.materials:
+            external = raw in connection.external_materials
+            material = _material_node(state.nodes, raw, external=external)
             state.edges.add(GraphEdge("evidence-source", record, material))
             _connect_local(state.connected, material.identity, state.roots)
-        state.dependencies.append(_evidence_projection(evidence_connection))
+            if not external:
+                _trace_material(material.identity, None, state, depth=0)
+        state.dependencies.append(_evidence_projection(connection))
 
 
 def _add_direct_artifacts(
     connections: Sequence[DirectArtifactConnection], state: _GraphState
 ) -> None:
-    for artifact_connection in connections:
-        presentation = _node(
-            state.nodes, "presentation", artifact_connection.presentation
-        )
-        material = _material_node(state.nodes, artifact_connection.material)
+    for connection in connections:
+        presentation = _node(state.nodes, "presentation", connection.presentation)
+        material = _material_node(state.nodes, connection.material)
         state.edges.add(GraphEdge("direct-artifact", presentation, material))
         _connect_local(state.connected, material.identity, state.roots)
-        state.dependencies.append(_artifact_projection(artifact_connection))
+        _trace_material(material.identity, None, state, depth=0)
+        state.dependencies.append(_artifact_projection(connection))
 
 
-def _add_invocations(invocations: Sequence[Invocation], state: _GraphState) -> None:
-    generated: set[str] = set()
+def _trace_material(
+    material: str,
+    consumer: Invocation | None,
+    state: _GraphState,
+    *,
+    depth: int,
+) -> None:
+    """Add only the unambiguous producer portion of one reached branch."""
+
+    if depth > MAX_GRAPH_DEPTH:
+        _fail(
+            "provenance.resource.too_large",
+            material,
+            {"depth": depth, "limit": MAX_GRAPH_DEPTH},
+        )
+    candidates = tuple(
+        invocation
+        for invocation in state.outputs.get(material, ())
+        if consumer is None or invocation.sequence < consumer.sequence
+    )
+    if len(candidates) != 1:
+        return
+    producer = candidates[0]
+    if producer.identity in state.visiting:
+        return
+    command = _node(state.nodes, "invocation", producer.identity)
+    output = _material_node(state.nodes, material)
+    state.edges.add(GraphEdge("output", command, output))
+    _connect_local(state.connected, material, state.roots)
+    if producer.identity in state.expanded_invocations:
+        return
+    state.expanded_invocations.add(producer.identity)
+    state.visiting.add(producer.identity)
+    if producer.script is not None and producer.script_identity is not None:
+        script = _material_node(state.nodes, producer.script)
+        state.edges.add(GraphEdge("script", command, script))
+        _connect_local(state.connected, script.identity, state.roots)
+    for relationship in producer.inputs:
+        _add_reached_input(relationship, producer, command, state, depth=depth)
+    state.visiting.remove(producer.identity)
+    state.dependencies.append(_invocation_projection(producer))
+
+
+def _add_reached_input(
+    relationship: MaterialRelationship,
+    consumer: Invocation,
+    command: GraphNode,
+    state: _GraphState,
+    *,
+    depth: int,
+) -> None:
+    material = _material_node(
+        state.nodes, relationship.path, external=relationship.external
+    )
+    state.edges.add(GraphEdge("input", material, command))
+    _connect_local(state.connected, material.identity, state.roots)
+    resource = relationship.input_resource
+    if resource is not None:
+        declaration = _node(
+            state.nodes,
+            "input-declaration",
+            f"{consumer.material_owner}:{resource.name}",
+        )
+        state.edges.add(GraphEdge("declared-input", declaration, material))
+    prior = _reached_prior_producer(relationship, consumer, state)
+    if prior is None:
+        return
+    _trace_material(relationship.path, consumer, state, depth=depth + 1)
+
+
+def _reached_prior_producer(
+    relationship: MaterialRelationship,
+    consumer: Invocation,
+    state: _GraphState,
+) -> Invocation | None:
+    if relationship.external:
+        return None
+    resource = relationship.input_resource
+    if resource is None or resource.kind == "file":
+        earlier = tuple(
+            invocation
+            for invocation in state.outputs.get(relationship.path, ())
+            if invocation.sequence < consumer.sequence
+        )
+        return earlier[0] if len(earlier) == 1 else None
+    root = Path(resource.canonical_target).resolve()
+    earlier_invocations = tuple(
+        invocation
+        for invocation in state.invocations
+        if invocation.sequence < consumer.sequence
+    )
+    exact = tuple(
+        invocation
+        for invocation in earlier_invocations
+        if any(
+            collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+            and Path(collection.root).resolve() == root
+            for collection in invocation.collections
+        )
+    )
+    if len(exact) != 1:
+        return None
+    owner = exact[0]
+    conflicts = {
+        invocation.identity
+        for invocation in earlier_invocations
+        if invocation.identity != owner.identity
+        and any(_within(Path(output.path), root) for output in invocation.outputs)
+    }
+    if conflicts or owner not in state.outputs.get(relationship.path, ()):
+        return None
+    return owner
+
+
+def _output_index(
+    invocations: Sequence[Invocation],
+) -> dict[str, tuple[Invocation, ...]]:
+    result: dict[str, list[Invocation]] = {}
     for invocation in invocations:
-        command = _node(state.nodes, "invocation", invocation.identity)
-        if invocation.script is not None and invocation.script_identity is not None:
-            script = _material_node(state.nodes, invocation.script)
-            state.edges.add(GraphEdge("script", command, script))
-            _connect_local(state.connected, script.identity, state.roots)
-        for relationship in invocation.inputs:
-            material = _material_node(
-                state.nodes,
-                relationship.path,
-                external=relationship.external and relationship.path not in generated,
-            )
-            state.edges.add(GraphEdge("input", material, command))
-            _connect_local(state.connected, material.identity, state.roots)
-            if relationship.named_input is not None:
-                name = _node(
-                    state.nodes,
-                    "data-name",
-                    f"{invocation.material_owner}:"
-                    f"{relationship.named_input}",
-                )
-                state.edges.add(GraphEdge("named-input", name, material))
-        for relationship in invocation.outputs:
-            material = _material_node(state.nodes, relationship.path)
-            state.edges.add(GraphEdge("output", command, material))
-            _connect_local(state.connected, material.identity, state.roots)
-            generated.add(relationship.path)
-        for collection in invocation.collections:
-            identity = hashlib.sha256(
-                canonical_json(
-                    {
-                        "direction": collection.direction,
-                        "invocation": invocation.identity,
-                        "mechanism": collection.mechanism,
-                        "members": list(collection.members),
-                        "root": collection.root,
-                        "target": collection.target,
-                    }
-                ).encode()
-            ).hexdigest()
-            group = _node(state.nodes, "collection", identity)
-            state.edges.add(
-                GraphEdge(
-                    collection.direction,
-                    group if collection.direction == "input" else command,
-                    command if collection.direction == "input" else group,
-                )
-            )
-            for member in collection.members:
-                material = _material_node(state.nodes, member)
-                state.edges.add(GraphEdge("member", group, material))
-                _connect_local(state.connected, material.identity, state.roots)
-        state.dependencies.append(_invocation_projection(invocation))
+        for output in invocation.outputs:
+            result.setdefault(output.path, []).append(invocation)
+    return {path: tuple(values) for path, values in result.items()}
 
 
 def _orphan_result(
@@ -306,8 +361,8 @@ def _orphan_result(
         "connected": sorted(inventory & connected),
         "declared_retained": sorted(retained),
         "inventory": sorted(inventory),
-        "unused_data_names": sorted(unused_names),
-        "version": "v2-initial",
+        "unused_input_names": sorted(unused_names),
+        "version": "input-registry-1",
     }
     return OrphanResult(
         tuple(sorted(inventory)),
@@ -317,23 +372,6 @@ def _orphan_result(
         tuple(sorted(unused_names)),
         _digest(orphan_projection),
     )
-
-
-def reuse_by_dependency(
-    current: Mapping[str, str], prior: Sequence[CacheEntry]
-) -> CacheReuse:
-    """Reuse only exact identity-and-dependency matches."""
-
-    prior_by_identity = {entry.identity: entry for entry in prior}
-    reused: dict[str, Mapping[str, object]] = {}
-    reopened: list[str] = []
-    for identity, dependency in sorted(current.items()):
-        candidate = prior_by_identity.get(identity)
-        if candidate is not None and candidate.dependency_projection == dependency:
-            reused[identity] = candidate.result
-        else:
-            reopened.append(identity)
-    return CacheReuse(reused, tuple(reopened))
 
 
 def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
@@ -355,16 +393,12 @@ def _connect_local(
 ) -> None:
     path = Path(material)
     if any(
-        _within(path, root)
-        for owned_roots in roots.values()
-        for root in owned_roots
+        _within(path, root) for owned_roots in roots.values() for root in owned_roots
     ):
         connected.add(path.resolve().as_posix())
 
 
-def _connection_roots(
-    roots: Mapping[str, Path],
-) -> dict[str, tuple[Path, ...]]:
+def _connection_roots(roots: Mapping[str, Path]) -> dict[str, tuple[Path, ...]]:
     result: dict[str, tuple[Path, ...]] = {}
     for entry, root in roots.items():
         try:
@@ -383,7 +417,7 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
     for root in roots.values():
         if root.is_symlink() or not root.is_dir():
             _fail("provenance.observation.unavailable", str(root), {"directory": False})
-        for path in root.rglob("*"):
+        for path in _bounded_inventory_descendants(root):
             relative = path.relative_to(root)
             if _excluded(relative):
                 continue
@@ -396,12 +430,7 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
                 continue
             if path.is_file():
                 inventory.add(path.resolve().as_posix())
-                if len(inventory) > MAX_GRAPH_NODES:
-                    _fail(
-                        "provenance.resource.too_large",
-                        "orphan inventory",
-                        {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
-                    )
+                _bound_inventory(inventory)
     return inventory
 
 
@@ -415,7 +444,7 @@ def _inventory_material_root(
             {"reason": "unavailable_material_root"},
         )
     canonical_root = root.resolve()
-    for path in canonical_root.rglob("*"):
+    for path in _bounded_inventory_descendants(canonical_root):
         relative = logical_root / path.relative_to(canonical_root)
         if path.is_symlink():
             _fail(
@@ -427,48 +456,67 @@ def _inventory_material_root(
             continue
         if path.is_file():
             inventory.add(path.resolve().as_posix())
-            if len(inventory) > MAX_GRAPH_NODES:
-                _fail(
-                    "provenance.resource.too_large",
-                    "orphan inventory",
-                    {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
-                )
+            _bound_inventory(inventory)
+
+
+def _bound_inventory(inventory: set[str]) -> None:
+    if len(inventory) > MAX_GRAPH_NODES:
+        _fail(
+            "provenance.resource.too_large",
+            "orphan inventory",
+            {"nodes": len(inventory), "limit": MAX_GRAPH_NODES},
+        )
+
+
+def _bounded_inventory_descendants(root: Path) -> tuple[Path, ...]:
+    try:
+        return bounded_descendants(root, maximum_entries=MAX_GRAPH_NODES)
+    except BoundedTraversalError as error:
+        if error.reason == "entry_limit":
+            _fail(
+                "provenance.resource.too_large",
+                str(root),
+                {"entries": error.observed, "limit": error.limit},
+            )
+        _fail(
+            "provenance.observation.unavailable",
+            str(root),
+            {"error": error.detail, "reason": error.reason},
+        )
 
 
 def _excluded(relative: Path) -> bool:
     return (
-        relative.suffix.lower() == ".md"
+        (len(relative.parts) == 1 and relative.suffix.lower() == ".md")
         or relative.name in IGNORED_FILE_NAMES
-        or any(part in IGNORED_DIRECTORY_NAMES for part in relative.parts)
-        or any(part in VALIDATION_OWNED_PARTS for part in relative.parts)
+        or (bool(relative.parts) and relative.parts[0] == "tmp")
+        or any(part in RUNTIME_CACHE_DIRECTORY_NAMES for part in relative.parts)
     )
 
 
 def _retained_material(
-    files: Sequence[EvidenceFile],
+    files: Sequence[RetentionFile],
     roots: Mapping[str, Path],
     inventory: set[str],
     connected: set[str],
 ) -> set[str]:
     retained: set[str] = set()
-    for evidence_file in files:
-        if evidence_file.entry_root.resolve() not in roots.values():
+    for retention_file in files:
+        if retention_file.entry_root.resolve() not in roots.values():
             _fail(
                 "retention.declaration.invalid",
-                str(evidence_file.path),
-                {"entry_root": str(evidence_file.entry_root)},
+                str(retention_file.path),
+                {"entry_root": str(retention_file.entry_root)},
             )
-        for record in evidence_file.records:
-            if not isinstance(record, RetentionRecord):
-                continue
-            covered = _retention_coverage(record, evidence_file.entry_root.resolve())
+        for record in retention_file.records:
+            covered = _retention_coverage(record, retention_file.entry_root.resolve())
             invalid = covered - inventory
             overlap = covered & retained
             redundant = covered & connected
             if invalid or overlap or redundant:
                 _fail(
                     "retention.declaration.invalid",
-                    f"{evidence_file.path}:{record.id}",
+                    f"{retention_file.path}:{record.id}",
                     {
                         "connected": sorted(redundant),
                         "ineligible": sorted(invalid),
@@ -484,26 +532,42 @@ def _retention_coverage(record: RetentionRecord, root: Path) -> set[str]:
         return {(root / path).resolve().as_posix() for path in record.paths}
     assert record.directory is not None
     directory = (root / record.directory).resolve()
+    try:
+        descendants = bounded_descendants(
+            directory, maximum_entries=MAX_RETENTION_DESCENDANTS
+        )
+    except BoundedTraversalError as error:
+        _fail(
+            "retention.declaration.invalid",
+            str(directory),
+            {
+                "limit": error.limit,
+                "observed": error.observed,
+                "reason": error.reason,
+            },
+        )
     return {
         path.resolve().as_posix()
-        for path in directory.rglob("*")
+        for path in descendants
         if path.is_file()
         and not path.is_symlink()
         and not _excluded(Path(record.directory) / path.relative_to(directory))
     }
 
 
-def _unused_data_names(
-    surfaces: Sequence[DataIndexSurface], invocations: Sequence[Invocation]
+def _unused_input_names(
+    surfaces: Sequence[InputRegistrySurface], invocations: Sequence[Invocation]
 ) -> set[str]:
     used = {
-        f"{invocation.material_owner}:{relationship.named_input}"
+        f"{invocation.material_owner}:{relationship.input_resource.name}"
         for invocation in invocations
         for relationship in invocation.inputs
-        if relationship.named_input is not None
+        if relationship.input_resource is not None
     }
     declared = {
-        f"{surface.owner}:{name}" for surface in surfaces for name in surface.names
+        f"{surface.owner}:{resource.name}"
+        for surface in surfaces
+        for resource in surface.data_file.inputs
     }
     return declared - used
 
@@ -512,8 +576,8 @@ def _evidence_projection(connection: EvidenceConnection) -> object:
     return {
         "dependencies": list(connection.dependencies),
         "entry": connection.entry,
-        "materials": sorted(connection.materials),
         "external_materials": sorted(connection.external_materials),
+        "materials": sorted(connection.materials),
         "presentation": connection.presentation,
         "record": connection.record,
     }
@@ -540,11 +604,23 @@ def _invocation_projection(invocation: Invocation) -> object:
             }
             for item in invocation.collections
         ],
-        "command_type": invocation.command_type,
         "identity": invocation.identity,
-        "inputs": [item.__dict__ for item in invocation.inputs],
-        "outputs": [item.__dict__ for item in invocation.outputs],
+        "inputs": [_relationship_projection(item) for item in invocation.inputs],
+        "outputs": [_relationship_projection(item) for item in invocation.outputs],
         "script_identity": invocation.script_identity,
+    }
+
+
+def _relationship_projection(relationship: MaterialRelationship) -> object:
+    resource = relationship.input_resource
+    return {
+        "direction": relationship.direction,
+        "external": relationship.external,
+        "input_identity": resource.content_identity if resource is not None else None,
+        "named_input": relationship.named_input,
+        "path": relationship.path,
+        "proof": relationship.proof,
+        "target": relationship.target,
     }
 
 
@@ -588,8 +664,8 @@ def _digest(value: object) -> str:
 
 def _fail(code: str, subject: str, observed: object) -> NoReturn:
     rule = (
-        "Orphan Detection"
+        "Evidence-rooted Orphans"
         if code.startswith("retention") or code.startswith("orphan")
-        else "Command-Provenance Resource And Safety Bounds"
+        else "Producer And Lineage Semantics"
     )
     raise MaterialGraphV2Error(code, subject, observed, rule)

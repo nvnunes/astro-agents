@@ -1,4 +1,4 @@
-"""Evidence-rooted v2 producer, lineage, and accepted-root evaluation."""
+"""Evidence-rooted producer and declared-input lineage evaluation."""
 
 from __future__ import annotations
 
@@ -7,29 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from .commands import Invocation, MaterialCollection
+from .commands import Invocation, MaterialCollection, MaterialRelationship
+from .errors import MechanicalContractError
 from .json_codec import canonical_json
 
 MAX_LINEAGE_DEPTH = 64
 
 
-class ProvenanceV2Error(ValueError):
+class ProvenanceV2Error(MechanicalContractError):
     """One completed mechanical provenance failure."""
-
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
-
-
-@dataclass(frozen=True)
-class ProvenanceRoot:
-    """One accepted external, model, or simulation root."""
-
-    kind: str
-    identity: str
 
 
 @dataclass(frozen=True)
@@ -39,7 +25,6 @@ class ProvenanceResult:
     material: str
     producers: tuple[str, ...]
     lineage: tuple[tuple[str, str], ...]
-    roots: tuple[ProvenanceRoot, ...]
     dependency_projection: str
 
 
@@ -48,8 +33,9 @@ class _WalkState:
     outputs: Mapping[str, tuple[Invocation, ...]]
     invocations: Sequence[Invocation]
     producers: list[str]
+    producer_seen: set[str]
     lineage: list[tuple[str, str]]
-    roots: set[ProvenanceRoot]
+    lineage_seen: set[tuple[str, str]]
     visiting: set[str]
 
 
@@ -63,9 +49,8 @@ def evaluate_provenance(
     if not Path(canonical).is_file() and not Path(canonical).is_dir():
         _fail("material.unresolved", canonical, {"exists": False})
     outputs = _output_index(invocations)
-    state = _WalkState(outputs, invocations, [], [], set(), set())
+    state = _WalkState(outputs, invocations, [], set(), [], set(), set())
     _walk_material(canonical, None, state, starting=True, depth=0)
-    roots = tuple(sorted(state.roots, key=lambda root: (root.kind, root.identity)))
     by_identity = {invocation.identity: invocation for invocation in invocations}
     payload = {
         "lineage": [list(edge) for edge in state.lineage],
@@ -75,15 +60,13 @@ def evaluate_provenance(
             _invocation_dependency(by_identity[identity])
             for identity in state.producers
         ],
-        "roots": [root.__dict__ for root in roots],
-        "version": "v2",
+        "version": "input-registry-1",
     }
     dependency = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     return ProvenanceResult(
         canonical,
         tuple(state.producers),
         tuple(state.lineage),
-        roots,
         dependency,
     )
 
@@ -138,39 +121,42 @@ def _walk_material(
             {"script": producer.script},
         )
     _validate_output_directories(producer, state.invocations)
-    state.producers.append(producer.identity)
+    if producer.identity not in state.producer_seen:
+        state.producers.append(producer.identity)
+        state.producer_seen.add(producer.identity)
     if consumer is not None:
-        state.lineage.append((producer.identity, consumer.identity))
+        edge = (producer.identity, consumer.identity)
+        if edge not in state.lineage_seen:
+            state.lineage.append(edge)
+            state.lineage_seen.add(edge)
     state.visiting.add(producer.identity)
     _walk_invocation(producer, state, depth)
     state.visiting.remove(producer.identity)
 
 
 def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> None:
-    if invocation.command_type in {"model", "simulation"}:
-        state.roots.add(ProvenanceRoot(invocation.command_type, invocation.identity))
     if not invocation.inputs:
-        if invocation.command_type not in {"model", "simulation"}:
-            _fail(
-                "provenance.root.missing",
-                invocation.identity,
-                {"inputs": 0, "type": invocation.command_type},
-            )
         return
     for relationship in invocation.inputs:
+        if (
+            relationship.input_resource is not None
+            and relationship.input_resource.kind == "directory"
+        ):
+            _walk_directory_input(relationship, invocation, state, depth)
+            continue
         prior_producers = tuple(
             producer
             for producer in state.outputs.get(relationship.path, ())
             if producer.sequence < invocation.sequence
         )
         if relationship.external and not prior_producers:
-            state.roots.add(
-                ProvenanceRoot(
-                    "external",
-                    relationship.named_input or relationship.path,
-                )
-            )
             continue
+        if relationship.external and len(prior_producers) == 1:
+            _fail(
+                "data.external.invalid",
+                relationship.named_input or relationship.path,
+                {"producer": prior_producers[0].identity},
+            )
         _walk_material(
             relationship.path,
             invocation,
@@ -178,6 +164,83 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
             starting=False,
             depth=depth + 1,
         )
+
+
+def _walk_directory_input(
+    relationship: MaterialRelationship,
+    consumer: Invocation,
+    state: _WalkState,
+    depth: int,
+) -> None:
+    resource = relationship.input_resource
+    assert resource is not None
+    root = Path(resource.canonical_target)
+    earlier = tuple(
+        invocation
+        for invocation in state.invocations
+        if invocation.sequence < consumer.sequence
+    )
+    exact = tuple(
+        invocation
+        for invocation in earlier
+        if any(
+            collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+            and Path(collection.root).resolve() == root.resolve()
+            for collection in invocation.collections
+        )
+    )
+    producers_within = {
+        invocation.identity
+        for invocation in earlier
+        if any(_within(Path(output.path), root) for output in invocation.outputs)
+    }
+    exact_ids = {invocation.identity for invocation in exact}
+    overlapping = {
+        invocation.identity
+        for invocation in earlier
+        for collection in invocation.collections
+        if collection.direction == "output"
+        and collection.mechanism == "directory"
+        and collection.root is not None
+        and Path(collection.root).resolve() != root.resolve()
+        and (
+            _within(Path(collection.root), root) or _within(root, Path(collection.root))
+        )
+    }
+    conflicts = (producers_within - exact_ids) | overlapping
+    if relationship.external:
+        if exact or producers_within or overlapping:
+            _fail(
+                "directory.external.conflict",
+                resource.name,
+                {"producers": sorted(exact_ids | producers_within | overlapping)},
+            )
+        return
+    if len(exact) != 1 or conflicts:
+        _fail(
+            "directory.producer.conflict",
+            resource.name,
+            {
+                "exact_producers": [item.identity for item in exact],
+                "conflicts": sorted(conflicts),
+            },
+        )
+    owner = exact[0]
+    if owner not in state.outputs.get(relationship.path, ()):
+        _fail(
+            "directory.producer.conflict",
+            resource.name,
+            {"missing_member": relationship.path, "producer": owner.identity},
+        )
+    _walk_material(
+        relationship.path,
+        consumer,
+        state,
+        starting=False,
+        depth=depth + 1,
+    )
 
 
 def _output_index(
@@ -192,11 +255,26 @@ def _output_index(
 
 def _invocation_dependency(invocation: Invocation) -> Mapping[str, object]:
     return {
-        "command_type": invocation.command_type,
         "identity": invocation.identity,
-        "inputs": [relationship.__dict__ for relationship in invocation.inputs],
-        "outputs": [relationship.__dict__ for relationship in invocation.outputs],
+        "inputs": [_relationship_dependency(value) for value in invocation.inputs],
+        "outputs": [_relationship_dependency(value) for value in invocation.outputs],
         "script_identity": invocation.script_identity,
+    }
+
+
+def _relationship_dependency(
+    relationship: MaterialRelationship,
+) -> Mapping[str, object]:
+    resource = relationship.input_resource
+    return {
+        "direction": relationship.direction,
+        "external": relationship.external,
+        "input": resource.as_dict() if resource is not None else None,
+        "input_identity": resource.content_identity if resource is not None else None,
+        "named_input": relationship.named_input,
+        "path": relationship.path,
+        "proof": relationship.proof,
+        "target": relationship.target,
     }
 
 

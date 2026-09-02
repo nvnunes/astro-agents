@@ -5,20 +5,36 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections import Counter
-from dataclasses import dataclass, field
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
 from typing import Any, Mapping, NoReturn, Sequence
+
+from research_log_data import (
+    DataContractError,
+    DataFile,
+    FingerprintObservation,
+    InputResource,
+    find_log_consistency_conflicts,
+    load_data_file,
+    resolve_input_token,
+    validate_fingerprint_observation,
+    verify_fingerprint,
+)
 
 from .commands import (
     CommandContext,
     Invocation,
+    ScriptObservation,
     discover_commands,
-    load_data_index,
     order_invocations,
 )
-from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
+from .entry_materials import (
+    EntryMaterialPathError,
+    validate_entry_path_symlinks,
+    validate_local_path_symlinks,
+)
+from .errors import MechanicalContractError
 from .evidence import (
     MAX_PRESENTATIONS_PER_LOG,
     MAX_RECORDS_PER_LOG,
@@ -42,6 +58,8 @@ from .evidence import (
     load_evidence_file,
     resolve_summary_references,
 )
+from .filesystem import BoundedTraversalError, bounded_descendants
+from .fingerprint_cache import FingerprintCache, project_root
 from .json_codec import canonical_json
 from .locator import (
     SourceObservation,
@@ -49,9 +67,9 @@ from .locator import (
     observe_source,
 )
 from .material_graph import (
-    DataIndexSurface,
     DirectArtifactConnection,
     EvidenceConnection,
+    InputRegistrySurface,
     MaterialGraphRequest,
     MaterialGraphResult,
     compose_material_graph,
@@ -68,26 +86,32 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .provenance import evaluate_provenance
+from .retention import RetentionFile, load_retention_file
 from .transformation import (
     TransformationResult,
     compare_presentation,
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-evidence/v2-orphan-11"
-CACHE_SCHEMA = "research-log-mechanical-cache/2"
+RULES_VERSION = "research-log-mechanical/input-registry-1"
+CACHE_SCHEMA = "research-log-mechanical-cache/6"
+CACHE_FIELDS = frozenset(
+    {
+        "artifact_identities",
+        "checks",
+        "rules_version",
+        "schema",
+    }
+)
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
+MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
 
-class EngineV2Error(ValueError):
+# Evaluation contracts and mutable scan state.
+
+
+class EngineV2Error(MechanicalContractError):
     """One precise integration-level mechanical failure."""
-
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
 
 
 @dataclass(frozen=True)
@@ -96,13 +120,17 @@ class _Entry:
     document: Path
     root: Path
     evidence_file: EvidenceFile | None
-    data_index: Mapping[str, str]
+    data_file: DataFile | None
+    retention_file: RetentionFile | None
+    evidence_failed: bool = False
 
 
 @dataclass(frozen=True)
 class _EntrySurface:
     evidence_file: EvidenceFile | None
-    data_index: Mapping[str, str]
+    evidence_failed: bool
+    data_file: DataFile | None
+    retention_file: RetentionFile | None
 
 
 @dataclass(frozen=True)
@@ -138,24 +166,44 @@ class _ScanState:
     summary: Path
     log_root: Path
     project_root: Path
+    fingerprint_cache: FingerprintCache | None = None
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
+    command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
+    command_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     records: list[_RecordOutcome] = field(default_factory=list)
     direct: list[DirectArtifactConnection] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
     selection_cache: dict[tuple[str, str], object] = field(default_factory=dict)
     source_cache: dict[str, SourceObservation] = field(default_factory=dict)
-    script_cache: dict[str, str] = field(default_factory=dict)
-    script_identity_seeds: dict[str, str] = field(default_factory=dict)
+    script_cache: dict[str, ScriptObservation] = field(default_factory=dict)
+    script_identity_seeds: dict[str, Mapping[str, object]] = field(default_factory=dict)
+    artifact_identity_seeds: dict[str, Mapping[str, object]] = field(
+        default_factory=dict
+    )
     artifact_identities: dict[str, Mapping[str, object]] = field(default_factory=dict)
-    artifact_identity_seeds: int = 0
+    input_observations: dict[str, FingerprintObservation] = field(default_factory=dict)
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
     source_hashes_reused: int = 0
+    input_fingerprints_reused: int = 0
     timings: dict[str, float] = field(default_factory=dict)
     text_cache: dict[Path, str] = field(default_factory=dict)
+
+
+@dataclass
+class _OrphanGroupingState:
+    log_identity: str
+    owner: str
+    inventory: set[str]
+    orphan_paths: Mapping[str, str]
+    grouped: set[str]
+    result: dict[str, Mapping[str, object]]
+
+
+# Top-level evaluation lifecycle.
 
 
 def mechanical_policy() -> MechanicalEvaluationPolicy[MechanicalGeneratedRecord]:
@@ -169,14 +217,18 @@ def _scan(
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     started = time.perf_counter()
     summary = request.summary_path.resolve()
-    state = _ScanState(summary, summary.with_suffix(""), _project_root(summary))
-    state.artifact_identities = _accepted_artifact_identities(
+    state = _ScanState(
+        summary,
+        summary.with_suffix(""),
+        project_root(summary),
+        request.fingerprint_cache,
+    )
+    state.artifact_identity_seeds = _accepted_artifact_identities(
         request.prior_cache, state.project_root
     )
-    state.artifact_identity_seeds = len(state.artifact_identities)
     state.script_identity_seeds = {
-        (state.project_root / relative).resolve().as_posix(): str(value["sha256"])
-        for relative, value in state.artifact_identities.items()
+        (state.project_root / relative).resolve().as_posix(): value
+        for relative, value in state.artifact_identity_seeds.items()
     }
     try:
         summary_text = _read_text(summary, state)
@@ -197,9 +249,7 @@ def _scan(
         state.invocations = _discover_invocations(state)
         _record_script_identities(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
-    except Exception as error:
-        if not _contract_error(error):
-            raise
+    except MechanicalContractError as error:
         state.checks.append(
             _error_check("conformance:log", CheckScope.CONFORMANCE, error)
         )
@@ -207,9 +257,7 @@ def _scan(
         _evaluate_entries(state)
         try:
             _evaluate_summary(summary_text, state)
-        except Exception as error:
-            if not _contract_error(error):
-                raise
+        except MechanicalContractError as error:
             state.checks.append(
                 _error_check(
                     "evidence:summary",
@@ -220,10 +268,13 @@ def _scan(
         _compose_graph(state)
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
         state.checks.append(_pass_check("conformance:log", CheckScope.CONFORMANCE))
-    checks, reused = _reuse_checks(state.checks, request.prior_cache)
-    cache = _cache_projection(checks, state.artifact_identities)
+    checks, unchanged = _compare_checks(state.checks, request.prior_cache)
+    cache = _cache_projection(
+        checks,
+        state.artifact_identities,
+    )
     metrics = {
-        "checks_reused": reused,
+        "checks_unchanged": unchanged,
         "elapsed_seconds": time.perf_counter() - started,
         "graph_edges": len(state.graph.edges) if state.graph else 0,
         "graph_nodes": len(state.graph.nodes) if state.graph else 0,
@@ -231,10 +282,29 @@ def _scan(
         "markdown_reads": state.markdown_reads,
         "script_hashes": len(state.script_cache),
         "artifact_identities": len(state.artifact_identities),
-        "artifact_identity_seeds": state.artifact_identity_seeds,
+        "directory_observations": sum(
+            observation.fingerprint.algorithm == "directory-sha256-v1"
+            for observation in state.input_observations.values()
+        ),
+        "identity_file_observations": sum(
+            observation.fingerprint.algorithm == "identity-files-sha256-v1"
+            for observation in state.input_observations.values()
+        ),
+        "identity_pattern_observations": sum(
+            observation.fingerprint.algorithm == "identity-patterns-sha256-v1"
+            for observation in state.input_observations.values()
+        ),
+        "artifact_identity_seeds": len(state.artifact_identity_seeds),
         "source_evaluations": state.source_evaluations,
         "source_reads": len(state.source_cache),
         "source_hashes_reused": state.source_hashes_reused,
+        "input_observations": len(state.input_observations),
+        "input_fingerprints_reused": state.input_fingerprints_reused,
+        **(
+            state.fingerprint_cache.metrics.as_dict()
+            if state.fingerprint_cache is not None
+            else {}
+        ),
         **state.timings,
         **(state.graph.metrics if state.graph else {}),
     }
@@ -253,13 +323,17 @@ def _evaluate(scan: Mapping[str, Any], date: str) -> MechanicalGeneratedRecord:
     )
 
 
+# Entry surfaces and command discovery.
+
+
 def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
     listed = _listed_entry_documents(summary_text, state)
     if not listed:
         _fail("association.declaration_missing", str(state.summary), {"entries": 0})
+    _validate_surface_placement(listed, state)
     entries: list[_Entry] = []
     surfaces: dict[Path, _EntrySurface] = {}
-    surface_errors: dict[Path, Exception] = {}
+    surface_errors: dict[Path, MechanicalContractError] = {}
     for document in listed:
         surface = _load_entry_surface(
             document, state, surfaces=surfaces, errors=surface_errors
@@ -273,10 +347,89 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
                 document.resolve(),
                 root,
                 surface.evidence_file,
-                surface.data_index,
+                surface.data_file,
+                surface.retention_file,
+                surface.evidence_failed,
             )
         )
-    return entries
+    data_files = tuple(
+        {
+            entry.data_file.path: entry.data_file
+            for entry in entries
+            if entry.data_file
+        }.values()
+    )
+    conflicts = find_log_consistency_conflicts(data_files)
+    if not conflicts:
+        return entries
+    conflicted_targets = {conflict.canonical_target for conflict in conflicts}
+    for conflict in conflicts:
+        identity = hashlib.sha256(conflict.canonical_target.encode("utf-8")).hexdigest()
+        state.checks.append(
+            _error_check(
+                f"conformance:data-conflict:{identity}",
+                CheckScope.CONFORMANCE,
+                conflict.error,
+            )
+        )
+    return [_without_conflicted_inputs(entry, conflicted_targets) for entry in entries]
+
+
+def _without_conflicted_inputs(entry: _Entry, targets: set[str]) -> _Entry:
+    if entry.data_file is None:
+        return entry
+    inputs = tuple(
+        item for item in entry.data_file.inputs if item.canonical_target not in targets
+    )
+    data_file = replace(entry.data_file, inputs=inputs) if inputs else None
+    return replace(entry, data_file=data_file)
+
+
+def _validate_surface_placement(documents: Sequence[Path], state: _ScanState) -> None:
+    allowed_roots = {document.parent.resolve() for document in documents}
+    entries_root = (state.log_root / "entries").resolve()
+    surface_names = ("data.csv", "data.json", "retention.json")
+    for name in surface_names:
+        for invalid in (state.log_root / name, entries_root / name):
+            if invalid.exists():
+                _fail(
+                    "data.file.location_invalid"
+                    if name.startswith("data")
+                    else "retention.file.location_invalid",
+                    str(invalid),
+                    {"reason": "parent_or_log_level_surface"},
+                )
+    if not entries_root.is_dir():
+        return
+    try:
+        descendants = bounded_descendants(
+            entries_root, maximum_entries=MAX_ENTRY_SURFACE_PATHS
+        )
+    except BoundedTraversalError as error:
+        _fail(
+            "association.resource.too_large"
+            if error.reason == "entry_limit"
+            else "association.document_unavailable",
+            str(entries_root),
+            {
+                "error": error.detail,
+                "limit": error.limit,
+                "observed": error.observed,
+                "reason": error.reason,
+            },
+        )
+    for candidate in descendants:
+        if (
+            candidate.name in surface_names
+            and candidate.parent.resolve() not in allowed_roots
+        ):
+            _fail(
+                "data.file.location_invalid"
+                if candidate.name.startswith("data")
+                else "retention.file.location_invalid",
+                str(candidate),
+                {"reason": "unowned_entry_surface"},
+            )
 
 
 def _load_entry_surface(
@@ -284,30 +437,29 @@ def _load_entry_surface(
     state: _ScanState,
     *,
     surfaces: dict[Path, _EntrySurface],
-    errors: dict[Path, Exception],
+    errors: dict[Path, MechanicalContractError],
 ) -> _EntrySurface | None:
     """Load one owned entry surface while preserving sibling evaluation."""
 
-    root = document.parent.resolve()
+    lexical_root = document.parent.absolute()
     try:
-        _validate_owned_entry(document, root, state)
+        _validate_owned_entry(document, lexical_root, state)
+        root = lexical_root.resolve()
         if root in errors:
             raise errors[root]
         if root not in surfaces:
-            surfaces[root] = _read_entry_surface(root, state)
-    except Exception as error:
-        if not _contract_error(error):
-            raise
-        errors[root] = error
+            surfaces[root] = _read_entry_surface(document.stem, root, state)
+    except MechanicalContractError as error:
+        errors[lexical_root] = error
         state.checks.append(
             _error_check(
                 f"entry:{document.stem}:declaration",
-                CheckScope.CONFORMANCE,
+                _error_scope(error, CheckScope.PROVENANCE),
                 error,
             )
         )
         return None
-    return surfaces[root]
+    return surfaces[lexical_root.resolve()]
 
 
 def _validate_owned_entry(document: Path, root: Path, state: _ScanState) -> None:
@@ -318,34 +470,121 @@ def _validate_owned_entry(document: Path, root: Path, state: _ScanState) -> None
             {"entry": document.stem, "exists": document.is_file()},
         )
     try:
-        root.relative_to((state.log_root / "entries").resolve())
-    except ValueError as error:
+        root.relative_to((state.log_root / "entries").absolute())
+        validate_entry_path_symlinks(document, state.log_root)
+    except (ValueError, EntryMaterialPathError) as error:
         raise EngineV2Error(
             "evidence.declaration.invalid",
             "entry root",
-            {"path": str(root), "root": str(state.log_root)},
+            {
+                "path": str(root),
+                "reason": getattr(error, "reason", "outside_entries"),
+                "root": str(state.log_root),
+            },
             "V2 JSON File Schema",
         ) from error
 
 
-def _read_entry_surface(root: Path, state: _ScanState) -> _EntrySurface:
+def _read_entry_surface(entry_id: str, root: Path, state: _ScanState) -> _EntrySurface:
     evidence_path = root / "evidence.json"
-    evidence_file = (
-        load_evidence_file(evidence_path, log_root=state.log_root, entry_root=root)
-        if evidence_path.is_file()
-        else None
+    evidence_file: EvidenceFile | None = None
+    evidence_failed = False
+    if evidence_path.is_file():
+        try:
+            evidence_file = load_evidence_file(
+                evidence_path, log_root=state.log_root, entry_root=root
+            )
+        except MechanicalContractError as error:
+            evidence_failed = True
+            _record_entry_surface_error(entry_id, "evidence", error, state)
+
+    data_file = _read_entry_data(entry_id, root, state)
+
+    retention_path = root / "retention.json"
+    retention_file: RetentionFile | None = None
+    if retention_path.is_file():
+        try:
+            retention_file = load_retention_file(retention_path, entry_root=root)
+        except MechanicalContractError as error:
+            _record_entry_surface_error(entry_id, "retention", error, state)
+    return _EntrySurface(evidence_file, evidence_failed, data_file, retention_file)
+
+
+def _read_entry_data(entry_id: str, root: Path, state: _ScanState) -> DataFile | None:
+    data_path = root / "data.json"
+    legacy_path = root / "data.csv"
+    try:
+        if data_path.exists() and legacy_path.exists():
+            _fail(
+                "data.file.location_invalid",
+                str(root),
+                {"files": [str(data_path), str(legacy_path)]},
+            )
+        if legacy_path.exists():
+            _fail(
+                "data.file.location_invalid",
+                str(legacy_path),
+                {"reason": "legacy_data_csv"},
+            )
+        data_file = (
+            load_data_file(data_path, entry_root=root) if data_path.is_file() else None
+        )
+    except MechanicalContractError as error:
+        _record_entry_surface_error(entry_id, "data", error, state)
+        return None
+    if data_file is None:
+        return None
+    valid_inputs: list[InputResource] = []
+    for resource in data_file.inputs:
+        try:
+            _verify_input(resource, state)
+        except MechanicalContractError as error:
+            _record_entry_surface_error(
+                entry_id, f"input:{resource.name}", error, state
+            )
+        else:
+            valid_inputs.append(resource)
+    return replace(data_file, inputs=tuple(valid_inputs))
+
+
+def _record_entry_surface_error(
+    entry_id: str, component: str, error: MechanicalContractError, state: _ScanState
+) -> None:
+    state.checks.append(
+        _error_check(
+            f"entry:{entry_id}:{component}-declaration",
+            _error_scope(error, CheckScope.PROVENANCE),
+            error,
+        )
     )
-    data_path = root / "data.csv"
-    data_index = MappingProxyType(
-        load_data_index(data_path) if data_path.is_file() else {}
+
+
+def _verify_input(
+    resource: InputResource, state: _ScanState
+) -> FingerprintObservation | None:
+    if resource.remote:
+        return None
+    key = resource.canonical_target
+    observation = state.input_observations.get(key)
+    if observation is not None:
+        return validate_fingerprint_observation(resource, observation)
+    observation = (
+        state.fingerprint_cache.verify(resource)
+        if state.fingerprint_cache is not None
+        else verify_fingerprint(resource)
     )
-    return _EntrySurface(evidence_file, data_index)
+    if observation is None:
+        return None
+    if observation.identity_reused:
+        state.input_fingerprints_reused += 1
+    state.input_observations[key] = observation
+    return observation
 
 
 def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
     result: list[Path] = []
     for target in index_entry_documents(text):
-        path = (state.summary.parent / target).resolve()
+        path = (state.summary.parent / target).absolute()
         if path.suffix == ".md" and ENTRY_ID_RE.fullmatch(path.stem):
             result.append(path)
     return tuple(dict.fromkeys(result))
@@ -365,26 +604,40 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 entry_root=entry.root,
                 log_root=state.log_root,
                 project_root=state.project_root,
-                data_index=entry.data_index,
+                data_file=entry.data_file,
+                input_fingerprint_verifier=lambda resource: _verify_input(
+                    resource, state
+                ),
                 script_identity_cache=state.script_cache,
                 script_identity_seeds=state.script_identity_seeds,
             )
             discovery = discover_commands(text, context)
             documents.append(discovery.invocations)
             for failure in discovery.failures:
+                identity = f"entry:{entry.id}:command:{failure.fence}:{failure.ordinal}"
+                if failure.error.code == "material.candidate.unresolved":
+                    observed = failure.error.observed
+                    candidates = (
+                        observed.get("candidates", ())
+                        if isinstance(observed, Mapping)
+                        else ()
+                    )
+                    for candidate in candidates:
+                        if isinstance(candidate, str) and candidate:
+                            state.command_candidate_dependencies.setdefault(
+                                candidate, set()
+                            ).add(identity)
+                    state.command_failure_owners.setdefault(
+                        relative.rsplit("/", 1)[0], set()
+                    ).add(identity)
                 state.checks.append(
                     _error_check(
-                        (
-                            f"entry:{entry.id}:command:"
-                            f"{failure.fence}:{failure.ordinal}"
-                        ),
+                        identity,
                         _error_scope(failure.error, CheckScope.PROVENANCE),
                         failure.error,
                     )
                 )
-        except Exception as error:
-            if not _contract_error(error):
-                raise
+        except MechanicalContractError as error:
             state.checks.append(
                 _error_check(
                     f"entry:{entry.id}:command",
@@ -393,6 +646,9 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 )
             )
     return order_invocations(documents)
+
+
+# Evidence, presentations, and provenance evaluation.
 
 
 def _evaluate_entries(state: _ScanState) -> None:
@@ -412,7 +668,7 @@ def _evaluate_entries(state: _ScanState) -> None:
                 )
             evidence_file = _document_evidence_file(entry, state)
             if evidence_file is None:
-                if presentations:
+                if presentations and not entry.evidence_failed:
                     _fail(
                         "association.declaration_missing",
                         str(entry.root / "evidence.json"),
@@ -437,9 +693,7 @@ def _evaluate_entries(state: _ScanState) -> None:
                 state.records.append(outcome)
                 state.checks.extend((outcome.evidence_check, outcome.provenance_check))
             _evaluate_direct_artifacts(entry, direct, state)
-        except Exception as error:
-            if not _contract_error(error):
-                raise
+        except MechanicalContractError as error:
             identity = f"entry:{entry.id}:association"
             scope = _error_scope(error, CheckScope.EVIDENCE)
             state.checks.append(_error_check(identity, scope, error))
@@ -478,9 +732,7 @@ def _entry_presentations(
     return tuple(presented), tuple(direct)
 
 
-def _document_evidence_file(
-    entry: _Entry, state: _ScanState
-) -> EvidenceFile | None:
+def _document_evidence_file(entry: _Entry, state: _ScanState) -> EvidenceFile | None:
     evidence_file = entry.evidence_file
     if evidence_file is None:
         return None
@@ -570,9 +822,7 @@ def _evaluate_record(
         materials = tuple(
             _resolve_source(source, entry, state) for source in record.sources
         )
-    except Exception as error:
-        if not _contract_error(error):
-            raise
+    except MechanicalContractError as error:
         evidence = _error_check(
             identity, _error_scope(error, CheckScope.EVIDENCE), error
         )
@@ -601,9 +851,7 @@ def _evaluate_record(
             [selection.dependency_projection for selection in selections]
             + [transformed.dependency_projection]
         )
-    except Exception as error:
-        if not _contract_error(error):
-            raise
+    except MechanicalContractError as error:
         scope = _error_scope(error, CheckScope.EVIDENCE)
         evidence = _error_check(identity, scope, error)
         canonical = None
@@ -649,15 +897,14 @@ def _selection(source: EvidenceSource, path: Path, state: _ScanState) -> Any:
         observation = state.source_cache.get(source_key)
         if observation is None:
             relative = _project_relative(path, state.project_root)
-            trusted = state.artifact_identities.get(relative) if relative else None
+            trusted = state.artifact_identity_seeds.get(relative) if relative else None
             observation = observe_source(path, trusted_identity=trusted)
             state.source_cache[source_key] = observation
             if observation.identity_reused:
                 state.source_hashes_reused += 1
             if relative is not None:
-                state.artifact_identities[relative] = _artifact_identity(
-                    observation.path,
-                    observation.source_identity.removeprefix("sha256:"),
+                state.artifact_identities[relative] = _source_artifact_identity(
+                    observation
                 )
         state.selection_cache[key] = evaluate_observed_locator(
             observation, source.locator
@@ -692,13 +939,19 @@ def _record_provenance(
                 {
                     "dependency_projection": result.dependency_projection,
                     "material": result.material,
-                    "roots": [root.__dict__ for root in result.roots],
                 }
             )
         return _pass_check(identity, CheckScope.PROVENANCE, dependencies=dependencies)
-    except Exception as error:
-        if not _contract_error(error):
-            raise
+    except MechanicalContractError as error:
+        blockers = _command_blockers(error.subject, state)
+        if error.code in {"producer.missing", "lineage.missing"} and blockers:
+            return _blocked_check(
+                identity,
+                CheckScope.PROVENANCE,
+                error.subject,
+                blockers,
+                dependencies=(artifact_dependency,),
+            )
         return _error_check(
             identity,
             CheckScope.PROVENANCE,
@@ -730,17 +983,25 @@ def _evaluate_direct_artifacts(
                     ),
                 )
             )
-        except Exception as error:
-            if not _contract_error(error):
-                raise
+        except MechanicalContractError as error:
+            blockers = _command_blockers(error.subject, state)
+            if error.code in {"producer.missing", "lineage.missing"} and blockers:
+                state.checks.append(
+                    _blocked_check(
+                        f"provenance:{identity}",
+                        CheckScope.PROVENANCE,
+                        error.subject,
+                        blockers,
+                        dependencies=({"artifacts": [target.resolve().as_posix()]},),
+                    )
+                )
+                continue
             state.checks.append(
                 _error_check(
                     f"provenance:{identity}",
                     CheckScope.PROVENANCE,
                     error,
-                    dependencies=(
-                        {"artifacts": [target.resolve().as_posix()]},
-                    ),
+                    dependencies=({"artifacts": [target.resolve().as_posix()]},),
                 )
             )
 
@@ -783,9 +1044,7 @@ def _evaluate_summary(text: str, state: _ScanState) -> None:
                         ),
                     )
                 )
-            except Exception as error:
-                if not _contract_error(error):
-                    raise
+            except MechanicalContractError as error:
                 state.checks.append(
                     _error_check(f"evidence:{identity}", CheckScope.EVIDENCE, error)
                 )
@@ -810,6 +1069,9 @@ def _require_complete_summary_references(
         )
 
 
+# Material graph composition and artifact-level orphan grouping.
+
+
 def _compose_graph(state: _ScanState) -> None:
     connections = tuple(
         EvidenceConnection(
@@ -832,20 +1094,31 @@ def _compose_graph(state: _ScanState) -> None:
         evidence=connections,
         direct_artifacts=tuple(state.direct),
         invocations=state.invocations,
-        evidence_files=_unique_evidence_files(state.entries),
-        data_indexes=_data_index_surfaces(state),
+        retention_files=_unique_retention_files(state.entries),
+        input_registries=_input_registry_surfaces(state),
     )
     try:
         state.graph = compose_material_graph(request)
-    except Exception as error:
-        if not _contract_error(error):
-            raise
+    except MechanicalContractError as error:
         state.checks.append(
             _error_check("graph:log", _error_scope(error, CheckScope.PROVENANCE), error)
         )
         return
     orphan = state.graph.orphan
+    orphan_groups = _orphan_group_metadata(state, orphan.inventory, orphan.orphaned)
     for path in orphan.orphaned:
+        blockers = _command_blockers(path, state)
+        if blockers:
+            state.checks.append(
+                _blocked_check(
+                    f"orphan:material:{path}",
+                    CheckScope.ORPHAN,
+                    path,
+                    blockers,
+                    dependencies=({"artifacts": [path]},),
+                )
+            )
+            continue
         state.checks.append(
             _failure_check(
                 f"orphan:material:{path}",
@@ -853,70 +1126,205 @@ def _compose_graph(state: _ScanState) -> None:
                 _FailureSpec(
                     "orphan.material.unused",
                     path,
-                    {"classification": "orphaned"},
+                    {
+                        "classification": "orphaned",
+                        **orphan_groups[path],
+                    },
                     "Orphan Detection",
                 ),
             )
         )
-    for name in orphan.unused_data_names:
+    for name in orphan.unused_input_names:
+        owner = name.rsplit(":", 1)[0]
+        blockers = state.command_failure_owners.get(owner, set())
+        if blockers:
+            state.checks.append(
+                _blocked_check(
+                    f"orphan:data-name:{name}",
+                    CheckScope.ORPHAN,
+                    name,
+                    blockers,
+                )
+            )
+            continue
         state.checks.append(
             _failure_check(
                 f"orphan:data-name:{name}",
                 CheckScope.ORPHAN,
                 _FailureSpec(
-                    "orphan.data_index.unused",
+                    "orphan.input.unused",
                     name,
                     {"classification": "unused"},
                     "Orphan Detection",
                 ),
             )
         )
-    if not orphan.orphaned and not orphan.unused_data_names:
+    if not orphan.orphaned and not orphan.unused_input_names:
         state.checks.append(
             _pass_check(
                 "orphan:log",
                 CheckScope.ORPHAN,
-                dependencies=(
-                    {"dependency_projection": orphan.dependency_projection},
-                ),
+                dependencies=({"dependency_projection": orphan.dependency_projection},),
             )
         )
 
 
-def _data_index_surfaces(state: _ScanState) -> tuple[DataIndexSurface, ...]:
-    names_by_owner: dict[str, set[str]] = {}
-    for entry in state.entries:
-        names_by_owner.setdefault(_material_owner(entry, state), set()).update(
-            entry.data_index
+def _orphan_group_metadata(
+    state: _ScanState,
+    inventory: Sequence[str],
+    orphaned: Sequence[str],
+) -> dict[str, Mapping[str, object]]:
+    inventory_by_owner: dict[str, dict[str, str]] = defaultdict(dict)
+    orphan_by_owner: dict[str, dict[str, str]] = defaultdict(dict)
+    for path in inventory:
+        logical = _logical_entry_material(path, state)
+        if logical is not None:
+            owner, relative = logical
+            inventory_by_owner[owner][relative] = path
+    for path in orphaned:
+        logical = _logical_entry_material(path, state)
+        if logical is not None:
+            owner, relative = logical
+            orphan_by_owner[owner][relative] = path
+    result: dict[str, Mapping[str, object]] = {}
+    for owner, orphan_paths in orphan_by_owner.items():
+        result.update(
+            _owner_orphan_groups(
+                state.log_root.as_posix(),
+                owner,
+                set(inventory_by_owner[owner]),
+                orphan_paths,
+            )
         )
-    return tuple(
-        DataIndexSurface(owner, tuple(sorted(names)))
-        for owner, names in sorted(names_by_owner.items())
+    return result
+
+
+def _owner_orphan_groups(
+    log_identity: str,
+    owner: str,
+    inventory: set[str],
+    orphan_paths: Mapping[str, str],
+) -> dict[str, Mapping[str, object]]:
+    state = _OrphanGroupingState(
+        log_identity, owner, inventory, orphan_paths, set(), {}
     )
+    top_directories = sorted(
+        {PurePosixPath(path).parts[0] for path in inventory if "/" in path}
+    )
+    for directory in top_directories:
+        _collapse_orphan_directory(directory, state)
+    for relative, path in orphan_paths.items():
+        if relative not in state.grouped:
+            state.result[path] = {
+                "artifact_count": 1,
+                "directory": None,
+                "group_identity": None,
+                "owner": owner,
+                "relative": relative,
+            }
+    return state.result
+
+
+def _collapse_orphan_directory(
+    directory: str,
+    state: _OrphanGroupingState,
+) -> None:
+    prefix = directory + "/"
+    eligible = {path for path in state.inventory if path.startswith(prefix)}
+    if eligible and eligible <= set(state.orphan_paths):
+        identity = (
+            "orphan-group:"
+            + hashlib.sha256(
+                canonical_json([state.log_identity, state.owner, directory]).encode()
+            ).hexdigest()
+        )
+        for relative in eligible:
+            path = state.orphan_paths[relative]
+            state.result[path] = {
+                "artifact_count": len(eligible),
+                "directory": directory,
+                "group_identity": identity,
+                "owner": state.owner,
+                "relative": relative,
+            }
+            state.grouped.add(relative)
+        return
+    depth = len(PurePosixPath(directory).parts)
+    children = sorted(
+        {
+            PurePosixPath(path).parts[depth]
+            for path in eligible
+            if len(PurePosixPath(path).parts) > depth + 1
+        }
+    )
+    for child in children:
+        _collapse_orphan_directory(f"{directory}/{child}", state)
+
+
+def _logical_entry_material(material: str, state: _ScanState) -> tuple[str, str] | None:
+    path = Path(material).resolve()
+    seen: set[Path] = set()
+    for entry in state.entries:
+        if entry.root in seen:
+            continue
+        seen.add(entry.root)
+        owner = _material_owner(entry, state)
+        try:
+            return owner, path.relative_to(entry.root.resolve()).as_posix()
+        except ValueError:
+            pass
+        for name in ("data", "images"):
+            logical_root = entry.root / name
+            if not logical_root.is_symlink():
+                continue
+            try:
+                relative = path.relative_to(logical_root.resolve()).as_posix()
+            except ValueError:
+                continue
+            return owner, f"{name}/{relative}"
+    return None
+
+
+def _input_registry_surfaces(state: _ScanState) -> tuple[InputRegistrySurface, ...]:
+    surfaces: dict[Path, InputRegistrySurface] = {}
+    for entry in state.entries:
+        if entry.data_file is not None:
+            surfaces.setdefault(
+                entry.data_file.path,
+                InputRegistrySurface(_material_owner(entry, state), entry.data_file),
+            )
+    return tuple(surfaces.values())
+
+
+def _unique_retention_files(entries: Sequence[_Entry]) -> tuple[RetentionFile, ...]:
+    files: dict[Path, RetentionFile] = {}
+    for entry in entries:
+        if entry.retention_file is not None:
+            files.setdefault(entry.retention_file.path, entry.retention_file)
+    return tuple(files.values())
 
 
 def _resolve_source(
     source: EvidenceSource, entry: _Entry, state: _ScanState
 ) -> _ResolvedSource:
     value = source.source
-    exact_name = re.fullmatch(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
+    exact_name = re.match(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
     external = False
     if exact_name is not None and exact_name.group(1) not in {"log", "project"}:
-        name = exact_name.group(1)
-        location = entry.data_index.get(name)
-        if location is None:
-            _fail("data_index.connection.missing", value, {"name": name})
-        if "://" in location:
+        try:
+            resolved = resolve_input_token(value, entry.data_file)
+        except DataContractError as error:
+            _fail(error.code, value, error.observed)
+        resource = resolved.resource
+        location = resolved.path
+        if resource.remote:
             _fail(
                 "locator.reader.unavailable",
                 value,
                 {"location": location, "retained_observation": False},
             )
-        raw_path = Path(location)
-        external = raw_path.is_absolute() or _lexically_escapes(
-            location, entry.root, state.log_root
-        )
-        path = raw_path if raw_path.is_absolute() else entry.root / raw_path
+        external = resource.external is not None
+        path = Path(location)
     elif value.startswith("<log>/"):
         path = state.log_root / value.removeprefix("<log>/")
     elif value.startswith("<project>/"):
@@ -947,11 +1355,7 @@ def _resolve_source(
 
 def _validate_entry_source_path(path: Path, entry: _Entry, source: str) -> None:
     try:
-        path.absolute().relative_to(entry.root.absolute())
-    except ValueError:
-        return
-    try:
-        validate_entry_path_symlinks(path, entry.root)
+        validate_local_path_symlinks(path, entry.root)
     except EntryMaterialPathError as error:
         _fail(
             "locator.path.unresolved",
@@ -1099,20 +1503,58 @@ def _dependent_check(
     )
 
 
-def _error_check(
+def _blocked_check(
     identity: str,
     scope: CheckScope,
-    error: Exception,
+    subject: str,
+    blockers: Sequence[str],
     *,
     dependencies: Sequence[Mapping[str, object]] = (),
 ) -> MechanicalCheck:
-    code = str(getattr(error, "code"))
-    subject = str(getattr(error, "subject"))
-    observed = getattr(error, "observed")
-    rule = str(getattr(error, "rule"))
+    return MechanicalCheck(
+        identity,
+        scope,
+        CheckStatus.NOT_APPLICABLE,
+        subject,
+        tuple(dependencies)
+        + tuple({"dependency": dependency} for dependency in sorted(blockers)),
+    )
+
+
+def _command_blockers(subject: str, state: _ScanState) -> tuple[str, ...]:
+    if "://" in subject:
+        return ()
+    path = Path(subject)
+    if not path.is_absolute():
+        return ()
+    resolved = path.resolve()
+    blockers: set[str] = set()
+    for candidate, identities in state.command_candidate_dependencies.items():
+        candidate_path = Path(candidate)
+        if not candidate_path.is_absolute():
+            continue
+        candidate_path = candidate_path.resolve()
+        if resolved == candidate_path or (
+            candidate_path.is_dir() and _within(resolved, candidate_path)
+        ):
+            blockers.update(identities)
+    return tuple(sorted(blockers))
+
+
+def _error_check(
+    identity: str,
+    scope: CheckScope,
+    error: MechanicalContractError,
+    *,
+    dependencies: Sequence[Mapping[str, object]] = (),
+) -> MechanicalCheck:
+    code = error.code
+    subject = error.subject
+    observed = error.observed
+    rule = error.rule
     status = (
         CheckStatus.UNAVAILABLE
-        if getattr(error, "outcome", "fail") == "unavailable"
+        if error.outcome == "unavailable"
         or code == "provenance.observation.unavailable"
         else CheckStatus.FAIL
     )
@@ -1153,9 +1595,13 @@ def _failure_check(
     )
 
 
-def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
-    code = str(getattr(error, "code", ""))
+def _error_scope(error: MechanicalContractError, default: CheckScope) -> CheckScope:
+    code = error.code
     conformance_prefixes = (
+        "data.declaration.",
+        "data.file.",
+        "data.name.",
+        "data.target.duplicate",
         "evidence.file.",
         "evidence.json.",
         "evidence.record.",
@@ -1180,11 +1626,13 @@ def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
         "association.context_invalid",
         "association.presentation.syntax_invalid",
         "association.resource.too_large",
-        "collection.manifest.invalid",
-        "data_index.raw_external",
+        "data.input.token_missing",
+        "data.remote.identity_invalid",
         "evidence.declaration.invalid",
+        "material.candidate.unresolved",
         "provenance.resource.too_large",
         "retention.declaration.invalid",
+        "retention.file.location_invalid",
         "retention.target.missing",
         "summary.reference.invalid",
     }
@@ -1195,12 +1643,6 @@ def _error_scope(error: Exception, default: CheckScope) -> CheckScope:
             or any(code.startswith(prefix) for prefix in conformance_prefixes)
         )
         else default
-    )
-
-
-def _contract_error(error: Exception) -> bool:
-    return all(
-        hasattr(error, field) for field in ("code", "subject", "observed", "rule")
     )
 
 
@@ -1218,30 +1660,6 @@ def _read_text(path: Path, state: _ScanState) -> str:
     return text
 
 
-def _project_root(summary: Path) -> Path:
-    for parent in summary.parents:
-        if parent.name == "docs":
-            return parent.parent
-    return summary.parent
-
-
-def _lexically_escapes(value: str, base: Path, log_root: Path) -> bool:
-    try:
-        parts = list(base.relative_to(log_root).parts)
-    except ValueError:
-        return True
-    for part in PurePosixPath(value).parts:
-        if part in {"", "."}:
-            continue
-        if part == "..":
-            if not parts:
-                return True
-            parts.pop()
-        else:
-            parts.append(part)
-    return False
-
-
 def _within(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -1250,20 +1668,22 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
-def _reuse_checks(
+# Cache validation, identity seeding, and exact check comparison.
+
+
+def _compare_checks(
     checks: Sequence[MechanicalCheck], prior: Mapping[str, Any] | None
 ) -> tuple[tuple[MechanicalCheck, ...], int]:
-    prior_checks = prior.get("checks") if isinstance(prior, Mapping) else None
     if (
         not isinstance(prior, Mapping)
-        or set(prior) != {"artifact_identities", "checks", "rules_version", "schema"}
-        or prior.get("schema") != CACHE_SCHEMA
+        or not cache_envelope_supported(prior)
         or prior.get("rules_version") != RULES_VERSION
-        or not isinstance(prior_checks, Mapping)
     ):
         return tuple(checks), 0
+    prior_checks = prior.get("checks")
+    assert isinstance(prior_checks, Mapping)
     result: list[MechanicalCheck] = []
-    reused = 0
+    unchanged = 0
     for check in checks:
         cached = prior_checks.get(check.identity)
         dependency = _check_dependency(check)
@@ -1280,9 +1700,9 @@ def _reuse_checks(
                 pass
             else:
                 if previous == check and previous.status is CheckStatus.PASS:
-                    reused += 1
+                    unchanged += 1
         result.append(check)
-    return tuple(result), reused
+    return tuple(result), unchanged
 
 
 def _cache_projection(
@@ -1307,7 +1727,7 @@ def _cache_projection(
 def _accepted_artifact_identities(
     prior: Mapping[str, Any] | None, project_root: Path
 ) -> dict[str, Mapping[str, object]]:
-    if not isinstance(prior, Mapping) or prior.get("schema") != CACHE_SCHEMA:
+    if not isinstance(prior, Mapping) or not cache_envelope_supported(prior):
         return {}
     candidates = prior.get("artifact_identities")
     if not isinstance(candidates, Mapping):
@@ -1342,6 +1762,19 @@ def _accepted_artifact_identities(
     return accepted
 
 
+def cache_envelope_supported(value: object) -> bool:
+    """Return whether a decoded value has the complete cache envelope."""
+
+    return (
+        isinstance(value, Mapping)
+        and set(value) == CACHE_FIELDS
+        and value.get("schema") == CACHE_SCHEMA
+        and isinstance(value.get("rules_version"), str)
+        and isinstance(value.get("artifact_identities"), Mapping)
+        and isinstance(value.get("checks"), Mapping)
+    )
+
+
 def _artifact_identity(path: Path, digest: object) -> Mapping[str, object]:
     stat = path.stat()
     return {
@@ -1349,6 +1782,18 @@ def _artifact_identity(path: Path, digest: object) -> Mapping[str, object]:
         "mtime_ns": stat.st_mtime_ns,
         "sha256": digest,
         "size": stat.st_size,
+    }
+
+
+def _source_artifact_identity(
+    observation: SourceObservation,
+) -> Mapping[str, object]:
+    _device, _inode, size, mtime_ns, ctime_ns = observation.file_observation
+    return {
+        "ctime_ns": ctime_ns,
+        "mtime_ns": mtime_ns,
+        "sha256": observation.source_identity.removeprefix("sha256:"),
+        "size": size,
     }
 
 
@@ -1360,11 +1805,11 @@ def _project_relative(path: Path, project_root: Path) -> str | None:
 
 
 def _record_script_identities(state: _ScanState) -> None:
-    for absolute, digest in state.script_cache.items():
+    for absolute, observation in state.script_cache.items():
         path = Path(absolute)
         relative = _project_relative(path, state.project_root)
-        if relative is not None and path.is_file() and not path.is_symlink():
-            state.artifact_identities[relative] = _artifact_identity(path, digest)
+        if relative is not None:
+            state.artifact_identities[relative] = observation.as_cache_record()
 
 
 def _check_dependency(check: MechanicalCheck) -> str:

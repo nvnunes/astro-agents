@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
+from .errors import MechanicalContractError
+from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import V2JsonError, canonical_json, decode_json
 
 EVIDENCE_SCHEMA = "research-log-evidence/v2"
@@ -20,8 +22,6 @@ MAX_PRESENTATIONS_PER_LOG = 10_000
 MAX_SUMMARY_REFERENCES_PER_LOG = 10_000
 MAX_RECORD_ID_BYTES = 96
 MAX_DOCUMENT_BYTES = 512
-MAX_RETENTION_PATHS = 10_000
-MAX_RETENTION_REASON_BYTES = 2048
 MAX_SOURCES = 32
 MAX_SUMMARY_REFERENCE_BYTES = 512
 MAX_PRESENTATION_BYTES = 1024 * 1024
@@ -83,15 +83,8 @@ MARKDOWN_LINK_RE = re.compile(
 EXTERNAL_TARGET_SCHEMES = frozenset({"doi", "ftp", "gs", "http", "https", "s3"})
 
 
-class EvidenceV2Error(ValueError):
+class EvidenceV2Error(MechanicalContractError):
     """Raised when active v2 evidence metadata violates its exact contract."""
-
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
 
 
 @dataclass(frozen=True)
@@ -131,30 +124,7 @@ class PresentationRecord:
         }
 
 
-@dataclass(frozen=True)
-class RetentionRecord:
-    """One entry-local retention declaration affecting orphan classification."""
-
-    id: str
-    paths: tuple[str, ...] = ()
-    directory: str | None = None
-    reason: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the canonical record object without interpreting reason."""
-
-        value: dict[str, Any] = {"id": self.id, "kind": "retention"}
-        if self.paths:
-            value["paths"] = list(self.paths)
-        else:
-            value["directory"] = self.directory
-            value["membership"] = "all-descendants"
-        if self.reason is not None:
-            value["reason"] = self.reason
-        return value
-
-
-EvidenceRecord = PresentationRecord | RetentionRecord
+EvidenceRecord = PresentationRecord
 
 
 @dataclass(frozen=True)
@@ -360,7 +330,7 @@ def load_evidence_file(
 
 def _read_evidence_json(path: Path) -> object:
     try:
-        raw = path.read_bytes()
+        raw = bounded_file_bytes(path, maximum_bytes=MAX_EVIDENCE_FILE_BYTES)
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         _fail(
@@ -369,19 +339,19 @@ def _read_evidence_json(path: Path) -> object:
             {"error": str(exc)},
             "V2 JSON File Schema",
         )
-    except OSError as exc:
+    except BoundedFileReadError as exc:
+        if exc.reason == "byte_limit":
+            _fail(
+                "association.resource.too_large",
+                str(path),
+                {"bytes": exc.observed, "limit": exc.limit},
+                "Association Resource Bounds",
+            )
         _fail(
             "evidence.json.schema_invalid",
             str(path),
-            {"error": str(exc)},
+            {"error": exc.detail, "reason": exc.reason},
             "V2 JSON File Schema",
-        )
-    if len(raw) > MAX_EVIDENCE_FILE_BYTES:
-        _fail(
-            "association.resource.too_large",
-            str(path),
-            {"bytes": len(raw), "limit": MAX_EVIDENCE_FILE_BYTES},
-            "Association Resource Bounds",
         )
     try:
         return decode_json(
@@ -554,10 +524,7 @@ def index_direct_artifacts(
         if fenced[number - 1]:
             continue
         context = contexts[number - 1]
-        if (
-            context.classification != "experimental"
-            or not context.under_results
-        ):
+        if context.classification != "experimental" or not context.under_results:
             continue
         for match in MARKDOWN_LINK_RE.finditer(line):
             raw_target = match.group("target")
@@ -613,9 +580,7 @@ def index_entry_documents(text: str) -> tuple[str, ...]:
             if "/entries/" not in target:
                 continue
             pure = PurePosixPath(target)
-            if pure.suffix == ".md" and re.fullmatch(
-                r"e[0-9]+[a-z]?", pure.stem, re.I
-            ):
+            if pure.suffix == ".md" and re.fullmatch(r"e[0-9]+[a-z]?", pure.stem, re.I):
                 targets.append(pure.as_posix())
     return tuple(dict.fromkeys(targets))
 
@@ -759,9 +724,7 @@ def associate_presentations(
         if isinstance(record, PresentationRecord)
     }
     skipped = {
-        item.id
-        for item in presentations
-        if item.section_classification == "invalid"
+        item.id for item in presentations if item.section_classification == "invalid"
     }
     eligible = [
         item for item in presentations if item.section_classification != "invalid"
@@ -889,8 +852,6 @@ def _decode_record(
     value = cast(Mapping[str, Any], value)
     record_id = _record_id(value.get("id"), subject)
     kind = value.get("kind")
-    if kind == "retention":
-        return _decode_retention(value, subject, record_id, entry_root)
     expected = {"document", "id", "kind", "sources", "transformation"}
     if set(value) != expected or kind not in {"statistic", "table", "output"}:
         _invalid(subject, {"fields": sorted(value), "kind": kind})
@@ -934,38 +895,6 @@ def _decode_source(value: object, subject: str) -> EvidenceSource:
     return EvidenceSource(source=source, locator=dict(locator))
 
 
-def _decode_retention(
-    value: Mapping[str, Any], subject: str, record_id: str, entry_root: Path
-) -> RetentionRecord:
-    reason = value.get("reason")
-    if reason is not None and (
-        not isinstance(reason, str)
-        or len(reason.encode("utf-8")) > MAX_RETENTION_REASON_BYTES
-    ):
-        _invalid(subject, {"reason_bytes": _bytes(reason)})
-    if "paths" in value:
-        expected = {"id", "kind", "paths"} | (
-            {"reason"} if "reason" in value else set()
-        )
-        paths = value["paths"]
-        if set(value) != expected or not isinstance(paths, list) or not paths:
-            _invalid(subject, {"fields": sorted(value), "paths": paths})
-        if len(paths) > MAX_RETENTION_PATHS or len(paths) != len(set(paths)):
-            _invalid(subject, {"path_count": len(paths)})
-        decoded = tuple(_retention_file(path, subject, entry_root) for path in paths)
-        return RetentionRecord(id=record_id, paths=decoded, reason=reason)
-    expected = {"directory", "id", "kind", "membership"} | (
-        {"reason"} if "reason" in value else set()
-    )
-    if set(value) != expected or value.get("membership") != "all-descendants":
-        _invalid(
-            subject,
-            {"fields": sorted(value), "membership": value.get("membership")},
-        )
-    directory = _retention_directory(value.get("directory"), subject, entry_root)
-    return RetentionRecord(id=record_id, directory=directory, reason=reason)
-
-
 def _record_id(value: object, subject: str) -> str:
     if (
         not isinstance(value, str)
@@ -995,30 +924,6 @@ def _document(
         target.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         _invalid(subject, {"document": path, "error": str(exc)})
-    return path
-
-
-def _retention_file(value: object, subject: str, entry_root: Path) -> str:
-    path = _normalized_relative(value, subject)
-    resolved = entry_root.joinpath(*PurePosixPath(path).parts)
-    _reject_symlinked_target(resolved, entry_root, subject, path)
-    if not resolved.is_file():
-        _invalid(subject, {"path": path, "reason": "not_regular_file"})
-    return path
-
-
-def _retention_directory(value: object, subject: str, entry_root: Path) -> str:
-    path = _normalized_relative(value, subject)
-    resolved = entry_root.joinpath(*PurePosixPath(path).parts)
-    _reject_symlinked_target(resolved, entry_root, subject, path)
-    if not resolved.is_dir():
-        _invalid(subject, {"directory": path, "reason": "not_directory"})
-    descendants = list(resolved.rglob("*"))
-    for child in descendants:
-        _reject_symlinked_target(child, entry_root, subject, path)
-    eligible = [child for child in descendants if child.is_file()]
-    if not eligible:
-        _invalid(subject, {"directory": path, "reason": "empty"})
     return path
 
 
@@ -1092,10 +997,7 @@ def _classify_section(labels: Sequence[str]) -> tuple[str, str | None]:
     if set(labels) - SECTION_LABELS:
         return "invalid", "unknown_label"
     observed = set(labels)
-    if (
-        {"Steps:", "Results:"} <= observed
-        and observed <= EXPERIMENTAL_SECTION_LABELS
-    ):
+    if {"Steps:", "Results:"} <= observed and observed <= EXPERIMENTAL_SECTION_LABELS:
         return "experimental", None
     if "Findings:" in observed and observed <= SYNTHESIS_SECTION_LABELS:
         return "synthesis", None
@@ -1176,10 +1078,6 @@ def _relative(path: Path, root: Path, subject: str) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         _invalid(subject, {"path": str(path), "root": str(root)})
-
-
-def _bytes(value: object) -> int | None:
-    return len(value.encode("utf-8")) if isinstance(value, str) else None
 
 
 def _invalid(subject: str, observed: object) -> NoReturn:

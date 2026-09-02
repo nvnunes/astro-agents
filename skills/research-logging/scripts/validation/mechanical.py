@@ -2,7 +2,7 @@
 
 This module owns only lifecycle sequencing. Concrete scan and evaluation
 contracts are supplied by the mechanical engine so this boundary does not
-depend on the legacy controller, adjudication, review, or publication stack.
+depend on controller or publication policy.
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Generic, Mapping, TypeVar
+
+from .fingerprint_cache import FingerprintCache
 
 MechanicalScan = Mapping[str, Any]
 MechanicalMetrics = Mapping[str, Any]
@@ -22,8 +24,8 @@ class MechanicalEvaluationRequest:
 
     summary_path: Path
     date: str
-    jobs: int = 8
     prior_cache: Mapping[str, Any] | None = None
+    fingerprint_cache: FingerprintCache | None = None
 
 
 MechanicalScanRunner = Callable[
@@ -42,7 +44,7 @@ class MechanicalEvaluationPolicy(Generic[MechanicalResult]):
 
 @dataclass(frozen=True)
 class MechanicalEvaluation(Generic[MechanicalResult]):
-    """Complete internal evaluation plus its reusable scan and diagnostics."""
+    """Complete internal evaluation plus its scan projection and diagnostics."""
 
     result: MechanicalResult
     scan: MechanicalScan
@@ -53,7 +55,7 @@ def evaluate_mechanical(
     request: MechanicalEvaluationRequest,
     policy: MechanicalEvaluationPolicy[MechanicalResult],
 ) -> MechanicalEvaluation[MechanicalResult]:
-    """Run one complete mechanical evaluation without the legacy controller."""
+    """Run one complete mechanical evaluation without publication."""
 
     scan, metrics = policy.scan(request)
     result = policy.evaluate(scan, request.date)

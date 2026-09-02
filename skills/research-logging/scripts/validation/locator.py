@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, NoReturn, Sequence, cast
 
+from .errors import MechanicalContractError
 from .json_codec import V2JsonError, canonical_json, decode_json
 from .mechanical_values import (
     CanonicalValue,
@@ -42,6 +43,8 @@ MAX_SELECTED_ITEMS = 10_000
 MAX_TEXT_OR_JSON_BYTES = 64 * 1024 * 1024
 MAX_BINARY_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_BINARY_MEMBER_OVERHEAD_BYTES = 1024 * 1024
+MAX_BINARY_TOTAL_BYTES = 512 * 1024 * 1024
+SOURCE_HASH_CHUNK_BYTES = 1024 * 1024
 INTEGER_TEXT_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 DECIMAL_TEXT_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
 SHAPE_PROPERTY_RE = re.compile(r"shape(?:\[(?P<index>0|[1-9][0-9]*)\])?\Z")
@@ -49,24 +52,11 @@ HDF_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
 
-class LocatorV2Error(ValueError):
-    """A precise stable v2 locator failure or unavailable observation."""
+# Locator contracts and evaluation state.
 
-    def __init__(
-        self,
-        code: str,
-        subject: str,
-        observed: object,
-        rule: str,
-        *,
-        outcome: str = "fail",
-    ):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
-        self.outcome = outcome
+
+class LocatorV2Error(MechanicalContractError):
+    """A precise stable v2 locator failure or unavailable observation."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +72,7 @@ class SourceObservation:
     """One stable retained-source observation reusable across locators."""
 
     path: Path
-    payload: bytes
+    payload: bytes | None
     profile: str
     source_identity: str
     file_observation: tuple[int, int, int, int, int]
@@ -111,11 +101,32 @@ class _EvaluationContext:
     inherent_identity: bool
 
 
+@dataclass
+class _MaterializationBudget:
+    total: int = 0
+
+    def consume(self, subject: str, observed_bytes: int) -> None:
+        if observed_bytes > MAX_BINARY_MEMBER_BYTES:
+            _fail(
+                "locator.source.too_large",
+                subject,
+                {"bytes": observed_bytes, "limit": MAX_BINARY_MEMBER_BYTES},
+            )
+        self.total += observed_bytes
+        if self.total > MAX_BINARY_TOTAL_BYTES:
+            _fail(
+                "locator.source.too_large",
+                subject,
+                {"bytes": self.total, "limit": MAX_BINARY_TOTAL_BYTES},
+            )
+
+
 class _HdfGroup(Mapping[str, object]):
     """Expose one HDF5 group without materializing unrelated datasets."""
 
-    def __init__(self, group: Any):
+    def __init__(self, group: Any, budget: _MaterializationBudget):
         self._group = group
+        self._budget = budget
 
     def __getitem__(self, key: str) -> object:
         import h5py
@@ -127,14 +138,17 @@ class _HdfGroup(Mapping[str, object]):
         if item is None:
             raise KeyError(key)
         if isinstance(item, h5py.Group):
-            return _HdfGroup(item)
-        return _hdf_dataset_value(item)
+            return _HdfGroup(item, self._budget)
+        return _hdf_dataset_value(item, self._budget)
 
     def __iter__(self):
         return iter(sorted(self._group.keys()))
 
     def __len__(self) -> int:
         return len(self._group)
+
+
+# Public parsing, observation, and evaluation boundary.
 
 
 def parse_locator(locator: Mapping[str, Any]) -> ParsedLocator:
@@ -227,16 +241,8 @@ def observe_source(
     if not source.is_file():
         _fail("locator.path.unresolved", str(source), {"regular_file": False})
     before = _file_observation(source)
-    try:
-        payload = source.read_bytes()
-    except OSError as exc:
-        _fail(
-            "locator.reader.unavailable",
-            str(source),
-            {"error": str(exc)},
-            outcome="unavailable",
-        )
-    profile = _classify_source(source, payload, declared_profile)
+    profile = _classify_source(source, _source_prefix(source), declared_profile)
+    payload = _bounded_text_payload(source, before) if _textual(profile) else None
     reused_identity = _trusted_source_identity(trusted_identity, before)
     observation = SourceObservation(
         path=source,
@@ -245,7 +251,7 @@ def observe_source(
         source_identity=(
             f"sha256:{reused_identity}"
             if reused_identity is not None
-            else source_content_identity(payload)
+            else _source_identity(source, payload)
         ),
         file_observation=before,
         identity_reused=reused_identity is not None,
@@ -266,14 +272,17 @@ def evaluate_observed_locator(
     profile = observation.profile
     source_identity = observation.source_identity
     if profile == "csv" or profile == "tsv":
+        assert payload is not None
         result = _evaluate_record_table(payload, parsed, profile, source_identity)
     elif profile == "json":
+        assert payload is not None
         result = _evaluate_json(payload, parsed, source_identity)
     elif profile == "npz":
-        result = _evaluate_npz(source, payload, parsed, source_identity)
+        result = _evaluate_npz(source, parsed, source_identity)
     elif profile == "hdf5":
-        result = _evaluate_hdf5(source, payload, parsed, source_identity)
+        result = _evaluate_hdf5(source, parsed, source_identity)
     elif profile == "text":
+        assert payload is not None
         result = _evaluate_text(payload, parsed, source_identity)
     else:
         _fail("locator.source.unsupported", str(source), {"profile": profile})
@@ -572,6 +581,9 @@ def _text_selector(value: object) -> Mapping[str, Any]:
     return dict(value)
 
 
+# Source-format adapters.
+
+
 def _evaluate_record_table(
     payload: bytes,
     locator: ParsedLocator,
@@ -652,9 +664,9 @@ def _evaluate_json(
 
 
 def _evaluate_npz(
-    source: Path, payload: bytes, locator: ParsedLocator, source_identity: str
+    source: Path, locator: ParsedLocator, source_identity: str
 ) -> SelectionResult:
-    _preflight_npz(source, payload)
+    _preflight_npz(source)
     try:
         import numpy as np
     except ImportError:
@@ -665,7 +677,7 @@ def _evaluate_npz(
             outcome="unavailable",
         )
     try:
-        with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+        with np.load(source, allow_pickle=False) as archive:
             members = sorted(archive.files)
             arrays = {name: archive[name] for name in members}
     except ValueError as exc:
@@ -677,17 +689,17 @@ def _evaluate_npz(
         _fail(code, str(source), {"error": str(exc)})
     except (OSError, zipfile.BadZipFile) as exc:
         _fail("locator.source.format_mismatch", str(source), {"error": str(exc)})
+    budget = _MaterializationBudget()
     for name, array in arrays.items():
         if array.dtype.hasobject:
             _fail("locator.source.unsafe", name, {"dtype": str(array.dtype)})
-        if array.nbytes > MAX_BINARY_MEMBER_BYTES:
-            _fail("locator.source.too_large", name, {"bytes": int(array.nbytes)})
+        budget.consume(name, int(array.nbytes))
     return _evaluate_array_container(arrays, locator, "npz", source_identity)
 
 
-def _preflight_npz(source: Path, payload: bytes) -> None:
+def _preflight_npz(source: Path) -> None:
     try:
-        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        with zipfile.ZipFile(source) as archive:
             members = [item for item in archive.infolist() if not item.is_dir()]
     except (OSError, zipfile.BadZipFile) as exc:
         _fail("locator.source.format_mismatch", str(source), {"error": str(exc)})
@@ -701,6 +713,7 @@ def _preflight_npz(source: Path, payload: bytes) -> None:
             {"duplicate_members": True},
         )
     staging_limit = MAX_BINARY_MEMBER_BYTES + MAX_BINARY_MEMBER_OVERHEAD_BYTES
+    total_staged = 0
     for member in members:
         if member.flag_bits & 0x1:
             _fail("locator.source.unsafe", member.filename, {"encrypted": True})
@@ -710,10 +723,17 @@ def _preflight_npz(source: Path, payload: bytes) -> None:
                 member.filename,
                 {"bytes": member.file_size, "staging_limit": staging_limit},
             )
+        total_staged += member.file_size
+        if total_staged > MAX_BINARY_TOTAL_BYTES + MAX_BINARY_MEMBER_OVERHEAD_BYTES:
+            _fail(
+                "locator.source.too_large",
+                str(source),
+                {"bytes": total_staged, "limit": MAX_BINARY_TOTAL_BYTES},
+            )
 
 
 def _evaluate_hdf5(
-    source: Path, payload: bytes, locator: ParsedLocator, source_identity: str
+    source: Path, locator: ParsedLocator, source_identity: str
 ) -> SelectionResult:
     try:
         import h5py
@@ -725,10 +745,13 @@ def _evaluate_hdf5(
             outcome="unavailable",
         )
     try:
-        with h5py.File(io.BytesIO(payload), "r") as handle:
+        with h5py.File(source, "r") as handle:
             _reject_hdf_links(handle)
             return _evaluate_array_container(
-                _HdfGroup(handle), locator, "hdf5", source_identity
+                _HdfGroup(handle, _MaterializationBudget()),
+                locator,
+                "hdf5",
+                source_identity,
             )
     except LocatorV2Error:
         raise
@@ -823,6 +846,9 @@ def _evaluate_candidates(
     shape = _selected_shape(items)
     _check_expectations(context.locator, len(matched), items, identities, shape)
     return _selection_result(context, tuple(items), len(matched), identities, shape)
+
+
+# Candidate traversal, filtering, and identity checks.
 
 
 def _matched_candidates(
@@ -1233,6 +1259,9 @@ def _property_node(node: _Node, property_name: str, profile: str) -> _Node:
     _fail("locator.property.unsupported", profile, {"property": property_name})
 
 
+# Canonical source-value conversion and projection.
+
+
 def canonical_source_value(value: object) -> CanonicalValue:
     """Map one decoded supported source value to the common value model."""
 
@@ -1433,11 +1462,14 @@ def _require_parse_type(value: CanonicalValue, parse: object, subject: str) -> N
         _fail("locator.literal.invalid", subject, {"parse": parse, "type": value.kind})
 
 
-def _classify_source(source: Path, payload: bytes, declared: str | None) -> str:
+# Source safety and stable identity checks.
+
+
+def _classify_source(source: Path, prefix: bytes, declared: str | None) -> str:
     suffix = source.suffix.lower()
-    if payload.startswith(HDF_SIGNATURE):
+    if prefix.startswith(HDF_SIGNATURE):
         observed = "hdf5"
-    elif payload.startswith(ZIP_SIGNATURES) and suffix == ".npz":
+    elif prefix.startswith(ZIP_SIGNATURES) and suffix == ".npz":
         observed = "npz"
     elif suffix == ".json":
         observed = "json"
@@ -1483,37 +1515,90 @@ def _reject_hdf_links(
             _reject_hdf_links(item, seen_groups, nodes)
 
 
-def _hdf_dataset_value(dataset: Any) -> object:
+def _hdf_dataset_value(dataset: Any, budget: _MaterializationBudget) -> object:
     """Read one selected bounded HDF5 dataset into a canonicalizable value."""
 
     import h5py
 
     observed_bytes = dataset.size * dataset.dtype.itemsize
-    if observed_bytes > MAX_BINARY_MEMBER_BYTES:
-        _fail(
-            "locator.source.too_large",
-            dataset.name,
-            {"bytes": observed_bytes},
-        )
+    string_type = h5py.check_string_dtype(dataset.dtype)
+    if string_type is not None:
+        if string_type.length is None:
+            _fail(
+                "locator.source.unsafe",
+                dataset.name,
+                {"dtype": str(dataset.dtype), "reason": "variable_length_string"},
+            )
+        budget.consume(dataset.name, observed_bytes)
+        return dataset.asstr()[()]
     if not dataset.dtype.hasobject:
+        budget.consume(dataset.name, observed_bytes)
         return dataset[()]
-    if h5py.check_string_dtype(dataset.dtype) is None:
-        _fail("locator.source.unsafe", dataset.name, {"dtype": str(dataset.dtype)})
-    value = dataset.asstr()[()]
-    if isinstance(value, str):
-        observed_bytes = len(value.encode("utf-8"))
-    else:
-        observed_bytes = sum(
-            len(str(item).encode("utf-8")) for item in value.reshape(-1)
+    _fail("locator.source.unsafe", dataset.name, {"dtype": str(dataset.dtype)})
+
+
+def _source_prefix(source: Path) -> bytes:
+    try:
+        with source.open("rb") as handle:
+            return handle.read(max(len(HDF_SIGNATURE), 4))
+    except OSError as exc:
+        _fail(
+            "locator.reader.unavailable",
+            str(source),
+            {"error": str(exc)},
+            outcome="unavailable",
         )
-        value = value.astype(str)
-    if observed_bytes > MAX_BINARY_MEMBER_BYTES:
+
+
+def _textual(profile: str) -> bool:
+    return profile in {"csv", "json", "text", "tsv"}
+
+
+def _bounded_text_payload(
+    source: Path, observation: tuple[int, int, int, int, int]
+) -> bytes:
+    size = observation[2]
+    if size > MAX_TEXT_OR_JSON_BYTES:
         _fail(
             "locator.source.too_large",
-            dataset.name,
-            {"bytes": observed_bytes},
+            str(source),
+            {"bytes": size, "limit": MAX_TEXT_OR_JSON_BYTES},
         )
-    return value
+    try:
+        with source.open("rb") as handle:
+            payload = handle.read(MAX_TEXT_OR_JSON_BYTES + 1)
+    except OSError as exc:
+        _fail(
+            "locator.reader.unavailable",
+            str(source),
+            {"error": str(exc)},
+            outcome="unavailable",
+        )
+    if len(payload) > MAX_TEXT_OR_JSON_BYTES:
+        _fail(
+            "locator.source.too_large",
+            str(source),
+            {"bytes": len(payload), "limit": MAX_TEXT_OR_JSON_BYTES},
+        )
+    return payload
+
+
+def _source_identity(source: Path, payload: bytes | None) -> str:
+    if payload is not None:
+        return source_content_identity(payload)
+    digest = hashlib.sha256()
+    try:
+        with source.open("rb") as handle:
+            while chunk := handle.read(SOURCE_HASH_CHUNK_BYTES):
+                digest.update(chunk)
+    except OSError as exc:
+        _fail(
+            "locator.reader.unavailable",
+            str(source),
+            {"error": str(exc)},
+            outcome="unavailable",
+        )
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _file_observation(source: Path) -> tuple[int, int, int, int, int]:

@@ -57,9 +57,10 @@ For integrity, check the core shape in this skill's `SKILL.md` and the
 applicable `references/file-entry-naming.md`, `references/file-entry.md`,
 `references/file-summary.md`, `references/file-references.md`,
 `references/file-script.md`, `references/file-entry-commands.md`, and
-`references/file-data-index.md`. Look for
+`references/file-data-index.md`. When retention exists, also read
+`references/file-retention.md`. Look for
 broken or stale links, unresolved citation keys, invalid entry paths or IDs,
-summary-entry inconsistency, unresolved `pyrun` or `data.csv` references, and
+summary-entry inconsistency, unresolved `pyrun` or `data.json` references, and
 missing required provenance declarations.
 
 Do not require routine production checks to be narrated or run commands.
@@ -77,8 +78,9 @@ Also look for:
 - copied or vendored `pyrun` files
 - project API choices that affect what the evidence establishes but are not recorded
 - interpreter fallback used despite a declared project environment without researcher approval
-- duplicate `data.csv` names, rows unused by recorded `<name>` tokens,
-  unresolved tokens, entry-local script or image rows, or raw absolute and
+- duplicate `data.json` names or targets, items unused by recorded `<name>`
+  tokens, missing input items, raw-path token bypasses, fingerprint drift,
+  conflicting external boundaries, unresolved tokens, or raw absolute and
   external input paths that should use `<name>`
 - active-work figures without a generating command in the document that presents them
 - active-work plot scripts that accept missing cases, non-finite values, or incompatible units

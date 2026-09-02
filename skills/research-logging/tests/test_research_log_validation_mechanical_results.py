@@ -109,9 +109,7 @@ class MechanicalResultTests(unittest.TestCase):
             ],
         )
 
-        decoded = RESULTS.MechanicalGeneratedRecord.from_json(
-            record.canonical_json()
-        )
+        decoded = RESULTS.MechanicalGeneratedRecord.from_json(record.canonical_json())
 
         self.assertEqual(decoded, record)
         with self.assertRaises(RESULTS.MechanicalResultContractError):

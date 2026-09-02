@@ -72,10 +72,7 @@ class ComplexityRatchetTests(unittest.TestCase):
 
             self.assertEqual(
                 issues,
-                [
-                    "complexity finding grew: module.py:retained:PLR0913 "
-                    "(7 > 6)"
-                ],
+                ["complexity finding grew: module.py:retained:PLR0913 (7 > 6)"],
             )
 
 

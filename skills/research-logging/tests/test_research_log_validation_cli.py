@@ -62,18 +62,15 @@ class ValidationCliTests(unittest.TestCase):
                 "mini.md",
                 "--date",
                 "2026-08-29",
-                "--jobs",
-                "3",
                 "--recompute",
                 "--dry-run",
             ]
         )
         self.assertEqual(args.summary, Path("mini.md"))
         self.assertEqual(args.date, "2026-08-29")
-        self.assertEqual(args.jobs, 3)
         self.assertTrue(args.recompute)
         self.assertTrue(args.dry_run)
-        for retired in ("--decisions", "--mode", "--review-diagnostics"):
+        for retired in ("--decisions", "--jobs", "--mode", "--review-diagnostics"):
             with self.subTest(retired=retired), self.assertRaises(SystemExit):
                 CLI.build_parser().parse_args(
                     ["validate", "--summary", "mini.md", retired, "value"]
@@ -88,22 +85,24 @@ class ValidationCliTests(unittest.TestCase):
         ):
             with self.subTest(status=status):
                 output = io.StringIO()
-                with mock.patch.object(
-                    CLI,
-                    "validate",
-                    return_value={"status": status},
-                ), redirect_stdout(output):
-                    exit_code = CLI.main(
-                        ["validate", "--summary", "mini.md"]
-                    )
+                with (
+                    mock.patch.object(
+                        CLI,
+                        "validate",
+                        return_value={"status": status},
+                    ),
+                    redirect_stdout(output),
+                ):
+                    exit_code = CLI.main(["validate", "--summary", "mini.md"])
                 self.assertEqual(exit_code, expected)
                 self.assertIn(f'"status": "{status}"', output.getvalue())
 
     def test_tool_failure_is_clear_and_nonzero(self) -> None:
         error = CLI.ValidationControllerError("cannot complete")
         stderr = io.StringIO()
-        with mock.patch.object(CLI, "validate", side_effect=error), redirect_stderr(
-            stderr
+        with (
+            mock.patch.object(CLI, "validate", side_effect=error),
+            redirect_stderr(stderr),
         ):
             exit_code = CLI.main(["validate", "--summary", "mini.md"])
         self.assertEqual(exit_code, 2)
@@ -114,8 +113,9 @@ class ValidationCliTests(unittest.TestCase):
             ("output-data", "complete_clear"),
             ("results", "complete_findings"),
         ):
-            with self.subTest(status=expected), tempfile.TemporaryDirectory() as (
-                directory
+            with (
+                self.subTest(status=expected),
+                tempfile.TemporaryDirectory() as (directory),
             ):
                 summary, _ = mechanical_log(
                     Path(directory), output_option=output_option
@@ -137,7 +137,40 @@ class ValidationCliTests(unittest.TestCase):
                 )
 
                 self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertEqual(json.loads(completed.stdout)["status"], expected)
+                result = json.loads(completed.stdout)
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(
+                    result["schema"], "research-log-validation-cli-result/1"
+                )
+                self.assertNotIn("record", result)
+                self.assertEqual(
+                    result["generated"]["mechanical"],
+                    (summary.with_suffix("") / "validation/mechanical.json")
+                    .resolve()
+                    .as_posix(),
+                )
+
+    def test_dry_run_retains_the_record_when_no_bundle_is_published(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = mechanical_log(Path(directory))
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "validate",
+                    "--summary",
+                    str(summary),
+                    "--dry-run",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            result = json.loads(completed.stdout)
+            self.assertFalse(result["published"])
+            self.assertIn("record", result)
 
     def test_executable_tool_error_is_nonzero_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

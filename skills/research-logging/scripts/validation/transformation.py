@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
+from .errors import MechanicalContractError
 from .json_codec import V2JsonError, canonical_json, decode_json
 from .locator import DECIMAL_TEXT_RE, INTEGER_TEXT_RE, authored_literal
 from .mechanical_values import CanonicalValue, SelectionResult
@@ -39,15 +40,11 @@ SEQUENCE_SEPARATORS = {"comma": ", ", "dimensions": " x ", "slash": " / "}
 ALIGNMENT_RE = re.compile(r":?-{3,}:?\Z")
 
 
-class TransformationV2Error(ValueError):
-    """One precise v2 transformation or presentation-comparison failure."""
+# Transformation contracts and expression-consumption state.
 
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
+
+class TransformationV2Error(MechanicalContractError):
+    """One precise v2 transformation or presentation-comparison failure."""
 
 
 @dataclass(frozen=True)
@@ -180,6 +177,9 @@ class _ConsumptionTracker:
         self.consumed.append(reference)
 
 
+# Public evaluation, parsing, and presentation comparison.
+
+
 def evaluate_transformation(
     transformation: Mapping[str, Any] | None,
     inputs: Sequence[SelectionResult],
@@ -279,79 +279,6 @@ def compare_presentation(
         )
 
 
-def evaluate_v1_upgrade_transformation(
-    phrase: str,
-    inputs: Sequence[SelectionResult],
-    *,
-    row_identity: str,
-    presented_kind: str,
-    presented: str | None,
-) -> TransformationResult:
-    """Evaluate v1 identity or report one exact nonmechanical upgrade failure."""
-
-    if not isinstance(phrase, str):
-        _legacy_fail(
-            "transformation.syntax.invalid",
-            row_identity,
-            {"phrase": phrase},
-        )
-    version = re.match(r"v([0-9]+):", phrase)
-    if version is not None and version.group(1) != "1":
-        _legacy_fail(
-            "transformation.version.unsupported",
-            row_identity,
-            {"phrase": phrase, "version": version.group(1)},
-        )
-    if phrase:
-        _legacy_fail(
-            "transformation.v1.nonmechanical",
-            row_identity,
-            {
-                "phrase": phrase,
-                "presentation": (
-                    None
-                    if presented is None
-                    else {"kind": presented_kind, "text": presented}
-                ),
-                "row": row_identity,
-                "sources": _legacy_input_projection(inputs),
-            },
-        )
-    result = evaluate_transformation(
-        None,
-        inputs,
-        presentation_kind=presented_kind,
-    )
-    if presented is not None:
-        compare_presentation(
-            result,
-            presented_kind=presented_kind,
-            presented=presented,
-        )
-    return result
-
-
-def _legacy_input_projection(
-    inputs: Sequence[SelectionResult],
-) -> list[Mapping[str, object]]:
-    return [
-        {
-            "input": input_index,
-            "locator": source.locator_identity,
-            "material": source.source_identity,
-            "selected": [
-                {
-                    "coordinate": list(item.coordinate),
-                    "item": item_index,
-                    "value": item.value.projection,
-                }
-                for item_index, item in enumerate(source.items)
-            ],
-        }
-        for input_index, source in enumerate(inputs)
-    ]
-
-
 def parse_markdown_table(
     text: str,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
@@ -373,6 +300,9 @@ def parse_markdown_table(
             "association.presentation.syntax_invalid", "table", {"alignment": parsed[1]}
         )
     return tuple(parsed[0]), tuple(tuple(row) for row in parsed[2:])
+
+
+# Recipe decoding and scalar rendering.
 
 
 def _parse_transformation(value: Mapping[str, Any]) -> tuple[Mapping[str, Any], str]:
@@ -769,6 +699,9 @@ def _form_spellings(
     _fail("transformation.syntax.invalid", "form", {"form": form})
 
 
+# Table modes and row composition.
+
+
 def _table_result(
     recipe: Mapping[str, Any],
     identity: str,
@@ -1140,6 +1073,9 @@ def _cell_recipe(cell: object, context: _ExpressionContext) -> RenderedPart:
         tuple(reference for part in parts for reference in part.references),
         tuple(item for part in parts for item in part.intermediates),
     )
+
+
+# Structured cell semantics and ordering.
 
 
 def _validate_cell_parts(form: str, parts: Sequence[RenderedPart]) -> None:
@@ -1519,13 +1455,4 @@ def _fail(code: str, subject: str, observed: object) -> NoReturn:
         subject,
         observed,
         "Presentation Transformation Subcontract",
-    )
-
-
-def _legacy_fail(code: str, subject: str, observed: object) -> NoReturn:
-    raise TransformationV2Error(
-        code,
-        subject,
-        observed,
-        "Legacy V1 Evidence Upgrade Reference",
     )

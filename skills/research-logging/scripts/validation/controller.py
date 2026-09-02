@@ -8,7 +8,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
 
-from .engine import CACHE_SCHEMA, mechanical_policy
+from .engine import cache_envelope_supported, mechanical_policy
+from .filesystem import BoundedFileReadError, bounded_file_bytes
+from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .json_codec import V2JsonError, decode_json
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
@@ -53,14 +55,12 @@ class ValidationRequest:
     Attributes:
         summary: Maintained research-log summary to validate.
         result_date: Optional ISO calendar date for completed findings.
-        jobs: Positive worker bound passed to the mechanical engine.
         publish: Whether to publish completed generated state.
         recompute: Whether to bypass all prior mechanical-cache reuse.
     """
 
     summary: Path
     result_date: str | None = None
-    jobs: int = 8
     publish: bool = True
     recompute: bool = False
 
@@ -73,26 +73,37 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             f"summary must not be a symlink: {request.summary}"
         )
     summary = request.summary.resolve()
-    _validate_request(summary, request.jobs)
+    _validate_request(summary)
     unsupported = _unsupported_metadata_state(summary)
     if unsupported is not None:
         return unsupported
     result_date = _result_date(request.result_date)
     log_root = summary.with_suffix("")
-    prior_cache = (
+    raw_cache = (
         None
         if request.recompute
         else _load_cache(log_root / "validation" / ".cache" / "mechanical.json")
     )
-    evaluation = evaluate_mechanical(
-        MechanicalEvaluationRequest(
-            summary,
-            result_date,
-            jobs=request.jobs,
-            prior_cache=prior_cache,
-        ),
-        mechanical_policy(),
-    )
+    prior_cache = raw_cache if cache_envelope_supported(raw_cache) else None
+    try:
+        with FingerprintCache(
+            project_root(summary),
+            writable=request.publish,
+            reuse=not request.recompute,
+        ) as fingerprint_cache:
+            if not request.recompute:
+                fingerprint_cache.seed_mechanical_cache(raw_cache)
+            evaluation = evaluate_mechanical(
+                MechanicalEvaluationRequest(
+                    summary,
+                    result_date,
+                    prior_cache=prior_cache,
+                    fingerprint_cache=fingerprint_cache,
+                ),
+                mechanical_policy(),
+            )
+    except FingerprintCacheError as error:
+        raise ValidationControllerError(str(error)) from error
     record = evaluation.result
     if not isinstance(record, MechanicalGeneratedRecord):
         raise ValidationControllerError("mechanical engine returned an invalid record")
@@ -100,8 +111,9 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     if not request.publish or record.completion is CompletionState.INCOMPLETE:
         return result
     cache = evaluation.scan.get("cache")
-    if not isinstance(cache, Mapping) or cache.get("schema") != CACHE_SCHEMA:
+    if not cache_envelope_supported(cache):
         raise ValidationControllerError("mechanical engine returned an invalid cache")
+    assert isinstance(cache, Mapping)
     outputs = {
         "validation/mechanical.json": (record.canonical_json() + "\n").encode(),
         "validation/.cache/mechanical.json": _json_bytes(cache),
@@ -118,13 +130,11 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     return _completed_result(record, evaluation.metrics, published=True)
 
 
-def _validate_request(summary: Path, jobs: int) -> None:
+def _validate_request(summary: Path) -> None:
     if summary.is_symlink() or not summary.is_file():
         raise ValidationControllerError(
             f"summary must be a regular non-symlink file: {summary}"
         )
-    if jobs < 1:
-        raise ValidationControllerError("jobs must be a positive integer")
     log_root = summary.with_suffix("")
     if log_root.is_symlink() or not log_root.is_dir():
         raise ValidationControllerError(
@@ -193,19 +203,15 @@ def _load_cache(path: Path) -> Mapping[str, Any] | None:
     if not path.is_file() or path.is_symlink():
         return None
     try:
-        raw = path.read_bytes()
-        if len(raw) > MAX_CACHE_BYTES:
-            return None
+        raw = bounded_file_bytes(path, maximum_bytes=MAX_CACHE_BYTES)
         value = decode_json(
             raw.decode("utf-8"),
             maximum_bytes=MAX_CACHE_BYTES,
             subject="mechanical cache",
         )
-    except (OSError, UnicodeError, V2JsonError):
+    except (BoundedFileReadError, UnicodeError, V2JsonError):
         return None
-    if not isinstance(value, Mapping) or value.get("schema") != CACHE_SCHEMA:
-        return None
-    return value
+    return value if isinstance(value, Mapping) else None
 
 
 def _completed_result(

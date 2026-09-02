@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import re
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
-from typing import Mapping, MutableMapping, NoReturn, Sequence
+from pathlib import Path
+from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
+
+from research_log_data import (
+    DataContractError,
+    DataFile,
+    FingerprintObservation,
+    InputResource,
+    resolve_input_token,
+    verify_fingerprint,
+)
 
 from .entry_materials import EntryMaterialPathError, is_entry_material_path
+from .errors import MechanicalContractError
+from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
 from .static_shell import (
     StaticCommand,
@@ -30,6 +40,7 @@ MAX_COLLECTION_MEMBERS = 100_000
 MAX_COMMAND_BYTES = 1024 * 1024
 MAX_FENCE_BYTES = MAX_COMMAND_BYTES * MAX_INVOCATIONS_PER_FENCE
 MAX_PATH_BYTES = 512
+SCRIPT_HASH_CHUNK_BYTES = 1024 * 1024
 
 FENCE_RE = re.compile(r"^(?P<marker>`{3,}|~{3,})(?P<info>[^`~]*)$")
 HEADING_RE = re.compile(r"^##[ \t]+.+$")
@@ -48,23 +59,43 @@ ROLE_TOKENS = frozenset(
         "output",
         "input-directory",
         "output-directory",
-        "input-manifest",
-        "output-manifest",
     }
 )
 SHELL_LANGUAGES = frozenset({"bash", "console", "sh", "shell", "zsh"})
-SIMULATION_STEMS = ("simulate", "simulation")
+MATERIAL_SUFFIXES = frozenset(
+    {
+        ".csv",
+        ".feather",
+        ".fit",
+        ".fits",
+        ".h5",
+        ".hdf5",
+        ".ini",
+        ".jpeg",
+        ".jpg",
+        ".json",
+        ".jsonl",
+        ".log",
+        ".mat",
+        ".npy",
+        ".npz",
+        ".parquet",
+        ".pdf",
+        ".pickle",
+        ".pkl",
+        ".png",
+        ".svg",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
 
 
-class CommandV2Error(ValueError):
+class CommandV2Error(MechanicalContractError):
     """One precise command-discovery or collection failure."""
-
-    def __init__(self, code: str, subject: str, observed: object, rule: str):
-        super().__init__(f"{code}: {subject}: {observed}")
-        self.code = code
-        self.subject = subject
-        self.observed = observed
-        self.rule = rule
 
 
 @dataclass(frozen=True)
@@ -77,6 +108,7 @@ class MaterialRelationship:
     target: str | None = None
     named_input: str | None = None
     external: bool = False
+    input_resource: InputResource | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +120,24 @@ class MaterialCollection:
     target: str
     members: tuple[str, ...]
     root: str | None = None
+
+
+@dataclass(frozen=True)
+class ScriptObservation:
+    """One stable script digest and its matching cache identity."""
+
+    digest: str
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    def as_cache_record(self) -> Mapping[str, object]:
+        return {
+            "ctime_ns": self.ctime_ns,
+            "mtime_ns": self.mtime_ns,
+            "sha256": self.digest,
+            "size": self.size,
+        }
 
 
 @dataclass(frozen=True)
@@ -104,7 +154,6 @@ class Invocation:
     executable: str
     script: str | None
     script_identity: str | None
-    command_type: str | None
     inputs: tuple[MaterialRelationship, ...]
     outputs: tuple[MaterialRelationship, ...]
     collections: tuple[MaterialCollection, ...]
@@ -151,7 +200,6 @@ class _ParsedCommand:
 @dataclass(frozen=True)
 class _Annotation:
     ordinal: int
-    command_type: str | None
     roles: Mapping[str, str]
 
 
@@ -163,10 +211,13 @@ class CommandContext:
     entry_root: Path
     log_root: Path
     project_root: Path
-    data_index: Mapping[str, str]
+    data_file: DataFile | None
     require_experimental_context: bool = True
-    script_identity_cache: MutableMapping[str, str] | None = None
-    script_identity_seeds: Mapping[str, str] | None = None
+    input_fingerprint_verifier: (
+        Callable[[InputResource], FingerprintObservation | None] | None
+    ) = None
+    script_identity_cache: MutableMapping[str, ScriptObservation] | None = None
+    script_identity_seeds: Mapping[str, Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -206,8 +257,9 @@ def discover_commands(
         context.entry_root.resolve(),
         context.log_root.resolve(),
         context.project_root.resolve(),
-        context.data_index,
+        context.data_file,
         context.require_experimental_context,
+        context.input_fingerprint_verifier,
         context.script_identity_cache,
         context.script_identity_seeds,
     )
@@ -268,9 +320,7 @@ def discover_commands(
                 )
             except CommandV2Error as error:
                 command_failures.append(
-                    CommandDiscoveryFailure(
-                        fence_number, concrete_ordinal, error
-                    )
+                    CommandDiscoveryFailure(fence_number, concrete_ordinal, error)
                 )
                 continue
             duplicate_counts[canonical] = duplicate + 1
@@ -304,39 +354,6 @@ def order_invocations(
         replace(invocation, sequence=sequence)
         for sequence, invocation in enumerate(ordered)
     )
-
-
-def load_data_index(path: Path) -> dict[str, str]:
-    """Load the exact entry-local name-to-location surface used by commands."""
-
-    try:
-        with path.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames != ["name", "type", "location"]:
-                _fail(
-                    "data_index.connection.missing",
-                    str(path),
-                    {"header": reader.fieldnames},
-                )
-            rows = list(reader)
-    except (OSError, UnicodeError, csv.Error) as exc:
-        _fail("data_index.connection.missing", str(path), {"error": str(exc)})
-    result: dict[str, str] = {}
-    for number, row in enumerate(rows, 2):
-        name, location = row.get("name", ""), row.get("location", "")
-        if (
-            not name
-            or TARGET_RE.fullmatch(name) is None
-            or not location
-            or name in result
-        ):
-            _fail(
-                "data_index.connection.missing",
-                f"{path}:{number}",
-                {"name": name, "location": location},
-            )
-        result[name] = location
-    return result
 
 
 def _role_name(name: str, role: str) -> bool:
@@ -374,11 +391,11 @@ def _command_fences(
             index += 1
         index += 1
         annotations: list[str] = []
-        while index < len(lines) and lines[index].startswith("<!-- command"):
-            annotation = [lines[index]]
+        while index < len(lines) and lines[index].lstrip().startswith("<!-- command"):
+            annotation = [lines[index].strip()]
             while "-->" not in annotation[-1] and index + 1 < len(lines):
                 index += 1
-                annotation.append(lines[index])
+                annotation.append(lines[index].strip())
             annotations.append("\n".join(annotation))
             index += 1
         if language in SHELL_LANGUAGES and (
@@ -503,17 +520,13 @@ def _parse_command(
     operators = tuple(
         index for index, token in enumerate(parsed_tokens) if token.operator
     )
-    pipeline_indexes = tuple(
-        index for index in operators if tokens[index] == "|"
-    )
+    pipeline_indexes = tuple(index for index in operators if tokens[index] == "|")
     if not tokens or len(pipeline_indexes) > 1:
         raise ValueError("unsupported pipeline")
     unsupported = {"&&", "||", ";"}
     if any(tokens[index] in unsupported for index in operators):
         raise ValueError("unsupported shell control flow")
-    background_indexes = tuple(
-        index for index in operators if tokens[index] == "&"
-    )
+    background_indexes = tuple(index for index in operators if tokens[index] == "&")
     if background_indexes and background_indexes != (len(tokens) - 1,):
         raise ValueError("unsupported shell control flow")
     command_end = len(tokens) - 1 if background_indexes else len(tokens)
@@ -530,6 +543,7 @@ def _parse_command(
     )
     if executable_index < 0:
         raise ValueError("missing executable")
+    executable_index = _unwrap_caffeinate(principal, executable_index)
     executable = Path(principal[executable_index].value).name
     script_index = (
         executable_index + 1
@@ -551,6 +565,23 @@ def _parse_command(
         tee_outputs,
         static_projection,
     )
+
+
+def _unwrap_caffeinate(principal: Sequence[StaticToken], executable_index: int) -> int:
+    """Return the wrapped executable index for a bounded caffeinate command."""
+    if Path(principal[executable_index].value).name != "caffeinate":
+        return executable_index
+    index = executable_index + 1
+    while index < len(principal) and principal[index].value.startswith("-"):
+        option = principal[index].value
+        index += 1
+        if option in {"-t", "-w"}:
+            if index >= len(principal):
+                raise ValueError("caffeinate option lacks value")
+            index += 1
+    if index >= len(principal):
+        raise ValueError("caffeinate lacks wrapped command")
+    return index
 
 
 def _pipeline_components(tokens: Sequence[StaticToken]) -> list[list[StaticToken]]:
@@ -664,26 +695,22 @@ def _parse_annotations(
 def _annotation_body(body: str, ordinal: int, document: str) -> _Annotation:
     clauses = re.split(r"\s*;\s*", body.strip())
     roles: dict[str, str] = {}
-    command_type: str | None = None
-    for index, clause in enumerate(clauses):
+    for clause in clauses:
         assignment = ASSIGNMENT_RE.fullmatch(clause.strip())
         if assignment is None:
             _fail("invocation.annotation.invalid", document, {"clause": clause})
         target, value = assignment.group("target"), assignment.group("value")
-        if target == "type":
-            if index or value not in {"model", "simulation"} or command_type:
-                _fail("invocation.annotation.invalid", document, {"clause": clause})
-            command_type = value
-        elif (
-            value not in ROLE_TOKENS
+        if (
+            target == "type"
+            or value in {"model", "simulation"}
+            or value not in ROLE_TOKENS
             or target in roles
             or TARGET_RE.fullmatch(target) is None
             and POSITIONAL_RE.fullmatch(target) is None
         ):
             _fail("invocation.annotation.invalid", document, {"clause": clause})
-        else:
-            roles[target] = value
-    return _Annotation(ordinal, command_type, roles)
+        roles[target] = value
+    return _Annotation(ordinal, roles)
 
 
 def _build_invocation(
@@ -700,19 +727,24 @@ def _build_invocation(
     )
     workflow_token = script_token or _explicit_local_executable(executable, context)
     script, script_identity = _resolve_script(workflow_token, context)
-    command_type = annotation.command_type if annotation else None
-    if command_type is None and _simulation_script(script or script_token):
-        command_type = "simulation"
     relationships, collections, candidates = _relationships(
         command, annotation, context
     )
+    if candidates:
+        _fail(
+            "material.candidate.unresolved",
+            context.document,
+            {"candidates": list(candidates)},
+        )
     inputs = tuple(item for item in relationships if item.direction == "input")
     outputs = tuple(item for item in relationships if item.direction == "output")
-    if len(inputs) > MAX_RELATIONSHIPS or len(outputs) > MAX_RELATIONSHIPS:
+    input_slots = _relationship_slots(inputs, collections, "input")
+    output_slots = _relationship_slots(outputs, collections, "output")
+    if input_slots > MAX_RELATIONSHIPS or output_slots > MAX_RELATIONSHIPS:
         _fail(
             "provenance.resource.too_large",
             context.document,
-            {"inputs": len(inputs), "outputs": len(outputs)},
+            {"inputs": input_slots, "outputs": output_slots},
         )
     identity_payload: list[object] = [
         context.log_id,
@@ -735,13 +767,30 @@ def _build_invocation(
         executable,
         script,
         script_identity,
-        command_type,
         inputs,
         outputs,
         collections,
         candidates,
         _material_owner(context),
     )
+
+
+def _relationship_slots(
+    relationships: Sequence[MaterialRelationship],
+    collections: Sequence[MaterialCollection],
+    direction: str,
+) -> int:
+    """Count authored material slots without charging for directory expansion."""
+    scalar_relationships = sum(
+        relationship.proof != "directory"
+        for relationship in relationships
+        if relationship.direction == direction
+    )
+    directory_collections = sum(
+        collection.mechanism == "directory" and collection.direction == direction
+        for collection in collections
+    )
+    return scalar_relationships + directory_collections
 
 
 def _material_owner(context: CommandContext) -> str:
@@ -772,21 +821,141 @@ def _resolve_script(
     ):
         return token, None
     canonical = path.resolve().as_posix()
+    observation = _reusable_script_observation(path, canonical, context)
+    if observation is not None:
+        return canonical, observation.digest
+    observation = _observe_script(path)
     if context.script_identity_cache is not None:
-        cached = context.script_identity_cache.get(canonical)
-        if cached is not None:
-            return canonical, cached
+        context.script_identity_cache[canonical] = observation
+    return canonical, observation.digest
+
+
+def _reusable_script_observation(
+    path: Path, canonical: str, context: CommandContext
+) -> ScriptObservation | None:
+    """Return a current stable cached or seeded identity when one matches."""
+
+    candidates: list[ScriptObservation | None] = []
+    if context.script_identity_cache is not None:
+        candidates.append(context.script_identity_cache.get(canonical))
     if context.script_identity_seeds is not None:
-        seeded = context.script_identity_seeds.get(canonical)
-        if seeded is not None:
+        candidates.append(_script_seed(context.script_identity_seeds.get(canonical)))
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        observation = _validated_script_observation(path, candidate)
+        if observation is not None:
             if context.script_identity_cache is not None:
-                context.script_identity_cache[canonical] = seeded
-            return canonical, seeded
-    payload = path.read_bytes()
-    identity = hashlib.sha256(payload).hexdigest()
-    if context.script_identity_cache is not None:
-        context.script_identity_cache[canonical] = identity
-    return canonical, identity
+                context.script_identity_cache[canonical] = observation
+            return observation
+    return None
+
+
+def _script_seed(value: object) -> ScriptObservation | None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "ctime_ns",
+        "mtime_ns",
+        "sha256",
+        "size",
+    }:
+        return None
+    digest = value.get("sha256")
+    size = value.get("size")
+    mtime_ns = value.get("mtime_ns")
+    ctime_ns = value.get("ctime_ns")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size < 0
+        or not isinstance(mtime_ns, int)
+        or isinstance(mtime_ns, bool)
+        or mtime_ns < 0
+        or not isinstance(ctime_ns, int)
+        or isinstance(ctime_ns, bool)
+        or ctime_ns < 0
+    ):
+        return None
+    return ScriptObservation(digest, size, mtime_ns, ctime_ns)
+
+
+def _validated_script_observation(
+    path: Path, observation: ScriptObservation
+) -> ScriptObservation | None:
+    """Reuse one identity only when the current script has a stable match."""
+
+    try:
+        before = path.stat()
+        after = path.stat()
+    except OSError as error:
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"error": str(error)},
+        )
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_identity != after_identity:
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"reason": "changed_during_observation"},
+        )
+    expected = (observation.size, observation.mtime_ns, observation.ctime_ns)
+    current = (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    return observation if current == expected else None
+
+
+def _observe_script(path: Path) -> ScriptObservation:
+    try:
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(SCRIPT_HASH_CHUNK_BYTES):
+                digest.update(chunk)
+        after = path.stat()
+    except OSError as error:
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"error": str(error)},
+        )
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_identity != after_identity:
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"reason": "changed_during_observation"},
+        )
+    return ScriptObservation(
+        digest.hexdigest(), after.st_size, after.st_mtime_ns, after.st_ctime_ns
+    )
 
 
 def _explicit_local_executable(executable: str, context: CommandContext) -> str | None:
@@ -796,15 +965,6 @@ def _explicit_local_executable(executable: str, context: CommandContext) -> str 
     if path.is_absolute() and _within(path.resolve(), context.project_root):
         return executable
     return None
-
-
-def _simulation_script(value: str | None) -> bool:
-    if value is None:
-        return False
-    stem = Path(value).stem
-    return stem in SIMULATION_STEMS or any(
-        stem.startswith(prefix + "_") for prefix in SIMULATION_STEMS
-    )
 
 
 def _relationships(
@@ -839,33 +999,50 @@ def _relationships(
         )
     for occurrence in command.options:
         role = annotated.get(occurrence.name, automatic_option_role(occurrence.name))
-        if role is None:
-            named = _named_input(occurrence.value, context)
-            if named is not None:
-                relationships.append(named)
-            else:
-                candidates.append(_candidate(occurrence.value, context))
-            continue
-        _apply_role(occurrence.value, role, occurrence.name, state)
+        _collect_argument(occurrence.value, occurrence.name, role, state, candidates)
     for index, value in enumerate(command.positionals, 1):
         target = f"@{index}"
         role = annotated.get(target)
-        if role is None:
-            named = _named_input(value, context)
-            if named is not None:
-                relationships.append(named)
-            else:
-                candidates.append(_candidate(value, context))
-            continue
-        _apply_role(value, role, target, state)
+        _collect_argument(value, target, role, state, candidates)
     collections.extend(_repeated_collections(relationships, context.document))
     relationships = _deduplicate_relationships(relationships, context.document)
     return tuple(relationships), tuple(collections), tuple(candidates)
 
 
-def _candidate(value: str, context: CommandContext) -> str:
+def _collect_argument(
+    value: str,
+    target: str,
+    role: str | None,
+    state: _RoleState,
+    candidates: list[str],
+) -> None:
+    if role is not None:
+        _apply_role(value, role, target, state)
+        return
+    named = _named_input(value, state.context)
+    if named is not None:
+        state.relationships.append(named)
+        return
+    candidate = _candidate(value, state.context)
+    if candidate is not None:
+        candidates.append(candidate)
+
+
+def _candidate(value: str, context: CommandContext) -> str | None:
+    if not _path_like(value):
+        return None
     path = _expand_path(value, context)
     return path.resolve().as_posix() if path is not None else value
+
+
+def _path_like(value: str) -> bool:
+    return (
+        "://" in value
+        or value.startswith(("/", "./", "../"))
+        or "/" in value
+        or re.search(r"<[A-Za-z0-9][A-Za-z0-9_-]*>", value) is not None
+        or Path(value).suffix in MATERIAL_SUFFIXES
+    )
 
 
 def _repeated_collections(
@@ -902,6 +1079,13 @@ def _apply_role(
         )
     direction = "input" if role.startswith("input") else "output"
     if role.endswith("-directory"):
+        if direction == "input":
+            collection, relationships = _named_directory_collection(
+                value, target, context
+            )
+            state.collections.append(collection)
+            state.relationships.extend(relationships)
+            return
         state.collections.append(
             _directory_collection(value, direction, target, context)
         )
@@ -915,21 +1099,9 @@ def _apply_role(
             for member in state.collections[-1].members
         )
         return
-    if role.endswith("-manifest"):
-        collection, manifest = _manifest_collection(value, direction, target, context)
-        state.collections.append(collection)
-        state.relationships.append(manifest)
-        state.relationships.extend(
-            _relationship(
-                _RelationshipRequest(
-                    member, direction, "manifest", target, expanded=True
-                ),
-                context,
-            )
-            for member in collection.members
-        )
-        return
-    named = _named_input(value, context) if direction == "input" else None
+    named = (
+        _named_input(value, context, target=target) if direction == "input" else None
+    )
     state.relationships.append(
         named
         or _relationship(
@@ -938,27 +1110,37 @@ def _apply_role(
     )
 
 
-def _named_input(value: str, context: CommandContext) -> MaterialRelationship | None:
-    match = re.fullmatch(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
-    if match is None or match.group(1) in {"log", "project"}:
+def _named_input(
+    value: str, context: CommandContext, *, target: str | None = None
+) -> MaterialRelationship | None:
+    match = re.match(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
+    if match is None or match.group(1) in {"log", "project", "theme"}:
         return None
-    name = match.group(1)
-    location = context.data_index.get(name)
-    if location is None:
-        _fail("data_index.connection.missing", context.document, {"name": name})
-    external = _external_location(location, context.entry_root, context.log_root)
-    path = (
-        location
-        if external and "://" in location
-        else _expanded_location(location, context)
+    try:
+        resolved = resolve_input_token(value, context.data_file)
+    except DataContractError as error:
+        _fail(error.code, context.document, error.observed)
+    resource = resolved.resource
+    return MaterialRelationship(
+        resolved.path,
+        "input",
+        "named-input",
+        target or resource.name,
+        resource.name,
+        resource.external is not None,
+        resource,
     )
-    return MaterialRelationship(path, "input", "named-input", name, name, external)
 
 
 def _relationship(
     request: _RelationshipRequest,
     context: CommandContext,
 ) -> MaterialRelationship:
+    if request.direction == "input" and not request.expanded:
+        named = _named_input(request.value, context, target=request.target)
+        if named is not None:
+            return named
+        _reject_raw_input(request.value, context)
     path = (
         Path(request.value)
         if request.expanded
@@ -966,17 +1148,41 @@ def _relationship(
     )
     if path is None:
         _fail("material.unresolved", context.document, {"value": request.value})
-    if (
-        request.direction == "input"
-        and not request.expanded
-        and not _command_path_in_scope(path, context)
-    ):
-        _fail("data_index.raw_external", context.document, {"value": request.value})
     return MaterialRelationship(
         path.resolve().as_posix(),
         request.direction,
         request.proof,
         request.target,
+    )
+
+
+def _reject_raw_input(value: str, context: CommandContext) -> NoReturn:
+    path = _expand_path(value, context)
+    canonical = (
+        value
+        if "://" in value
+        else (path.resolve().as_posix() if path is not None else value)
+    )
+    matching = []
+    if context.data_file is not None:
+        for resource in context.data_file.inputs:
+            if resource.canonical_target == canonical:
+                matching.append(resource.name)
+                continue
+            if (
+                resource.kind == "directory"
+                and not resource.remote
+                and path is not None
+            ):
+                try:
+                    path.resolve().relative_to(Path(resource.canonical_target))
+                except ValueError:
+                    continue
+                matching.append(resource.name)
+    _fail(
+        "data.input.token_missing" if matching else "data.input.undeclared",
+        context.document,
+        {"value": value, "matching": sorted(matching)},
     )
 
 
@@ -994,31 +1200,81 @@ def _expand_path(value: str, context: CommandContext) -> Path | None:
     return path if path.is_absolute() else context.entry_root / path
 
 
-def _expanded_location(value: str, context: CommandContext) -> str:
-    path = Path(value)
-    return (
-        (path if path.is_absolute() else context.entry_root / path).resolve().as_posix()
-    )
-
-
-def _external_location(value: str, base: Path, log_root: Path) -> bool:
-    if "://" in value or Path(value).is_absolute():
-        return True
+def _named_directory_collection(
+    value: str, target: str, context: CommandContext
+) -> tuple[MaterialCollection, tuple[MaterialRelationship, ...]]:
     try:
-        relative_base = base.relative_to(log_root)
-    except ValueError:
-        return True
-    parts: list[str] = list(relative_base.parts)
-    for part in PurePosixPath(value).parts:
-        if part in {"", "."}:
-            continue
-        if part == "..":
-            if not parts:
-                return True
-            parts.pop()
-        else:
-            parts.append(part)
-    return False
+        resolved = resolve_input_token(value, context.data_file)
+        if resolved.member is not None or resolved.resource.kind != "directory":
+            _fail(
+                "directory.membership.invalid",
+                context.document,
+                {"value": value, "reason": "not_whole_directory"},
+            )
+        observation = (
+            context.input_fingerprint_verifier(resolved.resource)
+            if context.input_fingerprint_verifier is not None
+            else verify_fingerprint(resolved.resource)
+        )
+    except DataContractError as error:
+        _fail(error.code, context.document, error.observed)
+    if observation is None:
+        _fail(
+            "directory.membership.invalid",
+            context.document,
+            {"value": value, "reason": "remote_directory"},
+        )
+    resource = resolved.resource
+    if resource.fingerprint.algorithm in {
+        "identity-files-sha256-v1",
+        "identity-patterns-sha256-v1",
+    }:
+        collection_kind = (
+            "identity-patterns"
+            if resource.fingerprint.algorithm == "identity-patterns-sha256-v1"
+            else "identity-files"
+        )
+        relationship = MaterialRelationship(
+            resolved.path,
+            "input",
+            collection_kind,
+            target,
+            resource.name,
+            resource.external is not None,
+            resource,
+        )
+        return (
+            MaterialCollection(
+                "input",
+                collection_kind,
+                target,
+                (resolved.path,),
+                resolved.path,
+            ),
+            (relationship,),
+        )
+    members = tuple(
+        (Path(resolved.path) / entry.path).resolve().as_posix()
+        for entry in observation.entries
+        if entry.type == "file"
+    )
+    _validate_members(members, context.document)
+    collection = MaterialCollection(
+        "input", "directory", target, members, resolved.path
+    )
+    relationships = tuple(
+        MaterialRelationship(
+            member,
+            "input",
+            "directory",
+            target,
+            resource.name,
+            resource.external is not None,
+            resource,
+        )
+        for member in members
+    )
+    return collection, relationships
 
 
 def _directory_collection(
@@ -1029,75 +1285,29 @@ def _directory_collection(
         _fail("collection.membership.invalid", context.document, {"directory": value})
     if not _command_path_in_scope(root, context, entry_only=True):
         _fail("collection.membership.invalid", context.document, {"directory": value})
-    descendants = sorted(root.rglob("*"))
+    try:
+        descendants = bounded_descendants(root, maximum_entries=MAX_COLLECTION_MEMBERS)
+    except BoundedTraversalError as error:
+        _fail(
+            "collection.membership.invalid",
+            context.document,
+            {
+                "directory": value,
+                "limit": error.limit,
+                "observed": error.observed,
+                "reason": error.reason,
+            },
+        )
     if any(path.is_symlink() for path in descendants):
         _fail(
             "collection.membership.invalid",
             context.document,
             {"directory": value, "reason": "nested_symlink"},
         )
-    members = tuple(
-        path.resolve().as_posix()
-        for path in descendants
-        if path.is_file()
-    )
+    members = tuple(path.resolve().as_posix() for path in descendants if path.is_file())
     _validate_members(members, context.document)
     return MaterialCollection(
         direction, "directory", target, members, root.resolve().as_posix()
-    )
-
-
-def _manifest_collection(
-    value: str, direction: str, target: str, context: CommandContext
-) -> tuple[MaterialCollection, MaterialRelationship]:
-    manifest = _expand_path(value, context)
-    if manifest is None or manifest.is_symlink() or not manifest.is_file():
-        _fail("collection.manifest.invalid", context.document, {"manifest": value})
-    try:
-        with manifest.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames != ["path"]:
-                _fail(
-                    "collection.manifest.invalid",
-                    context.document,
-                    {"header": reader.fieldnames},
-                )
-            raw = [row.get("path", "") for row in reader]
-    except (OSError, UnicodeError, csv.Error) as exc:
-        _fail("collection.manifest.invalid", context.document, {"error": str(exc)})
-    if any(not _manifest_member(item) for item in raw) or len(raw) != len(set(raw)):
-        _fail("collection.manifest.invalid", context.document, {"paths": raw})
-    member_paths = tuple(manifest.parent / item for item in raw)
-    if any(
-        path.is_symlink()
-        or not path.is_file()
-        or not _command_path_in_scope(path, context, entry_only=True)
-        for path in member_paths
-    ):
-        _fail("collection.manifest.invalid", context.document, {"paths": raw})
-    members = tuple(path.resolve().as_posix() for path in member_paths)
-    _validate_members(members, context.document)
-    collection = MaterialCollection(
-        direction,
-        "manifest",
-        target,
-        members,
-        manifest.parent.resolve().as_posix(),
-    )
-    relation = MaterialRelationship(
-        manifest.resolve().as_posix(), direction, "manifest-file", target
-    )
-    return collection, relation
-
-
-def _manifest_member(value: str) -> bool:
-    path = PurePosixPath(value)
-    return (
-        bool(value)
-        and not path.is_absolute()
-        and "\\" not in value
-        and "://" not in value
-        and all(part not in {"", ".", ".."} for part in path.parts)
     )
 
 

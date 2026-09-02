@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run entry-local Python commands and add data-index rows."""
+"""Run entry-local Python commands and maintain ``data.json`` inputs."""
 
 from __future__ import annotations
 
-import csv
 import fcntl
 import hashlib
+import json
 import os
 import re
 import stat
@@ -13,27 +13,51 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
-from research_log_data_index import (
-    DATA_INDEX_FIELDS,
-    TOKEN_RE,
-    DataIndex,
-    DataIndexError,
-    read_data_index as _read_data_index,
-    validate_data_name as _validate_data_name,
+from research_log_data import (
+    DATA_SCHEMA,
+    DataContractError,
+    DataFile,
+    ExternalBoundary,
+    Fingerprint,
+    InputResource,
+    build_identity_directory,
+    build_identity_pattern_directory,
+    build_local_input,
+    build_remote_input,
+    data_file_from_inputs,
+    input_token_candidate,
+    load_data_file,
+    observe_fingerprint,
+    resolve_input_token,
+    verify_fingerprint,
 )
 
-
-URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 
 
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun data add <name> <type> <location>",
+        "       pyrun data add <name> <file|directory> <location>\n"
+        "       pyrun data add-identity-directory <name> <location> "
+        "<identity-file>...\n"
+        "       pyrun data add-identity-pattern-directory <name> <location> "
+        "<identity-pattern>...\n"
+        "       pyrun data add-remote <name> <uri> <source> <identity> "
+        "<immutable-id|sha256:digest>\n"
+        "       pyrun data update <name> <file|directory> <location>\n"
+        "       pyrun data update-identity-directory <name> <location> "
+        "<identity-file>...\n"
+        "       pyrun data update-identity-pattern-directory <name> <location> "
+        "<identity-pattern>...\n"
+        "       pyrun data external <name> <source> <identity>\n"
+        "       pyrun data external-remove <name>\n"
+        "       pyrun data fingerprint <name>\n"
+        "       pyrun data remove <name>",
         file=sys.stderr,
     )
     return 2
@@ -47,9 +71,9 @@ def project_root(cwd: Path) -> Path:
             stderr=subprocess.DEVNULL,
             text=True,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise SystemExit("pyrun: could not resolve project root with git") from exc
-    return Path(output.strip())
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit("pyrun: could not resolve project root with git") from error
+    return Path(output.strip()).resolve()
 
 
 def python_executable(root: Path) -> str:
@@ -68,71 +92,41 @@ def is_log_root(candidate: Path) -> bool:
 def log_root(cwd: Path) -> Path:
     for candidate in [cwd, *cwd.parents]:
         if is_log_root(candidate):
-            return candidate
-
-    parts = cwd.parts
-    for index, part in enumerate(parts):
-        if part != "entries" or index == 0:
-            continue
-        candidate = Path(*parts[:index])
-        if is_log_root(candidate):
-            return candidate
-
+            return candidate.resolve()
     raise SystemExit(
-        "pyrun: could not resolve log root; expected a <log>.md sibling and <log>/entries/"
+        "pyrun: could not resolve log root; expected a <log>.md sibling and "
+        "<log>/entries/"
     )
 
 
-def data_index_candidates(cwd: Path) -> list[Path]:
-    return [
-        cwd / "data.csv",
-        cwd.parent / "data.csv",
-    ]
-
-
-def find_data_index(cwd: Path) -> Path | None:
-    for candidate in data_index_candidates(cwd):
-        if candidate.is_file():
-            return candidate
+def find_entry_root(cwd: Path, log: Path) -> Path | None:
+    entries = (log / "entries").resolve()
+    for candidate in [cwd, *cwd.parents]:
+        resolved = candidate.resolve()
+        if resolved.parent == entries:
+            return resolved
+        if resolved == entries:
+            break
     return None
 
 
-def validate_data_name(name: str, index: Path) -> None:
-    try:
-        _validate_data_name(name)
-    except DataIndexError as exc:
-        raise SystemExit(f"pyrun: {exc}: {index}") from exc
+def require_entry_root(cwd: Path, log: Path) -> Path:
+    entry = find_entry_root(cwd, log)
+    if entry is None or cwd.resolve() != entry:
+        raise SystemExit("pyrun: data operations must run from an entry root")
+    return entry
 
 
-def read_data_index(index: Path) -> DataIndex:
-    try:
-        return _read_data_index(index)
-    except DataIndexError as exc:
-        raise SystemExit(f"pyrun: {exc}: {index}") from exc
-
-
-def data_locations(index: Path | None) -> dict[str, str]:
-    if index is None:
-        return {}
-    return read_data_index(index).locations
-
-
-def entry_root(cwd: Path, log: Path) -> Path:
-    if cwd.parent != log / "entries":
-        raise SystemExit("pyrun: data add must run from an entry root")
-    return cwd
-
-
-def _data_index_lock_path(index: Path) -> Path:
-    identity = hashlib.sha256(str(index.resolve()).encode("utf-8")).hexdigest()
+def _data_lock_path(path: Path) -> Path:
+    identity = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
     return Path(tempfile.gettempdir()) / f"pyrun-data-{identity}.lock"
 
 
 @contextmanager
-def data_index_lock(index: Path) -> Iterator[None]:
-    """Serialize updates to one data index without adding entry-local files."""
+def data_lock(path: Path) -> Iterator[None]:
+    """Serialize updates without adding entry-local lock files."""
 
-    with _data_index_lock_path(index).open("a+b") as handle:
+    with _data_lock_path(path).open("a+b") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -140,100 +134,369 @@ def data_index_lock(index: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _write_data_index(index: Path, data: DataIndex) -> None:
-    index.parent.mkdir(parents=True, exist_ok=True)
-    mode = stat.S_IMODE(index.stat().st_mode) if index.exists() else 0o644
-    with tempfile.NamedTemporaryFile(
-        "w",
-        newline="",
-        encoding="utf-8",
-        dir=index.parent,
-        delete=False,
-    ) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=DATA_INDEX_FIELDS,
-            lineterminator="\n",
+def _load_data(entry: Path | None) -> DataFile | None:
+    if entry is None:
+        return None
+    path = entry / "data.json"
+    legacy = entry / "data.csv"
+    unsupported = [
+        candidate
+        for root in (entry.parent, entry.parent.parent)
+        for candidate in (root / "data.json", root / "data.csv")
+        if candidate.exists()
+    ]
+    if unsupported:
+        raise SystemExit(
+            "pyrun: parent or log-level data files are unsupported: "
+            + ", ".join(str(candidate) for candidate in unsupported)
         )
-        writer.writeheader()
-        writer.writerows(data.rows)
+    if path.exists() and legacy.exists():
+        raise SystemExit(f"pyrun: conflicting data.json and data.csv: {entry}")
+    if legacy.exists():
+        raise SystemExit(f"pyrun: legacy data.csv is unsupported: {legacy}")
+    if not path.exists():
+        return None
+    try:
+        return load_data_file(path, entry_root=entry)
+    except DataContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+
+
+def _serialized_data(data: DataFile) -> str:
+    value = {
+        "inputs": [
+            item.as_dict() for item in sorted(data.inputs, key=lambda row: row.name)
+        ],
+        "schema": DATA_SCHEMA,
+    }
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _write_data(path: Path, entry: Path, inputs: tuple[InputResource, ...]) -> None:
+    if not inputs:
+        if path.exists():
+            path.unlink()
+            _sync_directory(path.parent)
+        return
+    try:
+        data = data_file_from_inputs(path, entry_root=entry, inputs=inputs)
+    except DataContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        handle.write(_serialized_data(data))
         handle.flush()
         os.fsync(handle.fileno())
         temporary = Path(handle.name)
     try:
         temporary.chmod(mode)
-        os.replace(temporary, index)
-        directory = os.open(index.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def add_data(index: Path, name: str, data_type: str, location: str) -> None:
-    values = [value.strip() for value in (name, data_type, location)]
-    if any(not value for value in values):
-        raise SystemExit("pyrun: data add requires nonempty name, type, and location")
-    name, data_type, location = values
-    validate_data_name(name, index)
-
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
     try:
-        with data_index_lock(index):
-            if index.exists():
-                data = read_data_index(index)
-                if name in data.locations:
-                    raise SystemExit(f"pyrun: duplicate data name {name!r}: {index}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _update_data(
+    entry: Path,
+    operation: Callable[[DataFile | None], tuple[InputResource, ...]],
+) -> None:
+    path = entry / "data.json"
+    try:
+        with data_lock(path):
+            current = _load_data(entry)
+            _write_data(path, entry, operation(current))
+    except OSError as error:
+        raise SystemExit(
+            f"pyrun: could not update data file: {path}: {error}"
+        ) from error
+
+
+def _items(data: DataFile | None) -> tuple[InputResource, ...]:
+    return data.inputs if data is not None else ()
+
+
+def _named(data: DataFile | None, name: str) -> InputResource:
+    item = data.by_name.get(name) if data is not None else None
+    if item is None:
+        raise SystemExit(f"pyrun: unknown data input {name!r}")
+    return item
+
+
+def _replace_item(
+    data: DataFile | None, name: str, replacement: InputResource | None
+) -> tuple[InputResource, ...]:
+    current = _named(data, name)
+    return tuple(
+        replacement if item is current and replacement is not None else item
+        for item in _items(data)
+        if item is not current or replacement is not None
+    )
+
+
+def add_local(
+    entry: Path,
+    name: str,
+    kind: str,
+    location: str,
+    *,
+    identity_files: tuple[str, ...] = (),
+    identity_patterns: tuple[str, ...] = (),
+) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        if data is not None and name in data.by_name:
+            raise SystemExit(f"pyrun: duplicate data input {name!r}")
+        try:
+            if identity_files:
+                item = build_identity_directory(
+                    name,
+                    location,
+                    identity_files,
+                    entry_root=entry,
+                )
+            elif identity_patterns:
+                item = build_identity_pattern_directory(
+                    name,
+                    location,
+                    identity_patterns,
+                    entry_root=entry,
+                )
             else:
-                data = DataIndex(rows=[], locations={})
+                item = build_local_input(name, kind, location, entry_root=entry)
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
+        return (*_items(data), item)
 
-            row = {"name": name, "type": data_type, "location": location}
-            updated = DataIndex(
-                rows=[*data.rows, row],
-                locations={**data.locations, name: location},
+    _update_data(entry, operation)
+    print(f"pyrun: added {name!r} to {entry / 'data.json'}")
+
+
+def _remote_fingerprint(value: str) -> Fingerprint:
+    if value.startswith("sha256:"):
+        return Fingerprint("sha256", digest=value.removeprefix("sha256:"))
+    return Fingerprint("immutable-source", value=value)
+
+
+def add_remote(
+    entry: Path,
+    name: str,
+    location: str,
+    source: str,
+    identity: str,
+    fingerprint: str,
+) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        if data is not None and name in data.by_name:
+            raise SystemExit(f"pyrun: duplicate data input {name!r}")
+        try:
+            item = build_remote_input(
+                name,
+                location,
+                external=ExternalBoundary(source, identity),
+                fingerprint=_remote_fingerprint(fingerprint),
+                entry_root=entry,
             )
-            _write_data_index(index, updated)
-    except OSError as exc:
-        raise SystemExit(f"pyrun: could not update data index: {index}: {exc}") from exc
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
+        return (*_items(data), item)
 
-    print(f"pyrun: added {name!r} to {index}")
+    _update_data(entry, operation)
+    print(f"pyrun: added remote input {name!r} to {entry / 'data.json'}")
 
 
-def resolve_location(location: str, index: Path) -> str:
-    if URI_RE.match(location) and not WINDOWS_DRIVE_RE.match(location):
-        return location
-    path = Path(location).expanduser()
-    if path.is_absolute():
-        return str(path)
-    return str((index.parent / path).resolve())
+def update_local(
+    entry: Path,
+    name: str,
+    kind: str,
+    location: str,
+    *,
+    identity_files: tuple[str, ...] = (),
+    identity_patterns: tuple[str, ...] = (),
+) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        current = _named(data, name)
+        try:
+            if identity_files:
+                item = build_identity_directory(
+                    name,
+                    location,
+                    identity_files,
+                    entry_root=entry,
+                    external=current.external,
+                )
+            elif identity_patterns:
+                item = build_identity_pattern_directory(
+                    name,
+                    location,
+                    identity_patterns,
+                    entry_root=entry,
+                    external=current.external,
+                )
+            else:
+                item = build_local_input(
+                    name,
+                    kind,
+                    location,
+                    entry_root=entry,
+                    external=current.external,
+                )
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
+        return _replace_item(data, name, item)
+
+    _update_data(entry, operation)
+    print(f"pyrun: updated {name!r} in {entry / 'data.json'}")
+
+
+def set_external(entry: Path, name: str, source: str, identity: str) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        current = _named(data, name)
+        return _replace_item(
+            data, name, replace(current, external=ExternalBoundary(source, identity))
+        )
+
+    _update_data(entry, operation)
+    print(f"pyrun: set external boundary for {name!r}")
+
+
+def remove_external(entry: Path, name: str) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        current = _named(data, name)
+        if current.remote:
+            raise SystemExit("pyrun: remote inputs require an external boundary")
+        return _replace_item(data, name, replace(current, external=None))
+
+    _update_data(entry, operation)
+    print(f"pyrun: removed external boundary for {name!r}")
+
+
+def refresh_fingerprint(entry: Path, name: str) -> None:
+    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
+        current = _named(data, name)
+        if current.remote:
+            raise SystemExit("pyrun: revise remote identities with data add-remote")
+        try:
+            observed = observe_fingerprint(current)
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
+        return _replace_item(
+            data, name, replace(current, fingerprint=observed.fingerprint)
+        )
+
+    _update_data(entry, operation)
+    print(f"pyrun: refreshed fingerprint for {name!r}")
+
+
+def remove_input(entry: Path, name: str) -> None:
+    _update_data(entry, lambda data: _replace_item(data, name, None))
+    print(f"pyrun: removed {name!r} from {entry / 'data.json'}")
+
+
+def _data_operation(argv: list[str], entry: Path) -> int:
+    operation = argv[2] if len(argv) > 2 else ""
+    if operation == "add" and len(argv) == 6:
+        add_local(entry, argv[3], argv[4], argv[5])
+        return 0
+    if operation == "add-identity-directory" and len(argv) >= 6:
+        add_local(
+            entry,
+            argv[3],
+            "directory",
+            argv[4],
+            identity_files=tuple(argv[5:]),
+        )
+        return 0
+    if operation == "add-identity-pattern-directory" and len(argv) >= 6:
+        add_local(
+            entry,
+            argv[3],
+            "directory",
+            argv[4],
+            identity_patterns=tuple(argv[5:]),
+        )
+        return 0
+    if operation == "add-remote" and len(argv) == 8:
+        add_remote(entry, *argv[3:])
+        return 0
+    if operation == "update" and len(argv) == 6:
+        update_local(entry, argv[3], argv[4], argv[5])
+        return 0
+    if operation == "update-identity-directory" and len(argv) >= 6:
+        update_local(
+            entry,
+            argv[3],
+            "directory",
+            argv[4],
+            identity_files=tuple(argv[5:]),
+        )
+        return 0
+    if operation == "update-identity-pattern-directory" and len(argv) >= 6:
+        update_local(
+            entry,
+            argv[3],
+            "directory",
+            argv[4],
+            identity_patterns=tuple(argv[5:]),
+        )
+        return 0
+    if operation == "external" and len(argv) == 6:
+        set_external(entry, argv[3], argv[4], argv[5])
+        return 0
+    if operation == "external-remove" and len(argv) == 4:
+        remove_external(entry, argv[3])
+        return 0
+    if operation == "fingerprint" and len(argv) == 4:
+        refresh_fingerprint(entry, argv[3])
+        return 0
+    if operation == "remove" and len(argv) == 4:
+        remove_input(entry, argv[3])
+        return 0
+    return usage()
+
+
+def _reserved_tokens(arg: str, root: Path, log: Path) -> str:
+    def replace_reserved(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name == "project":
+            return str(root)
+        if name == "log":
+            return str(log)
+        raise SystemExit("pyrun: <theme> is no longer supported; use <log>")
+
+    return RESERVED_TOKEN_RE.sub(replace_reserved, arg)
 
 
 def resolve_arg(
     arg: str,
     root: Path,
     log: Path,
-    locations: dict[str, str],
-    index: Path | None,
+    data: DataFile | None,
+    verified: set[str],
 ) -> str:
-    def replace(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name == "project":
-            return str(root)
-        if name == "log":
-            return str(log)
-        if name == "theme":
-            raise SystemExit("pyrun: <theme> is no longer supported; use <log>")
-        if name in locations:
-            if index is None:
-                raise SystemExit(
-                    "pyrun: internal error resolving data name without "
-                    f"data index: {name}"
-                )
-            return resolve_location(locations[name], index)
-        raise SystemExit(f"pyrun: unresolved token <{name}> in argument: {arg}")
-
-    return TOKEN_RE.sub(replace, arg)
+    expanded = _reserved_tokens(arg, root, log)
+    if not input_token_candidate(expanded):
+        return expanded
+    try:
+        resolved = resolve_input_token(expanded, data)
+    except DataContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+    resource = resolved.resource
+    if resource.name not in verified:
+        try:
+            verify_fingerprint(resource)
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
+        verified.add(resource.name)
+    return resolved.path
 
 
 def main(argv: list[str]) -> int:
@@ -245,16 +508,15 @@ def main(argv: list[str]) -> int:
     log = log_root(cwd)
 
     if argv[1] == "data":
-        if len(argv) != 6 or argv[2] != "add":
-            return usage()
-        add_data(entry_root(cwd, log) / "data.csv", *argv[3:])
-        return 0
+        return _data_operation(argv, require_entry_root(cwd, log))
 
-    index = find_data_index(cwd)
-    locations = data_locations(index)
-    resolved = [resolve_arg(arg, root, log, locations, index) for arg in argv[1:]]
-
-    return subprocess.run([python_executable(root), *resolved], cwd=cwd).returncode
+    entry = find_entry_root(cwd, log)
+    data = _load_data(entry)
+    verified: set[str] = set()
+    resolved = [resolve_arg(arg, root, log, data, verified) for arg in argv[1:]]
+    return subprocess.run(
+        [python_executable(root), *resolved], cwd=cwd, check=False
+    ).returncode
 
 
 if __name__ == "__main__":

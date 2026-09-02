@@ -186,9 +186,7 @@ class MechanicalCheck:
                 for number, value in enumerate(dependencies)
             ),
             failure=(
-                FailurePayload.from_dict(item["failure"])
-                if "failure" in item
-                else None
+                FailurePayload.from_dict(item["failure"]) if "failure" in item else None
             ),
         )
 
@@ -312,9 +310,7 @@ class MechanicalGeneratedRecord:
             "summary",
         }
         if set(item) != expected:
-            raise MechanicalResultContractError(
-                "generated record has incorrect fields"
-            )
+            raise MechanicalResultContractError("generated record has incorrect fields")
         checks = tuple(
             MechanicalCheck.from_dict(value)
             for value in _sequence(item["checks"], "generated record.checks")
@@ -371,9 +367,7 @@ def aggregate_scopes(checks: Sequence[MechanicalCheck]) -> tuple[ScopeResult, ..
         else:
             status = CheckStatus.PASS
         counts = {
-            member_status.value: sum(
-                check.status is member_status for check in members
-            )
+            member_status.value: sum(check.status is member_status for check in members)
             for member_status in CheckStatus
         }
         results.append(

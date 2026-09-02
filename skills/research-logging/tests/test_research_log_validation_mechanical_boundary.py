@@ -14,7 +14,7 @@ class MechanicalBoundaryTests(unittest.TestCase):
     def test_entry_point_composes_scan_and_evaluation_without_agent_state(self) -> None:
         calls: list[tuple[str, object]] = []
         request = MECHANICAL.MechanicalEvaluationRequest(
-            Path("docs/log.md"), "2026-08-28", jobs=3
+            Path("docs/log.md"), "2026-08-28"
         )
 
         def scan(actual: Any) -> tuple[dict[str, object], dict[str, object]]:

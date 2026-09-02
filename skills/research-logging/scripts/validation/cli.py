@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -15,6 +14,7 @@ from .discovery import discover_summaries
 COMPLETED_STATUSES = frozenset(
     {"complete_clear", "complete_findings", "unsupported_metadata"}
 )
+CLI_RESULT_SCHEMA = "research-log-validation-cli-result/1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,9 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--summary", required=True, type=Path)
     validate_parser.add_argument("--date")
     validate_parser.add_argument(
-        "--jobs", type=int, default=min(32, (os.cpu_count() or 1) + 4)
-    )
-    validate_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="evaluate and report without publishing generated files",
@@ -54,13 +51,36 @@ def _run_validate(args: argparse.Namespace) -> int:
         ValidationRequest(
             args.summary,
             result_date=args.date,
-            jobs=args.jobs,
             publish=not args.dry_run,
             recompute=args.recompute,
         )
     )
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(_cli_result(result), ensure_ascii=False, sort_keys=True))
     return 0 if result["status"] in COMPLETED_STATUSES else 3
+
+
+def _cli_result(result: dict[str, object]) -> dict[str, object]:
+    """Return a bounded CLI envelope for a completed published evaluation."""
+
+    if not result.get("published") or not isinstance(result.get("record"), dict):
+        return result
+    record = result["record"]
+    summary = Path(str(result["summary"]))
+    log_root = summary.with_suffix("")
+    return {
+        "generated": {
+            "human": (log_root / "validation.md").as_posix(),
+            "mechanical": (log_root / "validation/mechanical.json").as_posix(),
+        },
+        "metrics": result.get("metrics", {}),
+        "published": True,
+        "result_date": record.get("result_date"),
+        "rules_version": record.get("rules_version"),
+        "schema": CLI_RESULT_SCHEMA,
+        "scopes": record.get("scopes", []),
+        "status": result["status"],
+        "summary": result["summary"],
+    }
 
 
 def _run_discover(args: argparse.Namespace) -> int:

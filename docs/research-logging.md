@@ -68,7 +68,8 @@ A populated log may contain:
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
-      data.csv
+      data.json
+      retention.json
       pyrun -> <installed launcher>
       data/
       images/
@@ -256,8 +257,9 @@ entry is removed. The folder name may change when the topic description becomes
 misleading; the ID does not.
 
 The entry that creates a saved result owns it. Later entries link to that
-result or use a named `data.csv` input when a command consumes it. A transformed
-result belongs to the later entry that created the transformation.
+result or declare it as a named `data.json` input when a recorded command
+consumes it. A transformed result belongs to the later entry that created the
+transformation.
 
 ### Entry documents
 
@@ -446,10 +448,11 @@ the interpreter that runs `pyrun`. It also expands these path tokens:
 
 - `<project>`: project root;
 - `<log>`: research-log directory; and
-- `<name>`: the matching location in the nearest entry `data.csv`.
+- `<name>`: one exact input in the owning entry-root `data.json`; and
+- `<directory-name>/member`: one exact member of a declared directory input.
 
-Tokens may be a whole argument or part of one, such as
-`input=<development_set>/cases.csv`. Quote arguments containing angle tokens.
+Data tokens occupy the complete input argument. Quote arguments containing
+angle tokens.
 
 For an active Python workflow, the entry uses a symbolic link named `pyrun`
 that points to the installed launcher; do not copy the launcher into the log.
@@ -486,36 +489,29 @@ redirection; output available only in an agent's temporary context is not
 evidence. This is original research execution, not validation or reproduction;
 do not rerun an unchanged command solely to test reproducibility or provenance.
 
-### Input index
+### Input registry
 
-Use entry-root `data.csv` for command inputs or durable external resources that
-need short names. It is not a list of scripts, images, or saved outputs.
+Use entry-root `data.json` for every file or directory consumed as a material
+input by a recorded command. It contains all and only command inputs, with one
+stable name, location, strong fingerprint, and—only for a producerless
+input—an explicit external source and version identity.
 
-When a new external input is needed, decide whether to copy it into the entry or
-retain a stable external reference, then add the chosen location to the index.
-
-```csv
-name,type,location
-development_set,CSV,/data/project/development.csv
-```
-
-The header is exactly `name,type,location`. `name` uses only ASCII letters,
-digits, `.`, `_`, and `-`; it is unique and cannot be `project`, `log`, or
-`theme`. `type` is a plain description such as `CSV`, `FITS`, `directory`, or
-`URL`. `location` may be a path or stable remote address; relative paths start
-from the entry folder.
-
-Add a row from the entry folder with:
+Add an accessible local input from the entry folder with:
 
 ```bash
-./pyrun data add development_set CSV /data/project/development.csv
+./pyrun data add development_set file /data/project/development.csv
+./pyrun data external development_set "Project archive" development-set/v2
 ```
 
-The command creates the header when needed and rejects malformed rows,
-duplicate names, and reserved names. It does not copy or inspect the referenced
-resource. Then use `"<development_set>"` in the recorded command. Add only rows
-that a recorded command uses. A generated output belongs in `data.csv` only
-when a later recorded command consumes it as an input.
+`pyrun` fingerprints local content and resolves the item through
+`"<development_set>"`. Raw command-input paths and URIs are invalid. A
+generated output enters `data.json` only when a later recorded command consumes
+it; it omits the external boundary and traces to its earlier producer. Omit
+`data.json` when the entry has no command inputs.
+
+Use `retention.json` only for intentionally retained material outside the
+evidence-rooted graph. Retention affects orphan classification and cannot
+create evidence or repair provenance.
 
 ### Scripts and saved outputs
 
@@ -747,8 +743,10 @@ Check the requested area against these questions:
   files checked against their expected structure? For work completed
   elsewhere, does the record preserve the actual workflow and identify missing
   material rather than replacing it with a cleaner reconstruction? Does
-  `data.csv` avoid duplicate or unused names, unresolved tokens, and script or
-  image rows?
+  `data.json` contain all and only command inputs, use unique names and
+  targets, resolve every token, preserve fingerprints, and distinguish exact
+  external boundaries from generated inputs? Are intentional disconnected
+  artifacts declared only through `retention.json`?
 - **Summary:** Is every substantive point supported by an entry? Does the
   summary describe current understanding, preserve the stable validation-report
   link, include explicit follow-ups, and end with the AI-use disclosure?

@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 .conda/
+/.cache/
 .research-log-validation.lock
 **/validation/.cache/
 site/

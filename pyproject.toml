@@ -16,7 +16,7 @@ files = [
   "scripts/agent_behavior_eval.py",
   "scripts/check_research_logging_complexity.py",
   "skills/research-logging/scripts/pyrun",
-  "skills/research-logging/scripts/research_log_data_index.py",
+  "skills/research-logging/scripts/research_log_data.py",
   "skills/research-logging/scripts/research_log_validation.py",
   "skills/research-logging/scripts/validation",
 ]

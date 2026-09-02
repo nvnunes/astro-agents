@@ -74,14 +74,14 @@ and instruction text do not override the active package.
 
 A prose-only revision to an existing entry loads Record, existing-entry,
 Record-content, label, and writing guidance. It does not load script, command,
-data-index, presented-evidence, naming, or reference guidance.
+input-registry, presented-evidence, naming, or reference guidance.
 
-An active script change loads script and command guidance. It loads data-index
+An active script change loads script and command guidance. It loads input-registry
 or presented-evidence guidance only when the changed workflow also matches
 those triggers, not merely because the entry contains older evidence.
 
 A presented computational result loads the core presented-evidence guidance
-together with each script, command, or data-index reference required by its
+together with each script, command, or input-registry reference required by its
 actual workflow. An entry evidence source also loads locator guidance. A
 non-identity statistic or output loads transformation guidance, while a table
 loads transformation and table guidance.
@@ -90,9 +90,9 @@ A summary reference or direct artifact does not load locator, transformation,
 or table guidance merely because another item in the entry uses it. It does not
 load citation guidance without citation work.
 
-When `data.csv`, a `<name>` token, or a durable external input first becomes
+When `data.json`, a `<name>` token, or a durable external input first becomes
 necessary after an investigation has begun, Record treats it as a new routing
-event and loads data-index guidance before finishing. An earlier routing pass
+event and loads input-registry guidance before finishing. An earlier routing pass
 without that trigger does not satisfy this requirement.
 
 A citation-only entry revision using an existing key loads reference guidance
@@ -231,8 +231,8 @@ Record puts one stable `eid` marker immediately before the table and adds one
 derived column without a retained source is not acceptable.
 
 An image embed or artifact link under `Results:` receives no evidence record or
-marker. Its target must resolve directly through a recorded command or
-`data.csv`; an evidence record cannot repair an unresolved target.
+marker. Its target must resolve directly through a recorded command; an
+evidence record or input declaration cannot repair an unresolved target.
 
 ## Summary
 
@@ -354,18 +354,19 @@ workflow, validation treats it as external evidence for the current log. It
 does not inspect another log's validation state or use that external reference
 to change orphan classification in the file's owning log.
 
-Given retained material not connected to evidence, a visible command
-relationship, a data-index input, or an explicit retention declaration,
+Given retained material outside the evidence-rooted command closure and not
+covered by an explicit retention declaration,
 validation reports the exact residual path as an orphan finding. Mechanical
 validation never asks an agent to classify the orphan semantically.
 
-## Data Index
+## Input Registry
 
-A `data.csv` row consumed through `<input_data>` by a recorded command is valid.
-A generated CSV may receive a row only when a later recorded command consumes
-it as input. Review reports an unused row, an entry-local script or image row,
-an unresolved token, or a raw external input path that should use `<name>`.
+A `data.json` item consumed through `<input_data>` by a recorded command is
+valid. A generated file receives an item only when a later recorded command
+consumes it as input. Review reports an unused item, missing declaration,
+unresolved token, fingerprint drift, conflicting boundary, or raw input path
+that should use `<name>`.
 
-A valid indexed input in a workflow branch that does not reach presented
-evidence does not make its index row orphaned; the workflow's retained material
+A valid declared input in a workflow branch that does not reach presented
+evidence remains a used declaration; the workflow's retained material
 remains eligible for orphan detection.

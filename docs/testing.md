@@ -49,7 +49,8 @@ Also run:
 git diff --check
 ```
 
-When changing `skills/research-logging/scripts/pyrun` or research-log command/data-index guidance that affects `pyrun`, also run:
+When changing `skills/research-logging/scripts/pyrun` or research-log
+command/input-registry guidance that affects `pyrun`, also run:
 
 ```bash
 ./.conda/bin/python -m unittest skills/research-logging/tests/test_pyrun.py
@@ -68,7 +69,7 @@ linting only the main validator:
 
 ```bash
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/pyrun \
-  skills/research-logging/scripts/research_log_data_index.py \
+  skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/research_log_validation.py \
   skills/research-logging/scripts/validation/*.py
 ./.conda/bin/ruff check skills/research-logging/scripts \
@@ -89,17 +90,20 @@ higher complexity score, or growth in the total advisory finding count.
 
 ### Research-Log Mechanical Validation Boundary
 
-Treat maintained summaries, entries, `data.csv`, evidence records, commands,
-scripts, retained evidence, scientific artifacts, and authored prose as
-research-owned. Mechanical validation may write only the generated artifacts
+Treat maintained summaries, entries, `data.json`, `retention.json`, evidence
+records, commands, scripts, retained evidence, scientific artifacts, and
+authored prose as research-owned. Mechanical validation may write only the generated artifacts
 defined in
 `skills/research-logging/references/file-validation-records.md`. Research
 operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
-- the public CLI accepts only `validate`, `--summary`, `--date`, `--jobs`,
+- the public CLI accepts only `validate`, `--summary`, `--date`,
   `--recompute`, and `--dry-run`;
+- a published validation prints a bounded result with generated-report paths
+  instead of duplicating the complete mechanical record on standard output,
+  while an unpublished dry run retains its complete record;
 - complete-clear, complete-findings, and unsupported-metadata results exit zero,
   while incomplete evaluation and tool failure exit nonzero;
 - recognized unsupported generated state produces one precise
@@ -108,39 +112,85 @@ The research-log test gate must verify:
 - the active standard route imports no semantic review, decision,
   continuation, reproduction, or unsupported evidence runtime;
 - `validation/mechanical.json` uses schema
-  `research-log-mechanical/1`, while the disposable cache uses the independent
-  `research-log-mechanical-cache/2` schema;
+  `research-log-mechanical/1`, while the disposable per-log cache uses the
+  independent `research-log-mechanical-cache/6` schema;
+- the project-level fingerprint cache uses SQLite schema version 1 at
+  `<project>/.cache/research-log-fingerprints.sqlite3`, remains independent of
+  mechanical rules and report schemas, and is excluded from source control;
+- the nearest enclosing non-symlink Git worktree marker owns the project cache,
+  including when the maintained log is outside `docs/` or the project itself is
+  named `docs`;
 - cache absence, corruption, or an unsupported cache schema causes bounded
-  recomputation, and cached checks are reused only when the complete cache
-  contract, rules version, dependency projection, and check content match;
-- a rules-version change invalidates cached checks while preserving artifact
-  identities whose cache entry and current file identity still match exactly;
+  recomputation, and evaluated checks count as unchanged only when the complete
+  cache contract, rules version, dependency projection, and check content
+  match;
+- a rules-version change makes cached checks ineligible for unchanged
+  comparison while preserving artifact identities whose cache entry and
+  current file identity still match exactly;
 - cached artifact identities avoid rehashing only when the project-relative
   regular file has the same byte size, modification time, and change time;
-- `--recompute` bypasses every existing cache entry, publishes a newly rebuilt
-  cache after a completed run, and writes nothing when combined with
-  `--dry-run`;
+- newly hashed scripts and locator sources publish digest and filesystem
+  metadata from one unchanged before-and-after observation, and a concurrent
+  change is unavailable rather than cacheable;
+- project-cache file observations avoid rehashing local files, including
+  external paths, only when canonical path, kind, size, modification time, and
+  change time still match;
+- project-cache directory observations retain deterministic membership and
+  member-file identities, reuse unchanged members after a partial change, and
+  hash only new or changed files before reconstructing the aggregate
+  fingerprint;
+- identity-file managed-directory observations hash only their 1–64 exact
+  declared files, never traverse undeclared descendants, reuse unchanged files
+  across logs, and create one logical aggregate command relationship rather
+  than false descendant membership;
+- identity-pattern managed-directory observations allow 1–64 final-component
+  selectors and 1–64 unique matches, scan each wildcard parent once, stop after
+  100,000 immediate candidates, and never traverse undeclared descendants;
+- repeated declarations, overlapping directories, and different logs in one
+  project share one content observation by canonical path;
+- schema-5 per-log input observations and compatible artifact identities seed
+  the project cache when current filesystem metadata still matches, while one
+  hydration scan captures directory-member hashes omitted by the old cache;
+- completed file observations survive interruption, concurrent validators do
+  not hash the same uncached file twice, and a corrupt generated project cache
+  is rebuilt without changing validation semantics;
+- dry-run treats unusable project cache state as absent, preserves unsupported
+  future schemas, and recompute dry-run never opens the project cache;
+- rebuilt mechanical caches contain only artifact observations used by the
+  current evaluation, so removed artifacts do not persist as stale per-log
+  cache state;
+- `--recompute` bypasses every existing mechanical and fingerprint-cache entry,
+  publishes a newly rebuilt mechanical cache after a completed run, and writes
+  nothing when combined with `--dry-run`;
 - `validation.md` contains separate Mechanical Validation and Reproduction
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;
 - the mechanical report shows completion and date, check counts for
-  conformance, evidence, and orphan, unique starting-artifact counts for
-  provenance, and every non-passing check grouped by entry without rendering
-  individual passing checks;
+  conformance and evidence, unique starting-artifact counts for provenance,
+  unique artifact counts and maximal directory groups for orphans, unused
+  input declarations separately, and every other non-passing check grouped by
+  entry without rendering individual passing checks;
 - canonical discovery finds maintained summaries from their stable navigation
   contract without filename-based exclusions;
-- dry-run writes nothing, incomplete evaluation publishes nothing, and an
-  ordinary publication failure restores the prior generated bundle;
+- dry-run writes nothing, incomplete evaluation publishes no per-log bundle,
+  completed fingerprint observations may persist from a writable incomplete
+  run, and an ordinary publication failure restores the prior per-log bundle;
 - validation leaves all research-owned bytes unchanged and preserves the
   maintained summary's exact stable report link;
 - evidence comparison, provenance, summary forwarding, and orphan detection
   remain independent code-only scopes with precise failure payloads;
 - external evidence is observed as a dependency of the current log without
   reading another log's validation state;
-- unchanged dependency projections reuse compatible passing checks, while
-  changed dependencies reopen only affected checks;
+- unchanged dependency projections produce matching passing checks, while
+  changed dependencies alter only affected checks;
 - source observations, locator evaluations, script hashes, and command
-  discovery stay bounded and shared within one invocation; and
+  discovery stay bounded and shared within one invocation, including both
+  per-member and aggregate binary-materialization limits;
+- local source and input paths reject lexical symlink aliases outside the
+  exact entry `data` and `images` roots or a platform alias shared by the entry
+  and target;
+- material-graph depth overflow fails explicitly rather than silently
+  truncating producer lineage; and
 - active implementation, test, fixture, command, and source-of-truth filenames
   use stable version-neutral names. Version labels remain only in data formats,
   schema identifiers, and unsupported-metadata observations.

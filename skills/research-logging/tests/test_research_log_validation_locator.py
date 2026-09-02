@@ -316,7 +316,7 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
                 handle.create_dataset(
                     "unrelated_name",
                     data="retained metadata",
-                    dtype=h5py.string_dtype(encoding="utf-8"),
+                    dtype=h5py.string_dtype(encoding="utf-8", length=32),
                 )
 
             result = LOCATOR.evaluate_locator(
@@ -343,6 +343,23 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
             )
             self.assertEqual(selected_text.items[0].value.kind, "string")
             self.assertEqual(selected_text.items[0].value.value, "retained metadata")
+
+            variable = root / "variable.h5"
+            with h5py.File(variable, "w") as handle:
+                handle.create_dataset(
+                    "text",
+                    data="unbounded metadata",
+                    dtype=h5py.string_dtype(encoding="utf-8"),
+                )
+            with mock.patch.object(
+                h5py.Dataset,
+                "asstr",
+                side_effect=AssertionError("must reject before materialization"),
+            ):
+                with self.assertRaisesRegex(
+                    LOCATOR.LocatorV2Error, "locator.source.unsafe"
+                ):
+                    LOCATOR.evaluate_locator(variable, {"path": ["text"]})
 
             external = root / "external.h5"
             with h5py.File(external, "w") as handle:
@@ -424,13 +441,42 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
                 ):
                     LOCATOR.evaluate_locator(bomb, {"path": []})
 
+            aggregate = root / "aggregate.npz"
+            np.savez(
+                aggregate,
+                first=np.array([1], dtype=np.int64),
+                second=np.array([2], dtype=np.int64),
+            )
+            with (
+                mock.patch.object(LOCATOR, "MAX_BINARY_MEMBER_BYTES", 8),
+                mock.patch.object(LOCATOR, "MAX_BINARY_TOTAL_BYTES", 8),
+            ):
+                with self.assertRaisesRegex(
+                    LOCATOR.LocatorV2Error, "locator.source.too_large"
+                ):
+                    LOCATOR.evaluate_locator(aggregate, {"path": []})
+
+    def test_source_observation_does_not_require_whole_file_read_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "results.csv"
+            write(source, "value\n1\n")
+
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("whole-file read"),
+            ):
+                result = LOCATOR.evaluate_locator(source, {"select": [["value"]]})
+
+            self.assertEqual(result.items[0].value.value, "1")
+
     def test_temporary_source_read_failure_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "results.csv"
             write(source, "value\n1\n")
 
             with mock.patch.object(
-                Path, "read_bytes", side_effect=OSError("temporarily unavailable")
+                Path, "open", side_effect=OSError("temporarily unavailable")
             ):
                 with self.assertRaises(LOCATOR.LocatorV2Error) as raised:
                     LOCATOR.evaluate_locator(source, {"select": [["value"]]})

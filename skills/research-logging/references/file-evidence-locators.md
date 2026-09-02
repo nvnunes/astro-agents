@@ -80,7 +80,9 @@ values, `shape` asserts one selected compound value, and `identities` requires
 - For NPZ, select exact member names and array positions. Object arrays are
   prohibited.
 - For HDF5 or MATLAB 7.3, select exact groups, datasets, indexes, or slices.
-  Do not follow external or escaping links.
+  Do not follow external or escaping links. Use fixed-length strings when text
+  must be selected; variable-length strings cannot be inspected within the
+  pre-materialization byte bound.
 - For text, use `{"text":{"contains":"exact text"}}`. Add a positive
   one-based `occurrence` or `"all"` when the text is not unique. The complete
   matching line is selected.

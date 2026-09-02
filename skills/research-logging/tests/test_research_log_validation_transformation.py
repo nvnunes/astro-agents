@@ -620,37 +620,6 @@ class TransformationV2TableTests(unittest.TestCase):
             )
 
 
-class TransformationV1UpgradeTests(unittest.TestCase):
-    def test_empty_v1_is_identity_and_nonempty_phrase_is_precise_failure(self) -> None:
-        source = _selection("1.0")
-        identity = TRANSFORM.evaluate_v1_upgrade_transformation(
-            "",
-            [source],
-            row_identity="entry/evidence.json#record-2",
-            presented_kind="statistic",
-            presented="1.0",
-        )
-        self.assertEqual(identity.accepted_spellings, ("1.0",))
-
-        with self.assertRaises(TRANSFORM.TransformationV2Error) as caught:
-            TRANSFORM.evaluate_v1_upgrade_transformation(
-                "v1:round to one decimal place",
-                [source],
-                row_identity="entry/evidence.json#record-3",
-                presented_kind="statistic",
-                presented="1.0",
-            )
-        error = caught.exception
-        self.assertEqual(error.code, "transformation.v1.nonmechanical")
-        self.assertEqual(error.subject, "entry/evidence.json#record-3")
-        self.assertEqual(error.observed["phrase"], "v1:round to one decimal place")
-        self.assertEqual(error.observed["presentation"]["text"], "1.0")
-        self.assertEqual(
-            error.observed["sources"][0]["selected"][0]["value"],
-            {"type": "string", "value": "1.0"},
-        )
-
-
 class TransformationV2RetainedCorpusTests(unittest.TestCase):
     def test_representative_retained_declarations_reproduce_presentations(self) -> None:
         fixtures = V2JSON.decode_json(

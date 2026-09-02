@@ -1,437 +1,259 @@
 from __future__ import annotations
 
 import importlib
+import json
 import tempfile
 from pathlib import Path
+from unittest import mock
 
+from research_log_data import (  # noqa: E402
+    ExternalBoundary,
+    build_local_input,
+    data_file_from_inputs,
+)
 from research_log_validation_test_support import unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
-EVIDENCE = importlib.import_module("validation.evidence")
 GRAPH = importlib.import_module("validation.material_graph")
+RETENTION = importlib.import_module("validation.retention")
 
 
-def _fixture(root: Path) -> tuple[Path, Path, object, object]:
+def _surface(root: Path) -> tuple[Path, Path, object, object]:
     log_root = root / "docs" / "log"
     entry_root = log_root / "entries" / "entry"
-    write(entry_root / "entry.md", "# Entry\n")
-    write(entry_root / "scripts" / "model.py", "# fixture\n")
+    write(entry_root / "e001.md", "# Entry\n")
+    write(entry_root / "scripts" / "build.py", "# fixture\n")
     write(entry_root / "data" / "source.csv", "value\n1\n")
-    write(entry_root / "data" / "debug.json", "{}\n")
-    write(entry_root / "data" / "orphan.txt", "unused\n")
-    write(
-        entry_root / "data.csv",
-        "name,type,location\ncatalog,csv,https://example.test/catalog.csv\nunused,csv,https://example.test/unused.csv\n",
+    write(entry_root / "data" / "reached.csv", "value\n1\n")
+    write(entry_root / "data" / "sibling.csv", "value\n2\n")
+    source = build_local_input(
+        "source",
+        "file",
+        "data/source.csv",
+        entry_root=entry_root,
+        external=ExternalBoundary("fixture", "fixture-source/v1"),
     )
-    write(
-        entry_root / "evidence.json",
-        """{
-  "schema": "research-log-evidence/v2",
-  "records": [
-    {
-      "id": "value",
-      "document": "entries/entry/entry.md",
-      "kind": "statistic",
-      "sources": [{"source": "data/source.csv", "locator": {"select": [["value"]]}}],
-      "transformation": null
-    },
-    {
-      "id": "debug",
-      "kind": "retention",
-      "paths": ["data/debug.json"],
-      "reason": "Useful context for later semantic review."
-    }
-  ]
-}
-""",
+    data_file = data_file_from_inputs(
+        entry_root / "data.json", entry_root=entry_root, inputs=(source,)
     )
     context = COMMAND.CommandContext(
         log_id="docs/log",
         entry="e001",
-        document="entries/entry/entry.md",
+        document="entries/entry/e001.md",
         entry_root=entry_root,
         log_root=log_root,
         project_root=root,
-        data_index={
-            "catalog": "https://example.test/catalog.csv",
-            "unused": "https://example.test/unused.csv",
-        },
+        data_file=data_file,
         require_experimental_context=False,
     )
-    commands = COMMAND.discover_commands(
+    invocations = COMMAND.discover_commands(
         """```bash
-./pyrun scripts/model.py --catalog '<catalog>' --output-data data/source.csv
+./pyrun scripts/build.py --input-data '<source>' \
+  --output-data data/reached.csv --output-data data/sibling.csv
 ```
-<!-- command type = model -->
 """,
         context,
     ).invocations
-    evidence_file = EVIDENCE.load_evidence_file(
-        entry_root / "evidence.json", log_root=log_root, entry_root=entry_root
+    return log_root, entry_root, data_file, invocations
+
+
+def _request(
+    entry_root: Path,
+    data_file: object,
+    invocations: object,
+    *,
+    evidence: tuple[object, ...] = (),
+    retention_files: tuple[object, ...] = (),
+) -> object:
+    return GRAPH.MaterialGraphRequest(
+        entry_roots={"e001": entry_root},
+        evidence=evidence,
+        direct_artifacts=(),
+        invocations=invocations,
+        retention_files=retention_files,
+        input_registries=(GRAPH.InputRegistrySurface("entries/entry", data_file),),
     )
-    return log_root, entry_root, commands, evidence_file
 
 
-class MaterialGraphV2Tests(unittest.TestCase):
-    def test_graph_and_orphan_are_composed_from_successful_edges(self) -> None:
+class MaterialGraphTests(unittest.TestCase):
+    def test_evidence_closure_connects_exact_output_not_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            _, entry_root, commands, evidence_file = _fixture(Path(directory))
-
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            reached = (entry_root / "data" / "reached.csv").resolve().as_posix()
+            sibling = (entry_root / "data" / "sibling.csv").resolve().as_posix()
             result = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
                     evidence=(
                         GRAPH.EvidenceConnection(
-                            "e001",
-                            "value",
-                            "entry.md:eid:value",
-                            ((entry_root / "data" / "source.csv").as_posix(),),
-                            ("locator-dependency", "presentation-dependency"),
-                        ),
-                    ),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                    data_indexes=(
-                        GRAPH.DataIndexSurface(
-                            "entries/entry", ("catalog", "unused")
+                            "e001", "result", "e001.md:eid:result", (reached,)
                         ),
                     ),
                 )
             )
 
+            self.assertIn(reached, result.orphan.connected)
             self.assertIn(
                 (entry_root / "data" / "source.csv").resolve().as_posix(),
                 result.orphan.connected,
             )
-            self.assertEqual(
-                result.orphan.declared_retained,
-                ((entry_root / "data" / "debug.json").resolve().as_posix(),),
-            )
-            self.assertEqual(
-                result.orphan.orphaned,
-                ((entry_root / "data" / "orphan.txt").resolve().as_posix(),),
-            )
-            self.assertEqual(
-                result.orphan.unused_data_names, ("entries/entry:unused",)
-            )
-            self.assertTrue(result.dependency_projection)
+            self.assertIn(sibling, result.orphan.orphaned)
+            self.assertNotIn(sibling, result.orphan.connected)
+            self.assertFalse(result.orphan.unused_input_names)
 
-    def test_runtime_cache_descendants_are_excluded_from_inventory(self) -> None:
+    def test_depth_overflow_fails_instead_of_truncating_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            _, entry_root, commands, evidence_file = _fixture(Path(directory))
-            cache_files = (
-                entry_root / ".mypy_cache" / "3.12" / "state.json",
-                entry_root / ".pytest_cache" / "v" / "cache" / "nodeids",
-                entry_root / ".ruff_cache" / "0.15.1" / "cache-entry",
-                entry_root / "scripts" / "__pycache__" / "model.pyc",
-            )
-            for path in cache_files:
-                write(path, "runtime cache\n")
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            reached = (entry_root / "data" / "reached.csv").resolve().as_posix()
 
-            result = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(
-                        GRAPH.EvidenceConnection(
-                            "e001",
-                            "value",
-                            "entry.md:eid:value",
-                            ((entry_root / "data" / "source.csv").as_posix(),),
-                        ),
-                    ),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                    data_indexes=(
-                        GRAPH.DataIndexSurface(
-                            "entries/entry", ("catalog", "unused")
-                        ),
-                    ),
-                )
-            )
-
-            retained = set(result.orphan.inventory)
-            for path in cache_files:
-                self.assertNotIn(path.resolve().as_posix(), retained)
-
-    def test_symlinked_data_and_images_are_first_class_entry_material(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            log_root, entry_root, _, _ = _fixture(root)
-            retained_root = root / "output" / "entry"
-            retained_data = retained_root / "data"
-            retained_images = retained_root / "images"
-            retained_root.mkdir(parents=True)
-            (entry_root / "data").rename(retained_data)
-            write(retained_images / "orphan.png", "image\n")
-            (entry_root / "data").symlink_to(
-                retained_data, target_is_directory=True
-            )
-            (entry_root / "images").symlink_to(
-                retained_images, target_is_directory=True
-            )
-            context = COMMAND.CommandContext(
-                log_id="docs/log",
-                entry="e001",
-                document="entries/entry/entry.md",
-                entry_root=entry_root,
-                log_root=log_root,
-                project_root=root,
-                data_index={
-                    "catalog": "https://example.test/catalog.csv",
-                    "unused": "https://example.test/unused.csv",
-                },
-                require_experimental_context=False,
-            )
-            commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/model.py --catalog '<catalog>' --output-data data/source.csv
-```
-<!-- command type = model -->
-""",
-                context,
-            ).invocations
-            evidence_file = EVIDENCE.load_evidence_file(
-                entry_root / "evidence.json",
-                log_root=log_root,
-                entry_root=entry_root,
-            )
-
-            result = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(
-                        GRAPH.EvidenceConnection(
-                            "e001",
-                            "value",
-                            "entry.md:eid:value",
-                            (
-                                (entry_root / "data" / "source.csv")
-                                .resolve()
-                                .as_posix(),
+            with (
+                mock.patch.object(GRAPH, "MAX_GRAPH_DEPTH", -1),
+                self.assertRaisesRegex(
+                    GRAPH.MaterialGraphV2Error, "provenance.resource.too_large"
+                ),
+            ):
+                GRAPH.compose_material_graph(
+                    _request(
+                        entry_root,
+                        data_file,
+                        invocations,
+                        evidence=(
+                            GRAPH.EvidenceConnection(
+                                "e001", "result", "e001.md:eid:result", (reached,)
                             ),
                         ),
-                    ),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
+                    )
                 )
+
+    def test_unreached_command_connects_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            result = GRAPH.compose_material_graph(
+                _request(entry_root, data_file, invocations)
             )
 
-            self.assertIn(
-                (retained_data / "source.csv").resolve().as_posix(),
-                result.orphan.connected,
+            for relative in (
+                "scripts/build.py",
+                "data/source.csv",
+                "data/reached.csv",
+                "data/sibling.csv",
+            ):
+                self.assertIn(
+                    (entry_root / relative).resolve().as_posix(),
+                    result.orphan.orphaned,
+                )
+            self.assertFalse(result.orphan.connected)
+
+    def test_unused_input_is_separate_from_artifact_orphans(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, _ = _surface(Path(directory))
+            result = GRAPH.compose_material_graph(_request(entry_root, data_file, ()))
+
+            self.assertEqual(
+                result.orphan.unused_input_names, ("entries/entry:source",)
+            )
+            self.assertGreater(len(result.orphan.orphaned), 0)
+
+    def test_retention_is_separate_and_cannot_cover_connected_material(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            write(
+                entry_root / "retention.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-retention/v1",
+                        "records": [{"id": "sibling", "paths": ["data/sibling.csv"]}],
+                    }
+                ),
+            )
+            retained = RETENTION.load_retention_file(
+                entry_root / "retention.json", entry_root=entry_root
+            )
+            reached = (entry_root / "data" / "reached.csv").resolve().as_posix()
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "result", "e001.md:eid:result", (reached,)
+                        ),
+                    ),
+                    retention_files=(retained,),
+                )
             )
             self.assertEqual(
                 result.orphan.declared_retained,
-                ((retained_data / "debug.json").resolve().as_posix(),),
-            )
-            self.assertEqual(
-                result.orphan.orphaned,
-                tuple(
-                    sorted(
-                        (
-                            (retained_data / "orphan.txt").resolve().as_posix(),
-                            (retained_images / "orphan.png").resolve().as_posix(),
-                        )
-                    )
-                ),
+                ((entry_root / "data" / "sibling.csv").resolve().as_posix(),),
             )
 
-    def test_retention_cannot_overlap_or_hide_connected_material(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, commands, evidence_file = _fixture(Path(directory))
-            path = entry_root / "evidence.json"
             write(
-                path,
-                path.read_text(encoding="utf-8").replace(
-                    '"paths": ["data/debug.json"]',
-                    '"paths": ["data/source.csv"]',
+                entry_root / "retention.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-retention/v1",
+                        "records": [{"id": "reached", "paths": ["data/reached.csv"]}],
+                    }
                 ),
             )
-            evidence_file = EVIDENCE.load_evidence_file(
-                path, log_root=log_root, entry_root=entry_root
+            redundant = RETENTION.load_retention_file(
+                entry_root / "retention.json", entry_root=entry_root
             )
-
             with self.assertRaisesRegex(
                 GRAPH.MaterialGraphV2Error, "retention.declaration.invalid"
             ):
                 GRAPH.compose_material_graph(
-                    GRAPH.MaterialGraphRequest(
-                        entry_roots={"e001": entry_root},
+                    _request(
+                        entry_root,
+                        data_file,
+                        invocations,
                         evidence=(
                             GRAPH.EvidenceConnection(
-                                "e001",
-                                "value",
-                                "entry.md:eid:value",
-                                ((entry_root / "data" / "source.csv").as_posix(),),
+                                "e001", "result", "e001.md:eid:result", (reached,)
                             ),
                         ),
-                        direct_artifacts=(),
-                        invocations=commands,
-                        evidence_files=(evidence_file,),
+                        retention_files=(redundant,),
                     )
                 )
 
-    def test_retention_reason_has_no_currentness_meaning(self) -> None:
+    def test_runtime_cache_and_temporary_descendants_are_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, commands, evidence_file = _fixture(Path(directory))
-
-            first = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                )
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            ignored = (
+                entry_root / ".mypy_cache" / "state.json",
+                entry_root / ".pytest_cache" / "nodeids",
+                entry_root / ".ruff_cache" / "cache-entry",
+                entry_root / "scripts" / "__pycache__" / "build.pyc",
+                entry_root / "tmp" / "scratch.csv",
             )
-            path = entry_root / "evidence.json"
-            write(
-                path,
-                path.read_text(encoding="utf-8").replace(
-                    "Useful context for later semantic review.", "Different prose."
-                ),
-            )
-            changed = EVIDENCE.load_evidence_file(
-                path, log_root=log_root, entry_root=entry_root
-            )
-            second = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(changed,),
-                )
-            )
-
-            self.assertEqual(first.dependency_projection, second.dependency_projection)
-
-    def test_unrelated_material_content_does_not_reopen_graph(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            _, entry_root, commands, evidence_file = _fixture(Path(directory))
-            first = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                )
-            )
-            write(entry_root / "data" / "orphan.txt", "changed bytes\n")
-            second = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                )
-            )
-
-            self.assertEqual(first.dependency_projection, second.dependency_projection)
-
-    def test_external_material_can_be_generated_later_in_the_log(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _, entry_root, _, evidence_file = _fixture(root)
-            target = (entry_root / "data" / "source.csv").resolve().as_posix()
-            context = COMMAND.CommandContext(
-                log_id="docs/log",
-                entry="e001",
-                document="entries/entry/entry.md",
-                entry_root=entry_root,
-                log_root=root / "docs" / "log",
-                project_root=root,
-                data_index={"absolute": target},
-                require_experimental_context=False,
-            )
-            commands = COMMAND.discover_commands(
-                """```bash
-tool --source '<absolute>'
-tool --output-data data/source.csv
-```
-<!-- command-2 type = model -->
-""",
-                context,
-            ).invocations
-
+            for path in ignored:
+                write(path, "cache\n")
             result = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                )
+                _request(entry_root, data_file, invocations)
             )
+            for path in ignored:
+                self.assertNotIn(path.resolve().as_posix(), result.orphan.inventory)
 
-            self.assertIn(GRAPH.GraphNode("external-material", target), result.nodes)
-            self.assertIn(GRAPH.GraphNode("material", target), result.nodes)
-
-    def test_generated_external_material_is_local_after_its_producer(self) -> None:
+    def test_nested_research_material_is_not_excluded_by_name_or_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _, entry_root, _, evidence_file = _fixture(root)
-            target = (root / "outside" / "source.csv").resolve()
-            target.parent.mkdir()
-            target.write_text("value\n1\n")
-            context = COMMAND.CommandContext(
-                log_id="docs/log",
-                entry="e001",
-                document="entries/entry/entry.md",
-                entry_root=entry_root,
-                log_root=root / "docs" / "log",
-                project_root=root,
-                data_index={"absolute": target.as_posix()},
-                require_experimental_context=False,
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            eligible = (
+                entry_root / "data" / "report.md",
+                entry_root / "data" / "validation" / "results.csv",
+                entry_root / "data" / "tmp" / "results.csv",
             )
-            commands = COMMAND.order_invocations(
-                (
-                    COMMAND.discover_commands(
-                        f"""```bash
-tool --output-data {target}
-tool --source '<absolute>' --output-data data/result.csv
-```
-<!-- command-1 type = model -->
-""",
-                        context,
-                    ).invocations,
-                )
-            )
-
+            for path in eligible:
+                write(path, "research material\n")
             result = GRAPH.compose_material_graph(
-                GRAPH.MaterialGraphRequest(
-                    entry_roots={"e001": entry_root},
-                    evidence=(),
-                    direct_artifacts=(),
-                    invocations=commands,
-                    evidence_files=(evidence_file,),
-                )
+                _request(entry_root, data_file, invocations)
             )
-
-            self.assertIn(
-                GRAPH.GraphNode("material", target.as_posix()), result.nodes
-            )
-            self.assertNotIn(
-                GRAPH.GraphNode("external-material", target.as_posix()), result.nodes
-            )
-
-    def test_cache_reuse_requires_exact_dependency(self) -> None:
-        prior = (
-            GRAPH.CacheEntry("a", "dep-a", {"status": "pass"}),
-            GRAPH.CacheEntry("b", "old", {"status": "pass"}),
-        )
-
-        result = GRAPH.reuse_by_dependency(
-            {"a": "dep-a", "b": "new", "c": "dep-c"}, prior
-        )
-
-        self.assertEqual(result.reused, {"a": {"status": "pass"}})
-        self.assertEqual(result.reopened, ("b", "c"))
+            for path in eligible:
+                identity = path.resolve().as_posix()
+                self.assertIn(identity, result.orphan.inventory)
+                self.assertIn(identity, result.orphan.orphaned)
 
 
 if __name__ == "__main__":

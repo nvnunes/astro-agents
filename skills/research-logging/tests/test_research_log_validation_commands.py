@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from research_log_data import (
+    ExternalBoundary,
+    Fingerprint,
+    FingerprintObservation,
+    InputResource,
+    build_identity_directory,
+    build_local_input,
+    build_remote_input,
+    data_file_from_inputs,
+    verify_fingerprint,
+)
 from research_log_validation_test_support import unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
@@ -14,6 +26,40 @@ COMMAND = importlib.import_module("validation.commands")
 def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
     entry_root = root / "docs" / "log" / "entries" / "entry"
     entry_root.mkdir(parents=True, exist_ok=True)
+    inputs = []
+    for name, location in (data_index or {}).items():
+        boundary = ExternalBoundary("test fixture", f"fixture:{name}:v1")
+        if "://" in location:
+            inputs.append(
+                build_remote_input(
+                    name,
+                    location,
+                    external=boundary,
+                    fingerprint=Fingerprint(
+                        "immutable-source", value=f"fixture:{name}:v1"
+                    ),
+                    entry_root=entry_root,
+                )
+            )
+        else:
+            inputs.append(
+                build_local_input(
+                    name,
+                    "directory" if Path(location).is_dir() else "file",
+                    location,
+                    entry_root=entry_root,
+                    external=boundary,
+                )
+            )
+    data_file = (
+        data_file_from_inputs(
+            entry_root / "data.json",
+            entry_root=entry_root,
+            inputs=tuple(inputs),
+        )
+        if inputs
+        else None
+    )
     return COMMAND.CommandContext(
         log_id="docs/log",
         entry="e001",
@@ -21,7 +67,7 @@ def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
         entry_root=entry_root,
         log_root=root / "docs" / "log",
         project_root=root,
-        data_index=data_index or {},
+        data_file=data_file,
         require_experimental_context=False,
     )
 
@@ -45,23 +91,29 @@ class CommandV2RoleTests(unittest.TestCase):
     def test_annotations_target_only_commands_that_need_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            context = _context(root, {"catalog": "https://example.test/catalog.csv"})
+            entry_root = root / "docs/log/entries/entry"
+            write(entry_root / "data/model.csv", "value\n1\n")
+            context = _context(
+                root,
+                {
+                    "catalog": "https://example.test/catalog.csv",
+                    "model": "data/model.csv",
+                },
+            )
             write(context.entry_root / "scripts" / "evaluate.py", "# fixture\n")
             write(context.entry_root / "scripts" / "simulate_trials.py", "# fixture\n")
             text = """```bash
 ./pyrun scripts/evaluate.py --catalog '<catalog>' --results data/model.csv
-./pyrun scripts/simulate_trials.py --input-data data/model.csv \
+./pyrun scripts/simulate_trials.py --input-data '<model>' \
   --output-data data/trials.npz
 ```
-<!-- command type = model; results = output -->
+<!-- command results = output -->
 """
 
             result = COMMAND.discover_commands(text, context)
 
             self.assertEqual(len(result.invocations), 2)
             model, simulation = result.invocations
-            self.assertEqual(model.command_type, "model")
-            self.assertEqual(simulation.command_type, "simulation")
             self.assertTrue(model.inputs[0].external)
             self.assertTrue(model.outputs[0].path.endswith("data/model.csv"))
             self.assertTrue(simulation.inputs[0].path.endswith("data/model.csv"))
@@ -69,10 +121,12 @@ class CommandV2RoleTests(unittest.TestCase):
 
     def test_annotation_ordinal_and_positional_target_are_one_based(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = _context(Path(directory))
+            root = Path(directory)
+            write(root / "docs/log/entries/entry/summary.csv", "value\n1\n")
+            context = _context(root, {"summary": "summary.csv"})
             text = """```bash
 tool --flag
-tool summary.csv final.csv
+tool '<summary>' final.csv
 ```
 <!-- command-2 @1 = input; @2 = output -->
 """
@@ -84,11 +138,46 @@ tool summary.csv final.csv
             self.assertTrue(second.inputs[0].path.endswith("summary.csv"))
             self.assertTrue(second.outputs[0].path.endswith("final.csv"))
 
+    def test_indented_annotation_after_indented_fence_is_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            text = """  ```bash
+  tool result.csv
+  ```
+  <!-- command @1 = output -->
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.invocations), 1)
+            self.assertTrue(
+                result.invocations[0].outputs[0].path.endswith("result.csv")
+            )
+
+    def test_caffeinate_flags_do_not_consume_wrapped_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            text = """```bash
+caffeinate -dimsu ./ao-sky run v2 --output-summary data/summary.json
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.invocations), 1)
+            invocation = result.invocations[0]
+            self.assertEqual(Path(invocation.executable).name, "ao-sky")
+            self.assertTrue(invocation.outputs[0].path.endswith("data/summary.json"))
+
     def test_annotation_override_and_embedded_path_failure_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = _context(Path(directory))
+            root = Path(directory)
+            write(root / "docs/log/entries/entry/source.csv", "value\n1\n")
+            context = _context(root, {"source": "source.csv"})
             text = """```bash
-tool --output-data source.csv
+tool --output-data '<source>'
 ```
 <!-- command output-data = input -->
 """
@@ -108,41 +197,16 @@ tool --output-data label=data/result.csv
                 "invocation.path_value.embedded",
             )
 
-    def test_data_index_loader_requires_one_exact_unique_mapping(self) -> None:
+    def test_command_type_annotation_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / "data.csv"
-            write(
-                path,
-                "name,type,location\n"
-                "catalog,csv,https://example.test/catalog.csv\n"
-                "local,csv,../prior/data.csv\n",
-            )
-
-            self.assertEqual(
-                COMMAND.load_data_index(path),
-                {
-                    "catalog": "https://example.test/catalog.csv",
-                    "local": "../prior/data.csv",
-                },
-            )
-
-            write(
-                path,
-                "name,type,location\n"
-                "catalog,csv,https://example.test/one.csv\n"
-                "catalog,csv,https://example.test/two.csv\n",
-            )
             with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "data_index.connection.missing"
+                COMMAND.CommandV2Error, "invocation.annotation.invalid"
             ):
-                COMMAND.load_data_index(path)
-
-            write(path, "name,location\ncatalog,https://example.test/catalog.csv\n")
-            with self.assertRaisesRegex(
-                COMMAND.CommandV2Error, "data_index.connection.missing"
-            ):
-                COMMAND.load_data_index(path)
+                COMMAND.discover_commands(
+                    "```bash\ntool --output-data result.csv\n```\n"
+                    "<!-- command type = model -->\n",
+                    _context(Path(directory)),
+                )
 
     def test_raw_external_rule_applies_only_to_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -160,7 +224,7 @@ tool --output-data {external}
             self.assertEqual(len(result.failures), 1)
             self.assertEqual(
                 result.failures[0].error.code,
-                "data_index.raw_external",
+                "data.input.undeclared",
             )
             self.assertEqual(len(result.invocations), 1)
             self.assertEqual(
@@ -168,7 +232,7 @@ tool --output-data {external}
                 external.resolve().as_posix(),
             )
 
-    def test_simulation_filename_convention_is_exact_and_overridable(self) -> None:
+    def test_script_filenames_have_no_provenance_classification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context = _context(root)
@@ -185,14 +249,16 @@ tool --output-data {external}
 ./pyrun scripts/sim_trials.py
 ./pyrun scripts/model_trials.py
 ```
-<!-- command-2 type = model -->
 """
 
             result = COMMAND.discover_commands(text, context)
 
-            self.assertEqual(
-                [invocation.command_type for invocation in result.invocations],
-                ["simulation", "model", None, None],
+            self.assertEqual(len(result.invocations), 4)
+            self.assertTrue(
+                all(
+                    not hasattr(invocation, "command_type")
+                    for invocation in result.invocations
+                )
             )
 
     def test_script_contents_never_establish_material_direction(self) -> None:
@@ -204,14 +270,15 @@ tool --output-data {external}
             text = """```bash
 ./pyrun scripts/analyze.py --results data/result.csv
 ```
+<!-- command results = output -->
 """
 
             first = COMMAND.discover_commands(text, context).invocations[0]
             write(script, "raise RuntimeError('contents changed')\n")
             second = COMMAND.discover_commands(text, context).invocations[0]
 
-            self.assertFalse(first.outputs)
-            self.assertTrue(first.candidates[0].endswith("data/result.csv"))
+            self.assertTrue(first.outputs)
+            self.assertFalse(first.candidates)
             self.assertEqual(first.identity, second.identity)
             self.assertNotEqual(first.script_identity, second.script_identity)
 
@@ -229,6 +296,50 @@ tool --output-data {external}
 
             self.assertEqual(invocation.script, executable.resolve().as_posix())
             self.assertTrue(invocation.script_identity)
+
+    def test_script_change_during_hash_is_an_unavailable_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "analyze.py"
+            write(script, "print('before')\n")
+            original_stat = COMMAND.Path.stat
+            calls = 0
+
+            def racing_stat(path: Path, *args: object, **kwargs: object):
+                nonlocal calls
+                if path == script:
+                    calls += 1
+                    if calls == 2:
+                        write(script, "print('after')\n")
+                return original_stat(path, *args, **kwargs)
+
+            with mock.patch.object(COMMAND.Path, "stat", new=racing_stat):
+                with self.assertRaisesRegex(
+                    COMMAND.CommandV2Error, "provenance.observation.unavailable"
+                ):
+                    COMMAND._observe_script(script)
+
+    def test_stale_script_cache_and_seed_are_revalidated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            script = context.entry_root / "scripts" / "analyze.py"
+            write(script, "print('before')\n")
+            stale = COMMAND._observe_script(script)
+            write(script, "print('after')\n")
+            expected = hashlib.sha256(script.read_bytes()).hexdigest()
+            canonical = script.resolve().as_posix()
+            context = replace(
+                context,
+                script_identity_cache={canonical: stale},
+                script_identity_seeds={canonical: stale.as_cache_record()},
+            )
+
+            invocation = COMMAND.discover_commands(
+                "```bash\n./pyrun scripts/analyze.py\n```\n", context
+            ).invocations[0]
+
+            self.assertEqual(invocation.script_identity, expected)
+            self.assertNotEqual(invocation.script_identity, stale.digest)
 
 
 class CommandV2ShellTests(unittest.TestCase):
@@ -263,11 +374,17 @@ Done.
 
     def test_environment_continuation_redirection_and_terminal_tee(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = _context(Path(directory))
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            write(entry_root / "data/source.csv", "value\n1\n")
+            write(entry_root / "data/config.txt", "config\n")
+            context = _context(
+                root, {"source": "data/source.csv", "config": "data/config.txt"}
+            )
             text = """```bash
-MODE=test tool --input-data data/source.csv \\
-  --result data/result.csv < data/config.txt > data/run.log
-tool --input-data data/source.csv | tee data/capture.log
+MODE=test tool --input-data '<source>' \\
+  --result data/result.csv < '<config>' > data/run.log
+tool --input-data '<source>' | tee data/capture.log
 ```
 <!-- command result = output -->
 """
@@ -329,11 +446,18 @@ wait
 
     def test_literal_for_loop_expands_scalar_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = _context(Path(directory))
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry/data"
+            inputs = {}
+            for fraction in ("025", "050", "075"):
+                path = entry_root / f"mean-{fraction}-membership.csv"
+                write(path, "value\n1\n")
+                inputs[f"mean-{fraction}"] = f"data/{path.name}"
+            context = _context(root, inputs)
             text = """```bash
 for fraction in 025 050 075; do
   ./pyrun scripts/train.py \\
-    --input-data "data/mean-${fraction}-membership.csv" \\
+    --input-data "<mean-${fraction}>" \\
     --output-dir "data/models/mean-${fraction}"
 done
 ```
@@ -381,7 +505,9 @@ done
             self.assertEqual(len(result.invocations), 2)
             self.assertEqual(result.invocations[0].tokens[-2:], ("64", "32"))
             self.assertEqual(result.invocations[1].tokens[-3:], ("128", "64", "32"))
-            self.assertTrue(result.invocations[0].outputs[0].path.endswith("compact.csv"))
+            self.assertTrue(
+                result.invocations[0].outputs[0].path.endswith("compact.csv")
+            )
             self.assertTrue(result.invocations[1].outputs[0].path.endswith("deep.csv"))
 
     def test_static_projection_changes_identity_without_changing_tokens(self) -> None:
@@ -403,7 +529,7 @@ done
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             first = COMMAND.discover_commands(
-                "```bash\nfor x in alpha; do\ntool --label \"$x\"\ndone\n```\n",
+                '```bash\nfor x in alpha; do\ntool --label "$x"\ndone\n```\n',
                 context,
             ).invocations[0]
             second = COMMAND.discover_commands(
@@ -415,8 +541,7 @@ done
             self.assertEqual(first.identity, second.identity)
 
             first_function = COMMAND.discover_commands(
-                "```bash\nrun_one () {\ntool --label \"$1\"\n}\n"
-                "run_one alpha\n```\n",
+                '```bash\nrun_one () {\ntool --label "$1"\n}\nrun_one alpha\n```\n',
                 context,
             ).invocations[0]
             second_function = COMMAND.discover_commands(
@@ -436,7 +561,7 @@ done
                 context,
             ).invocations[0]
             bound = COMMAND.discover_commands(
-                "```bash\nfor x in fixed; do\ntool --label \"$x\"\ndone\n```\n",
+                '```bash\nfor x in fixed; do\ntool --label "$x"\ndone\n```\n',
                 context,
             ).invocations[0]
 
@@ -502,7 +627,7 @@ done""",
             context = _context(Path(directory))
             text = r"""```bash
 for value in result; do
-  tool --label \${value} --operator \& --pattern \*.csv
+  tool --label \${value} --operator \& --pattern \*.pattern
 done
 ```
 """
@@ -512,7 +637,7 @@ done
             self.assertFalse(result.unsupported)
             self.assertEqual(
                 result.invocations[0].tokens[-6:],
-                ("--label", "${value}", "--operator", "&", "--pattern", "*.csv"),
+                ("--label", "${value}", "--operator", "&", "--pattern", "*.pattern"),
             )
 
     def test_escaped_output_variable_cannot_create_false_producer(self) -> None:
@@ -570,7 +695,7 @@ prepare
                 ),
                 "dynamic-case": (
                     "for value in one; do\n"
-                    "case \"$other\" in\n"
+                    'case "$other" in\n'
                     "one) selected=literal ;;\n"
                     "esac\n"
                     "tool --value $selected\n"
@@ -604,7 +729,7 @@ fi
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             text = """```bash
-tool --label '$(other)' --operator '&' --pattern '*.csv'
+tool --label '$(other)' --operator '&' --pattern '*.pattern'
 ```
 """
 
@@ -614,7 +739,7 @@ tool --label '$(other)' --operator '&' --pattern '*.csv'
             self.assertEqual(len(result.invocations), 1)
             self.assertEqual(
                 result.invocations[0].tokens[-6:],
-                ("--label", "$(other)", "--operator", "&", "--pattern", "*.csv"),
+                ("--label", "$(other)", "--operator", "&", "--pattern", "*.pattern"),
             )
 
     def test_single_quoted_loop_variable_is_not_substituted(self) -> None:
@@ -786,7 +911,9 @@ tool data/result.csv
 
             self.assertEqual(len(result.unsupported), 1)
             self.assertEqual(len(result.invocations), 1)
-            self.assertTrue(result.invocations[0].outputs[0].path.endswith("result.csv"))
+            self.assertTrue(
+                result.invocations[0].outputs[0].path.endswith("result.csv")
+            )
             self.assertEqual(result.invocations[0].ordinal, 1)
 
     def test_static_expansion_obeys_invocation_bound(self) -> None:
@@ -810,9 +937,7 @@ done
             context = _context(Path(directory))
             with mock.patch.object(COMMAND, "MAX_STATIC_TOKENS_PER_FENCE", 2):
                 with self.assertRaises(COMMAND.CommandV2Error) as tokens:
-                    COMMAND.discover_commands(
-                        "```bash\ntool one two\n```\n", context
-                    )
+                    COMMAND.discover_commands("```bash\ntool one two\n```\n", context)
             self.assertEqual(tokens.exception.observed, {"tokens": 3, "limit": 2})
 
             repeated = """```bash
@@ -825,9 +950,7 @@ done
             with mock.patch.object(COMMAND, "MAX_STATIC_WORK_ITEMS_PER_FENCE", 6):
                 with self.assertRaises(COMMAND.CommandV2Error) as work:
                     COMMAND.discover_commands(repeated, context)
-            self.assertEqual(
-                work.exception.observed, {"work_items": 7, "limit": 6}
-            )
+            self.assertEqual(work.exception.observed, {"work_items": 7, "limit": 6})
 
     def test_unsupported_surfaces_do_not_consume_invocation_budget(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -837,8 +960,9 @@ done
                 "tool && one\ntool && two\ntool && three",
             )
             for body in bodies:
-                with self.subTest(body=body), mock.patch.object(
-                    COMMAND, "MAX_INVOCATIONS_PER_FENCE", 1
+                with (
+                    self.subTest(body=body),
+                    mock.patch.object(COMMAND, "MAX_INVOCATIONS_PER_FENCE", 1),
                 ):
                     result = COMMAND.discover_commands(
                         f"```bash\n{body}\n```\n", context
@@ -867,10 +991,12 @@ done
 
     def test_physical_continuation_and_file_descriptor_redirection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = _context(Path(directory))
+            root = Path(directory)
+            write(root / "docs/log/entries/entry/data/source.csv", "value\n1\n")
+            context = _context(root, {"source": "data/source.csv"})
             text = (
                 "```bash\n"
-                "tool --input-data data/source.csv \\\n"
+                "tool --input-data '<source>' \\\n"
                 "  --output-data data/result.csv 2> data/stderr.log\n"
                 "```\n"
             )
@@ -947,7 +1073,8 @@ tool && other
     def test_caller_supplied_document_order_controls_global_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            first_context = _context(root)
+            write(root / "docs/log/entries/entry/data/a.csv", "value\n1\n")
+            first_context = _context(root, {"a": "data/a.csv"})
             second_context = replace(
                 first_context,
                 document="docs/log/entries/entry/notes.md",
@@ -956,7 +1083,7 @@ tool && other
                 "```bash\ntool --output-data data/a.csv\n```\n", first_context
             ).invocations
             second = COMMAND.discover_commands(
-                "```bash\ntool --input-data data/a.csv --output-data data/b.csv\n```\n",
+                "```bash\ntool --input-data '<a>' --output-data data/b.csv\n```\n",
                 second_context,
             ).invocations
 
@@ -978,31 +1105,117 @@ tool && other
 
 
 class CommandV2CollectionTests(unittest.TestCase):
-    def test_repeated_directory_and_manifest_collections_are_complete(self) -> None:
+    def test_named_input_directory_uses_shared_fingerprint_verifier(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            context = _context(root)
-            write(context.entry_root / "data" / "a.csv", "a\n")
-            write(context.entry_root / "data" / "b.csv", "b\n")
-            write(context.entry_root / "owned" / "x.txt", "x\n")
-            write(context.entry_root / "owned" / "nested" / "y.txt", "y\n")
-            write(context.entry_root / "manifest.csv", "path\ndata/a.csv\ndata/b.csv\n")
+            collection = root / "docs/log/entries/entry/data/collection"
+            write(collection / "a.csv", "a\n")
+            write(collection / "nested" / "b.csv", "b\n")
+            context = _context(root, {"collection": collection.as_posix()})
+            assert context.data_file is not None
+            resource = context.data_file.by_name["collection"]
+            observation = verify_fingerprint(resource)
+            assert observation is not None
+            calls: list[str] = []
+
+            def shared_verifier(value: InputResource) -> FingerprintObservation:
+                calls.append(value.name)
+                return observation
+
+            context = replace(context, input_fingerprint_verifier=shared_verifier)
+            with mock.patch.object(
+                COMMAND,
+                "verify_fingerprint",
+                side_effect=AssertionError("shared verifier must own observation"),
+            ):
+                result = COMMAND.discover_commands(
+                    "```bash\ntool --input-directory '<collection>'\n```\n"
+                    "<!-- command input-directory = input-directory -->\n",
+                    context,
+                )
+
+            self.assertEqual(calls, ["collection"])
+            self.assertEqual(len(result.invocations[0].collections[0].members), 2)
+
+    def test_identity_file_directory_is_one_logical_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            build = entry_root / "build"
+            write(build / "build.h5", "state")
+            write(build / "build.yaml", "mode: test\n")
+            write(build / "products" / "outer.h5", "product")
+            resource = build_identity_directory(
+                "build",
+                "build",
+                ("build.h5", "build.yaml"),
+                entry_root=entry_root,
+                external=ExternalBoundary("fixture", "build/v1"),
+            )
+            context = replace(
+                _context(root),
+                data_file=data_file_from_inputs(
+                    entry_root / "data.json",
+                    entry_root=entry_root,
+                    inputs=(resource,),
+                ),
+            )
+
+            result = COMMAND.discover_commands(
+                "```bash\ntool --input-directory '<build>'\n```\n"
+                "<!-- command input-directory = input-directory -->\n",
+                context,
+            )
+
+            invocation = result.invocations[0]
+            self.assertEqual(len(invocation.inputs), 1)
+            self.assertEqual(invocation.inputs[0].path, build.resolve().as_posix())
+            self.assertEqual(invocation.inputs[0].proof, "identity-files")
+            self.assertEqual(
+                invocation.collections[0].members,
+                (build.resolve().as_posix(),),
+            )
+            self.assertEqual(invocation.collections[0].mechanism, "identity-files")
+
+    def test_repeated_inputs_and_output_directory_are_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            write(entry_root / "data" / "a.csv", "a\n")
+            write(entry_root / "data" / "b.csv", "b\n")
+            write(entry_root / "owned" / "x.txt", "x\n")
+            write(entry_root / "owned" / "nested" / "y.txt", "y\n")
+            context = _context(root, {"a": "data/a.csv", "b": "data/b.csv"})
             text = """```bash
-tool --input-file data/a.csv --input-file data/b.csv
+tool --input-file '<a>' --input-file '<b>'
 tool --target owned
-tool --files manifest.csv
 ```
 <!-- command-2 target = output-directory -->
-<!-- command-3 files = input-manifest -->
 """
 
             result = COMMAND.discover_commands(text, context)
 
-            repeated, directory_result, manifest = result.invocations
-            self.assertEqual(repeated.collections[0].mechanism, "repeated")
+            repeated, directory_result = result.invocations
+            self.assertEqual(len(repeated.inputs), 2)
             self.assertEqual(len(directory_result.collections[0].members), 2)
-            self.assertEqual(manifest.collections[0].mechanism, "manifest")
-            self.assertEqual(len(manifest.inputs), 3)
+
+    def test_large_output_directory_counts_as_one_authored_relationship(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            for index in range(COMMAND.MAX_RELATIONSHIPS + 1):
+                write(entry_root / "owned" / f"{index}.txt", "x\n")
+            context = _context(root)
+            text = """```bash
+tool --target owned
+```
+<!-- command target = output-directory -->
+"""
+
+            invocation = COMMAND.discover_commands(text, context).invocations[0]
+
+            self.assertEqual(len(invocation.outputs), COMMAND.MAX_RELATIONSHIPS + 1)
+            self.assertEqual(len(invocation.collections), 1)
 
     def test_symlinked_entry_material_root_remains_command_owned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1011,9 +1224,7 @@ tool --files manifest.csv
             retained = root / "output" / "entry" / "data"
             write(retained / "a.csv", "a\n")
             write(retained / "b.csv", "b\n")
-            (context.entry_root / "data").symlink_to(
-                retained, target_is_directory=True
-            )
+            (context.entry_root / "data").symlink_to(retained, target_is_directory=True)
             text = """```bash
 tool --target data
 ```
@@ -1027,7 +1238,7 @@ tool --target data
                 invocation.collections[0].root, retained.resolve().as_posix()
             )
 
-    def test_manifest_escape_and_missing_member_fail(self) -> None:
+    def test_manifest_annotation_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             write(context.entry_root / "manifest.csv", "path\n../outside.csv\n")
@@ -1036,13 +1247,10 @@ tool --files manifest.csv
 ```
 <!-- command files = input-manifest -->
 """
-            result = COMMAND.discover_commands(text, context)
-
-            self.assertFalse(result.invocations)
-            self.assertEqual(len(result.failures), 1)
-            self.assertEqual(
-                result.failures[0].error.code, "collection.manifest.invalid"
-            )
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.annotation.invalid"
+            ):
+                COMMAND.discover_commands(text, context)
 
 
 if __name__ == "__main__":

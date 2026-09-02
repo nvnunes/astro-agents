@@ -3,7 +3,8 @@
 ## Status And Authority
 
 Status: active mechanical-validator implementation specification as of
-2026-08-31.
+2026-09-01. The approved next material-graph contract is normative for the
+in-place upgrade but becomes active only after implementation and migration.
 
 This document is the normative implementation contract for the code-only
 research-log mechanical validator, its tests, generated records, cache,
@@ -38,7 +39,7 @@ The complete specification owns:
 - evidence-rooted recorded-command discovery, producer and upstream lineage,
   trusted external and model/simulation roots, material collections, and
   named-input connection;
-- orphan detection for unused retained material and data-index names;
+- orphan detection for unused retained material and input declarations;
 - validation evaluation order, result scopes, failures, resource bounds, and
   currentness composition;
 - the public validation operation, result envelope, completion and exit
@@ -219,7 +220,7 @@ version.
 Source resolution precedes locator evaluation. A source profile is established
 from:
 
-- the data-index declaration or retained source declaration when present;
+- the input-registry declaration or retained source declaration when present;
 - the retained byte signature and safe structural inspection;
 - the filename extension only as supporting metadata.
 
@@ -228,7 +229,13 @@ A declared format that conflicts with retained bytes fails as
 under the evidence source-resolution contract. A source that changes during
 locator evaluation is `unavailable`.
 
-A data-index token is part of source identity. After resolution, its locator
+Every local source path is checked lexically before canonicalization. The exact
+entry-local `data` and `images` directory symlinks remain first-class material
+roots, and a platform alias shared by both the entry and source paths is
+permitted. No other source-path symlink is allowed, including an alias in an
+external or project-relative path.
+
+An input-registry token is part of source identity. After resolution, its locator
 uses the resolved source's profile. A remote target must have a stable retained
 or content-addressed observation before it can produce a successful selection.
 
@@ -663,6 +670,9 @@ whole-artifact selection, and prohibited sources.
 - String segments select groups or datasets; later index or slice segments
   select dataset values.
 - External links and links escaping the retained file are prohibited.
+- Fixed-length string datasets are supported. Variable-length string datasets
+  are prohibited because their decoded allocation cannot be bounded before
+  materialization.
 - `select`, `where`, and `identity` may treat explicitly selected aligned
   datasets as records along their common first axis.
 - No recursive group search occurs.
@@ -1672,6 +1682,7 @@ Active v2 evaluation uses this required default limit profile:
 | Associated presented item | 64 KiB UTF-8 |
 | JSON or text bytes read | 64 MiB |
 | One binary member or dataset materialized | 64 MiB |
+| Binary materialization in one source evaluation | 512 MiB total |
 
 An evaluator must not silently truncate a source or selection. Crossing a bound
 fails with the relevant resource code, exact subject, observed size, and
@@ -2324,564 +2335,557 @@ The v2 record and association profile permits at most:
 Crossing a stable authored bound is `fail`, not `unavailable`. Implementations
 may stream files and indexes and must not require repository-wide discovery.
 
-## Recorded-Command Provenance And Material Graph
+## Approved Input Registry And Artifact Graph Contract
 
-### Role And Authority
+### Status And Version Boundary
 
-Mechanical provenance answers:
+This section defines the active command-input, fingerprint, provenance,
+retention, and orphan contract. It replaces the retired `data.csv`, command
+types, filename-derived simulation roots, root-completion checks,
+`evidence.json` retention records, and command-connected orphan behavior.
 
-> Which recorded command produced each retained local evidence source or
-> directly presented artifact, what mechanically visible upstream lineage
-> leads to it, and where does that lineage reach trusted external data or a
-> declared model or simulation origin?
+The active contract uses `research-log-data/v1`,
+`research-log-retention/v1`, and `research-log-evidence/v2` with retention
+removed. The activated rules version is
+`research-log-mechanical/input-registry-1`. The authoritative generated record
+remains `research-log-mechanical/1` because its serialized shape does not
+change. The disposable per-log cache becomes
+`research-log-mechanical-cache/6`.
 
-The research log already records commands. Those command surfaces, together
-with optional adjacent command annotations, are the canonical provenance
-declarations. Standard validation must derive provenance from shell direction,
-the closed input/output option-name convention, command annotations, exact
-command paths and named-input tokens, declared command types, and observed
-retained material. It must
-not require an agent to restate the complete invocation in a second authored
-record.
+Cache v6 retains exactly `schema`, `rules_version`, `checks`, and
+`artifact_identities`. `artifact_identities` retains project-relative
+regular-file observation and digest reuse for evidence sources and scripts.
+Prior entries are reuse seeds only. The rebuilt cache contains only artifact
+observations used by the current evaluation. A rules-version change makes
+prior checks ineligible for unchanged comparison. A mechanical-cache shape
+change does not invalidate project-level input observations.
 
-Recorded commands are discovery surfaces, not independently validated
-declarations of their complete input and output behavior. Standard validation
-does not require every path-like command argument to have a direction and does
-not claim to reconstruct the complete command dependency graph. A path that
-cannot be classified establishes no edge. Its mere presence in a command is
-not a failure.
+Accessible local input observations belong to the generated project-level
+SQLite database at
+`<project>/.cache/research-log-fingerprints.sqlite3`. SQLite schema version 1
+stores file observations by canonical absolute path with kind, size,
+nanosecond modification time, nanosecond change time, fingerprint algorithm,
+and observed content digest. It stores directory metadata identities,
+aggregate directory fingerprints, and deterministic membership separately.
+The expected fingerprint in `data.json` is not part of the observation-cache
+key. A changed expectation compares against the current observed identity
+without forcing a content reread.
 
-There is no `provenance.json` in this contract. There are also no authored
-producer bindings, historical-limit declarations, free-form validation-block
-exceptions, ignored-material rules, or semantic provenance judgments.
-Structured retention records in entry-local `evidence.json` affect only orphan
-classification. Missing, conflicting, ambiguous, or mechanically undiscoverable
-relationships are completed failures or orphan findings as defined below.
+Every validation performs one bounded current directory metadata observation.
+An unchanged hydrated directory reuses its aggregate content fingerprint. A
+changed directory reconstructs its aggregate fingerprint from current ordered
+membership, reused identities for unchanged member files, and newly hashed
+identities for only new or changed member files. Matching metadata before and
+after reconstruction is required, so a concurrent change cannot be recorded as
+the identity of older content.
 
-Validation is read-only and non-executing. It may lex and parse recorded shell
-commands and adjacent command annotations, resolve and hash project-local
-scripts without importing or executing them, inspect retained material through
-bounded readers, and compare canonical paths and content identities. Script
-internals are irrelevant to association discovery: validation must not inspect
-them to infer material direction, path construction, command type, or lineage.
-It must not infer those relationships from prose, proximity, or likely intent.
-The sole filename-derived command type is the closed simulation script-name
-convention defined below.
+All logs in one project share the database. File hashing occurs while holding
+a process-safe SQLite write transaction, so concurrent validators cannot hash
+the same uncached path independently. Each completed file observation commits
+separately and survives later interruption. Schema-5 per-log input observations
+and compatible artifact identities seed schema 1 when current metadata still
+matches. Imported directory aggregates remain unhydrated until one deliberate
+scan records the omitted member-file identities. Mechanical rules, generated
+report schemas, and compatible SQLite schema migrations do not require content
+re-observation. Neither cache changes a conclusion.
 
-Within this contract, a `producer` is the unique recorded invocation
-mechanically proven to write or capture the exact material. This establishes
-recorded traceability. It does not independently prove that the historical
-invocation ran or produced the current bytes. Reproduction remains the separate
-execution-based check.
+### Ownership And Completeness
 
-### Recorded Invocation Discovery And Identity
+`data.json` is an input registry. It contains all and only resources used as
+material inputs by recorded commands owned by one entry root.
 
-An eligible shell command fence discovered through the research-log entry
-grammar may contain one or more bounded top-level invocations. Each supported
-invocation is identified independently for relationship discovery. Physical
-continuation lines, environment assignments, one analyzable pipeline, and
-shell redirection may
-belong to one invocation. Independent invocations may share a fence without
-creating control flow or a combined producer. Command substitution,
-dynamically constructed executable names, unsupported control flow, or an
-unparseable shell surface establishes no relationship by itself. It is not a
-standalone validation failure merely because it appears in the log. A command
-explicitly targeted by authored command metadata must be parseable enough
-to apply that metadata; otherwise the annotation is invalid. If no supported
-surface proves a required evidence producer, `producer.missing` owns the
-provenance failure.
+- Every proven command input has exactly one data item.
+- Every input-bearing argument uses the item's exact `<name>` token or one
+  exact `<directory-name>/member` token. Raw paths and URIs are invalid.
+- A generated output enters `data.json` only when a later recorded command
+  consumes it. Output-only results and presented artifacts do not enter it.
+- Evidence selection and direct presentation do not create command inputs.
+- An entry with no inputs omits `data.json`; a present file is non-empty.
+- Split documents at one entry root share one file. The validator does not
+  search, inherit, merge, or shadow parent-entry or log-level files.
 
-Before ordinary invocation discovery, the validator may statically expand this
-closed, non-executing shell grammar:
+`evidence.json` contains only presentation records. `retention.json` contains
+only intentional disconnected retention. Recorded commands own producers and
+ordinary lineage. Generated validation records remain validator-owned.
 
-- `for <name> in <literal>...; do ... done`, with a finite literal value list;
-- a locally defined function of any valid shell name, invoked with one or more
-  literal arguments, whose body uses only literal calls, `$1`, `shift`, and
-  `$@`;
-- a loop-local `case` on a bound scalar whose literal branches assign one
-  scalar or one literal array;
-- `$name`, `${name}`, and `${array[@]}` when the value is established by the
-  same supported construct; and
-- a trailing background `&` and standalone `wait`, which affect scheduling but
-  establish no material relationship by themselves.
+### `research-log-data/v1`
 
-Expansion never executes shell, reads an environment variable, selects a
-dynamic branch, expands a glob, or performs command, process, or arithmetic
-substitution. Function and variable names are generic; no helper name, script
-name, or entry path receives special behavior. Unsupported nesting, unbound
-values, nonliteral arguments, or expansion beyond an existing resource bound
-consumes the affected control surface without exposing its body as independent
-commands. The unsupported surface establishes no relationship.
+One entry-root file has exactly:
 
-The validator constructs the invocation identity from:
-
-1. maintained-log identity;
-2. entry identity;
-3. entry-relative command document path;
-4. the canonical shell-token and operator sequence;
-5. for an expanded invocation, the normalized visible control structure and
-   literal binding projection; and
-6. the zero-based ordinal among identical canonical commands and projections
-   in that document.
-
-Shell quoting that yields the same token has no identity meaning. Operators,
-redirections, argument order, option values, environment assignments, and the
-resolved executable or script token do. Line number, heading spelling, fence
-delimiter length, and surrounding prose do not. Changing the command changes
-its identity and reopens its dependent provenance outcomes. Changing a static
-value list, helper call, function body, selected case assignment, or other
-result-affecting part of the supported expansion likewise changes identity,
-even when one expanded command's final tokens happen to remain the same.
-
-Command annotation ordinals count the concrete invocation order after static
-expansion. A function definition and `wait` are not invocations. Each expanded
-loop iteration or supported helper-body command is an ordinary invocation for
-annotation, identity, relationship, and resource-bound purposes.
-
-For supported invocations, discovery returns:
-
-- the canonical command identity and parsed shell structure;
-- the resolved executable or project-local script when mechanically available;
-- exact path-valued argument candidates, redirection targets, and `<name>` tokens;
-- normalized adjacent command annotations and effective command type when
-  present;
-- mechanically established input and output relationships;
-- bounded collection selections when completely determined; and
-- stable failures and unresolved candidates that did not establish an edge.
-
-A stable failure while resolving one concrete invocation invalidates only that
-invocation. The validator records the failure using its command fence and
-concrete ordinal, omits that invocation's unproved edges, and continues
-discovering other invocations in the document. A command-local failure never
-discards successfully discovered earlier or later invocations.
-
-A path or token merely mentioned by a command is a candidate, not a provenance
-edge. Direction and coverage must be proven by the rules below.
-
-### Command Annotations, Types, And Role-Bearing Option Names
-
-A command fence may be followed immediately, with no intervening blank or
-prose line, by zero or more contiguous hidden annotations. Each annotation
-classifies one invocation; invocations that need no annotation have no empty
-placeholder.
-
-First or only command:
-
-```html
-<!-- command type = model; catalog = input; results = output -->
+```json
+{
+  "schema": "research-log-data/v1",
+  "inputs": []
+}
 ```
 
-Multi-command fence, when only commands 1 and 3 need annotations:
+Both keys are required and unknown keys fail. `inputs` is non-empty. Strict
+JSON uses the UTF-8, duplicate-key, finite-number, and trailing-content rules
+of `evidence.json`. Array order has no meaning; canonicalization sorts by
+`name`. One file is at most 8 MiB and contains at most 10,000 inputs.
 
-```html
-<!-- command-1 results = output -->
-<!-- command-3 type = simulation; summary-csv = input; @2 = output -->
+Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
+`external` only for a producerless external boundary:
+
+```json
+{
+  "name": "development_catalog",
+  "kind": "file",
+  "location": "../../../../../inputs/development-catalog.csv",
+  "fingerprint": {
+    "algorithm": "sha256",
+    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "external": {
+    "source": "GIRMOS development catalog",
+    "identity": "development-catalog/v3"
+  }
+}
 ```
 
-The annotation grammar is closed. It begins with literal `<!-- command`, an
-optional ordinal suffix `-N`, and one ASCII space. It ends with the literal
-` -->`. `N` is a one-based positive integer without leading zeroes. Omission
-and `-1` both select the first invocation; `-2`, `-3`, and so on select later
-top-level invocations in the immediately preceding fence. Between the prefix
-and suffix, the annotation contains one or more clauses separated by
-semicolons. ASCII spaces, tabs, and line breaks may surround clauses and
-semicolons, but every assignment uses exactly one ASCII space on both sides of
-`=`. A trailing semicolon is prohibited.
+`name` is at most 96 ASCII characters and matches
+`[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, and `theme` are reserved.
+`kind` is `file` or `directory`.
 
-Each clause is `target = value`:
+`location` is a normalized POSIX path relative to the owning entry root, an
+absolute POSIX path, or an absolute URI with a scheme followed by `://`. Paths
+have no reverse solidus, empty segment, or `.` segment. Relative paths may use
+`..`; resolution from the entry root determines their canonical target. A
+location contains no token, environment, glob, shell, or template expansion.
+The validator does not fetch a URI. One location is at most 2,048 UTF-8 bytes.
 
-- the reserved target `type`, when present, must be the first clause and its
-  value is exactly `model` or `simulation`;
-- an option target matches `[A-Za-z0-9][A-Za-z0-9_-]*`, omits leading hyphens,
-  and names an option present in the selected invocation;
-- a positional target is `@N`, where `N` is the one-based positional argument
-  ordinal after the executable or script token in the selected invocation;
-  option names and their syntactically paired values are not positional; and
-- a non-`type` value is exactly one of `input`, `output`,
-  `input-directory`, `output-directory`, `input-manifest`, or
-  `output-manifest`.
+A local canonical target is the safely resolved filesystem identity after the
+existing first-class entry `data` or `images` symlink rule. No other declared
+or nested symlink is allowed. A URI target is its normalized URI. Names and
+canonical targets are both unique within one file.
 
-At most one annotation may select one invocation, and annotations following
-one fence must use increasing command ordinals. `command` and `command-1`
-therefore cannot both follow one fence. Each target occurs at most once in its
-annotation. An option target assigns its role to all occurrences of that
-option in the selected invocation. A positional target assigns its role only
-to that one argument. Empty annotations, unknown targets, command types, or
-roles, duplicate targets or selected ordinals, out-of-range ordinals, missing
-options, and conflicting roles fail.
+Separate entries may declare the same target when each consumes it. Within one
+maintained log, all declarations of that target must agree on `kind`,
+`fingerprint`, and complete `external` metadata. Conflict fails; validation
+does not choose one declaration. The conflicting declarations are unavailable
+to dependent command and graph evaluation; other declarations in the same
+registry and entries that do not declare the target continue evaluation.
 
-Each classified option occurrence must carry exactly one value in either
-`--name value` or `--name=value` form; the analogous single-hyphen form is also
-accepted. Bundled short flags, valueless flags, and one option followed by an
-implicit variable-length value list do not acquire option roles through this
-mechanism. A positional path requires its own `@N` target. A collection of
-separate paths uses repeated option occurrences, separately targeted
-positional arguments, or a manifest.
+### Fingerprints
 
-After ordinary token expansion, the complete role-bearing value must be the
-path. The validator does not split `label=path`, `key=path`, or another embedded
-mapping to discover a path, and a role-bearing value containing that shape
-fails. The research agent must expose the label and path as separate command
-arguments or use a bounded manifest. An adjacent annotation assigns direction;
-it does not authorize substring extraction from an opaque argument.
+Every item has exactly one closed fingerprint:
 
-Annotations are optional. They exist to declare a command type, fill a
-discovery gap, classify a positional path, or override the automatic role of
-one option without making the visible command awkward. They are not producer
-bindings and cannot name material absent from the selected invocation. They
-cannot contradict shell redirection or assign incompatible roles to the same
-canonical material.
+- A local file uses `{"algorithm":"sha256","digest":"<64 lowercase hex>"}`.
+- A local directory uses
+  `{"algorithm":"directory-sha256-v1","digest":"<64 lowercase hex>"}`.
+- A managed local directory uses
+  `{"algorithm":"identity-files-sha256-v1","files":["<relative path>",...],"digest":"<64 lowercase hex>"}`.
+- A pattern-managed local directory uses
+  `{"algorithm":"identity-patterns-sha256-v1","patterns":["<relative selector>",...],"digest":"<64 lowercase hex>"}`.
+- An inaccessible remote object uses
+  `{"algorithm":"immutable-source","value":"<immutable version identity>"}`,
+  unless a known SHA-256 is available.
 
-`model` and `simulation` are distinct command types with the same mechanical
-root capability. A model command originates data by evaluating, sampling, or
-otherwise executing a model or mathematical relationship. A simulation
-command originates data by executing a simulated process, including an
-iterative, stochastic, time-evolving, or repeated-interaction process. The
-validator records the declared type but does not inspect code or judge whether
-the classification is scientifically appropriate.
+`immutable-source.value` is non-empty UTF-8 of at most 1,024 bytes. Validation
+checks shape and consistency but does not contact the source or judge the
+claim. Every accessible local resource uses a content digest, including an
+external resource. Size and modification time may seed cache reuse but are not
+serialized identity. Drift fails and validation never rewrites a digest.
 
-The validator also assigns `type = simulation` when the resolved project-local
-script or executable filename stem is exactly `simulate` or `simulation`, or
-begins with `simulate_` or `simulation_`. Matching is case-sensitive. It does
-not recognize `sim_`, internal tokens, other separators, aliases, or a
-`model_` prefix. An explicit annotation type overrides the filename-derived
-type. No filename convention automatically assigns `type = model`.
+`directory-sha256-v1` hashes the UTF-8 bytes of canonical compact JSON:
 
-The validator also recognizes one closed, case-sensitive option-name
-convention. After leading hyphens are removed, a path-bearing option acquires
-an automatic exact-path role when its name matches exactly one of these forms:
+```json
+{
+  "schema": "research-log-directory-fingerprint/1",
+  "entries": [
+    {"path": "empty", "type": "directory"},
+    {
+      "path": "samples/run-01.npz",
+      "type": "file",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
 
-| Form | Automatic role |
-| --- | --- |
-| `input` | `input` |
-| `input-*` or `input_*` | `input` |
-| `*-input` or `*_input` | `input` |
-| `output` | `output` |
-| `output-*` or `output_*` | `output` |
-| `*-output` or `*_output` | `output` |
+Canonical JSON sorts object keys and has no trailing newline. Paths are
+root-relative normalized POSIX paths, normalized to Unicode NFC, and sorted by
+UTF-8 bytes. Every descendant directory, including an empty directory, has one
+`directory` entry. Every regular file has one `file` entry and bytewise
+SHA-256. The root itself is omitted; an empty root hashes an empty array.
 
-`*` matches `[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?`. The `input` or
-`output` word must be the complete name or one leading or trailing token
-separated by exactly one hyphen or underscore. Internal tokens, substrings, aliases, plural forms,
-stemming, keyword scoring, and executable-specific reinterpretation do not
-match. For example, `output-summary-csv`, `summary-csv-output`, and
-`output_summary_csv` are outputs; `summary-csv`, `results`, and
-`summary-output-csv` are unclassified. A name that matches both roles, such as
-`input-output`, acquires no automatic role.
+Normalization collisions, symlinks, special files, unreadable entries,
+membership changes during observation, more than 100,000 descendants, a path
+over 512 UTF-8 bytes, or more than 1 TiB of file content fail under the
+applicable stable or temporary observation rule. Addition, deletion, rename,
+entry-type change, or content change changes the digest. Descendant traversal
+stops when the first over-limit member is observed; implementations must not
+materialize an unbounded tree before enforcing the limit.
 
-The automatic role covers only the exact argument path. It never asserts that
-a directory's descendants or a manifest's listed paths share that role.
-The collection roles `input-directory`, `output-directory`, `input-manifest`,
-and `output-manifest` therefore remain annotation-only. An adjacent
-annotation overrides the automatic role of the named option. Shell direction
-has precedence over both.
+`identity-files-sha256-v1` identifies one managed directory through 1–64
+explicit producer-owned identity files. Each path is a unique normalized
+root-relative POSIX path subject to the directory-member path restrictions and
+must resolve to a non-symlink regular file inside the declared root. Validation
+does not infer conventional filenames, expand globs, or traverse descendants.
+It hashes the UTF-8 bytes of canonical compact JSON:
 
-### Mechanical Input And Output Discovery
+```json
+{
+  "schema": "research-log-identity-files-fingerprint/1",
+  "files": [
+    {
+      "path": "build.h5",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "path": "build.yaml",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}
+```
 
-Discovery is evidence-rooted. The validator first identifies local sources of
-successfully associated entry evidence and any directly presented artifacts.
-Those materials are provenance starting points. It searches recorded commands for
-positive, mechanically established producer relationships to those starting points and
-then follows only mechanically established inputs of the selected producers.
-The process repeats for any such local generated input. This transitive set is
-the evidence-provenance closure.
+Canonical entries sort by the UTF-8 bytes of their relative path. The mode
+asserts the logical identity represented by the declared files; it does not
+claim bytewise coverage of undeclared descendants. The researcher must select
+identity files owned by the resource producer that change whenever the
+scientifically relevant resource identity changes. Missing, aliased, unreadable,
+or concurrently changed identity files fail observation. Shared cache reuse is
+per declared file and requires exact size and nanosecond modification and
+change times.
 
-Commands, arguments, and candidate paths outside that closure receive no
-provenance result. The validator may reuse any positive relationship it
-discovers outside the closure for separate retained-material orphan detection,
-but it does not require a complete role classification for the command. Command
-annotations and the option-name convention are therefore targeted proof
-mechanisms, not a requirement to describe every command argument.
+`identity-patterns-sha256-v1` identifies one managed directory through 1–64
+normalized exact or wildcard selectors. Exact selectors may name nested files.
+Wildcards `*`, `?`, and character classes are allowed only in the final path
+component; recursive `**` and wildcard parent directories are invalid. An exact
+selector must resolve to one non-symlink regular file. A wildcard selector may
+resolve to zero files. The selector set must resolve to 1–64 unique files, and
+overlapping selectors are invalid.
 
-One command-material relationship is established only by one of these closed
-proof forms:
+Validation scans each distinct wildcard parent at most once per membership
+observation and examines at most 100,000 immediate entries in that parent. It
+does not recurse into descendants. Crossing the candidate-entry or resolved-file
+bound fails as `directory.membership.invalid`; an unreadable parent or concurrent
+membership change is unavailable. The fingerprint hashes the UTF-8 bytes of
+canonical compact JSON:
 
-1. **Shell direction:** an input or output redirection, or a supported terminal
-   `tee` capture, unambiguously identifies the material and its direction.
-2. **Adjacent command annotation:** a valid annotation assigns one exact
-   command option or positional argument to an input or output role.
-3. **Role-bearing option name:** the option name acquires one exact-path role
-   through the closed leading-or-trailing `input`/`output` convention and is
-   not overridden by an annotation.
-4. **Named input:** an exact `<name>` token resolves through `data.csv` and is
-   therefore an input.
+```json
+{
+  "schema": "research-log-identity-patterns-fingerprint/1",
+  "patterns": ["build.h5", "maps-*.h5"],
+  "files": [
+    {
+      "path": "build.h5",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "path": "maps-hpx6.h5",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}
+```
 
-The proof must identify the canonical material path or named-input token, its
-direction, and the command identity. A path-valued argument under an option
-with no proven role remains a diagnostic candidate only. Keyword similarity,
-a nonmatching conventional option name, path existence, directory proximity,
-a unique candidate, and script internals do not prove direction.
+Selectors and matched files sort independently by their UTF-8 bytes. Added,
+removed, renamed, or changed matches change the digest. Shared cache reuse is
+per matched file and requires exact size and nanosecond modification and change
+times. Unmatched descendants remain outside the bytewise identity.
 
-A supported terminal `tee` capture is the final component of an otherwise
-supported pipeline, has executable basename exactly `tee`, has no option or
-operand grammar beyond one or more exact path operands, and establishes each
-operand as an output of the recorded invocation. The ordinary stdout/stderr
-pipeline into `tee` does not create another material edge. Append mode,
-process substitution, dynamically constructed operands, and other `tee`
-options are unsupported in the initial contract.
+### External Boundaries
 
-An invocation may expose several inputs and outputs. Their canonical material
-identities, not authored role names, establish graph edges. Repeated references
-to the same canonical material collapse to one relationship when their
-directions agree. A command that both reads and overwrites one material may use
-an explicit supported in-place proof form; otherwise the direction conflict
-fails.
+`external` has exactly two required non-empty UTF-8 strings of at most 1,024
+bytes:
 
-### Producer And Upstream Lineage
+```json
+{
+  "source": "Zenodo",
+  "identity": "record:1234567/object:reference-grid.csv/version:2"
+}
+```
 
-A local evidence source or direct artifact presentation has successful
-producer provenance when exactly one recorded invocation mechanically proves
-that it produces the material. Zero producers fail as `producer.missing`.
-Several producers fail as `producer.ambiguous`. Candidate ranking is not part
-of mechanical provenance.
+`source` names the authority or dataset family. `identity` names the exact
+dataset, object, and version. `location` says where the input is observed;
+`external` says which prior-provenance boundary is claimed.
 
-A selected producing invocation has upstream lineage when one of its
-mechanically established inputs has the same canonical material identity as
-exactly one earlier invocation output in the maintained log. That identity
-match creates the lineage edge and brings the input into the evidence-
-provenance closure, including when the input uses a named `data.csv` location
-outside the maintained log. No separate upstream declaration is required. An
-unclassified argument establishes no input edge and therefore makes no claim
-about lineage completeness.
+An item with no earlier maintained-log producer requires `external`, regardless
+of storage location. An item with one earlier producer omits `external` and
+traces to that producer. More than one earlier producer is ambiguous. URI
+resources are inaccessible and producerless in standard validation, require
+`external`, and use an immutable identity or known SHA-256. Version 1 permits
+only exact remote file objects; remote directory prefixes are unbounded and
+unsupported.
 
-The producer must precede the consumer in the research record. Cycles fail. A
-local generated input with no matching producer fails as `lineage.missing`. A
-named external input with no earlier producer is a trusted external root. If
-the same external location has an earlier recorded producer, the input instead
-traces to that producer. A later producer does not retroactively change an
-earlier external input.
+### Command Tokens And Roles
 
-Validation of one maintained log never reads another log's validation state or
-uses another log's producer graph. A directly referenced cross-log file is an
-external input observed by the consuming log.
+An exact file token is the whole argument `<name>`. A directory member token is
+`<name>/` plus one non-empty normalized POSIX member path with no absolute
+prefix, empty segment, `.`, `..`, reverse solidus, URI scheme, symlink, glob,
+shell, or template expansion. Member syntax requires a directory item.
 
-### Accepted Provenance Roots
+`pyrun` resolves tokens before execution. Script parameters may retain clean
+internal names through `dest=`; compatibility aliases are not required.
 
-Producer traceability alone does not complete provenance. Beginning with each
-local evidence source or directly presented artifact, every mechanically
-established upstream branch must terminate at one or more accepted roots:
+Named tokens establish input direction. Every other input proven by shell
+direction, an input annotation, an input-bearing option, or a finite input
+collection must use its matching token. A raw value matching an item is a
+missing token; a raw proven input without an item is undeclared.
 
-1. **Trusted external data:** a stable external input resolved through the
-   applicable source or `data.csv` contract. Validation trusts its prior
-   provenance and performs no traversal beyond that external boundary.
-2. **Model command:** a producing invocation whose effective command type is
-   `model`.
-3. **Simulation command:** a producing invocation whose effective command type
-   is `simulation`.
+A path-like argument with no role is not silently dropped. A candidate is
+path-like when its complete static value is an absolute path, URI, begins with
+`./` or `../`, contains `/` or a named token, or ends with a registered retained
+material suffix. It must acquire input or output direction through shell
+syntax, a natural option name, or an annotation. A dynamic material candidate
+that cannot resolve to one bounded value also fails. Other scalar arguments
+create no edge.
 
-A model or simulation command may itself expose mechanically established
-inputs. Every such input retains its ordinary producer or trusted-external
-root requirement; the command type does not hide, excuse, or terminate those
-input branches. When the typed command has no mechanically established data
-inputs, the command itself is the terminal generated origin.
+The initial suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
+`.npy`, `.h5`, `.hdf5`, `.mat`, `.pkl`, `.pickle`, `.fits`, `.fit`, `.parquet`,
+`.feather`, `.txt`, `.log`, `.yaml`, `.yml`, `.toml`, `.ini`, `.png`, `.jpg`,
+`.jpeg`, `.svg`, and `.pdf`, compared case-sensitively. A suffix identifies a
+candidate only; it never assigns direction.
 
-An untyped producing invocation with no mechanically established inputs is not
-an accepted root. A lineage closure that terminates there fails as
-`provenance.root.missing`. Several accepted external, model, or simulation
-roots may contribute to one evidence result. The validator reports the exact
-root set and preserves the distinction between `model` and `simulation`, but
-both types satisfy the same mechanical root requirement.
+Command annotations retain argument roles only. A `type` clause and values
+`model` or `simulation` are invalid. Script filenames receive no provenance
+classification.
 
-### Named Inputs And `data.csv`
+### Producer And Lineage Semantics
 
-An exact `<name>` token in a recorded command resolves through the entry-local
-`data.csv` contract. The token, its unique row, normalized location, and
-observed material identity form one input connection. When the resolved row is
-classified as external and has no earlier producer in the maintained log, it
-forms a trusted terminal provenance root; validation does not inspect an
-external producer graph or import another log's validation state. If an
-earlier recorded invocation produced the same canonical external location,
-ordinary local producer and lineage traversal takes precedence. A row
-resolving to generated local material always retains the ordinary local
-producer and lineage requirements. Duplicate, missing, malformed, or
-unresolved rows fail. An unused `data.csv` row is an orphan finding.
+Evidence and direct presentations begin graph traversal. Each local starting
+artifact requires exactly one producer. The selected producer's inputs trace
+backward:
 
-External classification is lexical and closed. A `data.csv` location is
-external when it is an absolute path, a URI, or a relative location whose
-normalized lexical path escapes the maintained-log root. A relative location
-whose normalized lexical path remains within the maintained-log root is local,
-including a path in the current entry or another entry of that log. Lexical
-containment is decided before following a permitted entry-local directory
-symlink; the resolved target is still observed and canonicalized under the
-ordinary path and safety rules. The `type` column, file extension, source
-contents, and command prose do not change this lexical classification. A
-generated local output indexed for a later command remains local and must have
-its producer lineage. A lexically external row is trusted at the declared
-boundary only until the maintained record contains an earlier producer for the
-same canonical path.
+- one earlier producer creates a lineage edge;
+- no earlier producer requires the item's explicit external boundary;
+- several earlier producers fail as ambiguous; and
+- a later producer never supplies an earlier consumer.
 
-External material used by a recorded command should use a named token rather
-than a raw absolute path, URL, or object-store location. Raw external locations
-fail conformance unless the existing data-index contract explicitly permits
-that source class. A named input establishes location and input direction; it
-does not establish scientific suitability.
+When a selected producer has no material inputs and no unresolved path-like
+candidate, traversal terminates successfully at the artifact-producer
+relationship. This is not a generated root. There is no generated-origin
+declaration, command-level root, command type, filename-derived root, or
+`provenance.root.missing` check.
 
-### Collections And Dynamic Membership
+Validation never imports another log's generated state. A cross-log input is
+declared by the consuming entry and follows the same producer and boundary
+rules within that log.
 
-A collection is a finite set of canonical material paths consumed or produced
-as one command relationship. It exists only when standard discovery proves its
-complete membership through one of three initial mechanisms. The option-name
-convention or an adjacent annotation may establish the direction of repeated
-exact path arguments. A dedicated directory or manifest requires the
-corresponding annotation-only collection role:
+### Directory Resources
 
-1. **Repeated exact path arguments:** every occurrence of one role-bearing
-   option names one exact member path.
-2. **Dedicated directory:** an `input-directory` or `output-directory` option
-   names one directory; membership is every retained regular-file descendant
-   observed beneath it at validation time.
-3. **Bounded manifest:** an `input-manifest` or `output-manifest` option names
-   one UTF-8 CSV file whose exact header is `path` and whose non-empty rows each
-   name one member path relative to the manifest's parent directory.
-Manifest paths must be unique normalized POSIX paths with no absolute path,
-empty segment, `.`, `..`, reverse solidus, URI scheme, symlink, or alias. For
-an input manifest, the manifest and listed members are command inputs. For an
-output manifest, the manifest and listed members are command outputs. A
-dedicated directory must be non-empty, remain beneath the entry root, and have
-one unambiguous direction. Its membership is complete precisely because the
-role declares that the entire directory is command-owned; added or removed
-descendants therefore reopen the collection.
+A local directory is either a byte-complete bounded collection with a
+`directory-sha256-v1` fingerprint or one managed logical aggregate with an
+`identity-files-sha256-v1` or `identity-patterns-sha256-v1` fingerprint.
 
-An output directory must be exclusive to one producing invocation. No other
-recorded invocation may establish an output relationship to the same canonical
-directory or any descendant. A shared output tree fails rather than dividing
-ownership through filename inference. The research-agent repair is a unique
-output directory per producer, repeated exact output paths, or a bounded output
-manifest. Input directories may be consumed by more than one invocation.
+- `<name>` under `input-directory` consumes every observed regular-file
+  descendant and gives each member an input edge.
+- `<name>/member` under an exact input role consumes only that member. The
+  member connects to the aggregate for fingerprint and external-boundary
+  evaluation; siblings receive no command or orphan connection.
+- Both forms count as use of the data item.
+- An external directory is valid only when no maintained-log command produces
+  its root or any member. Its boundary reaches a consumed member through the
+  explicit membership edge, not a path-prefix rule.
+- A generated directory must match one exact earlier `output-directory`.
+  Overlapping roots, separate member producers, or a second directory producer
+  fail exclusivity.
+- Output-directory ownership is invocation-exclusive. Repeated exact outputs
+  may share a parent without asserting directory ownership.
+- Command relationship bounds count one authored whole-directory role as one
+  relationship slot. Expanded directory members remain bounded by the
+  collection and graph limits; they do not consume scalar relationship slots.
+- Fingerprinting always covers complete membership, even for selected-member
+  use, when the algorithm is `directory-sha256-v1`.
+- A whole managed-directory token creates one aggregate input relationship and
+  does not pretend that its identity files or pattern matches are the only
+  consumed descendants.
+- An exact managed-directory member token continues to resolve that member,
+  while the resource's declared identity files or pattern matches establish the
+  aggregate input identity and boundary.
+- Identity files and pattern matches do not expand member relationships and
+  need not be command inputs themselves.
 
-Glob grammars, range-to-filename expansion, output templates, filename
-inference, selector languages, per-command plugins, shared extensions, nearby
-files, graph reachability, and undeclared subsets do not define initial
-collections. Only collections used by a mechanically established input,
-output, evidence source, or direct artifact relationship enter the required
-graph. A directory-valued candidate with no proven directory role creates no
-scope requirement.
+No manifest automatically expands member relationships. A manifest may be a
+named file input or one file selected by a managed-directory identity
+fingerprint.
 
-The collection identity contains the producing or consuming invocation
-identity, direction, canonical root when present, membership-mechanism
-projection, and ordered member identities. Membership is unique, non-empty,
-path-safe, and bounded. Every member must resolve beneath the permitted root.
-Added, missing, aliased, duplicate, or changed members reopen the collection
-outcome.
+### `research-log-retention/v1`
 
-When a required dynamic collection cannot be completely determined by these
-supported command-surface forms, validation fails as
-`collection.membership.unresolved`. The initial contract does not add a
-collection exception, inferred member list, or separate provenance record to
-make it pass. A research agent may repair the recorded surface with repeated
-arguments, a dedicated directory, a bounded manifest, or the optional adjacent
-annotation.
+An optional entry-root `retention.json` has exactly:
 
-### Material Graph Consistency
+```json
+{
+  "schema": "research-log-retention/v1",
+  "records": []
+}
+```
 
-The mechanical graph contains only explicitly presented or mechanically
-discovered nodes:
+Both keys are required and unknown keys fail. `records` is non-empty and sorts
+canonically by `id`. One file is at most 8 MiB and contains at most 1,000
+records. Each record uses one existing v2 retention target form, without
+`kind`:
 
-- v2 evidence records and their presented items;
-- direct artifact presentations;
-- canonical local files and named external resources;
-- recorded invocations, their effective command types, and resolved local
-  scripts;
-- mechanically established inputs, outputs, and finite collections; and
-- entry-local `data.csv` names.
+```json
+{
+  "id": "optimizer-debug-traces",
+  "paths": ["data/debug-trace.json", "data/optimizer-state.npz"],
+  "reason": "Diagnostic outputs retained for later investigation."
+}
+```
 
-Edges arise only from successful evidence association, exact command discovery,
-canonical material identity, collection expansion, or data-index resolution.
-The graph must satisfy:
+```json
+{
+  "id": "intermediate-wavefronts",
+  "directory": "data/intermediate-wavefronts",
+  "membership": "all-descendants",
+  "reason": "Intermediate states retained for later comparison."
+}
+```
 
-1. every reference resolves exactly once;
-2. every generated evidence source and direct artifact has exactly one
-   producer;
-3. every mechanically established generated input in the evidence-provenance
-   closure matches exactly one earlier output;
-4. producer lineage is acyclic;
-5. every upstream branch terminates at trusted external data or a declared
-   model or simulation command;
-6. every required collection has one exact non-empty membership;
-7. every collection member remains within its permitted root;
-8. every used data-index token resolves once; and
-9. each named external input either terminates at its declared boundary or
-   traces to exactly one earlier recorded producer of the same canonical path.
+The v2 retention ID, exact-path, all-descendants, containment, symlink,
+overlap, existence, eligibility, reason, and resource-bound rules apply
+unchanged. IDs are unique within `retention.json` and do not share an evidence
+ID namespace. A connected target makes retention redundant and invalid.
 
-Failure of one edge invalidates only provenance outcomes that depend on that
-edge and its downstream closure. It does not rewrite a successful
-evidence-value comparison as an association failure.
+### Evidence-rooted Orphans
 
-### Orphan Detection
+The orphan universe remains bounded regular files under each entry root,
+including first-class `data` and `images`, and excluding entry Markdown,
+`evidence.json`, `data.json`, `retention.json`, `pyrun`, validator output,
+research-log temporary paths, and runtime-cache descendants.
 
-Orphan detection inventories regular retained files beneath each entry root,
-excluding:
+Connectivity starts only at evidence sources and direct presentations and
+traces backward through unique producers and declared inputs. A command outside
+this closure connects none of its scripts, inputs, outputs, or directory
+members. An external boundary terminates a reached branch but never connects
+an unreached artifact or suppresses an orphan.
 
-- entry Markdown documents;
-- `evidence.json` and `data.csv`;
-- the `pyrun` symlink;
-- validation-owned generated paths; and
-- temporary paths excluded by the research-log contract; and
-- descendants of `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, and
-  `__pycache__` runtime-cache directories.
+Each eligible file is connected, declared-retained, or orphaned.
+`validation/mechanical.json` records authoritative artifact-level orphan
+checks. An unused data item produces one `orphan.input.unused` check; unused
+declarations are reported separately and do not inflate artifact counts.
 
-Entry-local `data` and `images` are first-class members of the entry when they
-are ordinary directories or directory symlinks. Orphan detection follows those two
-exact symlinks, inventories their bounded regular-file descendants, and assigns
-the canonical targets to the owning entry. Evidence, command, collection,
-direct-artifact, and retention paths continue to use the natural entry-local
-names such as `data/results.csv` and `images/residuals.png`. Validation does not
-follow another entry symlink or a nested symlink beneath either material root;
-an unavailable first-class root or nested symlink makes the material
-observation unavailable rather than silently omitting part of the entry.
+`validation.md` groups maximal all-orphan directories below, but never equal
+to, the owning entry root. Starting with each child directory, collapse the
+highest directory whose every eligible file is orphaned; otherwise recurse in
+normalized lexical order. Root-level files remain individual findings. Mixed
+directories retain individual files or smaller groups. No artifact appears
+twice.
 
-A retained file is connected when it is an evidence source, direct artifact
-presentation, mechanically established command input or output, resolved local
-script, required collection member, or resolved material of a used named
-input. An otherwise unconnected file is `declared-retained` when exactly one
-valid entry-local retention record covers its canonical path. Every remaining
-candidate produces `orphan.material.unused`. An unused data-index name
-produces `orphan.data_index.unused`.
+A group identity is `orphan-group:` plus lowercase SHA-256 of canonical JSON
+for `[maintained-log identity, entry material owner, normalized entry-relative
+directory]`. The report lists group identity, directory, and artifact count,
+and reports both orphan-group and unique orphan-artifact counts. Grouping
+creates no graph edge, retention, or collection.
 
-Retention affects only orphan classification. It does not establish evidence,
-input, output, producer, lineage, collection, or currentness edges and cannot
-repair a failure in any of those relationships. Overlapping retention records,
-missing targets, targets outside the entry, malformed paths, empty directory
-membership, targets that are not otherwise orphan-eligible, and targets that
-are already connected fail the retention declaration. A declaration that
-becomes redundant must be removed rather than silently retained. The optional
-`reason` remains available to Semantic
-Review but is ignored by mechanical validation beyond its basic JSON type and
-resource bound.
+### Provenance Truth Table
 
-Free-form `Validation:` blocks and similar prose do not suppress orphan
-findings. A research agent may connect the material through an actual command or evidence
-relationship, declare it through a valid retention record, or remove it when
-separately authorized. Validation may group residual findings by exact
-directory prefix for bounded reporting, but grouping does not create a
-collection, exception, or inferred lifecycle.
+| Data item and token | Earlier producers | External | Producer inputs | Result |
+| --- | --- | --- | --- | --- |
+| Missing item or raw input | any | any | any | Fail undeclared or missing-token validation before lineage. |
+| Declared and used | 0 | yes | n/a | Terminal external input after identity and fingerprint checks. |
+| Declared and used | 0 | no | n/a | Fail `lineage.missing`. |
+| Declared and used | 1 | no | n/a | Trace to the unique earlier producer. |
+| Declared and used | 1 | yes | n/a | Fail `data.external.invalid`. |
+| Declared and used | more than 1 | either | n/a | Fail `lineage.ambiguous`. |
+| Declared but unused | any | either | n/a | Report `orphan.input.unused`; create no graph edge. |
+| Evidence producer | n/a | n/a | 0, no candidate | Terminate at the artifact-producer relationship. |
+| Evidence producer | n/a | n/a | 0, unresolved candidate | Fail `material.candidate.unresolved`. |
+| Evidence producer | n/a | n/a | one or more | Follow every declared input under the rows above. |
 
-### Evidence And Provenance Integration
+### Directory Truth Table
 
-For every successfully associated entry evidence record or direct artifact
-presentation:
+| Use | Producer state | Boundary | Result |
+| --- | --- | --- | --- |
+| Whole `input-directory` | no root/member producer | external | Consume all fingerprinted members through the aggregate boundary. |
+| Exact member | no root/member producer | external | Consume only that member; siblings stay disconnected. |
+| Whole directory | one exact earlier `output-directory` | absent | Trace all members to that producer. |
+| Exact member | one exact earlier `output-directory` | absent | Trace that member without connecting siblings. |
+| Any directory | overlapping or separate member producers | either | Fail `directory.producer.conflict`. |
+| Generated directory | no exact earlier directory producer | absent | Fail `lineage.missing`. |
+| External directory | any root/member producer | present | Fail `directory.external.conflict`. |
+| Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
+| Workflow outside evidence closure | any | any | Members remain orphan-eligible unless retained. |
 
-1. resolve each local source to canonical material identity;
-2. require exactly one mechanically discovered producing invocation for
-   generated local material;
-3. connect named external sources through the exact used `data.csv` token;
-4. follow upstream lineage only through mechanically established inputs and
-   exact input-output identity matches;
-5. require every mechanically established lineage branch to terminate at
-   trusted external data or an effective `model` or `simulation` command type;
-6. expand only mechanically required and completely determined collections;
-   and
-7. let a summary reference reuse its target entry record's provenance
-   projection rather than create another producer relationship.
+### Approved Diagnostics
 
-Evidence association and provenance remain separately reported. A value may
-match its retained source while the source lacks a mechanically proven
-producer. In that case evidence comparison passes and provenance fails.
-Neither outcome decides scientific validity or reproducibility.
+| Code | Scope | Condition |
+| --- | --- | --- |
+| `data.file.location_invalid` | conformance | `data.json` is outside one entry root or a parent/log-level surface exists. |
+| `data.declaration.invalid` | conformance | A data file, item, field, fingerprint, boundary, or bound violates the closed contract. |
+| `data.name.duplicate` | conformance | One entry repeats a name. |
+| `data.target.duplicate` | conformance | One entry repeats a canonical target through any alias. |
+| `data.declaration.conflict` | conformance | Entries disagree on one target's kind, fingerprint, or boundary. |
+| `data.input.undeclared` | provenance | A proven input has no item, including an unknown token. |
+| `data.input.token_missing` | conformance | A proven input uses a raw location instead of its item token. |
+| `material.candidate.unresolved` | conformance | A path-like or dynamic material candidate has no proven role. |
+| `data.external.invalid` | provenance | A producerless input lacks a boundary or a produced input declares one. |
+| `data.target.missing` | provenance | A local input or selected member is absent. |
+| `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
+| `data.remote.identity_invalid` | conformance | A URI input lacks an immutable identity or known SHA-256. |
+| `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
+| `directory.producer.conflict` | provenance | A generated directory lacks one exclusive exact earlier producer. |
+| `directory.external.conflict` | provenance | An external directory root or member has a maintained-log producer. |
+| `retention.file.location_invalid` | conformance | `retention.json` is outside one entry root. |
+| `retention.declaration.invalid` | conformance | A retention file or record violates shape, path, overlap, eligibility, or redundancy. |
+| `retention.target.missing` | conformance | A retention target is absent. |
+| `orphan.material.unused` | orphan | One retained artifact lies outside the evidence closure and retention. |
+| `orphan.input.unused` | orphan | One data item is not consumed by any command. |
 
-No successful outcome asserts that every argument of a producing command was
-classified or that every dependency hidden inside a script was discovered.
-Those questions are outside the mechanical evidence-provenance contract.
+Existing producer, lineage, direction, observation, and resource diagnostics
+remain where their conditions still exist. The new version removes
+`provenance.root.missing`, `data_index.connection.missing`,
+`data_index.raw_external`, `orphan.data_index.unused`, command-type failures,
+simulation filename classification, and manifest diagnostics.
+
+### Approved Examples
+
+A generated intermediate contains no external boundary:
+
+```json
+{
+  "name": "normalized_samples",
+  "kind": "file",
+  "location": "data/normalized-samples.npz",
+  "fingerprint": {
+    "algorithm": "sha256",
+    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
+```
+
+A local external directory has both a strong digest and source identity:
+
+```json
+{
+  "name": "reference_grid",
+  "kind": "directory",
+  "location": "/Volumes/Data/reference-grid/v4",
+  "fingerprint": {
+    "algorithm": "directory-sha256-v1",
+    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "external": {
+    "source": "Reference grid archive",
+    "identity": "reference-grid/v4"
+  }
+}
+```
+
+An inaccessible remote input uses immutable source identity:
+
+```json
+{
+  "name": "archived_catalog",
+  "kind": "file",
+  "location": "s3://example-archive/catalog.csv?versionId=3Lg",
+  "fingerprint": {
+    "algorithm": "immutable-source",
+    "value": "versionId=3Lg"
+  },
+  "external": {
+    "source": "Example archive",
+    "identity": "bucket:example-archive/key:catalog.csv/version:3Lg"
+  }
+}
+```
+
+A producerless entry-relative file uses the external form because location does
+not determine lineage. A local file with one earlier producer uses the
+generated-intermediate form.
 
 ## Mechanical Validation Evaluation And Outcomes
 
@@ -2889,16 +2893,16 @@ Those questions are outside the mechanical evidence-provenance contract.
 
 Standard validation evaluates one target maintained log in this order:
 
-1. parse document, evidence-file, and data-index structure, and scan supported
+1. parse document, evidence, input-registry, and retention structure, and scan supported
    command surfaces for relationship candidates;
 2. establish presentation, evidence-record, invocation, and material
    identities;
 3. resolve sources, named inputs, and project-local script identities;
 4. evaluate locators, expectations, transformations, and presentation
    comparison;
-5. establish producers for evidence starting points, then follow mechanically proven
-   upstream inputs, accepted provenance roots, and required collection
-   membership within that closure;
+5. establish producers for evidence starting points, then follow mechanically
+   proven upstream inputs, explicit external boundaries, and required
+   directory membership within that closure;
 6. compose evidence and provenance outcomes; and
 7. classify connected, declared-retained, and orphaned material over the
    completed graph.
@@ -2914,15 +2918,22 @@ dependent result is `not_applicable` when a stable prerequisite failed and
 `unavailable` when its prerequisite is temporarily unavailable. The dependency
 note names the governing result.
 
+When an invocation has unresolved material candidates, a reached candidate
+artifact, candidate-directory descendant, or input-use classification
+dependent on that invocation is `not_applicable` with the command-conformance
+check as its dependency. It is not independently reported as a missing
+producer, missing lineage edge, orphan artifact, or unused input declaration.
+Unrelated commands and entry material remain independently evaluable.
+
 ### Result Scopes
 
 | Condition | Owning scope | Aggregate effect |
 | --- | --- | --- |
-| Malformed CSV, JSON, Markdown, path, supported source structure, or authored command annotation | Conformance | Fails conformance; dependent evidence or provenance is not applicable. An unsupported unannotated command merely establishes no relationships. |
+| Malformed JSON, Markdown, path, supported source structure, or authored command annotation | Conformance | Fails conformance; dependent evidence or provenance is not applicable. |
 | Missing or conflicting evidence declaration or exact presentation mismatch | Evidence | Fails evidence. |
-| Missing, ambiguous, conflicting, or incomplete producer, lineage, root, named-input, or collection relationship | Provenance | Fails provenance without changing the evidence-value result. |
+| Missing, ambiguous, conflicting, or incomplete producer, lineage, input, boundary, or directory relationship | Provenance | Fails provenance without changing the evidence-value result. |
 | Temporary access failure or material changing during observation | Owning check as unavailable | Makes the aggregate incomplete. |
-| Residual orphaned material or unused data-index name | Orphan | Reports findings without changing evidence or provenance status. |
+| Residual orphaned material or unused input declaration | Orphan | Reports findings without changing evidence or provenance status. |
 | Scientific validity, interpretation, claim support, or summary meaning | Semantic Review | No mechanical result. |
 | Ability to rerun and reproduce a workflow | Reproduction | No standard-validation result. |
 
@@ -2943,27 +2954,27 @@ specification when correcting the authored research record.
 
 One evidence-rooted generated-material provenance outcome depends on:
 
-1. command parser, command annotation grammar, command-type grammar, simulation
-   filename convention, and option-name role-grammar versions;
+1. command parser, command annotation grammar, input-token grammar, and
+   option-name role-grammar versions;
 2. canonical invocation identity and shell structure;
 3. resolved executable or local-script identities;
-4. exact command path, annotation, effective command type, redirection,
-   option-role, and named-token projections;
+4. exact command path, annotation, redirection, option-role, and named-token
+   projections;
 5. canonical material identity and direction proof;
 6. competing producer identities for the same material;
 7. exact upstream input-output identity matches;
-8. accepted external, model, and simulation root projections; and
-9. required collection mechanism and membership projections.
+8. input declaration, fingerprint, and external-boundary projections; and
+9. required directory mechanism and membership projections.
 
 One combined evidence-and-provenance outcome additionally depends on its
 evidence-record, source, locator, transformation, presentation, and association
 projections. Summary provenance depends on the referenced entry record's
 successful projection and, for a table, the declared cell coordinate.
 
-Unrelated commands and their unclassified arguments, files, evidence records,
-entry prose, collections, orphan findings, other logs, and Git state do not
-reopen an outcome. Whole-file hashes
-may trigger parsing, but reusable results compare the narrower projections.
+Unrelated commands outside the evidence closure, files, evidence records,
+entry prose, orphan findings, other logs, and Git state do not change an
+outcome. Whole-file hashes may trigger parsing, but unchanged-result comparison
+uses the narrower projections.
 
 ### Public Operation And Generated State
 
@@ -2973,7 +2984,7 @@ The public operation is:
 research_log_validation.py discover --root PATH
 
 research_log_validation.py validate --summary PATH
-  [--date YYYY-MM-DD] [--jobs N] [--recompute] [--dry-run]
+  [--date YYYY-MM-DD] [--recompute] [--dry-run]
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
@@ -2987,35 +2998,51 @@ multi-log validation.
 
 `--summary` names one regular non-symlink maintained summary whose sibling log
 root is a regular directory. `--date` defaults to the local calendar date and,
-when present, must be one exact ISO date. `--jobs` must be positive.
-`--recompute` bypasses all existing mechanical-cache reuse for the invocation:
-the validator re-evaluates every check and rereads or rehashes every source and
-artifact needed by those checks. It does not change validation scope, rules, or
-the published result format. A completed published recomputation replaces the
-disposable cache with the newly computed passing checks. These are the only
+when present, must be one exact ISO date.
+The nearest enclosing non-symlink `.git` file or directory defines the project
+root for project-relative identities and the shared fingerprint cache. Missing
+Git worktree metadata is an operational error; directory names do not determine
+project ownership.
+`--recompute` bypasses prior check comparison, cached source, script, and
+artifact identities, and project-level input observations for the invocation.
+The validator computes every check and rereads or rehashes every source and
+artifact needed by those checks. It does not change validation scope, rules,
+or the published result format. A writable recomputation commits stable input
+observations incrementally. A completed published recomputation replaces the
+per-log disposable cache with the newly computed checks and artifact
+identities. These are the only
 public standard-validation inputs; there is no mode, decisions, review,
 semantic, or reproduction input.
 
-The CLI writes one JSON result envelope to standard output when evaluation or
-the unsupported-metadata preflight completes:
+The CLI writes one bounded JSON result envelope to standard output when
+evaluation or the unsupported-metadata preflight completes. A completed
+published mechanical evaluation uses
+`research-log-validation-cli-result/1` and contains:
 
-- `schema` is `research-log-validation-result/1`;
+- `schema`;
 - `summary` is the resolved maintained-summary path;
 - `status` is `complete_clear`, `complete_findings`, `incomplete`, or
   `unsupported_metadata`; and
-- `published` states whether a new generated bundle was installed.
+- `published`, which states whether a new generated bundle was installed;
+- the bounded `metrics`, `result_date`, `rules_version`, and scope aggregates;
+  and
+- `generated.human` and `generated.mechanical`, which name the installed
+  generated reports.
 
-A mechanical evaluation envelope also contains its complete `record` and
-non-authoritative bounded `metrics`. An unsupported-metadata envelope instead
-contains `code:"validation.unsupported_metadata"` and `observed.paths`, which
-lists every detected unsupported path. It contains no partial mechanical
-record.
+The published CLI envelope does not duplicate the complete generated record on
+standard output. `validation/mechanical.json` owns those checks. An unpublished
+dry-run or incomplete evaluation retains the complete
+`research-log-validation-result/1` record in its result because no replacement
+bundle was installed. An unsupported-metadata envelope contains
+`code:"validation.unsupported_metadata"` and `observed.paths`, which lists
+every detected unsupported path. It contains no partial mechanical record.
 
 `complete_clear`, `complete_findings`, and `unsupported_metadata` exit zero
-because the requested evaluation or preflight completed. `incomplete` exits 3 and
-publishes nothing. Invalid inputs, observation failures outside the mechanical
-outcome contract, and publication failures are operational errors: they exit
-2, write a precise message to standard error, and publish no result.
+because the requested evaluation or preflight completed. `incomplete` exits 3
+and publishes no per-log bundle; a writable run may retain completed
+project-cache observations. Invalid inputs, observation failures outside the
+mechanical outcome contract, and publication failures are operational errors:
+they exit 2, write a precise message to standard error, and publish no result.
 `--dry-run` returns the applicable mechanical envelope with
 `published:false` and writes no generated path. When combined with
 `--recompute`, it performs the complete cache-independent evaluation without
@@ -3030,6 +3057,15 @@ A completed published evaluation owns exactly these active generated paths:
 <log>/validation.md
 ```
 
+A writable evaluation also owns the shared generated SQLite paths:
+
+```text
+<project>/.cache/research-log-fingerprints.sqlite3
+<project>/.cache/research-log-fingerprints.sqlite3-journal
+<project>/.cache/research-log-fingerprints.sqlite3-wal
+<project>/.cache/research-log-fingerprints.sqlite3-shm
+```
+
 `validation/mechanical.json` is authoritative and uses schema
 `research-log-mechanical/1`. Its exact top-level fields are `schema`,
 `summary`, `rules_version`, `result_date`, `completion`, `checks`, and
@@ -3041,7 +3077,7 @@ A completed published evaluation owns exactly these active generated paths:
 The record is canonical UTF-8 JSON with one trailing newline.
 
 `validation/.cache/mechanical.json` is disposable and uses the independent
-schema `research-log-mechanical-cache/2`. Its exact top-level fields are
+schema `research-log-mechanical-cache/6`. Its exact top-level fields are
 `schema`, `rules_version`, `checks`, and `artifact_identities`. `checks` retains
 only passing checks with a nonempty dependency projection, keyed by check
 identity; each value contains the exact check and its `dependency_projection`.
@@ -3049,28 +3085,50 @@ identity; each value contains the exact check and its `dependency_projection`.
 byte size, modification time, change time, and SHA-256 digest. An artifact
 identity avoids recomputing its digest only when all three current filesystem
 observations match; it does not avoid reading the artifact when evaluating a
-locator. Changed, missing, external, symlinked, malformed, or ambiguous paths
-are not reused.
+locator. A newly computed script or locator-source digest and its published
+filesystem metadata must come from the same stable before-and-after
+observation; a change during hashing is unavailable rather than cacheable.
+Published artifact identities contain only resources used during the current
+evaluation; unused prior seeds are omitted.
 
-Check reuse requires the exact cache shape, current rules version, current
-dependency projection, and an identical current check. A different rules
-version invalidates every cached check but does not invalidate an artifact
-identity whose cache schema, entry shape, project-relative regular-file path,
-size, modification time, and change time still match exactly. Absence, invalid
-JSON, excess size, extra or malformed fields, an unsupported schema, or
-mismatched content causes bounded recomputation. `--recompute` treats both
-checks and artifact identities as absent for reuse but does not delete or
-modify the cache unless the completed evaluation publishes the replacement
-generated bundle. Cache state never changes a conclusion.
+The project-level SQLite fingerprint cache uses schema version 1 at
+`<project>/.cache/research-log-fingerprints.sqlite3`. It stores current local
+input observations independently of this per-log cache. File records contain
+canonical absolute path, size, modification time, change time, algorithm, and
+observed digest. Directory records contain the complete bounded metadata
+identity, aggregate fingerprint, hydration state, and deterministic member
+paths and kinds. Member files reuse the global file records. Repeated
+declarations, directory commands, overlapping trees, and different logs share
+one observation by canonical path.
+
+An evaluated check counts as unchanged only when the prior cache has the exact
+shape and current rules version and contains the same check with the same
+dependency projection. This comparison happens after current evaluation and
+does not skip check computation. A different rules version makes every cached
+check ineligible for comparison but does not invalidate an artifact identity
+whose cache schema, entry shape, project-relative regular-file path, size,
+modification time, and change time still match exactly. Absence, invalid JSON,
+excess size, extra or malformed fields, an unsupported schema, or mismatched
+content causes bounded recomputation. `--recompute` treats checks and artifact
+identities as absent for reuse and bypasses project-level fingerprint reuse.
+A writable recomputation commits completed project observations incrementally
+and replaces the mechanical cache only when the completed evaluation publishes
+the generated bundle. `--dry-run` opens the project cache read-only and writes
+no generated path. A missing, corrupt, incomplete, locked, or unsupported
+read-only project cache is treated as absent and direct observation continues.
+A writable run rebuilds corrupt or incomplete generated cache state. It
+preserves and bypasses an unsupported future schema rather than deleting state
+owned by a newer implementation. `--recompute --dry-run` does not open the
+project cache. Cache state never changes a conclusion.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, check counts for
-conformance, evidence, and orphan, and unique provenance starting-artifact
-counts by their worst dependent provenance-check status. The Provenance row's
-displayed aggregate status remains the status of the complete provenance scope,
-including command-level checks that do not yet identify a starting artifact.
-The section also contains every non-passing check grouped by entry with its
-status, identity, subject, and dependencies. Failed and unavailable checks additionally show
+conformance and evidence, unique provenance starting-artifact counts, and
+unique orphan-artifact counts. It reports unused input declarations
+separately, collapses maximal all-orphan directories for discussion, and keeps
+artifact-level checks authoritative in `mechanical.json`. The section also
+contains every other non-passing check grouped by entry with its status,
+identity, subject, and dependencies. Failed and unavailable checks additionally show
 their code, observed state, and violated rule. It does not list individual
 passing checks or provide repair instructions. A scope with zero checks has a
 blank displayed aggregate status; the report does not present absent checks as
@@ -3090,45 +3148,13 @@ authoritative operation records under the same lock. Mechanical-record and
 cache schema versions evolve independently of evidence format v2 and of the
 future reproduction-record schema.
 
-### Command-Provenance And Orphan-Detection Failures
+### Command-Provenance And Orphan Diagnostics
 
-Every failure records the stable command, material, evidence-record, named-input,
-or collection identity when known; the observed command or path projection; the
-violated clause; and any dependency cause. It does not generate repair choices
-or authored declaration scaffolds.
-
-The invocation, command-type, material-direction, and collection failures below apply only
-to authored command metadata or to a relationship in the evidence-
-provenance closure. An unrelated or unclassified command argument is not a
-failure.
-
-| Code | Scope | Condition |
-| --- | --- | --- |
-| `invocation.command.unsupported` | conformance | Authored command metadata targets a command that cannot be parsed as one bounded supported invocation. |
-| `invocation.executable.unresolved` | provenance | A producing invocation required by the evidence-provenance closure has an executable or local script that does not resolve safely. |
-| `invocation.annotation.invalid` | conformance | An adjacent command annotation violates its closed grammar, placement, ordinal, type, option-reference, or role rules. |
-| `invocation.path_value.embedded` | conformance | A role-bearing command value embeds a path in a `label=path`, `key=path`, or other unsupported compound argument. |
-| `material.unresolved` | provenance | A required local path or named material does not resolve exactly once. |
-| `material.direction.conflict` | provenance | One invocation mechanically assigns incompatible directions to one canonical material without a supported in-place form. |
-| `producer.missing` | provenance | Generated evidence material or a direct artifact has no mechanically proven producer. |
-| `producer.ambiguous` | provenance | Several recorded invocations mechanically qualify as producer of one material. |
-| `producer.output_mismatch` | provenance | A candidate invocation does not prove output coverage of the required material. |
-| `lineage.missing` | provenance | A local generated command input has no exact earlier output match. |
-| `lineage.ambiguous` | provenance | A generated input matches outputs from several eligible invocations. |
-| `lineage.cycle` | provenance | Mechanically established producer relationships contain a cycle. |
-| `provenance.root.missing` | provenance | A mechanically established lineage branch terminates without trusted external data or an effective `model` or `simulation` command type. |
-| `collection.membership.unresolved` | provenance | Required collection membership cannot be completely determined from supported command discovery. |
-| `collection.membership.invalid` | provenance | Membership is empty, duplicate, escaping, aliased, over-broad, or inconsistent with its declared mechanism. |
-| `collection.output_directory.shared` | provenance | More than one invocation establishes output ownership of one canonical directory or one of its descendants. |
-| `collection.manifest.invalid` | conformance | A role-bearing collection manifest violates its exact CSV, path, direction, or resource contract. |
-| `data_index.connection.missing` | provenance | A used named input lacks one unique resolvable `data.csv` row. |
-| `data_index.raw_external` | conformance | A recorded external input bypasses the required named-input form. |
-| `retention.declaration.invalid` | conformance | A retention record is malformed, overlapping, empty, escaping, aliased, or names an ineligible target. |
-| `retention.target.missing` | conformance | A syntactically valid retention record names material that is not retained. |
-| `orphan.material.unused` | orphan | Retained local material has no mechanically established graph connection. |
-| `orphan.data_index.unused` | orphan | A `data.csv` name is not consumed by a recorded invocation. |
-| `provenance.observation.unavailable` | provenance | Stable observation is temporarily impossible because material is inaccessible or changes while read. |
-| `provenance.resource.too_large` | conformance | Command parsing, annotation parsing, graph expansion, or collection membership crosses a declared bound. |
+The active command-input, producer, directory, retention, and orphan codes are
+the closed set in `Approved Diagnostics` above. Existing invocation,
+direction, producer, lineage, observation, and resource diagnostics remain
+active only where that table and the surrounding contract retain their
+conditions.
 
 ### Command-Provenance Resource And Safety Bounds
 
@@ -3144,6 +3170,9 @@ The initial command-derived provenance profile permits at most:
 - 1,000 recorded invocations per maintained log;
 - 128 mechanically established inputs and 128 outputs per invocation;
 - 100,000 members in one required collection;
+- 100,000 descendants in one fingerprinted or retained directory;
+- 100,000 immediate candidates scanned in each identity-pattern wildcard
+  parent;
 - 512 bytes in one normalized path or source expression;
 - 1,000,000 material-graph nodes and 4,000,000 edges per maintained log;
 - 64 producer-lineage levels;
@@ -3154,6 +3183,9 @@ The initial command-derived provenance profile permits at most:
 Readers and command parsers must be non-executing, path-safe, symlink-safe,
 and bounded. Validation does not execute commands, import scripts, deserialize
 unsafe formats, follow unrestricted external links, or enumerate outside the
+declared scope. Crossing the material-graph node, edge, or producer-lineage
+bound fails the affected graph evaluation; it never silently truncates
+lineage or converts an unresolved tail into an orphan result.
 target maintained log except through the exact entry-local `data` and `images`
 material roots or directly referenced external material. Crossing a stable
 bound is `fail`; temporary material access failure is `unavailable`.
@@ -3162,12 +3194,11 @@ bound is `fail`; temporary material access failure is `unavailable`.
 
 The contract intentionally stops at bounded static expansion, shell direction,
 named inputs, the closed leading-or-trailing `input`/`output` option-name
-convention, optional adjacent command annotations, the `model` and `simulation`
-root types, the closed simulation filename convention, and the three finite
-collection forms those roles enable. A missing or ambiguous result fails
-regardless of whether one relationship appears likely.
+convention, optional adjacent command-role annotations, exact file inputs, and
+exact bounded directory inputs and outputs. A missing or ambiguous result
+fails regardless of whether one relationship appears likely.
 
-Additional automatic role words or command types, internal-token matching,
+Additional automatic role words, internal-token matching,
 glob grammars, range-to-filename expansion, dynamic output templates, selector
 languages, per-command plugins, and evidence-record provenance hints remain
 deferred until several concrete cases show that the initial forms make natural
@@ -3175,7 +3206,7 @@ research authoring materially awkward. A proposed addition requires
 retained-corpus evidence and explicit researcher approval. It must be closed,
 independently checkable from recorded state, bounded, and simpler overall than
 renaming the option or repairing the command surface with an adjacent
-annotation or manifest.
+annotation.
 
 No future mechanism may select a merely plausible producer, suppress an orphan
 without a retention record, invent missing historical lineage, override shell
@@ -3236,11 +3267,12 @@ The same experimental section records one command that names
 Mechanical validation resolves the local script without executing or
 inspecting its internals. The adjacent annotation assigns output direction to
 the exact `--summary-csv` option and establishes that invocation as the sole
-producer of `data/results.csv`. It resolves
-`<development-set>` through `data.csv` as a trusted terminal external root and
-does not traverse beyond it. The evidence check compares `67.6%`; the
-provenance check verifies the producer, named-input connection, and accepted
-root. Neither decides whether success rate is scientifically appropriate.
+producer of `data/results.csv`. It resolves `<development-set>` through the
+entry-root `data.json`, verifies its fingerprint and explicit external
+boundary, and does not traverse beyond that boundary. The evidence check
+compares `67.6%`; the provenance check verifies the producer, declared input,
+and boundary. Neither decides whether success rate is scientifically
+appropriate.
 
 Without the annotation, `--summary-csv` has no automatic role and establishes
 no edge. Because `data/results.csv` is an evidence source with no other mechanically proven
@@ -3263,7 +3295,8 @@ annotation rather than a retrospective rename.
   projection and does not declare another producer.
 - A direct, structured, or summary table uses the applicable closed table
   recipe. Every local source used by the table must independently resolve to
-  exactly one producing invocation unless it is a named external input.
+  exactly one producing invocation unless it reaches an explicit external
+  input boundary.
 - A marked output block may select a retained command log. A command whose
   supported shell structure contains `> data/run.log` establishes the output
   relationship directly; the marked fence payload must still match the
@@ -3272,38 +3305,13 @@ annotation rather than a retrospective rename.
   Markdown target must match exactly one mechanically proven command output.
   A path merely mentioned by a command does not suffice.
 - A cross-log source is observed as external material of the consuming log.
-  It is a trusted external root; validation does not import the source log's
-  command graph or validation result.
+  Validation does not import the source log's command graph or validation
+  result.
 - Historical material with no mechanically discoverable producer fails
   `producer.missing`. There is no limitation declaration that converts the gap
   into a pass.
 
-### Model And Simulation Roots
-
-This command is automatically classified as `simulation` from its script stem:
-
-````markdown
-```bash
-./pyrun scripts/simulate_trials.py --output-data data/trials.npz
-```
-````
-
-Its output has a simulation origin without a separate type clause. A model
-whose script name does not use the simulation convention declares its type in
-the unified annotation:
-
-````markdown
-```bash
-./pyrun scripts/evaluate_theory.py --output-data data/prediction.csv
-```
-<!-- command type = model -->
-````
-
-Both commands are accepted generated roots. If either command also exposes a
-mechanically established input, that input must independently trace to trusted
-external data or an earlier model or simulation root.
-
-### Collection And Named-Input Case
+### Directory And Named-Input Case
 
 Suppose an entry records:
 
@@ -3314,13 +3322,15 @@ Suppose an entry records:
 <!-- command output-dir = output-directory -->
 ````
 
-`<reference-grid>` must resolve through exactly one entry-local `data.csv` row.
+`<reference-grid>` must resolve through exactly one entry-root `data.json`
+input with an exact fingerprint and the applicable producer or external
+boundary.
 The annotation establishes `data/trials` as a dedicated output directory, so
 its complete collection is every retained regular-file descendant observed
 beneath that directory. The `--cases 1:40` selector is ordinary command input;
 validation does not need to understand how it maps to filenames. Without an
-approved directory role or the annotation, the directory remains a candidate
-and required collection discovery fails `collection.membership.unresolved`.
+approved directory role or the annotation, the directory remains an unresolved
+material candidate.
 
 ### V2
 
@@ -3412,8 +3422,8 @@ The approved v2 transformation contract applies these evolution rules:
 
 A change to v2 JSON schema dispatch, record or marker identity, field
 ownership, summary-reference syntax or coordinates, cardinality, Markdown parsing, exact comparison,
-command identity, annotation or command-type syntax, provenance proof forms,
-accepted-root semantics, graph semantics, or result scopes
+command identity, annotation or input-token syntax, provenance proof forms,
+external-boundary semantics, graph semantics, or result scopes
 that alters an existing valid outcome requires the applicable new evidence,
 command-discovery, or mechanical-validation contract version.
 

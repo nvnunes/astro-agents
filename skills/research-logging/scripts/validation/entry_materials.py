@@ -37,15 +37,48 @@ def validate_entry_path_symlinks(path: Path, entry_root: Path) -> Path:
         current /= part
         if not current.is_symlink():
             continue
-        if (
-            index == 0
-            and part in ENTRY_MATERIAL_DIRECTORY_NAMES
-            and current.is_dir()
-        ):
+        if index == 0 and part in ENTRY_MATERIAL_DIRECTORY_NAMES and current.is_dir():
             continue
         reason = "unavailable_material_root" if index == 0 else "symlink"
         raise EntryMaterialPathError(path, reason)
     return target.resolve()
+
+
+def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
+    """Resolve one local path after rejecting unsupported lexical symlinks.
+
+    Entry-root ``data`` and ``images`` directory symlinks remain allowed. A
+    shared ancestor alias is allowed only when its canonical target contains
+    both the entry root and the requested target; this preserves platform path
+    aliases without accepting an external material alias.
+    """
+
+    root = entry_root.resolve()
+    target = path.absolute()
+    canonical_target = target.resolve()
+    current = Path(target.anchor)
+    for part in target.parts[1:]:
+        current /= part
+        if part in {"", ".", ".."} or not current.is_symlink():
+            continue
+        try:
+            relative = current.absolute().relative_to(root.absolute())
+        except ValueError:
+            relative = None
+        if (
+            relative is not None
+            and len(relative.parts) == 1
+            and relative.name in ENTRY_MATERIAL_DIRECTORY_NAMES
+            and current.is_dir()
+        ):
+            continue
+        canonical_component = current.resolve()
+        if _within(root, canonical_component) and _within(
+            canonical_target, canonical_component
+        ):
+            continue
+        raise EntryMaterialPathError(path, "symlink")
+    return canonical_target
 
 
 def is_entry_material_path(path: Path, entry_root: Path) -> bool:
@@ -77,3 +110,11 @@ def entry_material_roots(entry_root: Path) -> tuple[Path, ...]:
             raise EntryMaterialPathError(lexical, "unavailable_material_root")
         roots.append(canonical)
     return tuple(roots)
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True

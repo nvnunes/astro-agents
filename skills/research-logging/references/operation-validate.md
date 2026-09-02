@@ -17,10 +17,12 @@ tool.
 ## Boundaries
 
 - Treat the maintained summary, entries, commands, scripts, artifacts,
-  `data.csv`, evidence records, and prose as read-only.
+  `data.json`, `retention.json`, evidence records, and prose as read-only.
 - Write only the generated paths owned by
   `references/file-validation-records.md`.
-- Validate the files on disk without consulting source-control state.
+- Validate the files on disk without consulting commits, branches, diffs, or
+  other source-control state. The nearest Git worktree marker is used only to
+  establish project scope for the shared generated cache.
 - Do not execute research commands, inspect script internals for hidden
   associations, make semantic judgments, or attempt reproduction.
 - Report findings precisely. Do not edit research content or generated records
@@ -51,12 +53,12 @@ with filename globs, and do not exclude a candidate because its basename is
 navigation line and sibling log root, so generated reports are not candidates.
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
-`--jobs N` to change the positive worker bound. Use `--dry-run` to evaluate
-without writing generated files. Use `--recompute` when a cache-independent
-validation is required: it ignores the existing mechanical cache, evaluates
-every check from current research material, and rebuilds the cache after a
-completed published run. `--recompute --dry-run` performs the complete fresh
-evaluation without writing generated files.
+`--dry-run` to evaluate without writing generated files. Use `--recompute` when
+a cache-independent validation is required: it ignores both the per-log
+mechanical cache and the project-level fingerprint cache, evaluates every
+check from current research material, and rebuilds generated cache state during
+a writable run. `--recompute --dry-run` performs the complete fresh evaluation
+without writing generated files.
 
 Interpret `status` as follows:
 
@@ -84,14 +86,20 @@ Report according to the returned status:
   When publication occurred, point any later repair operation to
   `validation/mechanical.json` for machine-readable details and
   `validation.md` for the human projection. A dry run publishes neither file.
+  A published CLI result is deliberately compact; read those generated files
+  instead of expecting every check to be repeated on standard output. An
+  unpublished dry run retains the complete record in its result because no
+  generated bundle exists.
 - For `unsupported_metadata`, report every path in `observed.paths` and state
   that no mechanical evaluation or generated file was published. Stop and
   request separate user authorization to archive or remove those generated
   paths. Do not point to `validation/mechanical.json` or `validation.md` as the
   result of this invocation, and do not route the blocker to Record.
 - For `incomplete`, report the unavailable required observations from the
-  returned record and state that no new generated bundle was published. For a
-  tool failure, report the precise operational error from standard error.
+  returned record and state that no new per-log generated bundle was
+  published. A writable run may have retained completed project-level
+  fingerprint observations. For a tool failure, report the precise operational
+  error from standard error.
 
 When summarizing several completed logs in a Markdown table:
 
@@ -99,8 +107,9 @@ When summarizing several completed logs in a Markdown table:
   `Orphan findings`, and `Reports` columns with a valid Markdown header row.
 - Introduce the table with: `Conformance, Evidence, and Provenance show Pass
   when all applicable checks pass; otherwise they are shown as
-  passed/applicable. Orphan findings are counts. Not-applicable checks are
-  excluded from applicable denominators and reported separately.`
+  passed/applicable. Orphan findings are unused-material artifact counts.
+  Not-applicable checks are excluded from applicable denominators and reported
+  separately.`
 - Render Conformance and Evidence with one or more applicable checks as `Pass`
   when every applicable check passes. When either scope has a failing check,
   render it as `passed/applicable`, where `applicable = pass + fail`.
@@ -113,8 +122,10 @@ When summarizing several completed logs in a Markdown table:
   actual `not_applicable` checks. When a scope has no applicable checks and
   only `N` not-applicable checks, render it as `N N/A`. Exclude
   not-applicable checks from the applicable denominator.
-- Render Orphan findings as the number of failed orphan-scope checks. Render
-  `0` when orphan classification ran without a finding.
+- Render Orphan findings from the unique orphan-artifact row in
+  `validation.md`. Do not add separately reported `orphan.input.unused`
+  declarations to that artifact count. Render `0` when orphan classification
+  ran without a material finding.
 - Leave the scope cell blank when its total check count is zero. Do not render
   an empty scope as `0/0`, `NA`, `N/A`, or `not applicable`.
 - Count `not_applicable` checks separately from failures in both per-log and

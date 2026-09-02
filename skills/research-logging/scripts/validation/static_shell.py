@@ -16,12 +16,8 @@ CASE_RE = re.compile(r"case\s+(?P<selector>.+?)\s+in\s*\Z")
 POSITIONAL_ASSIGNMENT_RE = re.compile(
     rf"(?P<name>{NAME})=\$(?P<position>[1-9][0-9]*)\Z"
 )
-ARRAY_ASSIGNMENT_RE = re.compile(
-    rf"(?P<name>{NAME})=\((?P<values>[^()]*)\)\s*;;\s*\Z"
-)
-SCALAR_ASSIGNMENT_RE = re.compile(
-    rf"(?P<name>{NAME})=(?P<value>[^\s;()]+)\s*;;\s*\Z"
-)
+ARRAY_ASSIGNMENT_RE = re.compile(rf"(?P<name>{NAME})=\((?P<values>[^()]*)\)\s*;;\s*\Z")
+SCALAR_ASSIGNMENT_RE = re.compile(rf"(?P<name>{NAME})=(?P<value>[^\s;()]+)\s*;;\s*\Z")
 BRANCH_RE = re.compile(r"(?P<literal>[^\s|()]+)\)\s*(?P<assignment>.+)\Z")
 VARIABLE_RE = re.compile(
     rf"\$(?:\{{(?P<braced>{NAME})\}}|(?P<plain>{NAME})(?![A-Za-z0-9_]))"
@@ -157,9 +153,7 @@ def expand_static_shell(
     items: list[StaticItem] = []
     index = 0
     while index < len(lines):
-        expanded, index = _expand_top_level(
-            lines, index, functions, budget
-        )
+        expanded, index = _expand_top_level(lines, index, functions, budget)
         items.extend(expanded)
     return tuple(items)
 
@@ -188,9 +182,7 @@ def _expand_top_level(
         return _failure("unsupported shell control flow"), end + 1
     failure = _dynamic_failure(line)
     return (
-        _failure(failure)
-        if failure
-        else _command_items(_commands(line, (), budget)),
+        _failure(failure) if failure else _command_items(_commands(line, (), budget)),
         index + 1,
     )
 
@@ -203,9 +195,7 @@ def _function_surface(
 ) -> tuple[tuple[StaticItem, ...], int] | None:
     function_match = FUNCTION_RE.fullmatch(lines[index])
     if function_match is not None:
-        return _record_function(
-            lines, index, function_match, functions, budget
-        )
+        return _record_function(lines, index, function_match, functions, budget)
     malformed = FUNCTION_PREFIX_RE.match(lines[index])
     if malformed is None:
         return None
@@ -366,9 +356,7 @@ def _function_call(
     if name not in functions.definitions:
         return None
     try:
-        tokens = _literal_tokens(
-            line, budget=budget, allow_background=True
-        )
+        tokens = _literal_tokens(line, budget=budget, allow_background=True)
     except StaticShellResourceError:
         raise
     except ValueError as exc:
@@ -377,9 +365,7 @@ def _function_call(
     arguments = tokens[1:-1] if background else tokens[1:]
     if not arguments:
         return _failure("static shell function requires literal arguments")
-    return _invoke_function(
-        functions.definitions[tokens[0]], tokens, arguments, budget
-    )
+    return _invoke_function(functions.definitions[tokens[0]], tokens, arguments, budget)
 
 
 def _invoke_function(
@@ -464,9 +450,7 @@ def _expand_loop(
         budget.bind()
         bindings = _Bindings({name: value}, {})
         try:
-            expanded, bindings = _expand_loop_body(
-                body, bindings, source, name, budget
-            )
+            expanded, bindings = _expand_loop_body(body, bindings, source, name, budget)
         except StaticShellResourceError:
             raise
         except ValueError as exc:
@@ -550,9 +534,7 @@ def _apply_case(
     assignment = matches[0]
     array = ARRAY_ASSIGNMENT_RE.fullmatch(assignment)
     if array is not None:
-        values = _literal_tokens(
-            array.group("values"), budget=budget
-        )
+        values = _literal_tokens(array.group("values"), budget=budget)
         arrays = dict(bindings.arrays)
         arrays[array.group("name")] = values
         return _Bindings(bindings.scalars, arrays, bindings.positional)
@@ -597,9 +579,7 @@ def _substitute(line: str, bindings: _Bindings) -> str:
         value = POSITIONAL_REFERENCE_RE.sub(
             lambda match: _positional_value(match, bindings), value
         )
-        value = VARIABLE_RE.sub(
-            lambda match: _scalar_value(match, bindings), value
-        )
+        value = VARIABLE_RE.sub(lambda match: _scalar_value(match, bindings), value)
         if "$" in value:
             raise ValueError("unsupported shell variable expansion")
         value = _restore_escaped_characters(value, escapes)
@@ -695,8 +675,7 @@ def _substitution_failure(line: str) -> str | None:
 
 def _looks_like_control(line: str) -> bool:
     return (
-        _control_word(line) in CONTROL_WORDS
-        or FUNCTION_RE.fullmatch(line) is not None
+        _control_word(line) in CONTROL_WORDS or FUNCTION_RE.fullmatch(line) is not None
     )
 
 
@@ -752,9 +731,7 @@ def _tokenize(
     maximum_tokens: int | None = None,
     allow_private: bool = False,
 ) -> tuple[StaticToken, ...]:
-    masked, replacements = _mask_quoted_operators(
-        value, allow_private=allow_private
-    )
+    masked, replacements = _mask_quoted_operators(value, allow_private=allow_private)
     lexer = shlex.shlex(masked, posix=True, punctuation_chars=";&|<>")
     lexer.whitespace_split = True
     raw_tokens: list[str] = []
@@ -799,9 +776,7 @@ def _mask_quoted_operators(
     for character in value:
         if escaped:
             result.append(
-                markers[character]
-                if character in OPERATOR_CHARACTERS
-                else character
+                markers[character] if character in OPERATOR_CHARACTERS else character
             )
             escaped = False
             continue
@@ -895,9 +870,7 @@ def _mask_escaped_characters(
     return "".join(result), replacements
 
 
-def _restore_escaped_characters(
-    value: str, replacements: Mapping[str, str]
-) -> str:
+def _restore_escaped_characters(value: str, replacements: Mapping[str, str]) -> str:
     for marker, escaped in replacements.items():
         value = value.replace(marker, escaped)
     return value
@@ -905,8 +878,7 @@ def _restore_escaped_characters(
 
 def _binding_projection(bindings: _Bindings) -> tuple[str, ...]:
     scalars = tuple(
-        f"scalar:{name}={value}"
-        for name, value in sorted(bindings.scalars.items())
+        f"scalar:{name}={value}" for name, value in sorted(bindings.scalars.items())
     )
     arrays = tuple(
         f"array:{name}={shlex.join(values)}"

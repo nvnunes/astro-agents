@@ -4,8 +4,10 @@ import importlib
 import json
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
+import research_log_data as DATA
 from research_log_validation_test_support import mock, unittest, write
 
 ENGINE = importlib.import_module("validation.engine")
@@ -15,6 +17,7 @@ LOCATOR = importlib.import_module("validation.locator")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
+    (root / ".git").mkdir(exist_ok=True)
     summary = root / "docs" / "study.md"
     log_root = root / "docs" / "study"
     entry_root = log_root / "entries" / "2026-08-29-e001-study"
@@ -31,8 +34,29 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     write(entry_root / "scripts" / "model.py", "# retained model\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
     write(
-        entry_root / "data.csv",
-        "name,type,location\ncatalog,csv,https://example.test/catalog.csv\n",
+        entry_root / "data.json",
+        json.dumps(
+            {
+                "schema": "research-log-data/v1",
+                "inputs": [
+                    {
+                        "name": "catalog",
+                        "kind": "file",
+                        "location": "https://example.test/catalog.csv",
+                        "fingerprint": {
+                            "algorithm": "immutable-source",
+                            "value": "fixture-catalog/v1",
+                        },
+                        "external": {
+                            "source": "test fixture",
+                            "identity": "fixture-catalog/v1",
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
     )
     write(
         entry_root / "evidence.json",
@@ -67,8 +91,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         "```bash\n"
         "./pyrun scripts/model.py --catalog '<catalog>' "
         f"--{output_option} data/results.csv\n"
-        "```\n"
-        "<!-- command type = model -->\n\n"
+        "```\n\n"
         "`Results:`\n\n"
         "The success rate was `67.6%`<!-- eid:success-rate -->.\n",
     )
@@ -84,14 +107,62 @@ def _evaluate(summary: Path, *, prior_cache: object = None) -> object:
     )
 
 
+def _remote_data_json() -> str:
+    return (
+        json.dumps(
+            {
+                "schema": "research-log-data/v1",
+                "inputs": [
+                    {
+                        "name": "catalog",
+                        "kind": "file",
+                        "location": "https://example.test/catalog.csv",
+                        "fingerprint": {
+                            "algorithm": "immutable-source",
+                            "value": "fixture-catalog/v1",
+                        },
+                        "external": {
+                            "source": "test fixture",
+                            "identity": "fixture-catalog/v1",
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_shared_input_observation_checks_every_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.csv"
+            write(source, "value\n1\n")
+            correct = DATA.build_local_input(
+                "first", "file", str(source), entry_root=root
+            )
+            wrong = replace(
+                correct,
+                name="second",
+                fingerprint=DATA.Fingerprint("sha256", digest="0" * 64),
+            )
+            state = ENGINE._ScanState(root / "study.md", root, root)
+
+            ENGINE._verify_input(correct, state)
+
+            with self.assertRaisesRegex(
+                DATA.DataContractError, "data.fingerprint.mismatch"
+            ):
+                ENGINE._verify_input(wrong, state)
+
     def test_cross_log_summary_link_is_not_an_owned_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = _log(root)
             external_entry = (
-                root
-                / "docs/other/entries/2026-08-29-e005-other-study/e005.md"
+                root / "docs/other/entries/2026-08-29-e005-other-study/e005.md"
             )
             write(external_entry, "# External entry\n")
             write(external_entry.parent / "evidence.json", "{}\n")
@@ -119,6 +190,26 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertFalse(
                 any("e005" in check.identity for check in evaluation.result.checks)
             )
+
+    def test_symlinked_entry_root_is_rejected_lexically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            lexical_root = entry.parent
+            physical_root = lexical_root.with_name(f"{lexical_root.name}-physical")
+            lexical_root.rename(physical_root)
+            lexical_root.symlink_to(physical_root.name, target_is_directory=True)
+
+            evaluation = _evaluate(summary)
+
+            failure = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:declaration"
+            )
+            self.assertEqual(failure.status, RESULTS.CheckStatus.FAIL)
+            assert failure.failure is not None
+            self.assertEqual(failure.failure.code, "evidence.declaration.invalid")
 
     def test_invalid_entry_evidence_does_not_block_valid_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -148,13 +239,162 @@ class EngineV2EndToEndTests(unittest.TestCase):
             invalid = next(
                 check
                 for check in evaluation.result.checks
-                if check.identity == "entry:e002:declaration"
+                if check.identity == "entry:e002:evidence-declaration"
             )
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
-            self.assertEqual(
-                invalid.failure.code, "evidence.json.schema_invalid"
+            self.assertEqual(invalid.failure.code, "evidence.json.schema_invalid")
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "association.declaration_missing"
+                    and "e002" in check.identity
+                    for check in evaluation.result.checks
+                )
             )
+
+    def test_invalid_retention_preserves_commands_and_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(entry.parent / "retention.json", "{\n")
+
+            evaluation = _evaluate(summary)
+
+            invalid = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:retention-declaration"
+            )
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(invalid.failure.code, "retention.declaration.invalid")
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evaluation.metrics["invocations"], 1)
+
+    def test_invalid_input_preserves_unrelated_inputs_and_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            bad_source = entry.parent / "data" / "bad.csv"
+            write(bad_source, "value\n1\n")
+            data_path = entry.parent / "data.json"
+            payload = json.loads(data_path.read_text(encoding="utf-8"))
+            payload["inputs"].append(
+                {
+                    "name": "unused-bad",
+                    "kind": "file",
+                    "location": "data/bad.csv",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": "0" * 64,
+                    },
+                    "external": {
+                        "source": "test fixture",
+                        "identity": "bad/v1",
+                    },
+                }
+            )
+            write(data_path, json.dumps(payload, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            invalid = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:input:unused-bad-declaration"
+            )
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(invalid.failure.code, "data.fingerprint.mismatch")
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evaluation.metrics["invocations"], 1)
+
+    def test_cross_entry_data_conflict_does_not_block_unrelated_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = _log(root)
+            links: list[str] = []
+            for entry_id, date, identity in (
+                ("e002", "2026-08-30", "conflict/v1"),
+                ("e003", "2026-08-31", "conflict/v2"),
+            ):
+                entry_root = root / f"docs/study/entries/{date}-{entry_id}-conflict"
+                write(entry_root / "scripts/model.py", "# fixture\n")
+                write(
+                    entry_root / f"{entry_id}.md",
+                    f"# Entry {entry_id}\n\n## Trial\n\n`Steps:`\n\n"
+                    "```bash\n"
+                    f"./pyrun scripts/model.py --input-data '<safe-{entry_id}>' "
+                    "--output-data data/result.csv\n"
+                    "```\n\n`Results:`\n\nDone.\n",
+                )
+                write(
+                    entry_root / "data.json",
+                    json.dumps(
+                        {
+                            "schema": "research-log-data/v1",
+                            "inputs": [
+                                {
+                                    "name": "conflict",
+                                    "kind": "file",
+                                    "location": "https://example.test/conflict.csv",
+                                    "fingerprint": {
+                                        "algorithm": "immutable-source",
+                                        "value": identity,
+                                    },
+                                    "external": {
+                                        "source": "fixture",
+                                        "identity": identity,
+                                    },
+                                },
+                                {
+                                    "name": f"safe-{entry_id}",
+                                    "kind": "file",
+                                    "location": (
+                                        f"https://example.test/{entry_id}.csv"
+                                    ),
+                                    "fingerprint": {
+                                        "algorithm": "immutable-source",
+                                        "value": f"safe/{entry_id}",
+                                    },
+                                    "external": {
+                                        "source": "fixture",
+                                        "identity": f"safe/{entry_id}",
+                                    },
+                                },
+                            ],
+                        }
+                    )
+                    + "\n",
+                )
+                links.append(
+                    f"- [{entry_id}]"
+                    f"(study/entries/{date}-{entry_id}-conflict/{entry_id}.md)"
+                )
+            write(summary, summary.read_text() + "\n" + "\n".join(links) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            conflict = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity.startswith("conformance:data-conflict:")
+            )
+            evidence = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(conflict.status, RESULTS.CheckStatus.FAIL)
+            assert conflict.failure is not None
+            self.assertEqual(conflict.failure.code, "data.declaration.conflict")
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evaluation.metrics["invocations"], 3)
 
     def test_invalid_entry_command_does_not_block_valid_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -211,22 +451,24 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(first, "# First\n")
             write(second, "# Second\n")
             write(entry_root / "evidence.json", "{}\n")
-            write(entry_root / "data.csv", "name,type,location\n")
+            write(entry_root / "data.json", _remote_data_json())
             state = ENGINE._ScanState(summary, log_root, project_root)
             evidence = object()
-            data_index = {"catalog": "https://example.test/catalog.csv"}
 
-            with mock.patch.object(
-                ENGINE, "load_evidence_file", return_value=evidence
-            ) as evidence_loader, mock.patch.object(
-                ENGINE, "load_data_index", return_value=data_index
-            ) as data_loader:
+            with (
+                mock.patch.object(
+                    ENGINE, "load_evidence_file", return_value=evidence
+                ) as evidence_loader,
+                mock.patch.object(
+                    ENGINE, "load_data_file", wraps=ENGINE.load_data_file
+                ) as data_loader,
+            ):
                 entries = ENGINE._entries(summary.read_text(), state)
 
             evidence_loader.assert_called_once()
             data_loader.assert_called_once()
             self.assertIs(entries[0].evidence_file, entries[1].evidence_file)
-            self.assertIs(entries[0].data_index, entries[1].data_index)
+            self.assertIs(entries[0].data_file, entries[1].data_file)
 
     def test_split_entry_commands_are_discovered_once_per_listed_document(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -244,8 +486,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(first, command)
             write(second, command)
             entries = [
-                ENGINE._Entry("e001a", first, entry_root, None, {}),
-                ENGINE._Entry("e001b", second, entry_root, None, {}),
+                ENGINE._Entry("e001a", first, entry_root, None, None, None),
+                ENGINE._Entry("e001b", second, entry_root, None, None, None),
             ]
             state = ENGINE._ScanState(
                 project_root / "docs" / "study.md", log_root, project_root
@@ -271,6 +513,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
     def test_split_entry_shares_data_index_usage_without_false_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / ".git").mkdir()
             summary = root / "docs" / "study.md"
             log_root = root / "docs" / "study"
             entry_root = log_root / "entries" / "2026-08-29-e001-study"
@@ -282,10 +525,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [First](study/entries/2026-08-29-e001-study/e001a.md)\n"
                 "- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
             )
-            write(
-                entry_root / "data.csv",
-                "name,type,location\ncatalog,csv,https://example.test/catalog.csv\n",
-            )
+            write(entry_root / "data.json", _remote_data_json())
             write(
                 first,
                 "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
@@ -305,12 +545,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in evaluation.result.checks
                 if check.failure is not None
             ]
-            self.assertNotIn("orphan.data_index.unused", failures)
+            self.assertNotIn("orphan.input.unused", failures)
             self.assertEqual(evaluation.metrics["invocations"], 2)
 
     def test_unlisted_split_document_evidence_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / ".git").mkdir()
             summary = root / "docs" / "study.md"
             log_root = root / "docs" / "study"
             entry_root = log_root / "entries" / "2026-08-29-e001-study"
@@ -627,7 +868,15 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
     def test_evidence_passes_while_missing_producer_fails_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory), output_option="results")
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text().replace(
+                    "./pyrun scripts/model.py --catalog '<catalog>' "
+                    "--output-data data/results.csv",
+                    "true",
+                ),
+            )
 
             evaluation = _evaluate(summary)
 
@@ -644,6 +893,48 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.failure is not None
             ]
             self.assertIn("producer.missing", failures)
+
+    def test_failed_command_candidates_block_dependent_graph_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory), output_option="results")
+            scratch = entry.parent / "data/scratch.csv"
+            write(scratch, "value\n1\n")
+            write(
+                entry,
+                entry.read_text().replace(
+                    "--results data/results.csv",
+                    "--results data/results.csv --scratch data/scratch.csv",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            command = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:command:1:1"
+            )
+            provenance = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            scratch_orphan = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity.endswith("data/scratch.csv")
+                and check.scope is RESULTS.CheckScope.ORPHAN
+            )
+            unused_input = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity.endswith(":catalog")
+            )
+            self.assertEqual(command.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(command.failure.code, "material.candidate.unresolved")
+            for dependent in (provenance, scratch_orphan, unused_input):
+                self.assertEqual(dependent.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+                self.assertIn({"dependency": command.identity}, dependent.dependencies)
 
     def test_failed_command_does_not_hide_later_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -678,8 +969,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "<!-- command type = model -->",
-                    "<!-- command type = model; results = output -->",
+                    "```\n\n`Results:`",
+                    "```\n<!-- command results = output -->\n\n`Results:`",
                 ),
             )
 
@@ -764,7 +1055,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in untyped.result.checks
                 if check.failure is not None
             ]
-            self.assertIn("provenance.root.missing", codes)
+            self.assertNotIn("provenance.root.missing", codes)
+            self.assertIn("orphan.input.unused", codes)
 
     def test_typed_command_does_not_hide_unrooted_visible_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -785,7 +1077,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in evaluation.result.checks
                 if check.failure is not None
             ]
-            self.assertIn("lineage.missing", codes)
+            self.assertIn("data.input.undeclared", codes)
 
     def test_cross_log_evidence_reads_only_the_external_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -840,7 +1132,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             write(
                 entry,
-                entry.read_text(encoding="utf-8").replace("type = model", "type=model"),
+                entry.read_text(encoding="utf-8").replace(
+                    "```\n\n`Results:`",
+                    "```\n<!-- command type=model -->\n\n`Results:`",
+                ),
             )
 
             evaluation = _evaluate(summary)
@@ -872,7 +1167,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
         self.assertNotIn("from .discovery", source)
 
-    def test_unchanged_dependency_results_reuse_and_changed_script_reopens(
+    def test_unchanged_dependency_results_match_and_changed_script_reopens(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -883,15 +1178,16 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(entry.parent / "scripts" / "model.py", "# changed identity\n")
             changed = _evaluate(summary, prior_cache=first.scan["cache"])
 
-            self.assertGreater(unchanged.metrics["checks_reused"], 0)
+            self.assertGreater(unchanged.metrics["checks_unchanged"], 0)
             self.assertLess(
-                changed.metrics["checks_reused"], unchanged.metrics["checks_reused"]
+                changed.metrics["checks_unchanged"],
+                unchanged.metrics["checks_unchanged"],
             )
             self.assertEqual(
                 changed.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
 
-    def test_cache_reuse_requires_exact_current_check_and_cache_contract(self) -> None:
+    def test_unchanged_comparison_requires_exact_check_and_cache_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             first = _evaluate(summary)
@@ -904,8 +1200,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             extra_cache["extra"] = True
             extra_field = _evaluate(summary, prior_cache=extra_cache)
 
-            self.assertEqual(corrupted.metrics["checks_reused"], 0)
-            self.assertEqual(extra_field.metrics["checks_reused"], 0)
+            self.assertEqual(corrupted.metrics["checks_unchanged"], 0)
+            self.assertEqual(extra_field.metrics["checks_unchanged"], 0)
+            self.assertEqual(extra_field.metrics["artifact_identity_seeds"], 0)
+            self.assertEqual(extra_field.metrics["source_hashes_reused"], 0)
             self.assertEqual(
                 corrupted.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )

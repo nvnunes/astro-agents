@@ -1,6 +1,6 @@
 ---
 name: research-logging
-description: Perform and record investigations in project-native research logs by implementing and running scripts, retaining and analyzing outputs, documenting evidence and observations, safely replacing superseded experimental work, updating summaries, reviewing or validating research, managing references, reorganizing log files, and maintaining evidence records and data indexes. Use when research work should be performed or preserved in a research log, not for general project docs, exploratory or standalone analysis without research-log intent, or scientific manuscript writing.
+description: Perform and record investigations in project-native research logs by implementing and running scripts, retaining and analyzing outputs, documenting evidence and observations, safely replacing superseded experimental work, updating summaries, reviewing or validating research, managing references, reorganizing log files, and maintaining evidence and input registries. Use when research work should be performed or preserved in a research log, not for general project docs, exploratory or standalone analysis without research-log intent, or scientific manuscript writing.
 ---
 
 # Research Logging
@@ -51,8 +51,10 @@ Use this Record routing map:
   and `references/file-evidence-tables.md`. A numerical result in experimental
   prose is separate evidence even when the same value appears in a Results
   table.
-- `data.csv`, a `<name>` token, or a durable external input: always read
+- `data.json`, a `<name>` token, or a durable external input: always read
   `references/file-data-index.md` when introduced.
+- `retention.json` or intentional disconnected retention: always read
+  `references/file-retention.md` when introduced.
 - Citations or `refs.bib`: read `references/file-references.md`; also read
   `references/operation-reference.md` for lookup or metadata verification.
 

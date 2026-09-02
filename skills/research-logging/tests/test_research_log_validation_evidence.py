@@ -69,12 +69,6 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
         "locator": {"text": {"contains": "completed"}}
       }],
       "transformation": null
-    },
-    {
-      "id": "debug-traces",
-      "kind": "retention",
-      "paths": ["data/debug.json"],
-      "reason": "Retained for later inspection."
     }
   ]
 }
@@ -87,7 +81,7 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
-    def test_strict_file_decodes_presentations_and_retention(self) -> None:
+    def test_strict_file_decodes_presentations_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = v2_fixture(Path(directory))
 
@@ -97,57 +91,32 @@ class EvidenceFileTests(unittest.TestCase):
                 entry_root=entry_root,
             )
 
-            self.assertEqual(len(evidence.records), 4)
+            self.assertEqual(len(evidence.records), 3)
             self.assertEqual(
                 [record.id for record in evidence.records],
-                ["success-rate", "comparison-table", "run-output", "debug-traces"],
+                ["success-rate", "comparison-table", "run-output"],
             )
             self.assertEqual(
                 [
                     record.id
                     for record in sorted(evidence.records, key=lambda row: row.id)
                 ],
-                ["comparison-table", "debug-traces", "run-output", "success-rate"],
+                ["comparison-table", "run-output", "success-rate"],
             )
             self.assertEqual(len(evidence.identity), 64)
 
-    def test_retention_accepts_entry_material_directory_symlink(self) -> None:
+    def test_retention_record_is_rejected_from_evidence_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log_root, entry_root, _ = v2_fixture(root)
-            retained = root / "output" / "entry" / "data"
-            retained.parent.mkdir(parents=True)
-            (entry_root / "data").rename(retained)
-            (entry_root / "data").symlink_to(retained, target_is_directory=True)
             path = entry_root / "evidence.json"
+            text = path.read_text(encoding="utf-8")
             path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    '"paths": ["data/debug.json"]',
-                    '"directory": "data", "membership": "all-descendants"',
-                ),
-                encoding="utf-8",
-            )
-
-            evidence = EVIDENCE_V2.load_evidence_file(
-                path, log_root=log_root, entry_root=entry_root
-            )
-
-            self.assertEqual(evidence.records[-1].directory, "data")
-
-    def test_retention_rejects_nested_symlink_in_material_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            log_root, entry_root, _ = v2_fixture(root)
-            external = root / "external.json"
-            write(external, "{}\n")
-            (entry_root / "data" / "nested.json").symlink_to(external)
-            path = entry_root / "evidence.json"
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    '"paths": ["data/debug.json"]',
-                    '"directory": "data", "membership": "all-descendants"',
-                ),
-                encoding="utf-8",
+                text.replace(
+                    "\n  ]",
+                    ',\n    {"id":"debug","kind":"retention",'
+                    '"paths":["data/debug.json"]}\n  ]',
+                )
             )
 
             with self.assertRaisesRegex(
@@ -171,7 +140,7 @@ class EvidenceFileTests(unittest.TestCase):
                     path, log_root=log_root, entry_root=entry_root
                 )
 
-    def test_wrong_file_location_and_unsafe_retention_fail(self) -> None:
+    def test_wrong_file_location_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = v2_fixture(Path(directory))
             path = entry_root / "evidence.json"
@@ -182,18 +151,6 @@ class EvidenceFileTests(unittest.TestCase):
             ):
                 EVIDENCE_V2.load_evidence_file(
                     wrong, log_root=log_root, entry_root=entry_root
-                )
-            path.write_text(
-                path.read_text(encoding="utf-8").replace(
-                    '"data/debug.json"', '"../debug.json"'
-                ),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "evidence.declaration.invalid"
-            ):
-                EVIDENCE_V2.load_evidence_file(
-                    path, log_root=log_root, entry_root=entry_root
                 )
 
     def test_declared_documents_and_retained_targets_must_exist(self) -> None:
@@ -212,7 +169,14 @@ class EvidenceFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = v2_fixture(Path(directory))
             path = entry_root / "evidence.json"
-            with mock.patch.object(EVIDENCE_V2, "MAX_EVIDENCE_FILE_BYTES", 4):
+            with (
+                mock.patch.object(EVIDENCE_V2, "MAX_EVIDENCE_FILE_BYTES", 4),
+                mock.patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=AssertionError("whole-file read is forbidden"),
+                ),
+            ):
                 with self.assertRaisesRegex(
                     EVIDENCE_V2.EvidenceV2Error,
                     "association.resource.too_large",
@@ -279,10 +243,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
         )
 
     def test_section_classifier_ignores_heading_and_labels_inside_fences(self) -> None:
-        text = (
-            "## Prose\n\n"
-            "```text\n## Not a section\n`Steps:`\n`Results:`\n```\n"
-        )
+        text = "## Prose\n\n```text\n## Not a section\n`Steps:`\n`Results:`\n```\n"
 
         self.assertEqual(EVIDENCE_V2.index_entry_section_issues(text), ())
 
@@ -317,9 +278,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
                 document.read_text(encoding="utf-8"),
                 document="entries/2026-08-28-e001-study/e001.md",
             )
-            associated = EVIDENCE_V2.associate_presentations(
-                evidence, presentations
-            )
+            associated = EVIDENCE_V2.associate_presentations(evidence, presentations)
 
             self.assertEqual(
                 {item.kind for item in presentations},
@@ -460,7 +419,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             "# Entry\n\n## Trial\n\n`Background:`\n\nQ\n\n"
             "`Steps:`\n\nRead the retained outputs.\n\n`Results:`\n\n"
             "![Figure](../images/result.png) and "
-            "[table](<data/result.csv> \"download\").\n"
+            '[table](<data/result.csv> "download").\n'
             "[navigation](notes.md) [external](https://example.com/a.csv)\n"
             "```text\n[not an artifact](data/inside.csv)\n```\n"
         )

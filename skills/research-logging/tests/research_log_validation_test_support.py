@@ -24,6 +24,7 @@ def mechanical_log(
 ) -> tuple[Path, Path]:
     """Create one complete active-format mechanical-validation fixture."""
 
+    (root / ".git").mkdir(exist_ok=True)
     summary = root / "docs" / "study.md"
     log_root = root / "docs" / "study"
     entry_root = log_root / "entries" / "2026-08-29-e001-study"
@@ -41,8 +42,29 @@ def mechanical_log(
     write(entry_root / "scripts" / "model.py", "# retained model\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
     write(
-        entry_root / "data.csv",
-        "name,type,location\ncatalog,csv,https://example.test/catalog.csv\n",
+        entry_root / "data.json",
+        json.dumps(
+            {
+                "schema": "research-log-data/v1",
+                "inputs": [
+                    {
+                        "name": "catalog",
+                        "kind": "file",
+                        "location": "https://example.test/catalog.csv",
+                        "fingerprint": {
+                            "algorithm": "immutable-source",
+                            "value": "fixture-catalog/v1",
+                        },
+                        "external": {
+                            "source": "test fixture",
+                            "identity": "fixture-catalog/v1",
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
     )
     write(
         entry_root / "evidence.json",
@@ -80,8 +102,7 @@ def mechanical_log(
         "```bash\n"
         "./pyrun scripts/model.py --catalog '<catalog>' "
         f"--{output_option} data/results.csv\n"
-        "```\n"
-        "<!-- command type = model -->\n\n"
+        "```\n\n"
         "`Results:`\n\n"
         "The success rate was `67.6%`<!-- eid:success-rate -->.\n",
     )

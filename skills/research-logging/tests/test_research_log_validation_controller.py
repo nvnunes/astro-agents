@@ -396,7 +396,7 @@ class MechanicalControllerTests(unittest.TestCase):
                         DATA.fingerprint_observation_record(resource, observation)
                     )
                 },
-                "rules_version": "research-log-mechanical/input-registry-1",
+                "rules_version": ENGINE.RULES_VERSION,
                 "schema": "research-log-mechanical-cache/5",
             }
             cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"

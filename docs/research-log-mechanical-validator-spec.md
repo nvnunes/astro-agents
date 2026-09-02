@@ -2347,7 +2347,7 @@ types, filename-derived simulation roots, root-completion checks,
 The active contract uses `research-log-data/v1`,
 `research-log-retention/v1`, and `research-log-evidence/v2` with retention
 removed. The activated rules version is
-`research-log-mechanical/input-registry-1`. The authoritative generated record
+`research-log-mechanical/input-registry-4`. The authoritative generated record
 remains `research-log-mechanical/1` because its serialized shape does not
 change. The disposable per-log cache becomes
 `research-log-mechanical-cache/6`.
@@ -2626,9 +2626,10 @@ collection must use its matching token. A raw value matching an item is a
 missing token; a raw proven input without an item is undeclared.
 
 A path-like argument with no role is not silently dropped. A candidate is
-path-like when its complete static value is an absolute path, URI, begins with
-`./` or `../`, contains `/` or a named token, or ends with a registered retained
-material suffix. It must acquire input or output direction through shell
+path-like when its complete static value resolves to an existing filesystem
+target, is an absolute path or URI, begins with `./` or `../`, contains a named
+token, or ends with a registered retained material suffix. A slash alone is not
+path evidence. A candidate must acquire input or output direction through shell
 syntax, a natural option name, or an annotation. A dynamic material candidate
 that cannot resolve to one bounded value also fails. Other scalar arguments
 create no edge.
@@ -2639,9 +2640,17 @@ The initial suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
 `.jpeg`, `.svg`, and `.pdf`, compared case-sensitively. A suffix identifies a
 candidate only; it never assigns direction.
 
-Command annotations retain argument roles only. A `type` clause and values
+Command annotations retain argument roles only. The roles are `input`,
+`output`, `input-directory`, and `output-directory`. A `type` clause and values
 `model` or `simulation` are invalid. Script filenames receive no provenance
 classification.
+
+The exact entry-local `data` and `images` directories are shared artifact-tree
+roots, not material artifacts or collections. An unclassified argument that
+resolves to either exact root creates no candidate. A role or `data.json`
+declaration targeting either exact root fails `material.root.invalid` or
+`data.declaration.invalid`, respectively. Descendant files and exclusively
+owned descendant directories retain ordinary material behavior.
 
 ### Producer And Lineage Semantics
 
@@ -2812,6 +2821,7 @@ creates no graph edge, retention, or collection.
 | `data.input.undeclared` | provenance | A proven input has no item, including an unknown token. |
 | `data.input.token_missing` | conformance | A proven input uses a raw location instead of its item token. |
 | `material.candidate.unresolved` | conformance | A path-like or dynamic material candidate has no proven role. |
+| `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
 | `data.external.invalid` | provenance | A producerless input lacks a boundary or a produced input declares one. |
 | `data.target.missing` | provenance | A local input or selected member is absent. |
 | `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |

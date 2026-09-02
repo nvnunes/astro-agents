@@ -16,6 +16,7 @@ from typing import Any, Mapping, NoReturn, cast
 
 from validation.entry_materials import (
     EntryMaterialPathError,
+    is_entry_material_root,
     validate_local_path_symlinks,
 )
 from validation.errors import MechanicalContractError
@@ -1132,6 +1133,8 @@ def _location(value: object, subject: str, entry_root: Path) -> tuple[str, bool,
         return value, True, value
     _validate_posix_location(value, subject)
     lexical = Path(value) if Path(value).is_absolute() else entry_root / value
+    if is_entry_material_root(lexical, entry_root):
+        _invalid(subject, {"location": value, "reason": "artifact_root"})
     _validate_local_symlink_surface(lexical, entry_root, subject)
     return value, False, lexical.resolve().as_posix()
 

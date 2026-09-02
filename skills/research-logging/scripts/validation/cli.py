@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence, cast
 
 from .controller import ValidationControllerError, ValidationRequest, validate
 from .discovery import discover_summaries
@@ -64,7 +64,7 @@ def _cli_result(result: dict[str, object]) -> dict[str, object]:
 
     if not result.get("published") or not isinstance(result.get("record"), dict):
         return result
-    record = result["record"]
+    record = cast(Mapping[str, object], result["record"])
     summary = Path(str(result["summary"]))
     log_root = summary.with_suffix("")
     return {

@@ -17,7 +17,11 @@ from research_log_data import (
     verify_fingerprint,
 )
 
-from .entry_materials import EntryMaterialPathError, is_entry_material_path
+from .entry_materials import (
+    EntryMaterialPathError,
+    is_entry_material_path,
+    is_entry_material_root,
+)
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
@@ -1029,17 +1033,31 @@ def _collect_argument(
 
 
 def _candidate(value: str, context: CommandContext) -> str | None:
+    path = _expand_path(value, context)
+    if path is not None and is_entry_material_root(path, context.entry_root):
+        return None
+    if path is not None:
+        try:
+            if path.exists():
+                return _resolved_candidate_value(path, value)
+        except OSError:
+            pass
     if not _path_like(value):
         return None
-    path = _expand_path(value, context)
-    return path.resolve().as_posix() if path is not None else value
+    return _resolved_candidate_value(path, value) if path is not None else value
+
+
+def _resolved_candidate_value(path: Path, fallback: str) -> str:
+    try:
+        return path.resolve().as_posix()
+    except OSError:
+        return fallback
 
 
 def _path_like(value: str) -> bool:
     return (
         "://" in value
         or value.startswith(("/", "./", "../"))
-        or "/" in value
         or re.search(r"<[A-Za-z0-9][A-Za-z0-9_-]*>", value) is not None
         or Path(value).suffix in MATERIAL_SUFFIXES
     )
@@ -1077,6 +1095,7 @@ def _apply_role(
             context.document,
             {"target": target, "value": value},
         )
+    _reject_entry_material_root(value, target, context)
     direction = "input" if role.startswith("input") else "output"
     if role.endswith("-directory"):
         if direction == "input":
@@ -1136,6 +1155,8 @@ def _relationship(
     request: _RelationshipRequest,
     context: CommandContext,
 ) -> MaterialRelationship:
+    if not request.expanded:
+        _reject_entry_material_root(request.value, request.target, context)
     if request.direction == "input" and not request.expanded:
         named = _named_input(request.value, context, target=request.target)
         if named is not None:
@@ -1154,6 +1175,18 @@ def _relationship(
         request.proof,
         request.target,
     )
+
+
+def _reject_entry_material_root(
+    value: str, target: str | None, context: CommandContext
+) -> None:
+    path = _expand_path(value, context)
+    if path is not None and is_entry_material_root(path, context.entry_root):
+        _fail(
+            "material.root.invalid",
+            context.document,
+            {"target": target, "value": value},
+        )
 
 
 def _reject_raw_input(value: str, context: CommandContext) -> NoReturn:

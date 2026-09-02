@@ -93,7 +93,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-mechanical/input-registry-1"
+RULES_VERSION = "research-log-mechanical/input-registry-4"
 CACHE_SCHEMA = "research-log-mechanical-cache/6"
 CACHE_FIELDS = frozenset(
     {
@@ -1107,14 +1107,14 @@ def _compose_graph(state: _ScanState) -> None:
     orphan = state.graph.orphan
     orphan_groups = _orphan_group_metadata(state, orphan.inventory, orphan.orphaned)
     for path in orphan.orphaned:
-        blockers = _command_blockers(path, state)
-        if blockers:
+        material_blockers = _command_blockers(path, state)
+        if material_blockers:
             state.checks.append(
                 _blocked_check(
                     f"orphan:material:{path}",
                     CheckScope.ORPHAN,
                     path,
-                    blockers,
+                    material_blockers,
                     dependencies=({"artifacts": [path]},),
                 )
             )
@@ -1136,14 +1136,14 @@ def _compose_graph(state: _ScanState) -> None:
         )
     for name in orphan.unused_input_names:
         owner = name.rsplit(":", 1)[0]
-        blockers = state.command_failure_owners.get(owner, set())
-        if blockers:
+        input_blockers = tuple(sorted(state.command_failure_owners.get(owner, set())))
+        if input_blockers:
             state.checks.append(
                 _blocked_check(
                     f"orphan:data-name:{name}",
                     CheckScope.ORPHAN,
                     name,
-                    blockers,
+                    input_blockers,
                 )
             )
             continue

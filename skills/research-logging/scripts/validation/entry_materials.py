@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 ENTRY_MATERIAL_DIRECTORY_NAMES = frozenset({"data", "images"})
@@ -94,6 +95,24 @@ def is_entry_material_path(path: Path, entry_root: Path) -> bool:
         return False
     validate_entry_path_symlinks(target, root)
     return True
+
+
+def is_entry_material_root(path: Path, entry_root: Path) -> bool:
+    """Return whether a path identifies the exact entry data or images root."""
+
+    root = Path(os.path.abspath(entry_root))
+    target = Path(os.path.abspath(path))
+    material_roots = tuple(root / name for name in ENTRY_MATERIAL_DIRECTORY_NAMES)
+    if target in material_roots:
+        return True
+    try:
+        canonical_target = target.resolve()
+        return any(
+            canonical_target == material_root.resolve()
+            for material_root in material_roots
+        )
+    except OSError:
+        return False
 
 
 def entry_material_roots(entry_root: Path) -> tuple[Path, ...]:

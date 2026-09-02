@@ -197,6 +197,119 @@ tool --output-data label=data/result.csv
                 "invocation.path_value.embedded",
             )
 
+    def test_path_like_scalar_values_do_not_become_material_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            text = """```bash
+tool --case "ERIS / 1 NGS"
+tool --run "9/6,2026-04-19T04:49:25+00:00,2026-04-19T18:59:50+00:00"
+tool --title-prefix "Stochastic 9/6 Static Simulation vs Run #1"
+tool --title-prefix "v2/v3 Dynamic"
+tool --version v2/v3
+tool --date 2026/09/02
+tool --directory missing/directory
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.invocations), 7)
+            self.assertFalse(result.failures)
+            self.assertTrue(all(not item.candidates for item in result.invocations))
+
+    def test_unavailable_long_scalar_does_not_terminate_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            value = "x" * 300
+
+            result = COMMAND.discover_commands(
+                f"```bash\ntool --label {value}\n```\n", context
+            )
+
+            self.assertEqual(len(result.invocations), 1)
+            self.assertFalse(result.failures)
+            self.assertFalse(result.invocations[0].candidates)
+
+    def test_positive_path_evidence_still_creates_material_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            existing = context.entry_root / "data with spaces" / "input"
+            write(existing, "retained\n")
+            existing_directory = context.entry_root / "catalog"
+            existing_directory.mkdir()
+            values = (
+                existing.relative_to(context.entry_root).as_posix(),
+                existing_directory.relative_to(context.entry_root).as_posix(),
+                "record('<project>/data/input.csv')",
+            )
+
+            for value in values:
+                with self.subTest(value=value):
+                    result = COMMAND.discover_commands(
+                        f'```bash\ntool --value "{value}"\n```\n', context
+                    )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(
+                        result.failures[0].error.code,
+                        "material.candidate.unresolved",
+                    )
+
+    def test_exact_artifact_roots_are_not_material_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            (context.entry_root / "data").mkdir(parents=True)
+            (context.entry_root / "images").mkdir()
+            text = """```bash
+tool --data-dir data --image-dir images --data-alias data/../data
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertEqual(len(result.invocations), 1)
+            self.assertFalse(result.failures)
+            self.assertFalse(result.invocations[0].candidates)
+
+    def test_exact_artifact_roots_cannot_receive_material_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            (context.entry_root / "data").mkdir(parents=True)
+            (context.entry_root / "images").mkdir()
+            cases = (
+                (
+                    "tool --input-data data",
+                    "",
+                ),
+                (
+                    "tool --output-data data",
+                    "",
+                ),
+                (
+                    "tool --target images",
+                    "<!-- command target = input-directory -->\n",
+                ),
+                (
+                    "tool --target images",
+                    "<!-- command target = output-directory -->\n",
+                ),
+                (
+                    "tool --output-data data/../data",
+                    "",
+                ),
+            )
+
+            for command, annotation in cases:
+                with self.subTest(command=command):
+                    result = COMMAND.discover_commands(
+                        f"```bash\n{command}\n```\n{annotation}", context
+                    )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(
+                        result.failures[0].error.code,
+                        "material.root.invalid",
+                    )
+
     def test_command_type_annotation_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(
@@ -1217,7 +1330,7 @@ tool --target owned
             self.assertEqual(len(invocation.outputs), COMMAND.MAX_RELATIONSHIPS + 1)
             self.assertEqual(len(invocation.collections), 1)
 
-    def test_symlinked_entry_material_root_remains_command_owned(self) -> None:
+    def test_symlinked_entry_material_root_cannot_receive_material_role(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context = _context(root)
@@ -1225,18 +1338,21 @@ tool --target owned
             write(retained / "a.csv", "a\n")
             write(retained / "b.csv", "b\n")
             (context.entry_root / "data").symlink_to(retained, target_is_directory=True)
-            text = """```bash
-tool --target data
+            for value in ("data", retained.as_posix()):
+                with self.subTest(value=value):
+                    text = f"""```bash
+tool --target {value}
 ```
 <!-- command target = output-directory -->
 """
 
-            invocation = COMMAND.discover_commands(text, context).invocations[0]
+                    result = COMMAND.discover_commands(text, context)
 
-            self.assertEqual(len(invocation.outputs), 2)
-            self.assertEqual(
-                invocation.collections[0].root, retained.resolve().as_posix()
-            )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(
+                        result.failures[0].error.code,
+                        "material.root.invalid",
+                    )
 
     def test_manifest_annotation_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

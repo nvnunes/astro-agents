@@ -156,6 +156,31 @@ class DataFileTests(unittest.TestCase):
             ):
                 DATA.load_data_file(path, entry_root=entry)
 
+    def test_shared_artifact_roots_cannot_be_declared_as_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry, _ = data_fixture(Path(directory))
+            path = entry / "data.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            locations = ("data", "images", "data/../data", "images/../images")
+            for index, location in enumerate(locations):
+                with self.subTest(location=location):
+                    payload["inputs"] = [
+                        {
+                            "name": f"artifact-root-{index}",
+                            "kind": "directory",
+                            "location": location,
+                            "fingerprint": {
+                                "algorithm": "directory-sha256-v1",
+                                "digest": "0" * 64,
+                            },
+                        }
+                    ]
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        DATA.DataContractError, "data.declaration.invalid"
+                    ):
+                        DATA.load_data_file(path, entry_root=entry)
+
     def test_relative_parent_path_outside_entry_is_normalized_before_symlink_check(
         self,
     ) -> None:

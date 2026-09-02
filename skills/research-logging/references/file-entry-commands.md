@@ -104,7 +104,9 @@ Option targets omit leading hyphens. Positional targets use `@N`, counting
 positional arguments after the executable or script token. Supported roles are
 `input`, `output`, `input-directory`, and `output-directory`. Use directory
 roles only when the entire non-empty directory has one direction and an output
-directory belongs exclusively to one producer.
+directory belongs exclusively to one producer. The exact entry `data` and
+`images` roots are shared artifact containers and cannot receive any material
+role; expose exact descendants or an exclusively owned subdirectory instead.
 
 A whole-directory role counts as one authored command relationship even though
 the validator records every bounded regular-file descendant as an artifact
@@ -122,6 +124,13 @@ not bind a producer by name, extract a path from an opaque `label=path` value,
 or excuse a missing command relationship. Prefer the option-name convention
 when it keeps the real command interface natural; use an annotation as the
 explicit fallback.
+
+Unclassified values are material candidates only when they have positive path
+evidence: an existing filesystem target, an explicit path or URI prefix, an
+angle token, or a known material suffix. A slash alone does not make a scalar a
+path. The exact entry `data` and `images` roots are ordinary artifact-container
+arguments rather than candidates; this exception does not apply to descendants
+or any other directory.
 
 Use prose for the question, rationale, controlled relationship, selection
 criteria, and interpretation. Do not repeat a visible CLI parameter inventory.

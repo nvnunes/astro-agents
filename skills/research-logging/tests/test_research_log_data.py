@@ -53,6 +53,20 @@ def data_fixture(root: Path) -> tuple[Path, Path]:
 
 
 class DataFileTests(unittest.TestCase):
+    def test_numeric_entry_family_input_names_are_reserved(self) -> None:
+        for name in ("e004", "E004"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                entry, _ = data_fixture(Path(directory))
+                path = entry / "data.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["inputs"][0]["name"] = name
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    DATA.DataContractError, "data.declaration.invalid"
+                ):
+                    DATA.load_data_file(path, entry_root=entry)
+
     def test_strict_file_decodes_and_serializes_canonically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry, source = data_fixture(Path(directory))

@@ -235,6 +235,15 @@ roots, and a platform alias shared by both the entry and source paths is
 permitted. No other source-path symlink is allowed, including an alias in an
 external or project-relative path.
 
+The exact cross-entry form `<e###>/path-within-data`, for example
+`<e004>/results.csv`, resolves against the `data/` material root of the one
+maintained numeric entry family with that ID. Split documents such as `e009a`
+and `e009b` may share that one root. The suffix must be a normalized relative
+path. A missing or ambiguous entry family, an empty suffix, or a suffix
+containing an absolute path, URI, backslash, `.` component, or `..` component
+fails as `locator.path.unresolved`. This syntax does not resolve names from
+another entry's `data.json`; `<e###@name>` is not part of the contract.
+
 An input-registry token is part of source identity. After resolution, its locator
 uses the resolved source's profile. A remote target must have a stable retained
 or content-addressed observation before it can produce a successful selection.
@@ -1213,8 +1222,9 @@ spellings map to Boolean false. Whitespace, other capitalization, `yes`/`no`,
 | `yes_no` | `yes` | `no` |
 | `pass_fail` | `Pass` | `Fail` |
 
-Capitalization is exact. There are no aliases, optional capitalization, or
-custom true/false strings.
+These are the canonical output spellings. Presentation comparison is
+case-insensitive only for cells declared as Boolean; text cells, headings, and
+source parsing remain exact. There are no aliases or custom true/false strings.
 
 Table cells additionally support one closed numeric sequence form:
 
@@ -1779,7 +1789,7 @@ Reserved codes include:
 | `locator.text.decode` | fail | A declared text source is not valid UTF-8. |
 | `transformation.version.unsupported` | fail | The declared transformation version has no enabled evaluator. |
 | `transformation.syntax.invalid` | fail | Version-specific syntax, keys, clauses, or key relationships are invalid or conflicting. |
-| `transformation.presentation.mismatch` | fail | The associated presented item is not one of the exact surface spellings defined by the declared transformed form. |
+| `transformation.presentation.mismatch` | fail | The associated presented item is not one of the surface spellings defined by the declared transformed form. A table mismatch reports table shapes, the total differing-cell count, and at most 16 one-based heading or cell differences with expected and observed values. |
 | `transformation.input.reference_invalid` | fail | A concrete item reference or structured field reference does not resolve in the required input. |
 | `transformation.input.unused` | fail | A locator-selected item is not consumed by the recipe. |
 | `transformation.input.reused` | fail | One selected item is referenced more than once. V2 requires exact one-time consumption. |
@@ -2347,7 +2357,7 @@ types, filename-derived simulation roots, root-completion checks,
 The active contract uses `research-log-data/v1`,
 `research-log-retention/v1`, and `research-log-evidence/v2` with retention
 removed. The activated rules version is
-`research-log-mechanical/input-registry-4`. The authoritative generated record
+`research-log-mechanical/input-registry-5`. The authoritative generated record
 remains `research-log-mechanical/1` because its serialized shape does not
 change. The disposable per-log cache becomes
 `research-log-mechanical-cache/6`.
@@ -2444,7 +2454,9 @@ Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
 ```
 
 `name` is at most 96 ASCII characters and matches
-`[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, and `theme` are reserved.
+`[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, `theme`, and names matching
+`e[0-9]+` case-insensitively are reserved. The numeric entry-family namespace
+is reserved so `<e###>/member` cannot conflict with a directory input token.
 `kind` is `file` or `directory`.
 
 `location` is a normalized POSIX path relative to the owning entry root, an

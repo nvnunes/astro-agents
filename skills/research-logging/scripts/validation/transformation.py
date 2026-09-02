@@ -19,6 +19,7 @@ MAX_TRANSFORMATION_BYTES = 32 * 1024
 MAX_INPUT_SLOTS = 256
 MAX_OUTPUT_PARTS = 10_000
 MAX_TABLE_CELLS = 10_000
+MAX_TABLE_DIFFERENCES = 16
 MAX_AUTHORED_TEXT_BYTES = 64 * 1024
 MAX_PRESENTED_BYTES = 64 * 1024
 MAX_UNIT_BYTES = 32
@@ -76,6 +77,7 @@ class TransformationResult:
     headings: tuple[str, ...] = ()
     rows: tuple[tuple[str, ...], ...] = ()
     numerical_cells: frozenset[tuple[int, int]] = frozenset()
+    case_insensitive_cells: frozenset[tuple[int, int]] = frozenset()
     references: tuple[InputReference, ...] = ()
     intermediates: tuple[str, ...] = ()
     dependency_projection: str = ""
@@ -264,11 +266,18 @@ def compare_presentation(
         )
     if result.kind == "table":
         headings, rows = parse_markdown_table(presented)
-        if headings != result.headings or rows != result.rows:
+        difference = _table_presentation_difference(
+            result.headings,
+            result.rows,
+            headings,
+            rows,
+            result.case_insensitive_cells,
+        )
+        if difference is not None:
             _fail(
                 "transformation.presentation.mismatch",
                 "table",
-                {"headings": headings, "rows": rows},
+                difference,
             )
         return
     if presented not in result.accepted_spellings:
@@ -737,9 +746,111 @@ def _table_result(
         headings=headings,
         rows=rows,
         numerical_cells=frozenset(numeric),
+        case_insensitive_cells=_case_insensitive_table_cells(recipe, len(rows)),
         references=references,
         intermediates=intermediates,
     )
+
+
+def _case_insensitive_table_cells(
+    recipe: Mapping[str, Any], row_count: int
+) -> frozenset[tuple[int, int]]:
+    mode = recipe["mode"]
+    if mode in {"direct", "structured"}:
+        columns = cast(Sequence[object], recipe["columns"])
+        boolean_columns = {
+            column
+            for column, descriptor in enumerate(columns, 1)
+            if isinstance(descriptor, Mapping) and descriptor.get("form") == "boolean"
+        }
+        return frozenset(
+            (row, column)
+            for row in range(1, row_count + 1)
+            for column in boolean_columns
+        )
+    rows = cast(Sequence[Sequence[object]], recipe["rows"])
+    return frozenset(
+        (row, column)
+        for row, cells in enumerate(rows, 1)
+        for column, cell in enumerate(cells, 1)
+        if isinstance(cell, Mapping) and cell.get("form") == "boolean"
+    )
+
+
+def _table_presentation_difference(
+    expected_headings: Sequence[str],
+    expected_rows: Sequence[Sequence[str]],
+    observed_headings: Sequence[str],
+    observed_rows: Sequence[Sequence[str]],
+    case_insensitive_cells: frozenset[tuple[int, int]],
+) -> Mapping[str, Any] | None:
+    differences: list[dict[str, Any]] = []
+    difference_count = 0
+
+    def record(difference: dict[str, Any]) -> None:
+        nonlocal difference_count
+        difference_count += 1
+        if len(differences) < MAX_TABLE_DIFFERENCES:
+            differences.append(difference)
+
+    for column in range(max(len(expected_headings), len(observed_headings))):
+        expected = (
+            expected_headings[column] if column < len(expected_headings) else None
+        )
+        observed = (
+            observed_headings[column] if column < len(observed_headings) else None
+        )
+        if expected != observed:
+            record(
+                {
+                    "location": "heading",
+                    "column": column + 1,
+                    "expected": expected,
+                    "observed": observed,
+                }
+            )
+
+    for row in range(max(len(expected_rows), len(observed_rows))):
+        expected_row = expected_rows[row] if row < len(expected_rows) else ()
+        observed_row = observed_rows[row] if row < len(observed_rows) else ()
+        for column in range(max(len(expected_row), len(observed_row))):
+            expected = expected_row[column] if column < len(expected_row) else None
+            observed = observed_row[column] if column < len(observed_row) else None
+            if expected == observed:
+                continue
+            position = (row + 1, column + 1)
+            if (
+                position in case_insensitive_cells
+                and expected is not None
+                and observed is not None
+                and expected.casefold() == observed.casefold()
+            ):
+                continue
+            record(
+                {
+                    "location": "cell",
+                    "row": row + 1,
+                    "column": column + 1,
+                    "expected": expected,
+                    "observed": observed,
+                }
+            )
+
+    if difference_count == 0:
+        return None
+    return {
+        "expected_shape": {
+            "rows": len(expected_rows),
+            "columns": len(expected_headings),
+        },
+        "observed_shape": {
+            "rows": len(observed_rows),
+            "columns": len(observed_headings),
+        },
+        "difference_count": difference_count,
+        "differences": differences,
+        "differences_truncated": difference_count > len(differences),
+    }
 
 
 def _direct_table(

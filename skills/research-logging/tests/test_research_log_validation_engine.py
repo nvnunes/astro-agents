@@ -135,6 +135,78 @@ def _remote_data_json() -> str:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_entry_data_reference_accepts_one_split_entry_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "entries/2026-08-29-e009-split-study"
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            state.entries = [
+                ENGINE._Entry(
+                    "e009a", entry_root / "e009a.md", entry_root, None, None, None
+                ),
+                ENGINE._Entry(
+                    "e009b", entry_root / "e009b.md", entry_root, None, None, None
+                ),
+            ]
+
+            referenced_entry, path = ENGINE._resolve_entry_data_reference(
+                "<e009>/results.csv", state
+            )
+
+            self.assertEqual(referenced_entry.root, entry_root)
+            self.assertEqual(path, entry_root / "data/results.csv")
+
+    def test_entry_data_reference_rejects_invalid_member_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "entries/2026-08-29-e009-study"
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            state.entries = [
+                ENGINE._Entry(
+                    "e009", entry_root / "e009.md", entry_root, None, None, None
+                )
+            ]
+
+            for source in (
+                "<e009>/",
+                "<e009>/../results.csv",
+                "<e009>/nested//results.csv",
+                "<e009>/nested\\results.csv",
+                "<e009>/https://example.test/results.csv",
+            ):
+                with (
+                    self.subTest(source=source),
+                    self.assertRaises(ENGINE.EngineV2Error) as raised,
+                ):
+                    ENGINE._resolve_entry_data_reference(source, state)
+                self.assertEqual(raised.exception.code, "locator.path.unresolved")
+
+    def test_entry_data_reference_rejects_missing_and_ambiguous_families(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            with self.assertRaises(ENGINE.EngineV2Error) as missing:
+                ENGINE._resolve_entry_data_reference("<e009>/results.csv", state)
+            self.assertEqual(missing.exception.code, "locator.path.unresolved")
+            self.assertEqual(missing.exception.observed["matches"], 0)
+
+            first_root = root / "entries/2026-08-29-e009a-study"
+            second_root = root / "entries/2026-08-30-e009b-study"
+            state.entries = [
+                ENGINE._Entry(
+                    "e009a", first_root / "e009a.md", first_root, None, None, None
+                ),
+                ENGINE._Entry(
+                    "e009b", second_root / "e009b.md", second_root, None, None, None
+                ),
+            ]
+            with self.assertRaises(ENGINE.EngineV2Error) as ambiguous:
+                ENGINE._resolve_entry_data_reference("<e009>/results.csv", state)
+            self.assertEqual(ambiguous.exception.code, "locator.path.unresolved")
+            self.assertEqual(ambiguous.exception.observed["matches"], 2)
+
     def test_shared_input_observation_checks_every_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -738,6 +810,119 @@ class EngineV2EndToEndTests(unittest.TestCase):
             scopes = {item.scope: item.status for item in evaluation.result.scopes}
             self.assertEqual(
                 scopes[RESULTS.CheckScope.ORPHAN],
+                RESULTS.CheckStatus.PASS,
+            )
+
+    def test_cross_entry_sources_resolve_against_referenced_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            split_entry = entry.with_name("e001a.md")
+            entry.rename(split_entry)
+            entry = split_entry
+            evidence_path = entry.parent / "evidence.json"
+            evidence_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence_payload["records"][0]["document"] = (
+                "entries/2026-08-29-e001-study/e001a.md"
+            )
+            write(evidence_path, json.dumps(evidence_payload, indent=2) + "\n")
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                .replace("e001.md", "e001a.md")
+                .replace("ref entry = e001;", "ref entry = e001a;"),
+            )
+            retained = root / "output" / "logs" / "study" / "e001" / "data"
+            retained.parent.mkdir(parents=True)
+            (entry.parent / "data").rename(retained)
+            relative_target = os.path.relpath(retained, entry.parent)
+            (entry.parent / "data").symlink_to(
+                relative_target, target_is_directory=True
+            )
+
+            second_root = root / "docs/study/entries/2026-08-29-e002-cross-entry-study"
+            second_entry = second_root / "e002.md"
+            write(
+                second_entry,
+                "## Trial\n\n`Steps:`\n\nNo command.\n\n`Results:`\n\n"
+                "The prior success rate was `67.6%`"
+                "<!-- eid:prior-success-rate -->.\n",
+            )
+            write(
+                second_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v2",
+                        "records": [
+                            {
+                                "id": "prior-success-rate",
+                                "document": (
+                                    "entries/2026-08-29-e002-cross-entry-study/e002.md"
+                                ),
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<e001>/results.csv",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                + "- [Cross-entry study](study/entries/"
+                "2026-08-29-e002-cross-entry-study/e002.md)\n",
+            )
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            self.assertIn(
+                "evidence:e002:prior-success-rate",
+                checks,
+                [
+                    (check.identity, check.failure)
+                    for check in evaluation.result.checks
+                    if "e002" in check.identity
+                ],
+            )
+            evidence = checks["evidence:e002:prior-success-rate"]
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            provenance = checks["provenance:e002:prior-success-rate"]
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+
+            second_evidence_path = second_root / "evidence.json"
+            second_payload = json.loads(
+                second_evidence_path.read_text(encoding="utf-8")
+            )
+            second_payload["records"][0]["sources"][0]["source"] = (
+                "<log>/entries/2026-08-29-e001-study/data/results.csv"
+            )
+            write(
+                second_evidence_path,
+                json.dumps(second_payload, indent=2) + "\n",
+            )
+
+            log_relative_evaluation = _evaluate(summary)
+            log_relative_checks = {
+                check.identity: check for check in log_relative_evaluation.result.checks
+            }
+            self.assertEqual(
+                log_relative_checks["evidence:e002:prior-success-rate"].status,
+                RESULTS.CheckStatus.PASS,
+            )
+            self.assertEqual(
+                log_relative_checks["provenance:e002:prior-success-rate"].status,
                 RESULTS.CheckStatus.PASS,
             )
 

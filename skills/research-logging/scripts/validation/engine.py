@@ -93,7 +93,7 @@ from .transformation import (
     evaluate_transformation,
 )
 
-RULES_VERSION = "research-log-mechanical/input-registry-4"
+RULES_VERSION = "research-log-mechanical/input-registry-5"
 CACHE_SCHEMA = "research-log-mechanical-cache/6"
 CACHE_FIELDS = frozenset(
     {
@@ -104,6 +104,7 @@ CACHE_FIELDS = frozenset(
     }
 )
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
+ENTRY_DATA_REFERENCE_RE = re.compile(r"<(e[0-9]+)>/([^<>]*)\Z")
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
 
@@ -1310,7 +1311,11 @@ def _resolve_source(
     value = source.source
     exact_name = re.match(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
     external = False
-    if exact_name is not None and exact_name.group(1) not in {"log", "project"}:
+    source_entry = entry
+    entry_data_reference = _resolve_entry_data_reference(value, state)
+    if entry_data_reference is not None:
+        source_entry, path = entry_data_reference
+    elif exact_name is not None and exact_name.group(1) not in {"log", "project"}:
         try:
             resolved = resolve_input_token(value, entry.data_file)
         except DataContractError as error:
@@ -1327,6 +1332,7 @@ def _resolve_source(
         path = Path(location)
     elif value.startswith("<log>/"):
         path = state.log_root / value.removeprefix("<log>/")
+        source_entry = _entry_owning_path(path, state) or entry
     elif value.startswith("<project>/"):
         path = state.project_root / value.removeprefix("<project>/")
         external = not _within(path, state.log_root)
@@ -1343,7 +1349,7 @@ def _resolve_source(
         ):
             _fail("locator.path.unresolved", value, {"source": value})
         path = entry.root.joinpath(*pure.parts)
-    _validate_entry_source_path(path, entry, value)
+    _validate_entry_source_path(path, source_entry, value)
     if path.is_symlink() or not path.is_file():
         _fail(
             "locator.path.unresolved",
@@ -1351,6 +1357,49 @@ def _resolve_source(
             {"path": path.resolve().as_posix(), "regular_file": False},
         )
     return _ResolvedSource(path.resolve(), external)
+
+
+def _resolve_entry_data_reference(
+    value: str, state: _ScanState
+) -> tuple[_Entry, Path] | None:
+    match = ENTRY_DATA_REFERENCE_RE.fullmatch(value)
+    if match is None:
+        return None
+    entry_id, relative_text = match.groups()
+    relative = PurePosixPath(relative_text)
+    if (
+        relative.is_absolute()
+        or relative.as_posix() != relative_text
+        or "\\" in relative_text
+        or "://" in relative_text
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        _fail("locator.path.unresolved", value, {"source": value})
+    matches: dict[Path, _Entry] = {}
+    for candidate in state.entries:
+        if candidate.id == entry_id or re.fullmatch(
+            rf"{re.escape(entry_id)}[a-z]", candidate.id
+        ):
+            matches.setdefault(candidate.root, candidate)
+    if len(matches) != 1:
+        _fail(
+            "locator.path.unresolved",
+            value,
+            {"entry": entry_id, "matches": len(matches)},
+        )
+    referenced_entry = next(iter(matches.values()))
+    return referenced_entry, referenced_entry.root.joinpath("data", *relative.parts)
+
+
+def _entry_owning_path(path: Path, state: _ScanState) -> _Entry | None:
+    target = path.absolute()
+    for candidate in state.entries:
+        try:
+            target.relative_to(candidate.root.absolute())
+        except ValueError:
+            continue
+        return candidate
+    return None
 
 
 def _validate_entry_source_path(path: Path, entry: _Entry, source: str) -> None:

@@ -14,10 +14,13 @@ Each `sources` item has exactly this shape:
 ```
 
 Source-array order defines transformation inputs starting at zero. Use a
-normalized entry-relative path, a `<log>/...` path, or an exact `<name>` token.
-Every source must be a bounded CSV, TSV, JSON, NPZ, HDF5/MATLAB 7.3, or UTF-8
-text selection. Retain a safe companion artifact for pickle or another opaque
-or execution-capable format.
+normalized entry-relative path, a `<log>/...` path, a cross-entry
+`<e###>/path-within-data` path such as `<e004>/results.csv`, or an exact
+`<name>` token. The cross-entry form resolves only when the numeric entry family
+identifies one maintained entry `data/` material root; split documents such as
+`e009a` and `e009b` may share that root. Every source must be a bounded CSV,
+TSV, JSON, NPZ, HDF5/MATLAB 7.3, or UTF-8 text selection. Retain a safe companion
+artifact for pickle or another opaque or execution-capable format.
 
 Before using a mutable or remote `<name>` target as evidence, retain a stable
 or content-addressed observation and select that retained source. Do not make

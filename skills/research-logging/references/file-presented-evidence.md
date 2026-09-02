@@ -84,9 +84,13 @@ Use 1–8 sources for a statistic, exactly one for an output, exactly one for a
 direct or structured table, and 1–32 for a summary table.
 
 Each source object contains exactly `source` and `locator`. `source` is an
-entry-relative path, a `<log>/...` path, or an exact `<name>` token from the
-entry-root `data.json` when that item is also a recorded command input. Follow
-the routed locator instructions for `locator`.
+entry-relative path, a `<log>/...` path, a cross-entry
+`<e###>/path-within-data` path such as `<e004>/results.csv`, or an exact
+`<name>` token from the entry-root `data.json` when that item is also a recorded
+command input. The cross-entry form resolves only when the numeric entry family
+identifies one maintained entry `data/` material root; split documents such as
+`e009a` and `e009b` may share that root. Follow the routed locator instructions
+for `locator`.
 Do not use an absolute path, URL, object-store URI, whole-artifact selection,
 or free-form selector prose in an evidence record.
 

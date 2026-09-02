@@ -15,7 +15,8 @@ log-level registry and do not inherit or merge another file.
 
 Each input has:
 
-- `name`: a unique entry-scoped ASCII token name;
+- `name`: a unique entry-scoped ASCII token name; `log`, `project`, `theme`,
+  and numeric entry-family names such as `e004` are reserved;
 - `kind`: `file` or `directory`;
 - `location`: a normalized path from the entry root, absolute path, or exact
   URI;

@@ -49,6 +49,7 @@ MAX_IDENTITY_PATTERN_CANDIDATES = 100_000
 HASH_CHUNK_BYTES = 1024 * 1024
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+ENTRY_REFERENCE_NAME_RE = re.compile(r"e[0-9]+\Z", re.IGNORECASE)
 INPUT_TOKEN_RE = re.compile(
     r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)>(?:/(?P<member>.+))?\Z"
 )
@@ -1106,6 +1107,7 @@ def _name(value: object, subject: str) -> str:
     if (
         not isinstance(value, str)
         or value in RESERVED_NAMES
+        or ENTRY_REFERENCE_NAME_RE.fullmatch(value) is not None
         or len(value.encode("ascii", errors="ignore")) != len(value)
         or len(value.encode("ascii")) > MAX_NAME_BYTES
         or NAME_RE.fullmatch(value) is None

@@ -429,12 +429,26 @@ class TransformationV2TableTests(unittest.TestCase):
         with self.assertRaisesRegex(
             TRANSFORM.TransformationV2Error,
             "transformation.presentation.mismatch",
-        ):
+        ) as raised:
             TRANSFORM.compare_presentation(
                 result,
                 presented_kind="table",
                 presented="Case | Error\n--- | ---\ncase-8 | 1.1%\ncase-15 | 1.14%",
             )
+        self.assertEqual(raised.exception.observed["difference_count"], 1)
+        self.assertEqual(
+            raised.exception.observed["differences"],
+            [
+                {
+                    "location": "cell",
+                    "row": 1,
+                    "column": 2,
+                    "expected": "1.12%",
+                    "observed": "1.1%",
+                }
+            ],
+        )
+        self.assertFalse(raised.exception.observed["differences_truncated"])
 
     def test_direct_table_accepts_one_rectangular_canonical_array(self) -> None:
         array = VALUES.array_value(
@@ -588,6 +602,78 @@ class TransformationV2TableTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rows, (("yes", "1.3 / 0.0%", "211, 231 nm"),))
+        TRANSFORM.compare_presentation(
+            result,
+            presented_kind="table",
+            presented=(
+                "| Valid | Fractions | Bands |\n"
+                "| --- | --- | --- |\n"
+                "| YES | 1.3 / 0.0% | 211, 231 nm |"
+            ),
+        )
+
+    def test_direct_boolean_presentation_is_case_insensitive(self) -> None:
+        result = TRANSFORM.evaluate_transformation(
+            {
+                "form": "table",
+                "headings": ["Valid"],
+                "mode": "direct",
+                "columns": [{"form": "boolean", "parse": "boolean", "style": "yes_no"}],
+            },
+            [_selection("True", records=(0,))],
+            presentation_kind="table",
+        )
+
+        TRANSFORM.compare_presentation(
+            result,
+            presented_kind="table",
+            presented="| Valid |\n| --- |\n| Yes |",
+        )
+
+    def test_boolean_case_insensitivity_does_not_apply_to_text_cells(self) -> None:
+        result = TRANSFORM.evaluate_transformation(
+            {
+                "form": "table",
+                "headings": ["Valid", "Label"],
+                "mode": "direct",
+                "columns": [
+                    {"form": "boolean", "parse": "boolean", "style": "yes_no"},
+                    {"form": "text"},
+                ],
+            },
+            [_selection("True", "Exact", records=(0, 0))],
+            presentation_kind="table",
+        )
+
+        with self.assertRaises(TRANSFORM.TransformationV2Error) as raised:
+            TRANSFORM.compare_presentation(
+                result,
+                presented_kind="table",
+                presented="| Valid | Label |\n| --- | --- |\n| Yes | exact |",
+            )
+
+        self.assertEqual(raised.exception.observed["difference_count"], 1)
+        self.assertEqual(raised.exception.observed["differences"][0]["column"], 2)
+
+    def test_table_presentation_difference_is_bounded(self) -> None:
+        result = TRANSFORM.TransformationResult(
+            kind="table",
+            identity="test",
+            headings=("Value",),
+            rows=tuple((str(index),) for index in range(20)),
+        )
+        presented = "\n".join(
+            ["| Value |", "| --- |", *("| mismatch |" for _ in range(20))]
+        )
+
+        with self.assertRaises(TRANSFORM.TransformationV2Error) as raised:
+            TRANSFORM.compare_presentation(
+                result, presented_kind="table", presented=presented
+            )
+
+        self.assertEqual(raised.exception.observed["difference_count"], 20)
+        self.assertEqual(len(raised.exception.observed["differences"]), 16)
+        self.assertTrue(raised.exception.observed["differences_truncated"])
 
     def test_summary_label_and_direct_text_restrictions_fail(self) -> None:
         with self.assertRaisesRegex(

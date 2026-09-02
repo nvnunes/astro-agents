@@ -50,6 +50,10 @@ sequence contains 2–8 numeric value expressions, may declare one shared `unit`
 and uses `slash`, `comma`, or `dimensions` style. Structured cells replace
 `item` with `field`.
 
+Boolean styles define canonical output spellings, but presentation comparison
+is case-insensitive for Boolean cells. This tolerance does not apply to text
+cells, headings, or source parsing.
+
 ## Direct
 
 For retained CSV:

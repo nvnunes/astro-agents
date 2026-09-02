@@ -65,7 +65,7 @@ or prose line between it and the target.
 ## Entry Evidence Records
 
 Store presentation records in `evidence.json` at the owning entry root. Its
-only top-level keys are `schema`, with value `research-log-evidence/v2`, and
+only top-level keys are `schema`, with value `research-log-evidence/v3`, and
 `records`, containing a non-empty array. Remove the file after removing its
 final record. Use UTF-8 JSON without comments, duplicate keys, non-finite
 numbers, or trailing content. The schema identifier is a data-format value,
@@ -83,16 +83,15 @@ Each presentation record contains exactly:
 Use 1–8 sources for a statistic, exactly one for an output, exactly one for a
 direct or structured table, and 1–32 for a summary table.
 
-Each source object contains exactly `source` and `locator`. `source` is an
-entry-relative path, a `<log>/...` path, a cross-entry
-`<e###>/path-within-data` path such as `<e004>/results.csv`, or an exact
-`<name>` token from the entry-root `data.json` when that item is also a recorded
-command input. The cross-entry form resolves only when the numeric entry family
-identifies one maintained entry `data/` material root; split documents such as
-`e009a` and `e009b` may share that root. Follow the routed locator instructions
-for `locator`.
-Do not use an absolute path, URL, object-store URI, whole-artifact selection,
-or free-form selector prose in an evidence record.
+Each source object contains exactly `source` and `locator`. `source` is one
+complete `<name>` or `<directory-name>/member` token from the owning entry-root
+`data.json`. A bare directory token is not evidence because a record must name
+one exact local regular file. Follow the routed locator instructions for
+`locator`. Do not use an entry-relative path, `<log>` or `<project>` path,
+cross-entry shorthand, absolute path, URL, object-store URI, whole-artifact
+selection, or free-form selector prose in an evidence record. To consume an
+artifact from another entry, declare that exact artifact in the consuming
+entry's `data.json` and use the local declaration's token.
 
 For retained `data/results.csv`:
 
@@ -105,13 +104,13 @@ the complete record and its presentation are:
 
 ```json
 {
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": [{
     "id": "candidate-success-rate",
     "document": "entries/2026-08-27-e001-study/e001.md",
     "kind": "statistic",
     "sources": [{
-      "source": "data/results.csv",
+      "source": "<results>",
       "locator": {
         "select": [["success_rate"]],
         "where": [{

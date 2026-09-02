@@ -28,13 +28,11 @@ from validation.filesystem import (
 )
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
-DATA_SCHEMA = "research-log-data/v1"
+DATA_SCHEMA = "research-log-data/v2"
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
 DIRECTORY_OBSERVATION_SCHEMA = "research-log-directory-observation/1"
 IDENTITY_FILES_FINGERPRINT_SCHEMA = "research-log-identity-files-fingerprint/1"
-IDENTITY_PATTERNS_FINGERPRINT_SCHEMA = (
-    "research-log-identity-patterns-fingerprint/1"
-)
+IDENTITY_PATTERNS_FINGERPRINT_SCHEMA = "research-log-identity-patterns-fingerprint/1"
 MAX_DATA_FILE_BYTES = 8 * 1024 * 1024
 MAX_INPUTS = 10_000
 MAX_NAME_BYTES = 96
@@ -232,7 +230,7 @@ class DataDeclarationConflict:
             "data.declaration.conflict",
             self.canonical_target,
             {"files": [str(path) for path in self.data_files]},
-            "research-log-data/v1",
+            DATA_SCHEMA,
         )
 
 
@@ -436,15 +434,15 @@ def data_file_from_inputs(
 def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInputToken:
     """Resolve one complete ``<name>`` or ``<directory>/member`` input token."""
 
-    match = INPUT_TOKEN_RE.fullmatch(value)
-    if match is None:
+    parts = input_token_parts(value)
+    if parts is None:
         _fail(
             "data.input.undeclared",
             value,
             {"reason": "invalid_token"},
             "Command Tokens And Roles",
         )
-    name = match.group("name")
+    name, member = parts
     resource = data_file.by_name.get(name) if data_file is not None else None
     if resource is None:
         _fail(
@@ -453,11 +451,42 @@ def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInput
             {"name": name},
             "Command Tokens And Roles",
         )
-    member = match.group("member")
     if member is None:
         return ResolvedInputToken(resource, resource.canonical_target)
     path = _resolve_member(resource, member, value)
     return ResolvedInputToken(resource, path, member)
+
+
+def input_token_parts(value: str) -> tuple[str, str | None] | None:
+    """Return the name and optional member of one complete input token."""
+
+    match = INPUT_TOKEN_RE.fullmatch(value)
+    name = match.group("name") if match is not None else None
+    member = match.group("member") if match is not None else None
+    if (
+        match is None
+        or name in RESERVED_NAMES
+        or not isinstance(name, str)
+        or len(name.encode("ascii")) > MAX_NAME_BYTES
+        or ENTRY_REFERENCE_NAME_RE.fullmatch(name) is not None
+        or member is not None
+        and not _valid_input_member(member)
+    ):
+        return None
+    return name, member
+
+
+def _valid_input_member(member: str) -> bool:
+    pure = PurePosixPath(member)
+    return not (
+        not member
+        or len(member.encode("utf-8")) > MAX_DIRECTORY_PATH_BYTES
+        or pure.is_absolute()
+        or "\\" in member
+        or "://" in member
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or pure.as_posix() != member
+    )
 
 
 def input_token_candidate(value: str) -> bool:
@@ -482,7 +511,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
             "data.declaration.invalid",
             resource.name,
             {"location": resource.location, "reason": "symlink"},
-            "research-log-data/v1",
+            DATA_SCHEMA,
         )
     if resource.kind == "file":
         if not path.is_file():
@@ -499,9 +528,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
         identities: list[Mapping[str, object]] = []
         for relative, identity_path in paths.items():
             digest, identity = _hash_file_observation(identity_path)
-            identity_entries.append(
-                DirectoryFingerprintEntry(relative, "file", digest)
-            )
+            identity_entries.append(DirectoryFingerprintEntry(relative, "file", digest))
             identities.append({"path": relative, **identity})
         fingerprint = compose_identity_files_fingerprint(tuple(identity_entries))
         _require_unchanged_identity_files(paths, identities, resource.name)
@@ -516,9 +543,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
         identities = []
         for relative, identity_path in paths.items():
             digest, identity = _hash_file_observation(identity_path)
-            identity_entries.append(
-                DirectoryFingerprintEntry(relative, "file", digest)
-            )
+            identity_entries.append(DirectoryFingerprintEntry(relative, "file", digest))
             identities.append({"path": relative, **identity})
         fingerprint = compose_identity_patterns_fingerprint(
             tuple(identity_entries),
@@ -585,9 +610,7 @@ def compose_identity_files_fingerprint(
     ):
         _invalid("identity-files", {"files": list(files)})
     payload = {
-        "files": [
-            {"path": entry.path, "sha256": entry.sha256} for entry in ordered
-        ],
+        "files": [{"path": entry.path, "sha256": entry.sha256} for entry in ordered],
         "schema": IDENTITY_FILES_FINGERPRINT_SCHEMA,
     }
     return Fingerprint(
@@ -613,9 +636,7 @@ def compose_identity_patterns_fingerprint(
     ):
         _invalid("identity-patterns", {"files": list(files)})
     payload = {
-        "files": [
-            {"path": entry.path, "sha256": entry.sha256} for entry in ordered
-        ],
+        "files": [{"path": entry.path, "sha256": entry.sha256} for entry in ordered],
         "patterns": list(patterns),
         "schema": IDENTITY_PATTERNS_FINGERPRINT_SCHEMA,
     }
@@ -733,9 +754,7 @@ def _identity_pattern_matches(
     if has_magic(pure.name):
         candidates = wildcard_candidates.get(canonical_parent)
         if candidates is None:
-            candidates = _bounded_identity_pattern_candidates(
-                canonical_parent, subject
-            )
+            candidates = _bounded_identity_pattern_candidates(canonical_parent, subject)
             wildcard_candidates[canonical_parent] = candidates
     else:
         candidates = (canonical_parent / pure.name,)
@@ -884,9 +903,7 @@ def _reuse_fingerprint_observation(
     if resource.kind == "file":
         return _reuse_file_observation(resource, identity, raw_entries, path)
     if resource.fingerprint.algorithm == "identity-files-sha256-v1":
-        return _reuse_identity_files_observation(
-            resource, identity, raw_entries, path
-        )
+        return _reuse_identity_files_observation(resource, identity, raw_entries, path)
     if resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
         return _reuse_identity_patterns_observation(
             resource, identity, raw_entries, path
@@ -903,9 +920,7 @@ def _reuse_identity_files_observation(
     if not path.is_dir() or set(identity) != {"files", "kind"}:
         return None
     raw_identities = identity.get("files")
-    if identity.get("kind") != "identity-files" or not isinstance(
-        raw_identities, list
-    ):
+    if identity.get("kind") != "identity-files" or not isinstance(raw_identities, list):
         return None
     entries = _cached_identity_entries(raw_entries, resource.fingerprint.files)
     if entries is None or len(raw_identities) != len(entries):
@@ -1167,13 +1182,7 @@ def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
     if (
         resource.kind != "directory"
         or resource.remote
-        or not member
-        or len(member.encode("utf-8")) > MAX_DIRECTORY_PATH_BYTES
-        or pure.is_absolute()
-        or "\\" in member
-        or "://" in member
-        or any(part in {"", ".", ".."} for part in pure.parts)
-        or pure.as_posix() != member
+        or not _valid_input_member(member)
     ):
         _invalid(subject, {"member": member, "resource": resource.name})
     root = Path(resource.canonical_target)
@@ -1297,11 +1306,7 @@ def _identity_files(value: object, subject: str) -> tuple[str, ...]:
 
 
 def _identity_patterns(value: object, subject: str) -> tuple[str, ...]:
-    if (
-        not isinstance(value, list)
-        or not value
-        or len(value) > MAX_IDENTITY_PATTERNS
-    ):
+    if not isinstance(value, list) or not value or len(value) > MAX_IDENTITY_PATTERNS:
         _invalid(subject, {"identity_patterns": value})
     result: list[str] = []
     for item in value:
@@ -1389,7 +1394,7 @@ def _require_unique_inputs(inputs: tuple[InputResource, ...], path: Path) -> Non
             "data.name.duplicate",
             str(path),
             {"names": names},
-            "research-log-data/v1",
+            DATA_SCHEMA,
         )
     targets = [item.canonical_target for item in inputs]
     if len(targets) != len(set(targets)):
@@ -1397,7 +1402,7 @@ def _require_unique_inputs(inputs: tuple[InputResource, ...], path: Path) -> Non
             "data.target.duplicate",
             str(path),
             {"targets": targets},
-            "research-log-data/v1",
+            DATA_SCHEMA,
         )
 
 
@@ -1684,7 +1689,7 @@ def _invalid(subject: object, observed: object) -> NoReturn:
         "data.declaration.invalid",
         str(subject),
         observed,
-        "research-log-data/v1",
+        DATA_SCHEMA,
     )
 
 

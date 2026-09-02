@@ -8,19 +8,17 @@ Each `sources` item has exactly this shape:
 
 ```json
 {
-  "source": "data/results.csv",
+  "source": "<results>",
   "locator": {"select": [["success_rate"]]}
 }
 ```
 
-Source-array order defines transformation inputs starting at zero. Use a
-normalized entry-relative path, a `<log>/...` path, a cross-entry
-`<e###>/path-within-data` path such as `<e004>/results.csv`, or an exact
-`<name>` token. The cross-entry form resolves only when the numeric entry family
-identifies one maintained entry `data/` material root; split documents such as
-`e009a` and `e009b` may share that root. Every source must be a bounded CSV,
-TSV, JSON, NPZ, HDF5/MATLAB 7.3, or UTF-8 text selection. Retain a safe companion
-artifact for pickle or another opaque or execution-capable format.
+Source-array order defines transformation inputs starting at zero. Use one
+complete `<name>` or `<directory-name>/member` token from the owning entry's
+`data.json`. A bare directory token is invalid because each evidence source is
+one exact local regular file. Every source must be a bounded CSV, TSV, JSON,
+NPZ, HDF5/MATLAB 7.3, or UTF-8 text selection. Retain a safe companion artifact
+for pickle or another opaque or execution-capable format.
 
 Before using a mutable or remote `<name>` target as evidence, retain a stable
 or content-addressed observation and select that retained source. Do not make
@@ -108,7 +106,7 @@ select the candidate value with:
 
 ```json
 {
-  "source": "data/results.csv",
+  "source": "<results>",
   "locator": {
     "select": [["success_rate"]],
     "where": [{"op": "eq", "path": ["case"], "value": "candidate"}],
@@ -121,7 +119,7 @@ For nested JSON, select one exact value with:
 
 ```json
 {
-  "source": "data/results.json",
+  "source": "<results-json>",
   "locator": {
     "path": ["simulation", 0, "throughput_pix_per_s"],
     "expect": {"items": 1}
@@ -133,7 +131,7 @@ For a retained command log, select its unique complete result line with:
 
 ```json
 {
-  "source": "data/run.log",
+  "source": "<run-log>",
   "locator": {"text": {"contains": "completed 500 trials"}}
 }
 ```

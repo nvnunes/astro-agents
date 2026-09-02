@@ -258,8 +258,8 @@ misleading; the ID does not.
 
 The entry that creates a saved result owns it. Later entries link to that
 result or declare it as a named `data.json` input when a recorded command
-consumes it. A transformed result belongs to the later entry that created the
-transformation.
+or evidence record consumes it. A transformed result belongs to the later
+entry that created the transformation.
 
 ### Entry documents
 
@@ -492,9 +492,9 @@ do not rerun an unchanged command solely to test reproducibility or provenance.
 ### Input registry
 
 Use entry-root `data.json` for every file or directory consumed as a material
-input by a recorded command. It contains all and only command inputs, with one
-stable name, location, strong fingerprint, and—only for a producerless
-input—an explicit external source and version identity.
+input by a recorded command or evidence record. It contains all and only those
+inputs, with one stable name, location, strong fingerprint, and—only for a
+producerless input—an explicit external source and version identity.
 
 Add an accessible local input from the entry folder with:
 
@@ -504,10 +504,12 @@ Add an accessible local input from the entry folder with:
 ```
 
 `pyrun` fingerprints local content and resolves the item through
-`"<development_set>"`. Raw command-input paths and URIs are invalid. A
-generated output enters `data.json` only when a later recorded command consumes
-it; it omits the external boundary and traces to its earlier producer. Omit
-`data.json` when the entry has no command inputs.
+`"<development_set>"`. Raw command-input and evidence-source paths and URIs
+are invalid. Evidence sources use one complete `<name>` or
+`<directory-name>/member` token and must resolve to one local regular file. A
+generated output enters `data.json` when a later recorded command or evidence
+record consumes it; it omits the external boundary and traces to its earlier
+producer. Omit `data.json` when the entry has no command or evidence inputs.
 
 Use `retention.json` only for intentionally retained material outside the
 evidence-rooted graph. Retention affects orphan classification and cannot
@@ -743,7 +745,7 @@ Check the requested area against these questions:
   files checked against their expected structure? For work completed
   elsewhere, does the record preserve the actual workflow and identify missing
   material rather than replacing it with a cleaner reconstruction? Does
-  `data.json` contain all and only command inputs, use unique names and
+  `data.json` contain all and only command and evidence inputs, use unique names and
   targets, resolve every token, preserve fingerprints, and distinguish exact
   external boundaries from generated inputs? Are intentional disconnected
   artifacts declared only through `retention.json`?

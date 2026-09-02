@@ -70,6 +70,7 @@ class EvidenceConnection:
     materials: tuple[str, ...]
     dependencies: tuple[str, ...] = ()
     external_materials: frozenset[str] = frozenset()
+    input_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,9 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     retained = _retained_material(
         request.retention_files, roots, inventory, state.connected
     )
-    unused_names = _unused_input_names(request.input_registries, request.invocations)
+    unused_names = _unused_input_names(
+        request.input_registries, request.invocations, request.evidence
+    )
     orphan = _orphan_result(inventory, state.connected, retained, unused_names)
     orphan_seconds = time.perf_counter() - orphan_started
 
@@ -174,7 +177,7 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         "edges": [_edge_projection(edge) for edge in sorted(state.edges)],
         "nodes": [_node_projection(node) for node in sorted(state.nodes)],
         "orphan": orphan.dependency_projection,
-        "version": "input-registry-1",
+        "version": "input-registry-2",
     }
     dependency_projection = _digest(graph_projection)
     currentness_seconds = time.perf_counter() - currentness_started
@@ -362,7 +365,7 @@ def _orphan_result(
         "declared_retained": sorted(retained),
         "inventory": sorted(inventory),
         "unused_input_names": sorted(unused_names),
-        "version": "input-registry-1",
+        "version": "input-registry-2",
     }
     return OrphanResult(
         tuple(sorted(inventory)),
@@ -556,7 +559,9 @@ def _retention_coverage(record: RetentionRecord, root: Path) -> set[str]:
 
 
 def _unused_input_names(
-    surfaces: Sequence[InputRegistrySurface], invocations: Sequence[Invocation]
+    surfaces: Sequence[InputRegistrySurface],
+    invocations: Sequence[Invocation],
+    evidence: Sequence[EvidenceConnection],
 ) -> set[str]:
     used = {
         f"{invocation.material_owner}:{relationship.input_resource.name}"
@@ -564,6 +569,7 @@ def _unused_input_names(
         for relationship in invocation.inputs
         if relationship.input_resource is not None
     }
+    used.update(name for connection in evidence for name in connection.input_names)
     declared = {
         f"{surface.owner}:{resource.name}"
         for surface in surfaces
@@ -577,6 +583,7 @@ def _evidence_projection(connection: EvidenceConnection) -> object:
         "dependencies": list(connection.dependencies),
         "entry": connection.entry,
         "external_materials": sorted(connection.external_materials),
+        "input_names": sorted(connection.input_names),
         "materials": sorted(connection.materials),
         "presentation": connection.presentation,
         "record": connection.record,

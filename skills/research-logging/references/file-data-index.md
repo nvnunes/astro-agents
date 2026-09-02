@@ -3,15 +3,15 @@
 Use this file when creating or revising an entry-root `data.json`, using a
 `<name>` input token, or declaring a durable external command input.
 
-`data.json` is a complete command-input registry. It contains all and only file
-and directory resources consumed as material inputs by recorded commands owned
-by one entry root. It is not an artifact inventory, evidence declaration, or
-producer registry.
+`data.json` is the complete material-input registry. It contains all and only
+file and directory resources consumed by recorded commands or by mechanical
+evidence records owned by one entry root. It is not an artifact inventory,
+evidence declaration, or producer registry.
 
-Omit `data.json` when the entry has no command inputs. A present file uses
-schema `research-log-data/v1` and contains a non-empty `inputs` array. Split
-documents at one entry root share that file. Do not create a parent-entry or
-log-level registry and do not inherit or merge another file.
+Omit `data.json` when the entry has no command or evidence inputs. A present
+file uses schema `research-log-data/v2` and contains a non-empty `inputs`
+array. Split documents at one entry root share that file. Do not create a
+parent-entry or log-level registry and do not inherit or merge another file.
 
 Each input has:
 
@@ -35,8 +35,11 @@ Use exact `<name>` arguments for file inputs. Use `<directory-name>` with an
 `input-directory` role to consume either every byte-complete descendant or one
 managed logical aggregate according to its fingerprint algorithm. Use
 `<directory-name>/member` to consume one exact member. Raw relative paths,
-absolute paths, and URIs are invalid for command inputs even when they match a
-declared location.
+absolute paths, and URIs are invalid for command inputs and evidence sources
+even when they match a declared location. An evidence source must resolve to
+one local regular file, so use `<name>` for a file or
+`<directory-name>/member` for one exact directory member; a bare directory
+token is not evidence.
 
 Add declarations from the entry root through `pyrun`:
 
@@ -115,10 +118,11 @@ or identity-file set. `data fingerprint` preserves the selected algorithm and
 identity-file list or identity-pattern set while refreshing its digest. Use
 `data update-identity-pattern-directory` to revise a pattern-managed directory.
 
-A generated output belongs in `data.json` only when a later recorded command
-consumes it. It has no `external` object and must trace to its unique earlier
-producer. Output-only results, evidence sources that are not command inputs,
-images, command logs, and scripts do not belong in the registry.
+A generated output belongs in `data.json` when a later recorded command or an
+evidence record consumes it. It has no `external` object and must trace to its
+unique earlier producer. Outputs consumed by neither surface do not belong in
+the registry. Images, command logs, and scripts follow the same rule: register
+them only when they are material inputs to a command or evidence record.
 
 Storage location does not decide externality. A producerless external input may
 be stored inside the entry; a generated intermediate may be outside it. Base

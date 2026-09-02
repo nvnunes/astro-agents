@@ -65,7 +65,7 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
         (entry / "data.json").write_text(
             json.dumps(
                 {
-                    "schema": "research-log-data/v1",
+                    "schema": "research-log-data/v2",
                     "inputs": [
                         {
                             "name": "input_csv",

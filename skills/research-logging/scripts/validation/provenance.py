@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
+from research_log_data import InputResource
+
 from .commands import Invocation, MaterialCollection, MaterialRelationship
 from .errors import MechanicalContractError
 from .json_codec import canonical_json
@@ -60,7 +62,7 @@ def evaluate_provenance(
             _invocation_dependency(by_identity[identity])
             for identity in state.producers
         ],
-        "version": "input-registry-1",
+        "version": "input-registry-2",
     }
     dependency = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     return ProvenanceResult(
@@ -77,6 +79,71 @@ def evaluate_many(
     """Evaluate independent evidence starting points without shared conclusions."""
 
     return tuple(evaluate_provenance(material, invocations) for material in materials)
+
+
+def require_external_boundary(
+    material: Path | str,
+    resource: InputResource,
+    invocations: Sequence[Invocation],
+) -> None:
+    """Require a declared external evidence input to have no local producer."""
+
+    if resource.external is None:
+        raise ValueError("external-boundary validation requires external metadata")
+    if resource.kind == "directory":
+        directory_producers = _directory_producers(
+            Path(resource.canonical_target), invocations
+        )
+        if directory_producers:
+            _fail(
+                "directory.external.conflict",
+                resource.name,
+                {"producers": sorted(directory_producers)},
+            )
+        return
+    canonical = Path(material).resolve().as_posix()
+    file_producers = _output_index(invocations).get(canonical, ())
+    if len(file_producers) == 1:
+        _fail(
+            "data.external.invalid",
+            resource.name,
+            {"producer": file_producers[0].identity},
+        )
+    if len(file_producers) > 1:
+        _fail(
+            "lineage.ambiguous",
+            canonical,
+            {"producers": [producer.identity for producer in file_producers]},
+        )
+
+
+def _directory_producers(
+    root: Path, invocations: Sequence[Invocation]
+) -> set[str]:
+    """Return commands producing a directory root, member, or overlapping tree."""
+
+    root = root.resolve()
+    result = {
+        invocation.identity
+        for invocation in invocations
+        if any(
+            _within(Path(output.path).resolve(), root)
+            for output in invocation.outputs
+        )
+    }
+    result.update(
+        invocation.identity
+        for invocation in invocations
+        for collection in invocation.collections
+        if collection.direction == "output"
+        and collection.mechanism == "directory"
+        and collection.root is not None
+        and (
+            _within(Path(collection.root).resolve(), root)
+            or _within(root, Path(collection.root).resolve())
+        )
+    )
+    return result
 
 
 def _walk_material(

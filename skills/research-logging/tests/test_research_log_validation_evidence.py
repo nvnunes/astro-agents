@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -9,10 +10,10 @@ from unittest import mock
 
 from research_log_validation_test_support import write
 
-EVIDENCE_V2 = importlib.import_module("validation.evidence")
+EVIDENCE = importlib.import_module("validation.evidence")
 
 
-def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
+def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
     log_root = root / "docs" / "study"
     entry_root = log_root / "entries" / "2026-08-28-e001-study"
     document = entry_root / "e001.md"
@@ -36,13 +37,13 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": [
     {
       "id": "success-rate",
       "document": "entries/2026-08-28-e001-study/e001.md",
       "kind": "statistic",
-      "sources": [{"source": "data/results.csv", "locator": {"select": [["rate"]]}}],
+      "sources": [{"source": "<results>", "locator": {"select": [["rate"]]}}],
       "transformation": {"form": "percentage", "source": {"input": 0, "item": 0}}
     },
     {
@@ -50,7 +51,7 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
       "document": "entries/2026-08-28-e001-study/e001.md",
       "kind": "table",
       "sources": [{
-        "source": "data/results.csv",
+        "source": "<results>",
         "locator": {"select": [["case"], ["rate"]]}
       }],
       "transformation": {
@@ -65,7 +66,7 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
       "document": "entries/2026-08-28-e001-study/e001.md",
       "kind": "output",
       "sources": [{
-        "source": "data/run.log",
+        "source": "<run-log>",
         "locator": {"text": {"contains": "completed"}}
       }],
       "transformation": null
@@ -81,11 +82,76 @@ def v2_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
+    def test_retired_v2_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
+            path = entry_root / "evidence.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["schema"] = "research-log-evidence/v2"
+            write(path, json.dumps(payload) + "\n")
+
+            with self.assertRaisesRegex(
+                EVIDENCE.EvidenceContractError, "evidence.json.schema_invalid"
+            ):
+                EVIDENCE.load_evidence_file(
+                    path, log_root=log_root, entry_root=entry_root
+                )
+
+    def test_sources_require_input_registry_tokens(self) -> None:
+        invalid_sources = (
+            "data/results.csv",
+            "/tmp/results.csv",
+            "https://example.test/results.csv",
+            "s3://fixture/results.csv",
+            "<project>/results.csv",
+            "<log>/results.csv",
+            "<e004>/results.csv",
+            "<results>/../secret.csv",
+            "<results>/nested//file.csv",
+            "<results>/nested\\file.csv",
+            "<results>/https://host/file.csv",
+        )
+        for source in invalid_sources:
+            with (
+                self.subTest(source=source),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                log_root, entry_root, _ = evidence_fixture(Path(directory))
+                path = entry_root / "evidence.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["records"][0]["sources"][0]["source"] = source
+                write(path, json.dumps(payload) + "\n")
+
+                with self.assertRaisesRegex(
+                    EVIDENCE.EvidenceContractError,
+                    "evidence.declaration.invalid",
+                ):
+                    EVIDENCE.load_evidence_file(
+                        path, log_root=log_root, entry_root=entry_root
+                    )
+
+        for source in ("<results>", "<results>/member.csv"):
+            with (
+                self.subTest(source=source),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                log_root, entry_root, _ = evidence_fixture(Path(directory))
+                path = entry_root / "evidence.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["records"][0]["sources"][0]["source"] = source
+                write(path, json.dumps(payload) + "\n")
+
+                evidence = EVIDENCE.load_evidence_file(
+                    path, log_root=log_root, entry_root=entry_root
+                )
+
+                self.assertEqual(evidence.records[0].sources[0].source, source)
+
     def test_strict_file_decodes_presentations_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, _ = v2_fixture(Path(directory))
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
 
-            evidence = EVIDENCE_V2.load_evidence_file(
+            evidence = EVIDENCE.load_evidence_file(
                 entry_root / "evidence.json",
                 log_root=log_root,
                 entry_root=entry_root,
@@ -108,7 +174,7 @@ class EvidenceFileTests(unittest.TestCase):
     def test_retention_record_is_rejected_from_evidence_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            log_root, entry_root, _ = v2_fixture(root)
+            log_root, entry_root, _ = evidence_fixture(root)
             path = entry_root / "evidence.json"
             text = path.read_text(encoding="utf-8")
             path.write_text(
@@ -120,57 +186,57 @@ class EvidenceFileTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "evidence.declaration.invalid"
+                EVIDENCE.EvidenceContractError, "evidence.declaration.invalid"
             ):
-                EVIDENCE_V2.load_evidence_file(
+                EVIDENCE.load_evidence_file(
                     path, log_root=log_root, entry_root=entry_root
                 )
 
     def test_duplicate_keys_and_ids_fail_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, _ = v2_fixture(Path(directory))
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
             path = entry_root / "evidence.json"
             text = path.read_text(encoding="utf-8")
             path.write_text(text.replace('"schema":', '"schema":"x","schema":', 1))
 
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "evidence.json.schema_invalid"
+                EVIDENCE.EvidenceContractError, "evidence.json.schema_invalid"
             ):
-                EVIDENCE_V2.load_evidence_file(
+                EVIDENCE.load_evidence_file(
                     path, log_root=log_root, entry_root=entry_root
                 )
 
     def test_wrong_file_location_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, _ = v2_fixture(Path(directory))
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
             path = entry_root / "evidence.json"
             wrong = log_root / "evidence.json"
             write(wrong, path.read_text(encoding="utf-8"))
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "evidence.file.location_invalid"
+                EVIDENCE.EvidenceContractError, "evidence.file.location_invalid"
             ):
-                EVIDENCE_V2.load_evidence_file(
+                EVIDENCE.load_evidence_file(
                     wrong, log_root=log_root, entry_root=entry_root
                 )
 
     def test_declared_documents_and_retained_targets_must_exist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, document = v2_fixture(Path(directory))
+            log_root, entry_root, document = evidence_fixture(Path(directory))
             path = entry_root / "evidence.json"
             document.unlink()
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "evidence.declaration.invalid"
+                EVIDENCE.EvidenceContractError, "evidence.declaration.invalid"
             ):
-                EVIDENCE_V2.load_evidence_file(
+                EVIDENCE.load_evidence_file(
                     path, log_root=log_root, entry_root=entry_root
                 )
 
     def test_file_and_individual_presentation_bounds_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, _ = v2_fixture(Path(directory))
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
             path = entry_root / "evidence.json"
             with (
-                mock.patch.object(EVIDENCE_V2, "MAX_EVIDENCE_FILE_BYTES", 4),
+                mock.patch.object(EVIDENCE, "MAX_EVIDENCE_FILE_BYTES", 4),
                 mock.patch.object(
                     Path,
                     "read_bytes",
@@ -178,29 +244,29 @@ class EvidenceFileTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(
-                    EVIDENCE_V2.EvidenceV2Error,
+                    EVIDENCE.EvidenceContractError,
                     "association.resource.too_large",
                 ):
-                    EVIDENCE_V2.load_evidence_file(
+                    EVIDENCE.load_evidence_file(
                         path, log_root=log_root, entry_root=entry_root
                     )
 
         prose = "x" * 100
-        with mock.patch.object(EVIDENCE_V2, "MAX_PRESENTATION_BYTES", 8):
-            indexed = EVIDENCE_V2.index_entry_presentations(
+        with mock.patch.object(EVIDENCE, "MAX_PRESENTATION_BYTES", 8):
+            indexed = EVIDENCE.index_entry_presentations(
                 f"{prose}\n`1`<!-- eid:value -->\n", document="entry.md"
             )
             self.assertEqual(len(indexed), 1)
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error,
+                EVIDENCE.EvidenceContractError,
                 "association.resource.too_large",
             ):
-                EVIDENCE_V2.index_entry_presentations(
+                EVIDENCE.index_entry_presentations(
                     f"`{'1' * 9}`<!-- eid:value -->\n", document="entry.md"
                 )
 
 
-class EvidenceV2AssociationTests(unittest.TestCase):
+class EvidenceAssociationTests(unittest.TestCase):
     def test_section_classifier_uses_the_documented_label_contract(self) -> None:
         text = (
             "# Entry\n\n"
@@ -220,10 +286,10 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             "`Steps:`\n\nValue `6`<!-- eid:incomplete -->.\n"
         )
 
-        presentations = EVIDENCE_V2.index_entry_presentations(
+        presentations = EVIDENCE.index_entry_presentations(
             text, document="entries/2026-08-28-e001-study/e001.md"
         )
-        issues = EVIDENCE_V2.index_entry_section_issues(text)
+        issues = EVIDENCE.index_entry_section_issues(text)
 
         by_id = {item.id: item for item in presentations}
         self.assertTrue(by_id["experimental"].context_valid)
@@ -245,7 +311,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
     def test_section_classifier_ignores_heading_and_labels_inside_fences(self) -> None:
         text = "## Prose\n\n```text\n## Not a section\n`Steps:`\n`Results:`\n```\n"
 
-        self.assertEqual(EVIDENCE_V2.index_entry_section_issues(text), ())
+        self.assertEqual(EVIDENCE.index_entry_section_issues(text), ())
 
     def test_block_candidates_stop_at_the_next_experimental_label(self) -> None:
         text = (
@@ -258,7 +324,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             "| Observation | Value |\n| --- | ---: |\n| contextual | 2 |\n"
         )
 
-        candidates = EVIDENCE_V2.index_entry_presentation_candidates(text)
+        candidates = EVIDENCE.index_entry_presentation_candidates(text)
 
         self.assertEqual(
             [(candidate.kind, candidate.line) for candidate in candidates],
@@ -267,18 +333,18 @@ class EvidenceV2AssociationTests(unittest.TestCase):
 
     def test_entry_markers_bind_all_three_presentation_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, document = v2_fixture(Path(directory))
-            evidence = EVIDENCE_V2.load_evidence_file(
+            log_root, entry_root, document = evidence_fixture(Path(directory))
+            evidence = EVIDENCE.load_evidence_file(
                 entry_root / "evidence.json",
                 log_root=log_root,
                 entry_root=entry_root,
             )
 
-            presentations = EVIDENCE_V2.index_entry_presentations(
+            presentations = EVIDENCE.index_entry_presentations(
                 document.read_text(encoding="utf-8"),
                 document="entries/2026-08-28-e001-study/e001.md",
             )
-            associated = EVIDENCE_V2.associate_presentations(evidence, presentations)
+            associated = EVIDENCE.associate_presentations(evidence, presentations)
 
             self.assertEqual(
                 {item.kind for item in presentations},
@@ -291,8 +357,8 @@ class EvidenceV2AssociationTests(unittest.TestCase):
 
     def test_marker_placement_kind_and_context_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log_root, entry_root, document = v2_fixture(Path(directory))
-            evidence = EVIDENCE_V2.load_evidence_file(
+            log_root, entry_root, document = evidence_fixture(Path(directory))
+            evidence = EVIDENCE.load_evidence_file(
                 entry_root / "evidence.json",
                 log_root=log_root,
                 entry_root=entry_root,
@@ -303,9 +369,9 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "presentation.marker.invalid"
+                EVIDENCE.EvidenceContractError, "presentation.marker.invalid"
             ):
-                EVIDENCE_V2.index_entry_presentations(
+                EVIDENCE.index_entry_presentations(
                     text,
                     document="entries/2026-08-28-e001-study/e001.md",
                 )
@@ -313,7 +379,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             wrong_kind = tuple(
                 item
                 if item.id != "success-rate"
-                else EVIDENCE_V2.PresentedItem(
+                else EVIDENCE.PresentedItem(
                     id=item.id,
                     document=item.document,
                     kind="output",
@@ -324,20 +390,20 @@ class EvidenceV2AssociationTests(unittest.TestCase):
                     section_classification=item.section_classification,
                     under_results=item.under_results,
                 )
-                for item in EVIDENCE_V2.index_entry_presentations(
+                for item in EVIDENCE.index_entry_presentations(
                     document.read_text(encoding="utf-8"),
                     document="entries/2026-08-28-e001-study/e001.md",
                 )
             )
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "association.kind_mismatch"
+                EVIDENCE.EvidenceContractError, "association.kind_mismatch"
             ):
-                EVIDENCE_V2.associate_presentations(evidence, wrong_kind)
+                EVIDENCE.associate_presentations(evidence, wrong_kind)
 
             with self.assertRaisesRegex(
-                EVIDENCE_V2.EvidenceV2Error, "presentation.marker.invalid"
+                EVIDENCE.EvidenceContractError, "presentation.marker.invalid"
             ):
-                EVIDENCE_V2.index_entry_presentations(
+                EVIDENCE.index_entry_presentations(
                     document.read_text(encoding="utf-8").replace(
                         "<!-- eid:success-rate -->", "<!-- EID:success-rate -->"
                     ),
@@ -353,65 +419,65 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             "<!-- ref entry = e001; eid = comparison-table; row = 1; column = 2 -->.\n"
         )
 
-        references = EVIDENCE_V2.index_summary_references(text)
+        references = EVIDENCE.index_summary_references(text)
 
         self.assertEqual(len(references), 2)
         self.assertEqual((references[1].row, references[1].column), (1, 2))
         with self.assertRaisesRegex(
-            EVIDENCE_V2.EvidenceV2Error, "summary.reference.invalid"
+            EVIDENCE.EvidenceContractError, "summary.reference.invalid"
         ):
-            EVIDENCE_V2.index_summary_references(
+            EVIDENCE.index_summary_references(
                 text.replace("entry = e001", "entry=e001", 1)
             )
 
     def test_summary_references_forward_exact_completed_presentations(self) -> None:
-        references = EVIDENCE_V2.index_summary_references(
+        references = EVIDENCE.index_summary_references(
             "Rate `67.6%`<!-- ref entry = e001; eid = rate -->.\n"
             "Cell `3.39x`"
             "<!-- ref entry = e001; eid = table; row = 1; column = 2 -->.\n"
         )
         targets = {
-            ("e001", "rate"): EVIDENCE_V2.CanonicalPresentation(
+            ("e001", "rate"): EVIDENCE.CanonicalPresentation(
                 kind="statistic", statistic="67.6%"
             ),
-            ("e001", "table"): EVIDENCE_V2.CanonicalPresentation(
+            ("e001", "table"): EVIDENCE.CanonicalPresentation(
                 kind="table",
                 table=(("candidate", "3.39x"),),
                 numerical_cells=frozenset({(1, 2)}),
             ),
         }
 
-        resolved = EVIDENCE_V2.resolve_summary_references(references, targets)
+        resolved = EVIDENCE.resolve_summary_references(references, targets)
 
         self.assertEqual(
             [association.forwarded_value for association in resolved],
             ["67.6%", "3.39x"],
         )
         with self.assertRaisesRegex(
-            EVIDENCE_V2.EvidenceV2Error, "summary.reference.mismatch"
+            EVIDENCE.EvidenceContractError, "summary.reference.mismatch"
         ):
-            EVIDENCE_V2.resolve_summary_references(
+            EVIDENCE.resolve_summary_references(
                 (replace(references[0], value="67.7%"),),
                 targets,
             )
 
-        unresolved = EVIDENCE_V2.index_summary_references(
+        unresolved = EVIDENCE.index_summary_references(
             "Value `1`<!-- ref entry = e001; eid = missing -->.\n"
         )
         with self.assertRaisesRegex(
-            EVIDENCE_V2.EvidenceV2Error, "summary.reference.unresolved"
+            EVIDENCE.EvidenceContractError, "summary.reference.unresolved"
         ):
-            EVIDENCE_V2.resolve_summary_references(unresolved, {})
+            EVIDENCE.resolve_summary_references(unresolved, {})
 
-        wrong_kind = EVIDENCE_V2.index_summary_references(
+        wrong_kind = EVIDENCE.index_summary_references(
             "Value `1`<!-- ref entry = e001; eid = output -->.\n"
         )
         with self.assertRaisesRegex(
-            EVIDENCE_V2.EvidenceV2Error, "summary.reference.target_invalid"
+            EVIDENCE.EvidenceContractError, "summary.reference.target_invalid"
         ):
-            EVIDENCE_V2.resolve_summary_references(
+            EVIDENCE.resolve_summary_references(
                 wrong_kind,
-                {("e001", "output"): EVIDENCE_V2.CanonicalPresentation("output")},
+                {("e001", "output"): EVIDENCE.CanonicalPresentation("output")},
             )
 
     def test_direct_artifacts_preserve_normalized_markdown_targets(self) -> None:
@@ -424,7 +490,7 @@ class EvidenceV2AssociationTests(unittest.TestCase):
             "```text\n[not an artifact](data/inside.csv)\n```\n"
         )
 
-        artifacts = EVIDENCE_V2.index_direct_artifacts(
+        artifacts = EVIDENCE.index_direct_artifacts(
             text,
             document="entries/2026-08-28-e001-study/e001.md",
         )

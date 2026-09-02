@@ -69,7 +69,7 @@ use one record-table locator and same-position column recipes:
 ```json
 {
   "sources": [{
-    "source": "data/errors.csv",
+    "source": "<errors>",
     "locator": {
       "select": [["case"], ["error"]],
       "identity": [["case"]],
@@ -117,7 +117,7 @@ select grouped records and their stable identities:
 
 ```json
 {
-  "source": "data/error-ranges.csv",
+  "source": "<error-ranges>",
   "locator": {
     "select": [["case"], ["error_min"], ["error_max"]],
     "identity": [["case"]],
@@ -172,17 +172,17 @@ The example produces `case-15 | 1.14–1.32%` followed by
 
 ## Summary
 
-Suppose input `0` selects string `1.6019` from `data/baseline.csv` and input
-`1` selects string `0.6015` from `data/candidate.csv`:
+Suppose input `0` selects string `1.6019` from `<baseline>` and input `1`
+selects string `0.6015` from `<candidate>`:
 
 ```json
 [
   {
-    "source": "data/baseline.csv",
+    "source": "<baseline>",
     "locator": {"select": [["fwhm_mas"]], "expect": {"items": 1}}
   },
   {
-    "source": "data/candidate.csv",
+    "source": "<candidate>",
     "locator": {"select": [["fwhm_mas"]], "expect": {"items": 1}}
   }
 ]

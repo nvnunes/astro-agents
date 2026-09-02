@@ -137,6 +137,15 @@ The research-log test gate must verify:
 - successful selections round-trip every canonical type and are keyed by
   strong source identity, source profile, canonical locator identity, and
   evaluator version;
+- evidence v3 accepts only complete input-registry tokens, rejects direct and
+  cross-entry paths, rejects bare directory tokens, and accepts one verified
+  regular-file directory member;
+- evidence-only registry declarations count as used, and token renames or
+  expected-fingerprint edits preserve selection-cache eligibility when the
+  resolved content identity, source profile, locator, and evaluator are
+  unchanged;
+- input verification and evidence selection share one strong source identity,
+  so a cold evidence file is hashed once and a hot run performs no new hash;
 - warm CSV, TSV, JSON, text, NPZ, and HDF5 selection hits perform no full
   payload read, source parse, archive open, or dataset materialization, while
   still checking reader availability and final source stability;

@@ -156,6 +156,30 @@ class MaterialGraphTests(unittest.TestCase):
             )
             self.assertGreater(len(result.orphan.orphaned), 0)
 
+    def test_evidence_only_input_is_not_reported_as_unused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, _ = _surface(Path(directory))
+            source = (entry_root / "data/source.csv").resolve().as_posix()
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    (),
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001",
+                            "result",
+                            "e001.md:eid:result",
+                            (source,),
+                            input_names=("entries/entry:source",),
+                        ),
+                    ),
+                )
+            )
+
+            self.assertFalse(result.orphan.unused_input_names)
+
     def test_retention_is_separate_and_cannot_cover_connected_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))

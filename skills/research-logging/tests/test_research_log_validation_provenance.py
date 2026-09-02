@@ -243,6 +243,12 @@ tool --input-directory '<bundle>' --output-data data/final.csv
                 PROVENANCE.ProvenanceV2Error, "directory.external.conflict"
             ):
                 PROVENANCE.evaluate_provenance(target, commands)
+            with self.assertRaisesRegex(
+                PROVENANCE.ProvenanceV2Error, "directory.external.conflict"
+            ):
+                PROVENANCE.require_external_boundary(
+                    entry_root / "data/bundle/a.csv", bundle, commands
+                )
 
 
 if __name__ == "__main__":

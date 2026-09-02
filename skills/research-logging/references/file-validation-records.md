@@ -57,7 +57,9 @@ once per membership observation with a 100,000-candidate bound and without
 descendant traversal.
 The expected fingerprint in `data.json`, mechanical rules, and per-log
 validation-cache schema do not key or invalidate an otherwise current
-observation.
+observation. Evidence source resolution reuses the verified registry
+observation in memory; it does not hash the same file again before consulting
+the selection cache.
 
 The nearest enclosing non-symlink `.git` file or directory owns the project
 cache; directory names do not determine project scope. A read-only validation

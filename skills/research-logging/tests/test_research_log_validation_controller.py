@@ -216,7 +216,7 @@ class MechanicalControllerTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text())
-            evidence["records"][0]["sources"][0]["source"] = "data/missing.csv"
+            evidence["records"][0]["sources"][0]["source"] = "<missing>"
             write(evidence_path, json.dumps(evidence) + "\n")
 
             result = CONTROLLER.validate(
@@ -359,8 +359,11 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(second["status"], "complete_clear")
             self.assertEqual(first["record"], second["record"])
+            # The script and evidence input are each hashed once; evidence
+            # selection reuses the input observation instead of hashing a third file.
+            self.assertEqual(first["metrics"]["fingerprint_cache_file_hashes"], 2)
             self.assertGreater(second["metrics"]["checks_unchanged"], 0)
-            self.assertGreater(second["metrics"]["source_hashes_reused"], 0)
+            self.assertGreater(second["metrics"]["input_fingerprints_reused"], 0)
             self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
             self.assertEqual(second["metrics"]["source_payload_reads"], 0)
             self.assertEqual(second["metrics"]["source_evaluations"], 0)
@@ -379,6 +382,33 @@ class MechanicalControllerTests(unittest.TestCase):
                     mechanical_before.st_ctime_ns,
                 ),
             )
+
+    def test_renaming_an_evidence_token_preserves_selection_cache_eligibility(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            first = CONTROLLER.validate(request)
+            entry_root = entry.parent
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            results = next(item for item in data["inputs"] if item["name"] == "results")
+            results["name"] = "renamed-results"
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            evidence_path = entry_root / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["source"] = "<renamed-results>"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            second = CONTROLLER.validate(request)
+
+            self.assertEqual(first["status"], "complete_clear")
+            self.assertEqual(second["status"], "complete_clear")
+            self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(second["metrics"]["source_payload_reads"], 0)
+            self.assertEqual(second["metrics"]["source_evaluations"], 0)
+            self.assertEqual(second["metrics"]["fingerprint_cache_file_hashes"], 0)
 
     def test_unchanged_local_input_reuses_its_verified_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -557,7 +587,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(rebuilt["metrics"]["checks_unchanged"], 0)
             self.assertGreater(rebuilt["metrics"]["selection_cache_hits"], 0)
             self.assertEqual(rebuilt["metrics"]["source_payload_reads"], 0)
-            self.assertGreater(rebuilt["metrics"]["source_hashes_reused"], 0)
+            self.assertGreater(rebuilt["metrics"]["input_fingerprints_reused"], 0)
 
     def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

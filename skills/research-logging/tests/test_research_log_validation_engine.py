@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -35,11 +36,14 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     )
     write(entry_root / "scripts" / "model.py", "# retained model\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
+    results_digest = hashlib.sha256(
+        (entry_root / "data" / "results.csv").read_bytes()
+    ).hexdigest()
     write(
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v1",
+                "schema": "research-log-data/v2",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -53,7 +57,16 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
                             "source": "test fixture",
                             "identity": "fixture-catalog/v1",
                         },
-                    }
+                    },
+                    {
+                        "name": "results",
+                        "kind": "file",
+                        "location": "data/results.csv",
+                        "fingerprint": {
+                            "algorithm": "sha256",
+                            "digest": results_digest,
+                        },
+                    },
                 ],
             },
             indent=2,
@@ -63,7 +76,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": [
     {
       "id": "success-rate",
@@ -71,7 +84,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
       "kind": "statistic",
       "sources": [
         {
-          "source": "data/results.csv",
+          "source": "<results>",
           "locator": {"select": [["success_rate"]]}
         }
       ],
@@ -124,7 +137,7 @@ def _remote_data_json() -> str:
     return (
         json.dumps(
             {
-                "schema": "research-log-data/v1",
+                "schema": "research-log-data/v2",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -148,77 +161,18 @@ def _remote_data_json() -> str:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
-    def test_entry_data_reference_accepts_one_split_entry_root(self) -> None:
+    def test_input_verification_dependencies_include_the_entry_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            entry_root = root / "entries/2026-08-29-e009-split-study"
-            state = ENGINE._ScanState(root / "study.md", root, root)
-            state.entries = [
-                ENGINE._Entry(
-                    "e009a", entry_root / "e009a.md", entry_root, None, None, None
-                ),
-                ENGINE._Entry(
-                    "e009b", entry_root / "e009b.md", entry_root, None, None, None
-                ),
-            ]
-
-            referenced_entry, path = ENGINE._resolve_entry_data_reference(
-                "<e009>/results.csv", state
+            write(root / "source.csv", "value\n1\n")
+            resource = DATA.build_local_input(
+                "source", "file", str(root / "source.csv"), entry_root=root
             )
 
-            self.assertEqual(referenced_entry.root, entry_root)
-            self.assertEqual(path, entry_root / "data/results.csv")
-
-    def test_entry_data_reference_rejects_invalid_member_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            entry_root = root / "entries/2026-08-29-e009-study"
-            state = ENGINE._ScanState(root / "study.md", root, root)
-            state.entries = [
-                ENGINE._Entry(
-                    "e009", entry_root / "e009.md", entry_root, None, None, None
-                )
-            ]
-
-            for source in (
-                "<e009>/",
-                "<e009>/../results.csv",
-                "<e009>/nested//results.csv",
-                "<e009>/nested\\results.csv",
-                "<e009>/https://example.test/results.csv",
-            ):
-                with (
-                    self.subTest(source=source),
-                    self.assertRaises(ENGINE.EngineV2Error) as raised,
-                ):
-                    ENGINE._resolve_entry_data_reference(source, state)
-                self.assertEqual(raised.exception.code, "locator.path.unresolved")
-
-    def test_entry_data_reference_rejects_missing_and_ambiguous_families(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            state = ENGINE._ScanState(root / "study.md", root, root)
-            with self.assertRaises(ENGINE.EngineV2Error) as missing:
-                ENGINE._resolve_entry_data_reference("<e009>/results.csv", state)
-            self.assertEqual(missing.exception.code, "locator.path.unresolved")
-            self.assertEqual(missing.exception.observed["matches"], 0)
-
-            first_root = root / "entries/2026-08-29-e009a-study"
-            second_root = root / "entries/2026-08-30-e009b-study"
-            state.entries = [
-                ENGINE._Entry(
-                    "e009a", first_root / "e009a.md", first_root, None, None, None
-                ),
-                ENGINE._Entry(
-                    "e009b", second_root / "e009b.md", second_root, None, None, None
-                ),
-            ]
-            with self.assertRaises(ENGINE.EngineV2Error) as ambiguous:
-                ENGINE._resolve_entry_data_reference("<e009>/results.csv", state)
-            self.assertEqual(ambiguous.exception.code, "locator.path.unresolved")
-            self.assertEqual(ambiguous.exception.observed["matches"], 2)
+            self.assertNotEqual(
+                ENGINE._input_declaration_key("entries/first", resource),
+                ENGINE._input_declaration_key("entries/second", resource),
+            )
 
     def test_shared_input_observation_checks_every_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -399,6 +353,186 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 1)
 
+    def test_invalid_command_input_blocks_its_provenance_without_cascade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            catalog_path = entry.parent / "inputs/catalog.csv"
+            write(catalog_path, "value\n1\n")
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
+            catalog.update(
+                {
+                    "location": "inputs/catalog.csv",
+                    "fingerprint": {"algorithm": "sha256", "digest": "0" * 64},
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            declaration = checks["entry:e001:input:catalog-declaration"]
+            command = checks["entry:e001:command:1:1"]
+            provenance = checks["provenance:e001:success-rate"]
+            self.assertEqual(command.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertIn({"dependency": declaration.identity}, command.dependencies)
+            self.assertEqual(
+                checks["evidence:e001:success-rate"].status,
+                RESULTS.CheckStatus.PASS,
+            )
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertIn({"dependency": command.identity}, provenance.dependencies)
+            failure_codes = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("producer.missing", failure_codes)
+            self.assertNotIn("orphan.material.unused", failure_codes)
+
+    def test_invalid_data_file_blocks_dependent_checks_without_cascade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(entry.parent / "data.json", "{\n")
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            declaration = checks["entry:e001:data-declaration"]
+            for identity in (
+                "entry:e001:command:1:1",
+                "evidence:e001:success-rate",
+                "provenance:e001:success-rate",
+            ):
+                self.assertEqual(
+                    checks[identity].status, RESULTS.CheckStatus.NOT_APPLICABLE
+                )
+                self.assertIn(
+                    {"dependency": declaration.identity}, checks[identity].dependencies
+                )
+            failure_codes = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("data.input.undeclared", failure_codes)
+            self.assertNotIn("orphan.material.unused", failure_codes)
+
+    def test_invalid_evidence_file_blocks_owner_orphan_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["source"] = "data/results.csv"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            declaration = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "entry:e001:evidence-declaration"
+            )
+            orphan_checks = [
+                check
+                for check in evaluation.result.checks
+                if check.scope is RESULTS.CheckScope.ORPHAN
+            ]
+            self.assertTrue(orphan_checks)
+            for check in orphan_checks:
+                self.assertEqual(check.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+                self.assertIn(
+                    {"dependency": declaration.identity}, check.dependencies
+                )
+            self.assertFalse(
+                any(check.failure is not None for check in orphan_checks)
+            )
+
+    def test_conflicted_input_blocks_consumers_without_undeclared_cascade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            shared = root / "inputs/catalog.csv"
+            write(shared, "success_rate\n0.676\n")
+            digest = hashlib.sha256(shared.read_bytes()).hexdigest()
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
+            catalog.update(
+                {
+                    "location": shared.as_posix(),
+                    "fingerprint": {"algorithm": "sha256", "digest": digest},
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["source"] = "<catalog>"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            second_root = root / "docs/study/entries/2026-08-30-e002-conflict"
+            write(second_root / "e002.md", "# Entry e002\n")
+            write(
+                second_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v2",
+                        "inputs": [
+                            {
+                                "name": "shared-catalog",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "fingerprint": {
+                                    "algorithm": "sha256",
+                                    "digest": digest,
+                                },
+                                "external": {
+                                    "source": "conflicting fixture",
+                                    "identity": "catalog/v2",
+                                },
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                + "\n- [Conflict]"
+                "(study/entries/2026-08-30-e002-conflict/e002.md)\n",
+            )
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            conflict = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity.startswith("conformance:data-conflict:")
+            )
+            for identity in (
+                "entry:e001:command:1:1",
+                "evidence:e001:success-rate",
+                "provenance:e001:success-rate",
+            ):
+                self.assertEqual(
+                    checks[identity].status, RESULTS.CheckStatus.NOT_APPLICABLE
+                )
+                self.assertIn(
+                    {"dependency": conflict.identity}, checks[identity].dependencies
+                )
+            failure_codes = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("data.input.undeclared", failure_codes)
+            self.assertNotIn("orphan.input.unused", failure_codes)
+            self.assertNotIn("orphan.material.unused", failure_codes)
+
     def test_cross_entry_data_conflict_does_not_block_unrelated_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -422,7 +556,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     entry_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v1",
+                            "schema": "research-log-data/v2",
                             "inputs": [
                                 {
                                     "name": "conflict",
@@ -661,14 +795,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry_root / "evidence.json",
                 """{
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": [
     {
       "id": "unlisted-value",
       "document": "entries/2026-08-29-e001-study/e001b.md",
       "kind": "statistic",
       "sources": [
-        {"source": "data/result.csv", "locator": {"select": [["value"]]}}
+        {"source": "<result>", "locator": {"select": [["value"]]}}
       ],
       "transformation": null
     }
@@ -727,6 +861,97 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evidence.dependencies,
             )
 
+    def test_generated_evidence_input_rejects_an_external_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            results = next(item for item in data["inputs"] if item["name"] == "results")
+            results["external"] = {
+                "source": "incorrect fixture boundary",
+                "identity": "incorrect/results-v1",
+            }
+            write(data_path, json.dumps(data, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            evidence = checks["evidence:e001:success-rate"]
+            provenance = checks["provenance:e001:success-rate"]
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
+            assert provenance.failure is not None
+            self.assertEqual(provenance.failure.code, "data.external.invalid")
+
+    def test_remote_evidence_is_unavailable_but_still_uses_its_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["inputs"] = [
+                item for item in data["inputs"] if item["name"] == "catalog"
+            ]
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence_data = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence_data["records"][0]["sources"][0]["source"] = "<catalog>"
+            write(evidence_path, json.dumps(evidence_data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    " --catalog '<catalog>'", ""
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.INCOMPLETE
+            )
+            self.assertEqual(
+                checks["evidence:e001:success-rate"].status,
+                RESULTS.CheckStatus.UNAVAILABLE,
+            )
+            self.assertEqual(
+                checks["provenance:e001:success-rate"].status,
+                RESULTS.CheckStatus.UNAVAILABLE,
+            )
+            failure_codes = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("orphan.input.unused", failure_codes)
+
+    def test_invalid_evidence_input_remains_declared_and_blocks_dependents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(entry.parent / "data/results.csv", "success_rate\n0.675\n")
+
+            evaluation = _evaluate(summary)
+
+            checks = {check.identity: check for check in evaluation.result.checks}
+            declaration = checks["entry:e001:input:results-declaration"]
+            evidence = checks["evidence:e001:success-rate"]
+            provenance = checks["provenance:e001:success-rate"]
+            assert declaration.failure is not None
+            self.assertEqual(declaration.failure.code, "data.fingerprint.mismatch")
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertIn(
+                {"dependency": declaration.identity}, evidence.dependencies
+            )
+            failure_codes = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("data.input.undeclared", failure_codes)
+            self.assertNotIn("orphan.input.unused", failure_codes)
+
     def test_decimal_locator_is_retained_exactly_in_record_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -745,6 +970,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry.parent / "data" / "results.csv",
                 "threshold,success_rate\n0.676,0.676\n",
             )
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            results = next(item for item in data["inputs"] if item["name"] == "results")
+            results["fingerprint"]["digest"] = hashlib.sha256(
+                (entry.parent / "data" / "results.csv").read_bytes()
+            ).hexdigest()
+            write(data_path, json.dumps(data, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
 
@@ -826,7 +1058,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 RESULTS.CheckStatus.PASS,
             )
 
-    def test_cross_entry_sources_resolve_against_referenced_entry(self) -> None:
+    def test_cross_entry_source_uses_the_consuming_entry_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = _log(root)
@@ -862,10 +1094,35 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "<!-- eid:prior-success-rate -->.\n",
             )
             write(
+                second_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v2",
+                        "inputs": [
+                            {
+                                "name": "prior-results",
+                                "kind": "file",
+                                "location": os.path.relpath(
+                                    retained / "results.csv", second_root
+                                ),
+                                "fingerprint": {
+                                    "algorithm": "sha256",
+                                    "digest": hashlib.sha256(
+                                        (retained / "results.csv").read_bytes()
+                                    ).hexdigest(),
+                                },
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            write(
                 second_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v2",
+                        "schema": "research-log-evidence/v3",
                         "records": [
                             {
                                 "id": "prior-success-rate",
@@ -875,7 +1132,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                 "kind": "statistic",
                                 "sources": [
                                     {
-                                        "source": "<e001>/results.csv",
+                                        "source": "<prior-results>",
                                         "locator": {"select": [["success_rate"]]},
                                     }
                                 ],
@@ -927,17 +1184,73 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
 
             log_relative_evaluation = _evaluate(summary)
-            log_relative_checks = {
-                check.identity: check for check in log_relative_evaluation.result.checks
+            declaration = next(
+                check
+                for check in log_relative_evaluation.result.checks
+                if check.identity == "entry:e002:evidence-declaration"
+            )
+            self.assertEqual(declaration.scope, RESULTS.CheckScope.CONFORMANCE)
+            assert declaration.failure is not None
+            self.assertEqual(declaration.failure.code, "evidence.declaration.invalid")
+
+    def test_evidence_directory_requires_one_exact_regular_file_member(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            entry_root = entry.parent
+            evidence_directory = entry_root / "data/evidence"
+            evidence_directory.mkdir()
+            (entry_root / "data/results.csv").replace(
+                evidence_directory / "results.csv"
+            )
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "data/results.csv", "data/evidence/results.csv"
+                ),
+            )
+            data_path = entry_root / "data.json"
+            payload = json.loads(data_path.read_text(encoding="utf-8"))
+            payload["inputs"] = [
+                DATA.build_local_input(
+                    "results-dir",
+                    "directory",
+                    "data/evidence",
+                    entry_root=entry_root,
+                ).as_dict()
+            ]
+            write(data_path, json.dumps(payload, indent=2) + "\n")
+            evidence_path = entry_root / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["source"] = "<results-dir>"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            bare = _evaluate(summary)
+
+            declaration = next(
+                check
+                for check in bare.result.checks
+                if check.identity == "evidence:e001:success-rate"
+            )
+            self.assertEqual(declaration.status, RESULTS.CheckStatus.FAIL)
+            assert declaration.failure is not None
+            self.assertEqual(declaration.failure.code, "evidence.declaration.invalid")
+
+            evidence["records"][0]["sources"][0]["source"] = "<results-dir>/results.csv"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            member = _evaluate(summary)
+
+            checks = {check.identity: check for check in member.result.checks}
+            self.assertEqual(
+                checks["evidence:e001:success-rate"].status,
+                RESULTS.CheckStatus.PASS,
+            )
+            failure_codes = {
+                check.failure.code
+                for check in member.result.checks
+                if check.failure is not None
             }
-            self.assertEqual(
-                log_relative_checks["evidence:e002:prior-success-rate"].status,
-                RESULTS.CheckStatus.PASS,
-            )
-            self.assertEqual(
-                log_relative_checks["provenance:e002:prior-success-rate"].status,
-                RESULTS.CheckStatus.PASS,
-            )
+            self.assertNotIn("orphan.input.unused", failure_codes)
 
     def test_distinct_locators_share_one_stable_source_observation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1288,11 +1601,29 @@ class EngineV2EndToEndTests(unittest.TestCase):
             external_state = external_root / "validation/manifest.json"
             write(external_source, "success_rate\n0.676\n")
             write(external_state, "not valid validation state\n")
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["inputs"].append(
+                {
+                    "name": "external-results",
+                    "kind": "file",
+                    "location": os.path.relpath(external_source, entry.parent),
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(
+                            external_source.read_bytes()
+                        ).hexdigest(),
+                    },
+                    "external": {
+                        "source": "Other research log",
+                        "identity": "other:e001:results",
+                    },
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text())
-            evidence["records"][0]["sources"][0]["source"] = (
-                "<project>/docs/other/entries/e001/data/results.csv"
-            )
+            evidence["records"][0]["sources"][0]["source"] = "<external-results>"
             write(evidence_path, json.dumps(evidence) + "\n")
             original_read_bytes = Path.read_bytes
             original_read_text = Path.read_text

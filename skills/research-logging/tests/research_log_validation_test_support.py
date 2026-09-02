@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import subprocess
@@ -41,11 +42,14 @@ def mechanical_log(
     )
     write(entry_root / "scripts" / "model.py", "# retained model\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
+    results_digest = hashlib.sha256(
+        (entry_root / "data" / "results.csv").read_bytes()
+    ).hexdigest()
     write(
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v1",
+                "schema": "research-log-data/v2",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -59,7 +63,16 @@ def mechanical_log(
                             "source": "test fixture",
                             "identity": "fixture-catalog/v1",
                         },
-                    }
+                    },
+                    {
+                        "name": "results",
+                        "kind": "file",
+                        "location": "data/results.csv",
+                        "fingerprint": {
+                            "algorithm": "sha256",
+                            "digest": results_digest,
+                        },
+                    },
                 ],
             },
             indent=2,
@@ -70,7 +83,7 @@ def mechanical_log(
         entry_root / "evidence.json",
         json.dumps(
             {
-                "schema": "research-log-evidence/v2",
+                "schema": "research-log-evidence/v3",
                 "records": [
                     {
                         "id": "success-rate",
@@ -78,7 +91,7 @@ def mechanical_log(
                         "kind": "statistic",
                         "sources": [
                             {
-                                "source": "data/results.csv",
+                                "source": "<results>",
                                 "locator": {"select": [["success_rate"]]},
                             }
                         ],

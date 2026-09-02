@@ -53,6 +53,34 @@ def data_fixture(root: Path) -> tuple[Path, Path]:
 
 
 class DataFileTests(unittest.TestCase):
+    def test_input_token_parts_enforces_complete_member_syntax(self) -> None:
+        self.assertEqual(DATA.input_token_parts("<results>"), ("results", None))
+        self.assertEqual(
+            DATA.input_token_parts("<results>/nested/file.csv"),
+            ("results", "nested/file.csv"),
+        )
+        for token in (
+            "<results>/../secret.csv",
+            "<results>/nested//file.csv",
+            "<results>/nested\\file.csv",
+            "<results>/https://host/file.csv",
+        ):
+            with self.subTest(token=token):
+                self.assertIsNone(DATA.input_token_parts(token))
+
+    def test_retired_v1_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry, _ = data_fixture(Path(directory))
+            path = entry / "data.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["schema"] = "research-log-data/v1"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                DATA.DataContractError, "data.declaration.invalid"
+            ):
+                DATA.load_data_file(path, entry_root=entry)
+
     def test_numeric_entry_family_input_names_are_reserved(self) -> None:
         for name in ("e004", "E004"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:

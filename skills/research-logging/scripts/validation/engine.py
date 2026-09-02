@@ -6,9 +6,9 @@ import hashlib
 import re
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, NoReturn, Sequence, cast
+from typing import Any, Iterable, Mapping, NoReturn, Sequence, cast
 
 from research_log_data import (
     DataContractError,
@@ -16,6 +16,7 @@ from research_log_data import (
     FingerprintObservation,
     InputResource,
     find_log_consistency_conflicts,
+    input_token_parts,
     load_data_file,
     resolve_input_token,
     validate_fingerprint_observation,
@@ -91,7 +92,7 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .mechanical_values import SelectionResult
-from .provenance import evaluate_provenance
+from .provenance import evaluate_provenance, require_external_boundary
 from .retention import RetentionFile, load_retention_file
 from .selection_codec import encode_selection
 from .transformation import (
@@ -101,9 +102,8 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/input-registry-5"
+RULES_VERSION = "research-log-mechanical/input-registry-6"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
-ENTRY_DATA_REFERENCE_RE = re.compile(r"<(e[0-9]+)>/([^<>]*)\Z")
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
 
@@ -122,14 +122,16 @@ class _Entry:
     evidence_file: EvidenceFile | None
     data_file: DataFile | None
     retention_file: RetentionFile | None
-    evidence_failed: bool = False
+    evidence_failure: MechanicalCheck | None = None
+    data_failure: MechanicalCheck | None = None
 
 
 @dataclass(frozen=True)
 class _EntrySurface:
     evidence_file: EvidenceFile | None
-    evidence_failed: bool
+    evidence_failure: MechanicalCheck | None
     data_file: DataFile | None
+    data_failure: MechanicalCheck | None
     retention_file: RetentionFile | None
 
 
@@ -137,6 +139,8 @@ class _EntrySurface:
 class _ResolvedSource:
     path: Path
     external: bool
+    input_name: str
+    resource: InputResource
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,10 @@ class _ScanState:
     source_cache: dict[str, SourceIdentityObservation] = field(default_factory=dict)
     script_cache: dict[str, ScriptObservation] = field(default_factory=dict)
     input_observations: dict[str, FingerprintObservation] = field(default_factory=dict)
+    input_prerequisite_checks: dict[str, list[MechanicalCheck]] = field(
+        default_factory=dict
+    )
+    graph_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
@@ -347,13 +355,14 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
         root = document.parent.resolve()
         entries.append(
             _Entry(
-                document.stem,
-                document.resolve(),
-                root,
-                surface.evidence_file,
-                surface.data_file,
-                surface.retention_file,
-                surface.evidence_failed,
+                id=document.stem,
+                document=document.resolve(),
+                root=root,
+                evidence_file=surface.evidence_file,
+                data_file=surface.data_file,
+                retention_file=surface.retention_file,
+                evidence_failure=surface.evidence_failure,
+                data_failure=surface.data_failure,
             )
         )
     data_files = tuple(
@@ -364,29 +373,21 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
         }.values()
     )
     conflicts = find_log_consistency_conflicts(data_files)
-    if not conflicts:
-        return entries
-    conflicted_targets = {conflict.canonical_target for conflict in conflicts}
     for conflict in conflicts:
         identity = hashlib.sha256(conflict.canonical_target.encode("utf-8")).hexdigest()
-        state.checks.append(
-            _error_check(
-                f"conformance:data-conflict:{identity}",
-                CheckScope.CONFORMANCE,
-                conflict.error,
-            )
+        check = _error_check(
+            f"conformance:data-conflict:{identity}",
+            CheckScope.CONFORMANCE,
+            conflict.error,
         )
-    return [_without_conflicted_inputs(entry, conflicted_targets) for entry in entries]
-
-
-def _without_conflicted_inputs(entry: _Entry, targets: set[str]) -> _Entry:
-    if entry.data_file is None:
-        return entry
-    inputs = tuple(
-        item for item in entry.data_file.inputs if item.canonical_target not in targets
-    )
-    data_file = replace(entry.data_file, inputs=inputs) if inputs else None
-    return replace(entry, data_file=data_file)
+        state.checks.append(check)
+        for entry in entries:
+            if entry.data_file is None:
+                continue
+            for resource in entry.data_file.inputs:
+                if resource.canonical_target == conflict.canonical_target:
+                    _add_input_prerequisite(entry, resource, check, state)
+    return entries
 
 
 def _validate_surface_placement(documents: Sequence[Path], state: _ScanState) -> None:
@@ -485,24 +486,25 @@ def _validate_owned_entry(document: Path, root: Path, state: _ScanState) -> None
                 "reason": getattr(error, "reason", "outside_entries"),
                 "root": str(state.log_root),
             },
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         ) from error
 
 
 def _read_entry_surface(entry_id: str, root: Path, state: _ScanState) -> _EntrySurface:
     evidence_path = root / "evidence.json"
     evidence_file: EvidenceFile | None = None
-    evidence_failed = False
+    evidence_failure: MechanicalCheck | None = None
     if evidence_path.is_file():
         try:
             evidence_file = load_evidence_file(
                 evidence_path, log_root=state.log_root, entry_root=root
             )
         except MechanicalContractError as error:
-            evidence_failed = True
-            _record_entry_surface_error(entry_id, "evidence", error, state)
+            evidence_failure = _record_entry_surface_error(
+                entry_id, "evidence", error, state
+            )
 
-    data_file = _read_entry_data(entry_id, root, state)
+    data_file, data_failure = _read_entry_data(entry_id, root, state)
 
     retention_path = root / "retention.json"
     retention_file: RetentionFile | None = None
@@ -511,10 +513,18 @@ def _read_entry_surface(entry_id: str, root: Path, state: _ScanState) -> _EntryS
             retention_file = load_retention_file(retention_path, entry_root=root)
         except MechanicalContractError as error:
             _record_entry_surface_error(entry_id, "retention", error, state)
-    return _EntrySurface(evidence_file, evidence_failed, data_file, retention_file)
+    return _EntrySurface(
+        evidence_file,
+        evidence_failure,
+        data_file,
+        data_failure,
+        retention_file,
+    )
 
 
-def _read_entry_data(entry_id: str, root: Path, state: _ScanState) -> DataFile | None:
+def _read_entry_data(
+    entry_id: str, root: Path, state: _ScanState
+) -> tuple[DataFile | None, MechanicalCheck | None]:
     data_path = root / "data.json"
     legacy_path = root / "data.csv"
     try:
@@ -534,33 +544,31 @@ def _read_entry_data(entry_id: str, root: Path, state: _ScanState) -> DataFile |
             load_data_file(data_path, entry_root=root) if data_path.is_file() else None
         )
     except MechanicalContractError as error:
-        _record_entry_surface_error(entry_id, "data", error, state)
-        return None
+        check = _record_entry_surface_error(entry_id, "data", error, state)
+        return None, check
     if data_file is None:
-        return None
-    valid_inputs: list[InputResource] = []
+        return None, None
     for resource in data_file.inputs:
         try:
             _verify_input(resource, state)
         except MechanicalContractError as error:
-            _record_entry_surface_error(
+            check = _record_entry_surface_error(
                 entry_id, f"input:{resource.name}", error, state
             )
-        else:
-            valid_inputs.append(resource)
-    return replace(data_file, inputs=tuple(valid_inputs))
+            _add_input_prerequisite_for_root(root, resource, check, state)
+    return data_file, None
 
 
 def _record_entry_surface_error(
     entry_id: str, component: str, error: MechanicalContractError, state: _ScanState
-) -> None:
-    state.checks.append(
-        _error_check(
-            f"entry:{entry_id}:{component}-declaration",
-            _error_scope(error, CheckScope.PROVENANCE),
-            error,
-        )
+) -> MechanicalCheck:
+    check = _error_check(
+        f"entry:{entry_id}:{component}-declaration",
+        _error_scope(error, CheckScope.PROVENANCE),
+        error,
     )
+    state.checks.append(check)
+    return check
 
 
 def _verify_input(
@@ -583,6 +591,32 @@ def _verify_input(
         state.input_fingerprints_reused += 1
     state.input_observations[key] = observation
     return observation
+
+
+def _input_declaration_key(owner: str, resource: InputResource) -> str:
+    """Identify one entry-owned input declaration for dependency tracking."""
+
+    return f"{owner}:{resource.name}"
+
+
+def _add_input_prerequisite(
+    entry: _Entry,
+    resource: InputResource,
+    check: MechanicalCheck,
+    state: _ScanState,
+) -> None:
+    _add_input_prerequisite_for_root(entry.root, resource, check, state)
+
+
+def _add_input_prerequisite_for_root(
+    root: Path,
+    resource: InputResource,
+    check: MechanicalCheck,
+    state: _ScanState,
+) -> None:
+    owner = root.relative_to(state.log_root).as_posix()
+    key = _input_declaration_key(owner, resource)
+    state.input_prerequisite_checks.setdefault(key, []).append(check)
 
 
 def _observe_script_identity(path: Path, state: _ScanState) -> ScriptObservation:
@@ -649,9 +683,44 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 ),
             )
             discovery = discover_commands(text, context)
-            documents.append(discovery.invocations)
+            valid_invocations: list[Invocation] = []
+            for invocation in discovery.invocations:
+                prerequisites = _invocation_input_prerequisites(invocation, state)
+                if not prerequisites:
+                    valid_invocations.append(invocation)
+                    continue
+                identity = _command_check_identity(
+                    entry.id, invocation.fence, invocation.ordinal
+                )
+                state.checks.append(
+                    _checks_depending_on(
+                        identity, CheckScope.PROVENANCE, prerequisites
+                    )
+                )
+                _register_invocation_blockers(invocation, identity, state)
+            documents.append(tuple(valid_invocations))
             for failure in discovery.failures:
-                identity = f"entry:{entry.id}:command:{failure.fence}:{failure.ordinal}"
+                identity = _command_check_identity(
+                    entry.id, failure.fence, failure.ordinal
+                )
+                prerequisites = _command_failure_prerequisites(
+                    entry, failure.error, state
+                )
+                if prerequisites:
+                    state.checks.append(
+                        _checks_depending_on(
+                            identity,
+                            _error_scope(failure.error, CheckScope.PROVENANCE),
+                            prerequisites,
+                        )
+                    )
+                    state.graph_failure_owners.setdefault(
+                        _material_owner(entry, state), set()
+                    ).add(identity)
+                    state.command_failure_owners.setdefault(
+                        _material_owner(entry, state), set()
+                    ).add(identity)
+                    continue
                 if failure.error.code == "material.candidate.unresolved":
                     observed = failure.error.observed
                     candidates = (
@@ -685,6 +754,75 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
     return order_invocations(documents)
 
 
+def _command_check_identity(entry: str, fence: int, ordinal: int) -> str:
+    return f"entry:{entry}:command:{fence}:{ordinal}"
+
+
+def _invocation_input_prerequisites(
+    invocation: Invocation, state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    checks = [
+        check
+        for relationship in invocation.inputs
+        if relationship.input_resource is not None
+        for check in state.input_prerequisite_checks.get(
+            _input_declaration_key(
+                invocation.material_owner, relationship.input_resource
+            ),
+            (),
+        )
+    ]
+    return _unique_checks(checks)
+
+
+def _command_failure_prerequisites(
+    entry: _Entry, error: MechanicalContractError, state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    if entry.data_failure is not None and error.code == "data.input.undeclared":
+        return (entry.data_failure,)
+    matching = [
+        check
+        for check in _entry_input_prerequisites(entry, state)
+        if check.failure is not None and check.failure.code == error.code
+    ]
+    return _unique_checks(matching)
+
+
+def _entry_input_prerequisites(
+    entry: _Entry, state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    if entry.data_file is None:
+        return ()
+    owner = _material_owner(entry, state)
+    return _unique_checks(
+        [
+            check
+            for resource in entry.data_file.inputs
+            for check in state.input_prerequisite_checks.get(
+                _input_declaration_key(owner, resource), ()
+            )
+        ]
+    )
+
+
+def _register_invocation_blockers(
+    invocation: Invocation, identity: str, state: _ScanState
+) -> None:
+    paths = {relationship.path for relationship in invocation.outputs}
+    paths.update(
+        collection.root
+        for collection in invocation.collections
+        if collection.direction == "output" and collection.root is not None
+    )
+    if invocation.script is not None and Path(invocation.script).is_absolute():
+        paths.add(invocation.script)
+    for path in paths:
+        state.command_candidate_dependencies.setdefault(path, set()).add(identity)
+    state.command_failure_owners.setdefault(invocation.material_owner, set()).add(
+        identity
+    )
+
+
 # Evidence, presentations, and provenance evaluation.
 
 
@@ -705,7 +843,7 @@ def _evaluate_entries(state: _ScanState) -> None:
                 )
             evidence_file = _document_evidence_file(entry, state)
             if evidence_file is None:
-                if presentations and not entry.evidence_failed:
+                if presentations and entry.evidence_failure is None:
                     _fail(
                         "association.declaration_missing",
                         str(entry.root / "evidence.json"),
@@ -855,6 +993,18 @@ def _evaluate_record(
     state: _ScanState,
 ) -> _RecordOutcome:
     identity = f"evidence:{entry.id}:{record.id}"
+    if entry.data_failure is not None:
+        evidence = _check_depending_on(
+            identity, CheckScope.EVIDENCE, entry.data_failure
+        )
+        provenance = _check_depending_on(
+            f"provenance:{entry.id}:{record.id}",
+            CheckScope.PROVENANCE,
+            entry.data_failure,
+        )
+        return _RecordOutcome(
+            entry.id, record, item, (), evidence, provenance, None, ()
+        )
     try:
         materials = tuple(
             _resolve_source(source, entry, state) for source in record.sources
@@ -863,25 +1013,44 @@ def _evaluate_record(
         evidence = _error_check(
             identity, _error_scope(error, CheckScope.EVIDENCE), error
         )
-        provenance = _dependent_check(
+        provenance = _check_depending_on(
             f"provenance:{entry.id}:{record.id}",
             CheckScope.PROVENANCE,
-            identity,
+            evidence,
         )
         return _RecordOutcome(
             entry.id, record, item, (), evidence, provenance, None, ()
         )
+    verification_checks = _unique_checks(
+        check
+        for material in materials
+        for check in state.input_prerequisite_checks.get(material.input_name, ())
+    )
+    if verification_checks:
+        evidence = _checks_depending_on(
+            identity, CheckScope.EVIDENCE, verification_checks
+        )
+        provenance = _checks_depending_on(
+            f"provenance:{entry.id}:{record.id}",
+            CheckScope.PROVENANCE,
+            verification_checks,
+        )
+        return _RecordOutcome(
+            entry.id, record, item, materials, evidence, provenance, None, ()
+        )
     provenance = _record_provenance(entry, record, materials, state)
     try:
         selections = [
-            _selection(source, resolved.path, state)
+            _selection(source, resolved, state)
             for source, resolved in zip(record.sources, materials)
         ]
         transformed = _transform_and_compare(record, selections, item, state)
         evidence = _pass_check(
             identity,
             CheckScope.EVIDENCE,
-            dependencies=_record_dependencies(record, selections, transformed, item),
+            dependencies=_record_dependencies(
+                record, materials, selections, transformed, item
+            ),
         )
         canonical = _canonical_presentation(transformed, item)
         dependencies = tuple(
@@ -927,8 +1096,9 @@ def _transform_and_compare(
 
 
 def _selection(
-    source: EvidenceSource, path: Path, state: _ScanState
+    source: EvidenceSource, resolved: _ResolvedSource, state: _ScanState
 ) -> SelectionResult:
+    path = resolved.path
     source_key = path.resolve().as_posix()
     parsed_locator = parse_locator(source.locator)
     key = (source_key, parsed_locator.identity)
@@ -937,8 +1107,10 @@ def _selection(
         identity = state.source_cache.get(source_key)
         if identity is None:
             started = time.perf_counter()
+            trusted_identity = _trusted_input_identity(resolved, state)
             identity = observe_source_identity(
                 path,
+                trusted_identity=trusted_identity,
                 fingerprint_cache=state.fingerprint_cache,
             )
             state.timings["source_identity_seconds"] = state.timings.get(
@@ -946,7 +1118,7 @@ def _selection(
             ) + (time.perf_counter() - started)
             state.source_opens += 1
             state.source_cache[source_key] = identity
-            if identity.identity_reused:
+            if identity.identity_reused and trusted_identity is None:
                 state.source_hashes_reused += 1
         started = time.perf_counter()
         selection = (
@@ -1011,12 +1183,23 @@ def _record_provenance(
 ) -> MechanicalCheck:
     identity = f"provenance:{entry.id}:{record.id}"
     artifact_dependency = {
-        "artifacts": sorted(material.path.as_posix() for material in materials)
+        "artifacts": sorted(material.path.as_posix() for material in materials),
+        "inputs": [
+            {
+                "declaration": material.resource.content_identity,
+                "name": material.input_name,
+                "path": material.path.as_posix(),
+            }
+            for material in sorted(materials, key=lambda item: item.input_name)
+        ],
     }
     try:
         dependencies: list[Mapping[str, object]] = [artifact_dependency]
         for material in materials:
             if material.external:
+                require_external_boundary(
+                    material.path, material.resource, state.invocations
+                )
                 dependencies.append(
                     {"kind": "external", "material": material.path.as_posix()}
                 )
@@ -1160,25 +1343,29 @@ def _require_complete_summary_references(
 
 
 def _compose_graph(state: _ScanState) -> None:
-    connections = tuple(
-        EvidenceConnection(
-            outcome.entry,
-            outcome.record.id,
-            f"{outcome.item.document}:{outcome.item.id}",
-            tuple(material.path.as_posix() for material in outcome.materials),
-            outcome.dependencies,
-            frozenset(
-                material.path.as_posix()
-                for material in outcome.materials
-                if material.external
-            ),
+    connections: list[EvidenceConnection] = []
+    for outcome in state.records:
+        input_names = _evidence_input_names(outcome.entry, outcome.record, state)
+        if not outcome.materials and not input_names:
+            continue
+        connections.append(
+            EvidenceConnection(
+                outcome.entry,
+                outcome.record.id,
+                f"{outcome.item.document}:{outcome.item.id}",
+                tuple(material.path.as_posix() for material in outcome.materials),
+                outcome.dependencies,
+                frozenset(
+                    material.path.as_posix()
+                    for material in outcome.materials
+                    if material.external
+                ),
+                input_names,
+            )
         )
-        for outcome in state.records
-        if outcome.materials
-    )
     request = MaterialGraphRequest(
         entry_roots={entry.id: entry.root for entry in state.entries},
-        evidence=connections,
+        evidence=tuple(connections),
         direct_artifacts=tuple(state.direct),
         invocations=state.invocations,
         retention_files=_unique_retention_files(state.entries),
@@ -1194,15 +1381,15 @@ def _compose_graph(state: _ScanState) -> None:
     orphan = state.graph.orphan
     orphan_groups = _orphan_group_metadata(state, orphan.inventory, orphan.orphaned)
     for path in orphan.orphaned:
-        material_blockers = _command_blockers(path, state)
+        material_blockers = _material_graph_blockers(path, state)
         if material_blockers:
             state.checks.append(
-                _blocked_check(
+                _checks_depending_on(
                     f"orphan:material:{path}",
                     CheckScope.ORPHAN,
-                    path,
-                    material_blockers,
-                    dependencies=({"artifacts": [path]},),
+                    _checks_by_identity(material_blockers, state),
+                    subject=path,
+                    extra_dependencies=({"artifacts": [path]},),
                 )
             )
             continue
@@ -1223,14 +1410,14 @@ def _compose_graph(state: _ScanState) -> None:
         )
     for name in orphan.unused_input_names:
         owner = name.rsplit(":", 1)[0]
-        input_blockers = tuple(sorted(state.command_failure_owners.get(owner, set())))
+        input_blockers = _input_graph_blockers(name, owner, state)
         if input_blockers:
             state.checks.append(
-                _blocked_check(
+                _checks_depending_on(
                     f"orphan:data-name:{name}",
                     CheckScope.ORPHAN,
-                    name,
-                    input_blockers,
+                    _checks_by_identity(input_blockers, state),
+                    subject=name,
                 )
             )
             continue
@@ -1372,6 +1559,73 @@ def _logical_entry_material(material: str, state: _ScanState) -> tuple[str, str]
     return None
 
 
+def _material_graph_blockers(material: str, state: _ScanState) -> tuple[str, ...]:
+    blockers = set(_command_blockers(material, state))
+    logical = _logical_entry_material(material, state)
+    if logical is None:
+        return tuple(sorted(blockers))
+    owner, _relative = logical
+    blockers.update(state.graph_failure_owners.get(owner, ()))
+    blockers.update(
+        check.identity for check in _owner_surface_prerequisites(owner, state)
+    )
+    blockers.update(
+        check.identity for check in _material_input_prerequisites(material, state)
+    )
+    return tuple(sorted(blockers))
+
+
+def _input_graph_blockers(
+    name: str, owner: str, state: _ScanState
+) -> tuple[str, ...]:
+    blockers = set(state.command_failure_owners.get(owner, ()))
+    blockers.update(state.graph_failure_owners.get(owner, ()))
+    blockers.update(
+        check.identity for check in state.input_prerequisite_checks.get(name, ())
+    )
+    blockers.update(
+        check.identity for check in _owner_surface_prerequisites(owner, state)
+    )
+    return tuple(sorted(blockers))
+
+
+def _owner_surface_prerequisites(
+    owner: str, state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    return _unique_checks(
+        check
+        for entry in state.entries
+        if _material_owner(entry, state) == owner
+        for check in (entry.data_failure, entry.evidence_failure)
+        if check is not None
+    )
+
+
+def _material_input_prerequisites(
+    material: str, state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    path = Path(material).resolve()
+    checks: list[MechanicalCheck] = []
+    for entry in state.entries:
+        if entry.data_file is None:
+            continue
+        owner = _material_owner(entry, state)
+        for resource in entry.data_file.inputs:
+            if resource.remote:
+                continue
+            target = Path(resource.canonical_target).resolve()
+            if path != target and (
+                resource.kind != "directory" or not _within(path, target)
+            ):
+                continue
+            checks.extend(
+                state.input_prerequisite_checks.get(
+                    _input_declaration_key(owner, resource), ()
+                )
+            )
+    return _unique_checks(checks)
+
+
 def _input_registry_surfaces(state: _ScanState) -> tuple[InputRegistrySurface, ...]:
     surfaces: dict[Path, InputRegistrySurface] = {}
     for entry in state.entries:
@@ -1381,6 +1635,24 @@ def _input_registry_surfaces(state: _ScanState) -> tuple[InputRegistrySurface, .
                 InputRegistrySurface(_material_owner(entry, state), entry.data_file),
             )
     return tuple(surfaces.values())
+
+
+def _evidence_input_names(
+    entry_id: str, record: PresentationRecord, state: _ScanState
+) -> tuple[str, ...]:
+    """Return declared registry names consumed by one evidence record."""
+
+    entry = next((item for item in state.entries if item.id == entry_id), None)
+    if entry is None or entry.data_file is None:
+        return ()
+    owner = _material_owner(entry, state)
+    names: list[str] = []
+    for source in record.sources:
+        parts = input_token_parts(source.source)
+        if parts is None or parts[0] not in entry.data_file.by_name:
+            continue
+        names.append(f"{owner}:{parts[0]}")
+    return tuple(names)
 
 
 def _unique_retention_files(entries: Sequence[_Entry]) -> tuple[RetentionFile, ...]:
@@ -1395,97 +1667,61 @@ def _resolve_source(
     source: EvidenceSource, entry: _Entry, state: _ScanState
 ) -> _ResolvedSource:
     value = source.source
-    exact_name = re.match(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
-    external = False
-    source_entry = entry
-    entry_data_reference = _resolve_entry_data_reference(value, state)
-    if entry_data_reference is not None:
-        source_entry, path = entry_data_reference
-    elif exact_name is not None and exact_name.group(1) not in {"log", "project"}:
-        try:
-            resolved = resolve_input_token(value, entry.data_file)
-        except DataContractError as error:
-            _fail(error.code, value, error.observed)
-        resource = resolved.resource
-        location = resolved.path
-        if resource.remote:
-            _fail(
-                "locator.reader.unavailable",
-                value,
-                {"location": location, "retained_observation": False},
-            )
-        external = resource.external is not None
-        path = Path(location)
-    elif value.startswith("<log>/"):
-        path = state.log_root / value.removeprefix("<log>/")
-        source_entry = _entry_owning_path(path, state) or entry
-    elif value.startswith("<project>/"):
-        path = state.project_root / value.removeprefix("<project>/")
-        external = not _within(path, state.log_root)
-    else:
-        pure = PurePosixPath(value)
-        if (
-            not value
-            or pure.is_absolute()
-            or "\\" in value
-            or "://" in value
-            or any(part in {"", ".", ".."} for part in pure.parts)
-            or "<" in value
-            or ">" in value
-        ):
-            _fail("locator.path.unresolved", value, {"source": value})
-        path = entry.root.joinpath(*pure.parts)
-    _validate_entry_source_path(path, source_entry, value)
+    try:
+        resolved = resolve_input_token(value, entry.data_file)
+    except DataContractError as error:
+        _fail(error.code, value, error.observed)
+    resource = resolved.resource
+    if resource.remote:
+        _fail(
+            "locator.reader.unavailable",
+            value,
+            {"location": resolved.path, "retained_observation": False},
+            outcome="unavailable",
+        )
+    if resolved.member is None and resource.kind != "file":
+        _fail(
+            "evidence.declaration.invalid",
+            value,
+            {"reason": "directory_member_required"},
+        )
+    path = Path(resolved.path)
+    _validate_entry_source_path(path, entry, value)
     if path.is_symlink() or not path.is_file():
         _fail(
             "locator.path.unresolved",
             value,
             {"path": path.resolve().as_posix(), "regular_file": False},
         )
-    return _ResolvedSource(path.resolve(), external)
+    return _ResolvedSource(
+        path.resolve(),
+        resource.external is not None,
+        f"{_material_owner(entry, state)}:{resource.name}",
+        resource,
+    )
 
 
-def _resolve_entry_data_reference(
-    value: str, state: _ScanState
-) -> tuple[_Entry, Path] | None:
-    match = ENTRY_DATA_REFERENCE_RE.fullmatch(value)
-    if match is None:
+def _trusted_input_identity(
+    source: _ResolvedSource, state: _ScanState
+) -> Mapping[str, object] | None:
+    """Project a verified file input into the locator identity contract."""
+
+    resource = source.resource
+    if resource.kind != "file":
         return None
-    entry_id, relative_text = match.groups()
-    relative = PurePosixPath(relative_text)
-    if (
-        relative.is_absolute()
-        or relative.as_posix() != relative_text
-        or "\\" in relative_text
-        or "://" in relative_text
-        or any(part in {"", ".", ".."} for part in relative.parts)
+    observation = state.input_observations.get(resource.canonical_target)
+    if observation is None or observation.fingerprint.digest is None:
+        return None
+    identity = observation.cache_identity
+    if not isinstance(identity, Mapping):
+        return None
+    values = {name: identity.get(name) for name in ("size", "mtime_ns", "ctime_ns")}
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool)
+        for value in values.values()
     ):
-        _fail("locator.path.unresolved", value, {"source": value})
-    matches: dict[Path, _Entry] = {}
-    for candidate in state.entries:
-        if candidate.id == entry_id or re.fullmatch(
-            rf"{re.escape(entry_id)}[a-z]", candidate.id
-        ):
-            matches.setdefault(candidate.root, candidate)
-    if len(matches) != 1:
-        _fail(
-            "locator.path.unresolved",
-            value,
-            {"entry": entry_id, "matches": len(matches)},
-        )
-    referenced_entry = next(iter(matches.values()))
-    return referenced_entry, referenced_entry.root.joinpath("data", *relative.parts)
-
-
-def _entry_owning_path(path: Path, state: _ScanState) -> _Entry | None:
-    target = path.absolute()
-    for candidate in state.entries:
-        try:
-            target.relative_to(candidate.root.absolute())
-        except ValueError:
-            continue
-        return candidate
-    return None
+        return None
+    return {**values, "sha256": observation.fingerprint.digest}
 
 
 def _validate_entry_source_path(path: Path, entry: _Entry, source: str) -> None:
@@ -1515,6 +1751,7 @@ def _canonical_presentation(
 
 def _record_dependencies(
     record: PresentationRecord,
+    materials: Sequence[_ResolvedSource],
     selections: Sequence[Any],
     transformed: TransformationResult,
     item: PresentedItem,
@@ -1534,6 +1771,16 @@ def _record_dependencies(
                 "classifier_version": SECTION_CLASSIFIER_VERSION,
                 "under_results": item.under_results,
             }
+        },
+        {
+            "inputs": [
+                {
+                    "declaration": material.resource.content_identity,
+                    "name": material.input_name,
+                    "path": material.path.as_posix(),
+                }
+                for material in materials
+            ]
         },
         {"selections": [selection.dependency_projection for selection in selections]},
         {"transformation": transformed.dependency_projection},
@@ -1636,6 +1883,85 @@ def _dependent_check(
         identity,
         ({"dependency": dependency},),
     )
+
+
+def _check_depending_on(
+    identity: str, scope: CheckScope, dependency: MechanicalCheck
+) -> MechanicalCheck:
+    """Project one failed prerequisite into its dependent check."""
+
+    if dependency.status is not CheckStatus.UNAVAILABLE:
+        return _dependent_check(identity, scope, dependency.identity)
+    assert dependency.failure is not None
+    return _failure_check(
+        identity,
+        scope,
+        _FailureSpec(
+            dependency.failure.code,
+            identity,
+            {"dependency_status": dependency.status.value},
+            dependency.failure.rule,
+            dependency.identity,
+            CheckStatus.UNAVAILABLE,
+        ),
+        dependencies=({"dependency": dependency.identity},),
+    )
+
+
+def _checks_depending_on(
+    identity: str,
+    scope: CheckScope,
+    dependencies: Sequence[MechanicalCheck],
+    *,
+    subject: str | None = None,
+    extra_dependencies: Sequence[Mapping[str, object]] = (),
+) -> MechanicalCheck:
+    """Project several input-verification prerequisites into one check."""
+
+    unique = {check.identity: check for check in dependencies}
+    subject = identity if subject is None else subject
+    unavailable = next(
+        (
+            check
+            for check in unique.values()
+            if check.status is CheckStatus.UNAVAILABLE
+        ),
+        None,
+    )
+    if unavailable is None:
+        return _blocked_check(
+            identity,
+            scope,
+            subject,
+            tuple(unique),
+            dependencies=extra_dependencies,
+        )
+    assert unavailable.failure is not None
+    return _failure_check(
+        identity,
+        scope,
+        _FailureSpec(
+            unavailable.failure.code,
+            subject,
+            {"dependency_status": unavailable.status.value},
+            unavailable.failure.rule,
+            unavailable.identity,
+            CheckStatus.UNAVAILABLE,
+        ),
+        dependencies=tuple(extra_dependencies)
+        + tuple({"dependency": dependency} for dependency in sorted(unique)),
+    )
+
+
+def _unique_checks(checks: Iterable[MechanicalCheck]) -> tuple[MechanicalCheck, ...]:
+    return tuple({check.identity: check for check in checks}.values())
+
+
+def _checks_by_identity(
+    identities: Sequence[str], state: _ScanState
+) -> tuple[MechanicalCheck, ...]:
+    selected = set(identities)
+    return tuple(check for check in state.checks if check.identity in selected)
 
 
 def _blocked_check(
@@ -1844,7 +2170,17 @@ def _verify_source_stability(state: _ScanState) -> None:
             )
 
 
-def _fail(code: str, subject: str, observed: object) -> NoReturn:
+def _fail(
+    code: str,
+    subject: str,
+    observed: object,
+    *,
+    outcome: str = "fail",
+) -> NoReturn:
     raise EngineV2Error(
-        code, subject, observed, "Mechanical Validation Evaluation And Outcomes"
+        code,
+        subject,
+        observed,
+        "Mechanical Validation Evaluation And Outcomes",
+        outcome=outcome,
     )

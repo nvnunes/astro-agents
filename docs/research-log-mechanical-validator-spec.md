@@ -163,30 +163,30 @@ outcome subcontracts below own the remaining stages.
 V2 is the only active locator language.
 
 - A standalone v2 locator begins with `v2:`.
-- A v2 `evidence.json` source embeds the locator's JSON object without that
+- An evidence v3 source embeds the locator's v2 JSON object without that
   prefix.
 - A locator with any other `v<integer>:` prefix fails as unsupported.
 - Version selection occurs before version-specific parsing.
 - A v2 parse or evaluation failure is a mechanical failure and is not retried
   under another interpretation.
 
-## V2 Evidence Source Objects
+## Evidence V3 Source Objects
 
-A v2 `evidence.json` record does not serialize source expressions into one
+An evidence v3 record does not serialize source expressions into one
 delimited string. Its ordered `sources` array contains objects with exactly
 `source` and `locator`:
 
 ```json
 {
-  "source": "data/results.csv",
+  "source": "<results>",
   "locator": {
     "select": [["success_rate"]]
   }
 }
 ```
 
-`source` follows the path, token, resolution, and safety rules of the outer
-evidence-source contract. JSON owns field separation; the string has no
+`source` is one complete `<name>` or `<directory-name>/member` token from the
+owning entry's input registry. JSON owns field separation; the string has no
 embedded source-list or locator delimiter grammar.
 
 `locator` is the JSON object portion of an explicit v2 locator. It must not
@@ -217,8 +217,9 @@ version.
 
 ### Source Resolution And Classification
 
-Source resolution precedes locator evaluation. A source profile is established
-from:
+Source resolution precedes locator evaluation. Every evidence source resolves
+through the owning entry-root `data.json`; direct paths and cross-entry
+shorthand are invalid. A source profile is established from:
 
 - the input-registry declaration or retained source declaration when present;
 - the retained byte signature and safe structural inspection;
@@ -229,24 +230,18 @@ A declared format that conflicts with retained bytes fails as
 under the evidence source-resolution contract. A source that changes during
 locator evaluation is `unavailable`.
 
-Every local source path is checked lexically before canonicalization. The exact
-entry-local `data` and `images` directory symlinks remain first-class material
-roots, and a platform alias shared by both the entry and source paths is
-permitted. No other source-path symlink is allowed, including an alias in an
-external or project-relative path.
+Every local source path is checked under the input registry's lexical and
+canonical safety rules. A bare file token resolves to one local regular file.
+A directory token must include one normalized member path that resolves to an
+exact local regular file. A bare directory, direct relative or absolute path,
+`<project>` path, `<log>` path, `<e###>` shorthand, URL, or object-store URI is
+invalid at the evidence-source surface. To consume another entry's artifact,
+the consuming entry declares that exact target and uses its own token.
 
-The exact cross-entry form `<e###>/path-within-data`, for example
-`<e004>/results.csv`, resolves against the `data/` material root of the one
-maintained numeric entry family with that ID. Split documents such as `e009a`
-and `e009b` may share that one root. The suffix must be a normalized relative
-path. A missing or ambiguous entry family, an empty suffix, or a suffix
-containing an absolute path, URI, backslash, `.` component, or `..` component
-fails as `locator.path.unresolved`. This syntax does not resolve names from
-another entry's `data.json`; `<e###@name>` is not part of the contract.
-
-An input-registry token is part of source identity. After resolution, its locator
-uses the resolved source's profile. A remote target must have a stable retained
-or content-addressed observation before it can produce a successful selection.
+The resolved strong content identity and source profile, not the authored token
+or expected fingerprint, participate in selection-cache identity. A remote
+registry target cannot directly serve as mechanical evidence; retain a stable
+local observation and select that registered file instead.
 
 ### Evaluation Outcomes
 
@@ -1880,19 +1875,19 @@ the `| Entry | Date | Checked | Reproducibility |` table header or the
 decision, session, or report conclusion. An unrelated file does not become
 obsolete state merely because it is below a directory named `validation`.
 
-V2 JSON records permit only v2 locators and v2 transformations because they
+Evidence v3 records permit only v2 locators and v2 transformations because they
 embed structured JSON objects directly.
 
 Direct artifact presentations use their Markdown target and the provenance
 contract rather than `evidence.json`.
 
-### V2 JSON File Schema
+### Evidence V3 JSON File Schema
 
-V2 uses one exact top-level object:
+Evidence v3 uses one exact top-level object:
 
 ```json
 {
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": []
 }
 ```
@@ -1912,7 +1907,7 @@ An entry-root presentation record has exactly:
   "kind": "statistic",
   "sources": [
     {
-      "source": "data/results.csv",
+      "source": "<results>",
       "locator": {
         "select": [["success_rate"]]
       }
@@ -1924,55 +1919,16 @@ An entry-root presentation record has exactly:
 
 Required keys are `id`, `document`, `kind`, `sources`, and `transformation`;
 unknown keys fail. `kind` is `statistic`, `table`, or `output`. `sources` is a
-non-empty ordered array of exact v2 source objects. `transformation` is `null`
-for identity or the JSON object portion of a v2 transformation without a
-`v2:` prefix. V2 record kinds are entry presentations and entry-owned
-retention. Summaries use the Markdown-owned references defined below.
+non-empty ordered array of exact evidence v3 source objects containing v2
+locators. `transformation` is `null` for identity or the JSON object portion of
+a v2 transformation without a `v2:` prefix. Record kinds are entry
+presentations. Summaries use the Markdown-owned references defined below, and
+disconnected retention belongs in `retention.json`.
 
-An entry-root retention record uses exactly one of these forms:
-
-```json
-{
-  "id": "optimizer-debug-traces",
-  "kind": "retention",
-  "paths": [
-    "data/debug-trace.json",
-    "data/optimizer-state.npz"
-  ],
-  "reason": "Diagnostic outputs retained for later investigation."
-}
-```
-
-```json
-{
-  "id": "intermediate-wavefronts",
-  "kind": "retention",
-  "directory": "data/intermediate-wavefronts",
-  "membership": "all-descendants",
-  "reason": "Intermediate states retained for later comparison."
-}
-```
-
-Required keys are `id`, `kind`, and either `paths` or the pair `directory` and
-`membership`. `kind` must be `retention`. `membership` must be the literal
-`all-descendants`. The two target forms are mutually exclusive. `paths` is a
-non-empty array of unique normalized POSIX paths relative to the entry root.
-`directory` is one normalized POSIX directory path relative to the entry root.
-Every target must remain beneath that root and must not be absolute, empty,
-aliased, or contain `.`, `..`, a reverse solidus, or a URI scheme. A path may
-cross the exact entry-local `data` or `images` directory when that directory is
-a symlink; these are first-class entry material roots regardless of physical
-storage location. No other or nested symlink is permitted. The directory form
-covers every otherwise orphan-eligible regular-file descendant observed
-beneath that directory. It must resolve to at least one such file.
-
-`reason` is the only optional key and, when present, must be a UTF-8 JSON string
-of at most 2,048 bytes. It records research-agent intent for later semantic
-review. Mechanical validation does not interpret, judge, compare, or include
-its contents in retention identity, currentness, dependency, or outcome
-projections. Unknown keys fail. Retention records are permitted only in an
-entry-root `evidence.json`; they have no `document`, `sources`,
-`transformation`, or presentation marker.
+Entry-owned disconnected retention uses the separate
+`research-log-retention/v1` contract in `retention.json`. A retention record is
+invalid in `evidence.json` and has no presentation marker, source, locator, or
+transformation.
 
 The evaluator treats every embedded locator and non-null transformation as
 explicit v2. Their canonical identities retain the ordinary `v2:` prefix plus
@@ -2068,7 +2024,7 @@ the separator `; ` between mappings. No alternate spacing, ordering, case,
 quoting, keys, or attributes are accepted.
 
 `entry` is the exact entry document ID in the current maintained log.
-`eid` satisfies the v2 evidence-ID grammar and names one presentation
+`eid` satisfies the evidence-ID grammar and names one presentation
 record in that entry's `evidence.json`. Together they identify the stable
 record `(maintained-log identity, entry identity, evidence ID)`.
 
@@ -2151,12 +2107,12 @@ Cardinality is closed by presentation kind:
 | `table` / `structured` | 1 | Every selected record and field satisfies repeated single-source consumption. |
 | `table` / `summary` | 1–32 | Every selected item is consumed exactly once by an evidence cell. |
 
-A v2 table record must use a non-null v2 table transformation. Null identity is
+An evidence v3 table record must use a non-null v2 table transformation. Null identity is
 not a second table grammar. A statistic may use null identity only when one
 selected primitive renders to exactly one canonical statistic expression. An
 output may use null identity only for one selected string.
 
-A whole-artifact reference is prohibited in a v2 evidence record because it
+A whole-artifact reference is prohibited in an evidence record because it
 returns no source-internal selection to the transformation contract. Authors
 must use a bounded v2 locator. Whole artifacts remain valid for direct artifact
 presentations outside evidence-record files.
@@ -2354,10 +2310,10 @@ retention, and orphan contract. It replaces the retired `data.csv`, command
 types, filename-derived simulation roots, root-completion checks,
 `evidence.json` retention records, and command-connected orphan behavior.
 
-The active contract uses `research-log-data/v1`,
-`research-log-retention/v1`, and `research-log-evidence/v2` with retention
+The active contract uses `research-log-data/v2`,
+`research-log-retention/v1`, and `research-log-evidence/v3` with retention
 removed. The activated rules version is
-`research-log-mechanical/input-registry-5`. The authoritative generated record
+`research-log-mechanical/input-registry-6`. The authoritative generated record
 remains `research-log-mechanical/1` because its serialized shape does not
 change. Disposable per-log validation acceleration uses SQLite database schema
 version 1 with independently versioned `check_comparison` and
@@ -2398,14 +2354,20 @@ re-observation. Neither cache changes a conclusion.
 ### Ownership And Completeness
 
 `data.json` is an input registry. It contains all and only resources used as
-material inputs by recorded commands owned by one entry root.
+material inputs by recorded commands or evidence records owned by one entry
+root.
 
-- Every proven command input has exactly one data item.
-- Every input-bearing argument uses the item's exact `<name>` token or one
-  exact `<directory-name>/member` token. Raw paths and URIs are invalid.
-- A generated output enters `data.json` only when a later recorded command
-  consumes it. Output-only results and presented artifacts do not enter it.
-- Evidence selection and direct presentation do not create command inputs.
+- Every proven command input and every evidence source has exactly one data
+  item in the consuming entry.
+- Every input-bearing command argument and evidence source uses the item's
+  exact `<name>` token or one exact `<directory-name>/member` token. Raw paths
+  and URIs are invalid.
+- A generated output enters `data.json` when a later recorded command or an
+  evidence record consumes it. An output consumed by neither surface remains
+  absent.
+- Evidence use counts as registry use when evaluating unused declarations.
+- An evidence source resolves to one local regular file. A bare directory token
+  is invalid; select one exact member instead.
 - An entry with no inputs omits `data.json`; a present file is non-empty.
 - Split documents at one entry root share one file. The validator does not
   search, inherit, merge, or shadow parent-entry or log-level files.
@@ -2414,13 +2376,13 @@ material inputs by recorded commands owned by one entry root.
 only intentional disconnected retention. Recorded commands own producers and
 ordinary lineage. Generated validation records remain validator-owned.
 
-### `research-log-data/v1`
+### `research-log-data/v2`
 
 One entry-root file has exactly:
 
 ```json
 {
-  "schema": "research-log-data/v1",
+  "schema": "research-log-data/v2",
   "inputs": []
 }
 ```
@@ -2452,7 +2414,7 @@ Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
 `name` is at most 96 ASCII characters and matches
 `[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, `theme`, and names matching
 `e[0-9]+` case-insensitively are reserved. The numeric entry-family namespace
-is reserved so `<e###>/member` cannot conflict with a directory input token.
+is reserved for maintained entry identifiers.
 `kind` is `file` or `directory`.
 
 `location` is a normalized POSIX path relative to the owning entry root, an
@@ -3274,13 +3236,13 @@ Its entry-local `evidence.json` contains:
 
 ```json
 {
-  "schema": "research-log-evidence/v2",
+  "schema": "research-log-evidence/v3",
   "records": [{
     "id": "candidate-success-rate",
     "document": "entries/2026-08-27-e001-study/e001.md",
     "kind": "statistic",
     "sources": [{
-      "source": "data/results.csv",
+      "source": "<results>",
       "locator": {
         "select": [["success_rate"]],
         "where": [{
@@ -3297,6 +3259,10 @@ Its entry-local `evidence.json` contains:
   }]
 }
 ```
+
+The same entry's `data.json` registers `data/results.csv` as the generated
+`results` file input, using its current SHA-256 fingerprint and no `external`
+boundary.
 
 The same experimental section records one command that names
 `data/results.csv`:

@@ -1,4 +1,4 @@
-"""Active v2 evidence-file and presentation-association contracts."""
+"""Active evidence-file and presentation-association contracts."""
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
+from research_log_data import input_token_parts
+
 from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
 from .errors import MechanicalContractError
 from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import V2JsonError, canonical_json, decode_json
 
-EVIDENCE_SCHEMA = "research-log-evidence/v2"
+EVIDENCE_SCHEMA = "research-log-evidence/v3"
 MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024
 MAX_RECORDS_PER_FILE = 1000
 MAX_RECORDS_PER_LOG = 10_000
@@ -83,13 +85,13 @@ MARKDOWN_LINK_RE = re.compile(
 EXTERNAL_TARGET_SCHEMES = frozenset({"doi", "ftp", "gs", "http", "https", "s3"})
 
 
-class EvidenceV2Error(MechanicalContractError):
-    """Raised when active v2 evidence metadata violates its exact contract."""
+class EvidenceContractError(MechanicalContractError):
+    """Raised when active evidence metadata violates its exact contract."""
 
 
 @dataclass(frozen=True)
 class EvidenceSource:
-    """One ordered v2 source and embedded locator declaration."""
+    """One ordered source token and embedded locator declaration."""
 
     source: str
     locator: Mapping[str, Any]
@@ -102,7 +104,7 @@ class EvidenceSource:
 
 @dataclass(frozen=True)
 class PresentationRecord:
-    """One entry-owned v2 presentation declaration."""
+    """One entry-owned presentation declaration."""
 
     id: str
     document: str
@@ -129,7 +131,7 @@ EvidenceRecord = PresentationRecord
 
 @dataclass(frozen=True)
 class EvidenceFile:
-    """Validated entry-local v2 evidence file."""
+    """Validated entry-local evidence file."""
 
     path: Path
     entry_root: Path
@@ -157,7 +159,7 @@ class EvidenceFile:
 
 @dataclass(frozen=True)
 class PresentedItem:
-    """One exact entry presentation selected by an adjacent v2 marker."""
+    """One exact entry presentation selected by an adjacent marker."""
 
     id: str
     document: str
@@ -264,7 +266,7 @@ def load_evidence_file(
     log_root: Path,
     entry_root: Path,
 ) -> EvidenceFile:
-    """Read one exact entry-root v2 file with strict JSON and schema checks."""
+    """Read one exact entry-root evidence file with strict schema checks."""
 
     path = path.resolve()
     log_root = log_root.resolve()
@@ -283,14 +285,14 @@ def load_evidence_file(
             "evidence.json.schema_invalid",
             str(path),
             {"fields": sorted(value) if isinstance(value, Mapping) else None},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     if value["schema"] != EVIDENCE_SCHEMA or not isinstance(value["records"], list):
         _fail(
             "evidence.json.schema_invalid",
             str(path),
             {"schema": value.get("schema")},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     raw_records = value["records"]
     if not raw_records:
@@ -298,7 +300,7 @@ def load_evidence_file(
             "evidence.file.empty",
             str(path),
             {"records": 0},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     if len(raw_records) > MAX_RECORDS_PER_FILE:
         _fail(
@@ -323,7 +325,7 @@ def load_evidence_file(
             "evidence.record.id_duplicate",
             str(path),
             {"ids": ids},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     return EvidenceFile(path=path, entry_root=entry_root, records=records)
 
@@ -337,7 +339,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.file.encoding_invalid",
             str(path),
             {"error": str(exc)},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     except BoundedFileReadError as exc:
         if exc.reason == "byte_limit":
@@ -351,7 +353,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.json.schema_invalid",
             str(path),
             {"error": exc.detail, "reason": exc.reason},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
     try:
         return decode_json(
@@ -364,7 +366,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.json.schema_invalid",
             str(path),
             {"error": str(exc)},
-            "V2 JSON File Schema",
+            "Evidence V3 JSON File Schema",
         )
 
 
@@ -888,8 +890,8 @@ def _decode_source(value: object, subject: str) -> EvidenceSource:
         )
     source = value["source"]
     locator = value["locator"]
-    if not isinstance(source, str) or not source.strip():
-        _invalid(subject, {"source": source})
+    if not isinstance(source, str) or input_token_parts(source) is None:
+        _invalid(subject, {"reason": "input_token_required", "source": source})
     if not isinstance(locator, Mapping) or not locator:
         _invalid(subject, {"locator": locator})
     return EvidenceSource(source=source, locator=dict(locator))
@@ -1085,9 +1087,9 @@ def _invalid(subject: str, observed: object) -> NoReturn:
         "evidence.declaration.invalid",
         subject,
         observed,
-        "V2 JSON File Schema",
+        "Evidence V3 JSON File Schema",
     )
 
 
 def _fail(code: str, subject: str, observed: object, rule: str) -> NoReturn:
-    raise EvidenceV2Error(code, subject, observed, rule)
+    raise EvidenceContractError(code, subject, observed, rule)

@@ -6,6 +6,7 @@ import os
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import research_log_data as DATA
 from research_log_validation_test_support import mock, unittest, write
@@ -14,6 +15,7 @@ ENGINE = importlib.import_module("validation.engine")
 MECHANICAL = importlib.import_module("validation.mechanical")
 RESULTS = importlib.import_module("validation.mechanical_results")
 LOCATOR = importlib.import_module("validation.locator")
+CACHE = importlib.import_module("validation.validation_cache")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -98,10 +100,21 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     return summary, entry
 
 
-def _evaluate(summary: Path, *, prior_cache: object = None) -> object:
+def _comparison(evaluation: Any) -> dict[str, Any]:
+    return {
+        check.identity: CACHE.CheckComparisonEntry(
+            check,
+            CACHE.check_dependency(check, ENGINE.RULES_VERSION),
+        )
+        for check in evaluation.result.checks
+        if check.status is RESULTS.CheckStatus.PASS and check.dependencies
+    }
+
+
+def _evaluate(summary: Path, *, check_comparison: dict[str, Any] | None = None) -> Any:
     return MECHANICAL.evaluate_mechanical(
         MECHANICAL.MechanicalEvaluationRequest(
-            summary, "2026-08-29", prior_cache=prior_cache
+            summary, "2026-08-29", check_comparison=check_comparison
         ),
         ENGINE.mechanical_policy(),
     )
@@ -997,7 +1010,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "V2: Expanded Mechanical Locator Language",
                 outcome="unavailable",
             )
-            with mock.patch.object(ENGINE, "observe_source", side_effect=unavailable):
+            with mock.patch.object(
+                ENGINE, "observe_source_identity", side_effect=unavailable
+            ):
                 evaluation = _evaluate(summary)
 
             self.assertEqual(
@@ -1358,10 +1373,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             first = _evaluate(summary)
+            comparison = _comparison(first)
 
-            unchanged = _evaluate(summary, prior_cache=first.scan["cache"])
+            unchanged = _evaluate(summary, check_comparison=comparison)
             write(entry.parent / "scripts" / "model.py", "# changed identity\n")
-            changed = _evaluate(summary, prior_cache=first.scan["cache"])
+            changed = _evaluate(summary, check_comparison=comparison)
 
             self.assertGreater(unchanged.metrics["checks_unchanged"], 0)
             self.assertLess(
@@ -1376,24 +1392,22 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             first = _evaluate(summary)
-            corrupted_cache = json.loads(json.dumps(first.scan["cache"]))
-            for cached in corrupted_cache["checks"].values():
-                cached["check"]["subject"] = "wrong subject"
+            comparison = _comparison(first)
+            identity, cached = next(iter(comparison.items()))
+            corrupted = dict(comparison)
+            corrupted[identity] = CACHE.CheckComparisonEntry(
+                replace(cached.check, subject="wrong subject"),
+                cached.dependency_projection,
+            )
 
-            corrupted = _evaluate(summary, prior_cache=corrupted_cache)
-            extra_cache = json.loads(json.dumps(first.scan["cache"]))
-            extra_cache["extra"] = True
-            extra_field = _evaluate(summary, prior_cache=extra_cache)
+            result = _evaluate(summary, check_comparison=corrupted)
 
-            self.assertEqual(corrupted.metrics["checks_unchanged"], 0)
-            self.assertEqual(extra_field.metrics["checks_unchanged"], 0)
-            self.assertEqual(extra_field.metrics["artifact_identity_seeds"], 0)
-            self.assertEqual(extra_field.metrics["source_hashes_reused"], 0)
-            self.assertEqual(
-                corrupted.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            self.assertLess(
+                result.metrics["checks_unchanged"],
+                len(comparison),
             )
             self.assertEqual(
-                extra_field.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+                result.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
 
 

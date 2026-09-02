@@ -11,8 +11,8 @@ import sqlite3
 import stat
 import time
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, cast
+from pathlib import Path
+from typing import Mapping, cast
 from urllib.parse import quote
 
 from research_log_data import (
@@ -33,12 +33,14 @@ from research_log_data import (
     verify_fingerprint,
 )
 
+from .filesystem import FileIdentity, file_identity
+from .sqlite_support import is_sqlite_corruption
+
 CACHE_FILENAME = "research-log-fingerprints.sqlite3"
 CACHE_SCHEMA_VERSION = 1
 PROJECT_MARKER = ".git"
 BUSY_TIMEOUT_MILLISECONDS = 60_000
 LOCK_RETRY_SECONDS = 0.01
-SQLITE_CORRUPTION_CODES = frozenset({11, 24, 26})
 SQLITE_BUSY_CODE = 5
 SQLITE_LOCKED_CODE = 6
 SQLITE_CONTENTION_CODES = frozenset({SQLITE_BUSY_CODE, SQLITE_LOCKED_CODE})
@@ -89,8 +91,6 @@ class FingerprintCacheMetrics:
     file_reuses: int
     directory_reuses: int
     directories_hydrated: int
-    legacy_files_imported: int
-    legacy_directories_imported: int
 
     def as_dict(self) -> dict[str, int]:
         """Return stable metric names for the validation result envelope."""
@@ -100,10 +100,6 @@ class FingerprintCacheMetrics:
             "fingerprint_cache_directories_hydrated": self.directories_hydrated,
             "fingerprint_cache_file_hashes": self.file_hashes,
             "fingerprint_cache_file_reuses": self.file_reuses,
-            "fingerprint_cache_legacy_directories_imported": (
-                self.legacy_directories_imported
-            ),
-            "fingerprint_cache_legacy_files_imported": self.legacy_files_imported,
         }
 
 
@@ -132,8 +128,6 @@ class FingerprintCache:
         self._file_reuses = 0
         self._directory_reuses = 0
         self._directories_hydrated = 0
-        self._legacy_files_imported = 0
-        self._legacy_directories_imported = 0
 
     def __enter__(self) -> FingerprintCache:
         """Open the cache with the requested read/write lifecycle."""
@@ -157,8 +151,6 @@ class FingerprintCache:
             file_reuses=self._file_reuses,
             directory_reuses=self._directory_reuses,
             directories_hydrated=self._directories_hydrated,
-            legacy_files_imported=self._legacy_files_imported,
-            legacy_directories_imported=self._legacy_directories_imported,
         )
 
     def verify(self, resource: InputResource) -> FingerprintObservation | None:
@@ -189,23 +181,95 @@ class FingerprintCache:
                 observation = self._observe_directory(path)
         return validate_fingerprint_observation(resource, observation)
 
-    def seed_mechanical_cache(self, cache: Mapping[str, Any] | None) -> None:
-        """Import compatible observations from one legacy per-log cache."""
+    def observe_regular_file(self, path: Path) -> FingerprintObservation:
+        """Return one current strong identity without an authored expectation.
 
+        The path must identify a regular non-symlink file. Reuse and stable
+        observation follow the same Phase 10 rules as declared file inputs.
+        """
+
+        if path.is_symlink() or not path.is_file():
+            raise FingerprintCacheError(
+                f"strong identity requires a regular non-symlink file: {path}"
+            )
+        path = path.resolve()
+        digest, identity, reused = self._observe_file(path)
+        return FingerprintObservation(
+            Fingerprint("sha256", digest=digest),
+            cache_identity=identity,
+            identity_reused=reused,
+        )
+
+    def remember_regular_file(
+        self,
+        path: Path,
+        *,
+        digest: str,
+        expected_size: int,
+        expected_identity: FileIdentity,
+    ) -> bool:
+        """Record bytes just published by the caller without rereading them.
+
+        The caller must supply the exact identity returned by publication.
+        Any replacement before or during this transaction makes the observation
+        ineligible.
+        """
+
+        connection = self._connection
         if (
             not self.writable
-            or self._connection is None
-            or not isinstance(cache, Mapping)
+            or connection is None
+            or DIGEST_RE.fullmatch(digest) is None
+            or expected_size < 0
         ):
-            return
-        self._connection.execute("BEGIN IMMEDIATE")
+            return False
         try:
-            self._seed_input_observations(cache.get("input_observations"))
-            self._seed_artifact_identities(cache.get("artifact_identities"))
-            self._connection.commit()
-        except Exception:
-            self._connection.rollback()
-            raise
+            path = path.parent.resolve() / path.name
+            current = path.lstat()
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or file_identity(current) != expected_identity
+            ):
+                return False
+            before = _current_file_identity(path)
+            if before["size"] != expected_size:
+                return False
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO file_observations
+                    (path, size, mtime_ns, ctime_ns, algorithm, digest)
+                VALUES (?, ?, ?, ?, 'sha256', ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    size=excluded.size,
+                    mtime_ns=excluded.mtime_ns,
+                    ctime_ns=excluded.ctime_ns,
+                    algorithm=excluded.algorithm,
+                    digest=excluded.digest
+                """,
+                (
+                    path.as_posix(),
+                    before["size"],
+                    before["mtime_ns"],
+                    before["ctime_ns"],
+                    digest,
+                ),
+            )
+            after = _current_file_identity(path)
+            final = path.lstat()
+            if (
+                after != before
+                or not stat.S_ISREG(final.st_mode)
+                or file_identity(final) != expected_identity
+            ):
+                connection.rollback()
+                return False
+            connection.commit()
+            return True
+        except (DataContractError, OSError, sqlite3.DatabaseError):
+            if connection.in_transaction:
+                connection.rollback()
+            return False
 
     def _verify_without_cache(
         self, resource: InputResource
@@ -225,7 +289,7 @@ class FingerprintCache:
         except sqlite3.DatabaseError as error:
             if not self.writable:
                 return None
-            if not _is_corrupt_database(error):
+            if not is_sqlite_corruption(error):
                 raise FingerprintCacheError(
                     f"invalid fingerprint cache {self.path}: {error}"
                 ) from error
@@ -668,123 +732,6 @@ class FingerprintCache:
             connection.rollback()
             raise
 
-    def _seed_input_observations(self, value: object) -> None:
-        if not isinstance(value, Mapping):
-            return
-        for raw in value.values():
-            if not isinstance(raw, Mapping):
-                continue
-            target = raw.get("target")
-            kind = raw.get("kind")
-            fingerprint = raw.get("fingerprint")
-            identity = raw.get("identity")
-            if (
-                not isinstance(target, str)
-                or kind not in {"file", "directory"}
-                or not isinstance(fingerprint, Mapping)
-                or not isinstance(identity, Mapping)
-            ):
-                continue
-            path = Path(target)
-            if kind == "file":
-                digest = fingerprint.get("digest")
-                if (
-                    fingerprint.get("algorithm") == "sha256"
-                    and isinstance(digest, str)
-                    and DIGEST_RE.fullmatch(digest) is not None
-                    and _identity_matches(path, identity)
-                ):
-                    self._seed_file(path, identity, digest)
-            else:
-                digest = fingerprint.get("digest")
-                metadata = identity.get("metadata_sha256")
-                if (
-                    fingerprint.get("algorithm") == "directory-sha256-v1"
-                    and isinstance(digest, str)
-                    and DIGEST_RE.fullmatch(digest) is not None
-                    and isinstance(metadata, str)
-                    and DIGEST_RE.fullmatch(metadata) is not None
-                    and path.is_dir()
-                    and not path.is_symlink()
-                ):
-                    self._seed_directory(path, metadata, digest)
-
-    def _seed_artifact_identities(self, value: object) -> None:
-        if not isinstance(value, Mapping):
-            return
-        for relative, identity in value.items():
-            if not isinstance(relative, str) or not isinstance(identity, Mapping):
-                continue
-            pure = PurePosixPath(relative)
-            if pure.is_absolute() or any(
-                part in {"", ".", ".."} for part in pure.parts
-            ):
-                continue
-            path = self.project_root.joinpath(*pure.parts)
-            digest = identity.get("sha256")
-            if (
-                isinstance(digest, str)
-                and DIGEST_RE.fullmatch(digest) is not None
-                and _identity_matches(path, identity)
-            ):
-                self._seed_file(path, identity, digest)
-
-    def _seed_file(
-        self, path: Path, identity: Mapping[str, object], digest: str
-    ) -> None:
-        assert self._connection is not None
-        current = self._connection.execute(
-            "SELECT size, mtime_ns, ctime_ns, digest "
-            "FROM file_observations WHERE path=?",
-            (path.resolve().as_posix(),),
-        ).fetchone()
-        candidate = (
-            identity.get("size"),
-            identity.get("mtime_ns"),
-            identity.get("ctime_ns"),
-            digest,
-        )
-        if current is not None and tuple(current) != candidate:
-            self._connection.execute(
-                "DELETE FROM file_observations WHERE path=?",
-                (path.resolve().as_posix(),),
-            )
-            return
-        if current is None:
-            self._connection.execute(
-                """
-                INSERT INTO file_observations
-                    (path, size, mtime_ns, ctime_ns, algorithm, digest)
-                VALUES (?, ?, ?, ?, 'sha256', ?)
-                """,
-                (path.resolve().as_posix(), *candidate[:3], digest),
-            )
-            self._legacy_files_imported += 1
-
-    def _seed_directory(self, path: Path, metadata: str, digest: str) -> None:
-        assert self._connection is not None
-        current = self._connection.execute(
-            "SELECT metadata_sha256, digest FROM directory_observations WHERE path=?",
-            (path.resolve().as_posix(),),
-        ).fetchone()
-        if current is not None and tuple(current) != (metadata, digest):
-            self._connection.execute(
-                "DELETE FROM directory_observations WHERE path=?",
-                (path.resolve().as_posix(),),
-            )
-            return
-        if current is None:
-            self._connection.execute(
-                """
-                INSERT INTO directory_observations
-                    (path, metadata_sha256, algorithm, digest, hydrated)
-                VALUES (?, ?, 'directory-sha256-v1', ?, 0)
-                """,
-                (path.resolve().as_posix(), metadata, digest),
-            )
-            self._legacy_directories_imported += 1
-
-
 def project_root(summary: Path) -> Path:
     """Return the nearest Git worktree owning a maintained-log summary."""
 
@@ -821,30 +768,6 @@ def _current_file_identity(path: Path) -> Mapping[str, object]:
         "mtime_ns": observation.st_mtime_ns,
         "size": observation.st_size,
     }
-
-
-def _identity_matches(path: Path, identity: Mapping[str, object]) -> bool:
-    try:
-        return _current_file_identity(path) == {
-            "ctime_ns": identity.get("ctime_ns"),
-            "kind": "file",
-            "mtime_ns": identity.get("mtime_ns"),
-            "size": identity.get("size"),
-        }
-    except DataContractError:
-        return False
-
-
-def _is_corrupt_database(error: sqlite3.DatabaseError) -> bool:
-    code = getattr(error, "sqlite_errorcode", None)
-    if isinstance(code, int):
-        return (code & 0xFF) in SQLITE_CORRUPTION_CODES
-    message = str(error).lower()
-    return (
-        "not a database" in message
-        or "malformed" in message
-        or "schema is incomplete" in message
-    )
 
 
 def _is_lock_contention(error: sqlite3.OperationalError) -> bool:

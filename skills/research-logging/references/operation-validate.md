@@ -55,10 +55,10 @@ navigation line and sibling log root, so generated reports are not candidates.
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use `--recompute` when
 a cache-independent validation is required: it ignores both the per-log
-mechanical cache and the project-level fingerprint cache, evaluates every
-check from current research material, and rebuilds generated cache state during
-a writable run. `--recompute --dry-run` performs the complete fresh evaluation
-without writing generated files.
+check-comparison and selection cache and the project-level fingerprint cache,
+evaluates every check from current research material, and rebuilds generated
+cache state during a writable run. `--recompute --dry-run` performs the
+complete fresh evaluation without writing generated files.
 
 Interpret `status` as follows:
 
@@ -98,8 +98,9 @@ Report according to the returned status:
 - For `incomplete`, report the unavailable required observations from the
   returned record and state that no new per-log generated bundle was
   published. A writable run may have retained completed project-level
-  fingerprint observations. For a tool failure, report the precise operational
-  error from standard error.
+  fingerprint observations and independently completed bounded selections;
+  neither becomes a new comparison baseline. For a tool failure, report the
+  precise operational error from standard error.
 
 When summarizing several completed logs in a Markdown table:
 

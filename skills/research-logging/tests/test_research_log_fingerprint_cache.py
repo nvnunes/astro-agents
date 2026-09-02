@@ -13,6 +13,7 @@ from research_log_validation_test_support import importlib, write
 
 DATA = importlib.import_module("research_log_data")
 CACHE = importlib.import_module("validation.fingerprint_cache")
+FILESYSTEM = importlib.import_module("validation.filesystem")
 
 
 def file_resource(path: Path, *, digest: str | None = None) -> object:
@@ -264,43 +265,6 @@ class FingerprintCacheTests(unittest.TestCase):
                     cache.verify(resource)
                 self.assertEqual(cache.metrics.file_hashes, 1)
                 self.assertEqual(cache.metrics.file_reuses, 1)
-
-    def test_legacy_directory_seed_is_hydrated_once(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            collection = root / "collection"
-            write(collection / "a.txt", "a")
-            write(collection / "b.txt", "b")
-            resource = directory_resource(collection)
-            observation = DATA.verify_fingerprint(resource)
-            assert observation is not None
-            legacy = {
-                "input_observations": {
-                    DATA.fingerprint_observation_key(resource): (
-                        DATA.fingerprint_observation_record(resource, observation)
-                    )
-                }
-            }
-
-            with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.seed_mechanical_cache(legacy)
-                cache.verify(resource)
-                self.assertEqual(cache.metrics.legacy_directories_imported, 1)
-                self.assertEqual(cache.metrics.directories_hydrated, 1)
-                self.assertEqual(cache.metrics.file_hashes, 2)
-
-            with (
-                mock.patch.object(
-                    CACHE,
-                    "observe_file_content",
-                    side_effect=AssertionError("hydrated content must not be reread"),
-                ),
-                CACHE.FingerprintCache(root, writable=True) as cache,
-            ):
-                reused = cache.verify(resource)
-                assert reused is not None
-                self.assertTrue(reused.identity_reused)
-                self.assertEqual(cache.metrics.directory_reuses, 1)
 
     def test_interrupted_directory_hydration_preserves_completed_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -577,6 +541,75 @@ class FingerprintCacheTests(unittest.TestCase):
                 members,
                 [("a.txt", "file"), ("empty", "directory"), ("empty/.keep", "file")],
             )
+
+    def test_just_published_regular_file_can_be_remembered_without_reread(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "validation" / "mechanical.json"
+            payload = b'{"schema":"fixture"}\n'
+            write(report, payload.decode())
+            digest = hashlib.sha256(payload).hexdigest()
+
+            with CACHE.FingerprintCache(root, writable=True) as cache:
+                self.assertTrue(
+                    cache.remember_regular_file(
+                        report,
+                        digest=digest,
+                        expected_size=len(payload),
+                        expected_identity=FILESYSTEM.file_identity(report.lstat()),
+                    )
+                )
+
+            with (
+                mock.patch.object(
+                    CACHE,
+                    "observe_file_content",
+                    side_effect=AssertionError("remembered bytes must not be reread"),
+                ),
+                CACHE.FingerprintCache(root, writable=False) as cache,
+            ):
+                observation = cache.observe_regular_file(report)
+
+            self.assertEqual(observation.fingerprint.digest, digest)
+            self.assertTrue(observation.identity_reused)
+
+    def test_remember_regular_file_rejects_wrong_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "mechanical.json"
+            write(report, "{}\n")
+
+            with CACHE.FingerprintCache(root, writable=True) as cache:
+                self.assertFalse(
+                    cache.remember_regular_file(
+                        report,
+                        digest=hashlib.sha256(report.read_bytes()).hexdigest(),
+                        expected_size=999,
+                        expected_identity=FILESYSTEM.file_identity(report.lstat()),
+                    )
+                )
+
+    def test_remember_regular_file_rejects_a_same_size_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "mechanical.json"
+            write(report, "old\n")
+            published_identity = FILESYSTEM.file_identity(report.lstat())
+            replacement = root / "replacement.json"
+            write(replacement, "new\n")
+            replacement.replace(report)
+
+            with CACHE.FingerprintCache(root, writable=True) as cache:
+                remembered = cache.remember_regular_file(
+                    report,
+                    digest=hashlib.sha256(b"old\n").hexdigest(),
+                    expected_size=4,
+                    expected_identity=published_identity,
+                )
+
+            self.assertFalse(remembered)
 
 
 if __name__ == "__main__":

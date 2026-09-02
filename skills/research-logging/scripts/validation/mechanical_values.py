@@ -27,7 +27,14 @@ class CanonicalValue:
         if self.kind == "bytes":
             assert isinstance(self.value, bytes)
             projected = base64.b64encode(self.value).decode("ascii")
-        elif self.kind in {"array", "record", "mapping", "table"}:
+        elif self.kind in {
+            "array",
+            "duration",
+            "mapping",
+            "quantity",
+            "record",
+            "table",
+        }:
             projected = _project_compound(self.value)
         else:
             projected = self.value

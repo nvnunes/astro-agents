@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
 
-from .engine import cache_envelope_supported, mechanical_policy
-from .filesystem import BoundedFileReadError, bounded_file_bytes
+from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
-from .json_codec import V2JsonError, decode_json
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
-from .records import RecordPublicationError, publish_validation_outputs
+from .records import (
+    RecordPublicationError,
+    publish_validation_outputs_locked,
+    remove_legacy_validation_cache,
+    validate_legacy_validation_cache_paths,
+    validation_lock,
+)
 from .report import compose_validation_report
+from .validation_cache import ValidationCache, ValidationCacheError
 
 RESULT_SCHEMA = "research-log-validation-result/1"
-MAX_CACHE_BYTES = 32 * 1024 * 1024
 UNSUPPORTED_GENERATED_PATHS = (
     "validation/manifest.json",
     "validation/outcomes",
@@ -79,55 +84,132 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         return unsupported
     result_date = _result_date(request.result_date)
     log_root = summary.with_suffix("")
-    raw_cache = (
-        None
-        if request.recompute
-        else _load_cache(log_root / "validation" / ".cache" / "mechanical.json")
-    )
-    prior_cache = raw_cache if cache_envelope_supported(raw_cache) else None
     try:
-        with FingerprintCache(
-            project_root(summary),
+        validate_legacy_validation_cache_paths(log_root)
+        if request.publish:
+            with validation_lock(log_root):
+                return _run_validation(
+                    request,
+                    summary,
+                    log_root,
+                    result_date,
+                )
+        return _run_validation(
+            request,
+            summary,
+            log_root,
+            result_date,
+        )
+    except (
+        FingerprintCacheError,
+        OSError,
+        RecordPublicationError,
+        ValidationCacheError,
+    ) as error:
+        raise ValidationControllerError(str(error)) from error
+
+
+def _run_validation(
+    request: ValidationRequest,
+    summary: Path,
+    log_root: Path,
+    result_date: str,
+) -> dict[str, Any]:
+    """Evaluate under the caller-owned publication lifecycle."""
+
+    with FingerprintCache(
+        project_root(summary),
+        writable=request.publish,
+        reuse=not request.recompute,
+    ) as fingerprint_cache:
+        with ValidationCache(
+            log_root,
             writable=request.publish,
             reuse=not request.recompute,
-        ) as fingerprint_cache:
-            if not request.recompute:
-                fingerprint_cache.seed_mechanical_cache(raw_cache)
+        ) as validation_cache:
+            report_identity = (
+                None
+                if request.recompute
+                else _current_report_identity(log_root, fingerprint_cache)
+            )
+            prior_checks = validation_cache.load_check_comparison(
+                rules_version=RULES_VERSION,
+                report_sha256=report_identity,
+            )
             evaluation = evaluate_mechanical(
                 MechanicalEvaluationRequest(
                     summary,
                     result_date,
-                    prior_cache=prior_cache,
                     fingerprint_cache=fingerprint_cache,
+                    validation_cache=validation_cache,
+                    check_comparison=prior_checks,
                 ),
                 mechanical_policy(),
             )
-    except FingerprintCacheError as error:
-        raise ValidationControllerError(str(error)) from error
-    record = evaluation.result
-    if not isinstance(record, MechanicalGeneratedRecord):
-        raise ValidationControllerError("mechanical engine returned an invalid record")
-    result = _completed_result(record, evaluation.metrics, published=False)
-    if not request.publish or record.completion is CompletionState.INCOMPLETE:
-        return result
-    cache = evaluation.scan.get("cache")
-    if not cache_envelope_supported(cache):
-        raise ValidationControllerError("mechanical engine returned an invalid cache")
-    assert isinstance(cache, Mapping)
-    outputs = {
-        "validation/mechanical.json": (record.canonical_json() + "\n").encode(),
-        "validation/.cache/mechanical.json": _json_bytes(cache),
-        "validation.md": compose_validation_report(record).encode(),
-    }
+            record = evaluation.result
+            if not isinstance(record, MechanicalGeneratedRecord):
+                raise ValidationControllerError(
+                    "mechanical engine returned an invalid record"
+                )
+            result = _completed_result(record, evaluation.metrics, published=False)
+            if not request.publish or record.completion is CompletionState.INCOMPLETE:
+                return result
+            mechanical = (record.canonical_json() + "\n").encode()
+            mechanical_digest = hashlib.sha256(mechanical).hexdigest()
+            outputs = {
+                "validation.md": compose_validation_report(record).encode(),
+            }
+            mechanical_changed = report_identity != mechanical_digest
+            if mechanical_changed:
+                outputs["validation/mechanical.json"] = mechanical
+            published_identities = publish_validation_outputs_locked(
+                log_root,
+                outputs,
+                validate_current=lambda: _require_publication_state(
+                    summary,
+                    fingerprint_cache,
+                    unchanged_report_sha256=(
+                        None if mechanical_changed else mechanical_digest
+                    ),
+                ),
+            )
+            if mechanical_changed:
+                fingerprint_cache.remember_regular_file(
+                    log_root / "validation" / "mechanical.json",
+                    digest=mechanical_digest,
+                    expected_size=len(mechanical),
+                    expected_identity=published_identities[
+                        "validation/mechanical.json"
+                    ],
+                )
+            promoted = validation_cache.finish_published_run(
+                record.checks,
+                rules_version=RULES_VERSION,
+                report_sha256=mechanical_digest,
+            )
+            cleanup_failures = (
+                remove_legacy_validation_cache(log_root) if promoted else ()
+            )
+            metrics = {
+                **evaluation.metrics,
+                **fingerprint_cache.metrics.as_dict(),
+                **validation_cache.metrics.as_dict(),
+                "legacy_cache_cleanup_failures": len(cleanup_failures),
+            }
+            return _completed_result(record, metrics, published=True)
+
+
+def _current_report_identity(
+    log_root: Path, fingerprint_cache: FingerprintCache
+) -> str | None:
+    path = log_root / "validation" / "mechanical.json"
+    if path.is_symlink() or not path.is_file():
+        return None
     try:
-        publish_validation_outputs(
-            log_root,
-            outputs,
-            validate_current=lambda: _require_unsupported_metadata_clear(summary),
-        )
-    except (OSError, RecordPublicationError) as exc:
-        raise ValidationControllerError(str(exc)) from exc
-    return _completed_result(record, evaluation.metrics, published=True)
+        observation = fingerprint_cache.observe_regular_file(path)
+    except FingerprintCacheError:
+        return None
+    return observation.fingerprint.digest
 
 
 def _validate_request(summary: Path) -> None:
@@ -199,19 +281,20 @@ def _require_unsupported_metadata_clear(summary: Path) -> None:
         )
 
 
-def _load_cache(path: Path) -> Mapping[str, Any] | None:
-    if not path.is_file() or path.is_symlink():
-        return None
-    try:
-        raw = bounded_file_bytes(path, maximum_bytes=MAX_CACHE_BYTES)
-        value = decode_json(
-            raw.decode("utf-8"),
-            maximum_bytes=MAX_CACHE_BYTES,
-            subject="mechanical cache",
+def _require_publication_state(
+    summary: Path,
+    fingerprint_cache: FingerprintCache,
+    *,
+    unchanged_report_sha256: str | None,
+) -> None:
+    _require_unsupported_metadata_clear(summary)
+    if unchanged_report_sha256 is None:
+        return
+    observed = _current_report_identity(summary.with_suffix(""), fingerprint_cache)
+    if observed != unchanged_report_sha256:
+        raise ValidationControllerError(
+            "authoritative mechanical report changed during validation"
         )
-    except (BoundedFileReadError, UnicodeError, V2JsonError):
-        return None
-    return value if isinstance(value, Mapping) else None
 
 
 def _completed_result(
@@ -228,10 +311,3 @@ def _completed_result(
         "status": record.completion.value,
         "summary": record.summary,
     }
-
-
-def _json_bytes(value: Mapping[str, Any]) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        + "\n"
-    ).encode("utf-8")

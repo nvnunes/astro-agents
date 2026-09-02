@@ -2359,16 +2359,12 @@ The active contract uses `research-log-data/v1`,
 removed. The activated rules version is
 `research-log-mechanical/input-registry-5`. The authoritative generated record
 remains `research-log-mechanical/1` because its serialized shape does not
-change. The disposable per-log cache becomes
-`research-log-mechanical-cache/6`.
-
-Cache v6 retains exactly `schema`, `rules_version`, `checks`, and
-`artifact_identities`. `artifact_identities` retains project-relative
-regular-file observation and digest reuse for evidence sources and scripts.
-Prior entries are reuse seeds only. The rebuilt cache contains only artifact
-observations used by the current evaluation. A rules-version change makes
-prior checks ineligible for unchanged comparison. A mechanical-cache shape
-change does not invalidate project-level input observations.
+change. Disposable per-log validation acceleration uses SQLite database schema
+version 1 with independently versioned `check_comparison` and
+`evidence_selections` components. A rules-version change makes prior checks
+ineligible for unchanged comparison without invalidating compatible selections
+or project-level observations. A per-log database or component change likewise
+does not invalidate project-level input observations.
 
 Accessible local input observations belong to the generated project-level
 SQLite database at
@@ -3074,12 +3070,14 @@ A completed published evaluation owns exactly these active generated paths:
 
 ```text
 <log>/validation/mechanical.json
-<log>/validation/.cache/mechanical.json
-<log>/validation/.cache/lock
+<log>/validation/reproduction.json  # when reproduction publishes it
 <log>/validation.md
+<log>/.cache/research-log-validation.sqlite3
+<log>/.cache/research-log-validation.lock
 ```
 
-A writable evaluation also owns the shared generated SQLite paths:
+The SQLite database may have `-journal`, `-wal`, and `-shm` companions. A
+writable evaluation also owns the shared generated SQLite paths:
 
 ```text
 <project>/.cache/research-log-fingerprints.sqlite3
@@ -3098,20 +3096,25 @@ A writable evaluation also owns the shared generated SQLite paths:
 `scope`, aggregate `status`, total `checks`, and counts for every check status.
 The record is canonical UTF-8 JSON with one trailing newline.
 
-`validation/.cache/mechanical.json` is disposable and uses the independent
-schema `research-log-mechanical-cache/6`. Its exact top-level fields are
-`schema`, `rules_version`, `checks`, and `artifact_identities`. `checks` retains
-only passing checks with a nonempty dependency projection, keyed by check
-identity; each value contains the exact check and its `dependency_projection`.
-`artifact_identities` maps project-relative regular-file paths to their exact
-byte size, modification time, change time, and SHA-256 digest. An artifact
-identity avoids recomputing its digest only when all three current filesystem
-observations match; it does not avoid reading the artifact when evaluating a
-locator. A newly computed script or locator-source digest and its published
-filesystem metadata must come from the same stable before-and-after
-observation; a change during hashing is unavailable rather than cacheable.
-Published artifact identities contain only resources used during the current
-evaluation; unused prior seeds are omitted.
+`<log>/.cache/research-log-validation.sqlite3` is disposable per-log
+acceleration state using SQLite schema version 1. It has independently
+versioned `check_comparison` and `evidence_selections` components.
+`check_comparison` retains only passing dependency-bearing checks, with the
+rules version, exact dependency projection, strict serialized check, and exact
+SHA-256 identity of the authoritative `validation/mechanical.json` from which
+the baseline was built. `evidence_selections` retains strict serialized
+successful `SelectionResult` values keyed by strong source content identity,
+source profile, canonical locator identity, and locator-evaluator version.
+
+Selections contain typed selected values, coordinates, identities, membership,
+shape, and dependency projection. They contain no source payload, parsed table
+or array, open handle, transformed presentation, or complete evidence check.
+One serialized result is limited to 256 KiB and all retained results for one
+log are limited to 16 MiB. An oversized selection remains a valid evaluation
+result but is omitted from the cache. Each completed stable selection is
+committed independently. Rows used in the current evaluation are assigned its
+retention generation; obsolete rows are removed only after that evaluation
+completes and its authoritative report publishes successfully.
 
 The project-level SQLite fingerprint cache uses schema version 1 at
 `<project>/.cache/research-log-fingerprints.sqlite3`. It stores current local
@@ -3123,25 +3126,33 @@ paths and kinds. Member files reuse the global file records. Repeated
 declarations, directory commands, overlapping trees, and different logs share
 one observation by canonical path.
 
-An evaluated check counts as unchanged only when the prior cache has the exact
-shape and current rules version and contains the same check with the same
+An evaluated check counts as unchanged only when the current authoritative
+mechanical-report bytes match the baseline report identity and the table
+contains the same passing check under the current rules version and exact
 dependency projection. This comparison happens after current evaluation and
-does not skip check computation. A different rules version makes every cached
-check ineligible for comparison but does not invalidate an artifact identity
-whose cache schema, entry shape, project-relative regular-file path, size,
-modification time, and change time still match exactly. Absence, invalid JSON,
-excess size, extra or malformed fields, an unsupported schema, or mismatched
-content causes bounded recomputation. `--recompute` treats checks and artifact
-identities as absent for reuse and bypasses project-level fingerprint reuse.
-A writable recomputation commits completed project observations incrementally
-and replaces the mechanical cache only when the completed evaluation publishes
-the generated bundle. `--dry-run` opens the project cache read-only and writes
-no generated path. A missing, corrupt, incomplete, locked, or unsupported
-read-only project cache is treated as absent and direct observation continues.
-A writable run rebuilds corrupt or incomplete generated cache state. It
-preserves and bypasses an unsupported future schema rather than deleting state
-owned by a newer implementation. `--recompute --dry-run` does not open the
-project cache. Cache state never changes a conclusion.
+does not skip check computation. A different rules version invalidates only
+check comparison; it does not invalidate current Phase 10 file observations or
+otherwise eligible evidence selections.
+
+Selection lookup happens after locator canonicalization and current strong
+source-identity observation but before full source loading. A hit reconstructs
+the exact typed `SelectionResult`, verifies the required optional reader is
+available, and continues through current transformation and presentation
+comparison. A hit performs no full source payload read, source parse, archive
+open, or dataset materialization. Every used source is rechecked for stable
+filesystem identity before evaluation returns. Source content, profile,
+locator identity, or evaluator-version changes cause a miss.
+
+Per-log cache absence, corruption, unsupported state, rejected rows, or I/O
+failure causes bounded ordinary evaluation and never changes a conclusion. A
+writable run rebuilds a corrupt cache. An unsupported future database or
+component version is preserved and bypassed; compatible older components are
+invalidated independently. A dry run opens existing per-log and project caches
+read-only and does not create, update, or garbage-collect state. `--recompute`
+bypasses check comparison, selection reuse, and project-level fingerprint
+reuse. A successful writable recomputation may repopulate both caches;
+`--recompute --dry-run` opens neither cache and leaves generated state
+byte-identical.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, check counts for
@@ -3160,15 +3171,26 @@ section is visibly `not_yet_run` until Phase 3 defines and publishes
 conclusion, and standard mechanical validation reads or writes no reproduction
 record.
 
-Publication holds `validation/.cache/lock`, rejects symlinks in generated
-destinations, rechecks the unsupported-metadata boundary under the lock, and atomically
-replaces each destination. An ordinary error restores every replaced path to
-the prior completed bundle before releasing the lock. Process termination is
-subject to the per-destination atomicity boundary; a later invocation must not
-interpret a partial bundle as current. `validation.md` is composed from the
-authoritative operation records under the same lock. Mechanical-record and
-cache schema versions evolve independently of evidence format v2 and of the
-future reproduction-record schema.
+Writable validation acquires
+`<log>/.cache/research-log-validation.lock` before opening the per-log database
+and holds it through evaluation, authoritative publication, comparison
+replacement, and completed-run selection cleanup. Publication rejects symlinks
+in generated destinations, rechecks the unsupported-metadata boundary under
+the lock, and atomically replaces each destination. An ordinary publication
+error restores every replaced path to the prior completed bundle before
+releasing the lock. A cache failure after successful publication leaves the
+authoritative bundle in place and makes later reuse conservative. Process
+termination is subject to the per-destination atomicity boundary; a later
+invocation must not interpret a partial bundle as current. `validation.md` is
+composed from the authoritative operation records under the same lock.
+
+The retired `validation/.cache/mechanical.json` and
+`validation/.cache/lock` are never read or migrated. After the first successful
+comparison-baseline rebuild, validation removes only those known files and
+removes their directory only when empty. Unknown legacy-directory contents are
+preserved. Mechanical-record, database, component, locator-evaluator, and
+future reproduction-record versions evolve independently of evidence format
+v2.
 
 ### Command-Provenance And Orphan Diagnostics
 

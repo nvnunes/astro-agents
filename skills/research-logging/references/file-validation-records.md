@@ -10,9 +10,11 @@ A validation agent may write only these generated paths for the active
 mechanical operation:
 
 - `<log>/validation/mechanical.json`;
-- `<log>/validation/.cache/mechanical.json`;
-- `<log>/validation/.cache/lock`; and
+- `<log>/validation/reproduction.json` when reproduction publishes it;
 - `<log>/validation.md`;
+- `<log>/.cache/research-log-validation.sqlite3`;
+- `<log>/.cache/research-log-validation.lock`;
+- SQLite journal, WAL, and shared-memory companions for that per-log cache;
 - `<project>/.cache/research-log-fingerprints.sqlite3`; and
 - SQLite journal, WAL, and shared-memory companions for that project cache.
 
@@ -21,13 +23,22 @@ uses schema `research-log-mechanical/1` and records every mechanical check,
 independent conformance, evidence, provenance, and orphan-scope aggregates, the
 rules version, and the result date.
 
-`validation/.cache/mechanical.json` is a disposable reuse projection. It uses
-schema `research-log-mechanical-cache/6`, has an independent version history,
-and may be removed or rebuilt without changing a validation conclusion. It
-tracks compatible passing checks and project-relative evidence/script
-observations. A rebuilt cache retains only observations used in that
-evaluation; prior entries are reuse seeds, not persistent registry state. A
-rules-version change invalidates cached checks.
+`<log>/.cache/research-log-validation.sqlite3` is disposable validation
+acceleration state. SQLite schema version 1 contains independently versioned
+`check_comparison` and `evidence_selections` components. Check comparison keeps
+only passing dependency-bearing checks tied to the exact current authoritative
+mechanical-report digest and current rules version. Selection reuse stores only
+strict serialized successful `SelectionResult` values keyed by strong source
+content identity, source profile, canonical locator identity, and locator
+evaluator version. It never stores source payloads, parsed sources, open
+handles, transformed presentations, or complete evidence checks.
+
+One serialized selection may use at most 256 KiB and all retained selections
+for one log may use at most 16 MiB. Oversized selections remain valid and are
+simply recomputed later. Each completed stable selection is committed
+independently. Only a completed published evaluation advances retention and
+removes rows unused by that evaluation. Incomplete, interrupted, and read-only
+runs do not remove prior rows or replace the check-comparison baseline.
 
 `<project>/.cache/research-log-fingerprints.sqlite3` is the generated shared
 filesystem-observation cache. SQLite schema version 1 stores canonical absolute
@@ -44,8 +55,9 @@ selectors, then stores and reuses only the matched file observations. Added or
 removed matches change the aggregate identity. Each wildcard parent is scanned
 once per membership observation with a 100,000-candidate bound and without
 descendant traversal.
-The expected fingerprint in `data.json`, mechanical rules, and mechanical-cache
-schema do not key or invalidate an otherwise current observation.
+The expected fingerprint in `data.json`, mechanical rules, and per-log
+validation-cache schema do not key or invalidate an otherwise current
+observation.
 
 The nearest enclosing non-symlink `.git` file or directory owns the project
 cache; directory names do not determine project scope. A read-only validation
@@ -58,8 +70,8 @@ The project cache is generated acceleration state, not research identity or
 execution history. A writable validation stores each completed file
 observation transactionally, including observations completed before a later
 incomplete result or interruption. `--dry-run` never creates or updates it.
-`--recompute` bypasses both mechanical and fingerprint reuse. Ignore
-`validation/.cache/` and the project `.cache/` directory in source control.
+`--recompute` bypasses check, selection, and fingerprint reuse. Ignore every
+`.cache/` directory in source control and research-log discovery.
 
 `validation.md` is the shared human-facing projection. Its Mechanical
 Validation section shows the completion state and date, check counts for
@@ -74,10 +86,9 @@ the two operations into one pass/fail conclusion and is never authoritative.
 ## Research Boundary
 
 Treat maintained summaries, entries, scripts, artifacts, `data.json`,
-`retention.json`, evidence
-records, and authored prose as research-owned. Validation reads them but never
-edits them. Research operations preserve generated validation files and do not
-hand-edit them.
+`retention.json`, evidence records, and authored prose as research-owned.
+Validation reads them but never edits them. Research operations preserve
+generated validation files and do not hand-edit them.
 
 The maintained summary owns one stable navigation line immediately below its
 H1:
@@ -102,21 +113,33 @@ separately user-authorized maintenance action, not Record.
 
 `incomplete` means at least one required observation was unavailable. It exits
 nonzero and publishes no new per-log bundle. A writable run may retain earlier
-completed project-cache observations. A tool or publication failure also exits
-nonzero. `--dry-run` evaluates and returns the result without acquiring the
-publication lock or writing any generated file.
+completed project-cache observations and bounded successful selections. A tool
+or publication failure also exits nonzero. `--dry-run` evaluates and returns
+the result without acquiring the publication lock or writing any generated
+file.
 
 Canonical publication holds the per-log lock, rechecks the required observed
 state, and replaces the generated files atomically per destination. An
 ordinary publication error restores the prior completed bundle. Mechanical
-cache absence, corruption, or an unsupported schema causes bounded
-recomputation. Project-cache absence creates a new database; corruption
-discards and rebuilds generated observations during a writable validation. An
-unsupported future project-cache schema is preserved and bypassed. Compatible
-project-cache schema changes require explicit migration. `--recompute` bypasses
-all existing cache reuse for one invocation. A completed published
-recomputation installs the newly rebuilt mechanical cache; a recomputation
-combined with `--dry-run` leaves every generated path byte-identical.
+cache absence, corruption, rejected rows, or incompatible components cause
+bounded recomputation. Writable validation rebuilds a corrupt per-log cache;
+an unsupported future database or component version is preserved and
+bypassed. Read-only validation opens existing cache state read-only and does
+not create, update, or garbage-collect it. Project-cache absence creates a new
+database; corruption discards and rebuilds generated observations during a
+writable validation. An unsupported future project-cache schema is preserved
+and bypassed. Compatible cache schema changes require explicit migration.
+`--recompute` bypasses all existing cache reuse for one invocation. A completed
+published recomputation repopulates the per-log cache; a recomputation combined
+with `--dry-run` leaves every generated path byte-identical.
+
+The writer lock is held before the writable per-log database opens and remains
+held through evaluation, authoritative publication, comparison replacement,
+and completed-run selection cleanup. The known legacy files
+`validation/.cache/mechanical.json` and `validation/.cache/lock` are not read or
+migrated. After a successful comparison-baseline rebuild they are removed, and
+their directory is removed only when empty; unknown legacy-directory contents
+are preserved.
 
 Mechanical validation is code-only. It does not request agent judgment,
 produce repair instructions, inspect script internals to infer associations,

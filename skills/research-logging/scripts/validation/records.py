@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import stat
@@ -10,13 +11,18 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
-LOCK_FILENAME = "validation/.cache/lock"
+from .filesystem import FileIdentity, file_identity
+from .validation_cache import LOCK_FILENAME
+
+LEGACY_CACHE_FILES = (
+    "validation/.cache/mechanical.json",
+    "validation/.cache/lock",
+)
 PUBLISHABLE_PATHS = frozenset(
     {
         "validation.md",
         "validation/mechanical.json",
         "validation/reproduction.json",
-        "validation/.cache/mechanical.json",
     }
 )
 
@@ -30,14 +36,18 @@ def validation_lock(log_root: Path) -> Iterator[None]:
     """Hold one log's nonblocking generated-state publication lock."""
 
     log_root = log_root.resolve()
-    lock_path = log_root / LOCK_FILENAME
+    lock_path = log_root / ".cache" / LOCK_FILENAME
     current = log_root
-    for part in PurePosixPath(LOCK_FILENAME).parts:
+    for part in (".cache", LOCK_FILENAME):
         current /= part
         if current.is_symlink():
             raise RecordPublicationError(
                 f"validation publication path must not contain a symlink: {current}"
             )
+    if lock_path.exists() and not lock_path.is_file():
+        raise RecordPublicationError(
+            f"validation lock must be a regular file: {lock_path}"
+        )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         try:
@@ -60,20 +70,31 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+def _atomic_write_bytes(path: Path, payload: bytes) -> FileIdentity:
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
         temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary.chmod(mode)
+            os.replace(temporary, path)
+            _fsync_directory(path.parent)
+            installed = os.fstat(handle.fileno())
+            current = path.lstat()
+            identity = file_identity(installed)
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or identity != file_identity(current)
+            ):
+                raise RecordPublicationError(
+                    f"validation publication destination changed: {path}"
+                )
+            return identity
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _atomic_copy_file(path: Path, source: Path, mode: int) -> None:
@@ -113,27 +134,19 @@ def _snapshot_file(path: Path, snapshot: Path) -> int:
                 target.flush()
                 os.fsync(target.fileno())
         after = os.fstat(descriptor)
-        current = path.stat()
+        current = path.lstat()
     finally:
         os.close(descriptor)
-    before_identity = _file_identity(before)
-    if before_identity != _file_identity(after) or before_identity != _file_identity(
-        current
+    before_identity = file_identity(before)
+    if (
+        before_identity != file_identity(after)
+        or not stat.S_ISREG(current.st_mode)
+        or before_identity != file_identity(current)
     ):
         raise RecordPublicationError(
             f"validation publication destination changed during snapshot: {path}"
         )
     return stat.S_IMODE(before.st_mode)
-
-
-def _file_identity(observation: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        observation.st_dev,
-        observation.st_ino,
-        observation.st_size,
-        observation.st_mtime_ns,
-        observation.st_ctime_ns,
-    )
 
 
 def _snapshot_publication(
@@ -226,22 +239,85 @@ def publish_validation_outputs(
 
     log_root = log_root.resolve()
     with validation_lock(log_root):
-        resolved = _publication_paths(log_root, outputs)
-        if validate_current is not None:
-            validate_current()
-        with tempfile.TemporaryDirectory(
-            prefix="research-log-validation-publication-"
-        ) as snapshot_directory:
-            prior = _snapshot_publication(resolved, Path(snapshot_directory))
-            attempted: list[tuple[str, Path]] = []
-            try:
-                for relative, path, payload in resolved:
-                    attempted.append((relative, path))
-                    _atomic_write_bytes(path, payload)
-                if validate_current is not None:
-                    validate_current()
-            except Exception as exc:
-                rollback_errors = _restore_publication(attempted, prior)
+        publish_validation_outputs_locked(
+            log_root,
+            outputs,
+            validate_current=validate_current,
+        )
+
+
+def publish_validation_outputs_locked(
+    log_root: Path,
+    outputs: Mapping[str, bytes],
+    *,
+    validate_current: Callable[[], None] | None = None,
+) -> Mapping[str, FileIdentity]:
+    """Publish one bundle while the caller holds the per-log writer lock."""
+
+    log_root = log_root.resolve()
+    resolved = _publication_paths(log_root, outputs)
+    if validate_current is not None:
+        validate_current()
+    with tempfile.TemporaryDirectory(
+        prefix="research-log-validation-publication-"
+    ) as snapshot_directory:
+        prior = _snapshot_publication(resolved, Path(snapshot_directory))
+        attempted: list[tuple[str, Path]] = []
+        published: dict[str, FileIdentity] = {}
+        try:
+            for relative, path, payload in resolved:
+                attempted.append((relative, path))
+                published[relative] = _atomic_write_bytes(path, payload)
+            if validate_current is not None:
+                validate_current()
+        except Exception as exc:
+            rollback_errors = _restore_publication(attempted, prior)
+            raise RecordPublicationError(
+                _publication_failure_message(exc, rollback_errors)
+            ) from exc
+    return published
+
+
+def remove_legacy_validation_cache(log_root: Path) -> tuple[str, ...]:
+    """Remove known superseded cache files without affecting publication."""
+
+    log_root = log_root.resolve()
+    errors: list[str] = []
+    try:
+        validate_legacy_validation_cache_paths(log_root)
+    except RecordPublicationError as error:
+        return (str(error),)
+    for relative in LEGACY_CACHE_FILES:
+        pure = PurePosixPath(relative)
+        path = log_root.joinpath(*pure.parts)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            errors.append(f"{path}: {error}")
+    directory = log_root / "validation" / ".cache"
+    try:
+        directory.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        if error.errno != errno.ENOTEMPTY:
+            errors.append(f"{directory}: {error}")
+    return tuple(errors)
+
+
+def validate_legacy_validation_cache_paths(log_root: Path) -> None:
+    """Reject symlinks before inspecting or cleaning known legacy cache paths."""
+
+    log_root = log_root.resolve()
+    for relative in LEGACY_CACHE_FILES:
+        current = log_root
+        for part in PurePosixPath(relative).parts:
+            current /= part
+            if current.is_symlink():
                 raise RecordPublicationError(
-                    _publication_failure_message(exc, rollback_errors)
-                ) from exc
+                    f"legacy cache path must not contain a symlink: {current}"
+                )
+        if current.exists() and not current.is_file():
+            raise RecordPublicationError(
+                f"legacy cache path must be a regular file: {current}"
+            )

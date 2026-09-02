@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from research_log_validation_test_support import (
@@ -16,14 +18,25 @@ from research_log_validation_test_support import (
 CONTROLLER = importlib.import_module("validation.controller")
 DATA = importlib.import_module("research_log_data")
 ENGINE = importlib.import_module("validation.engine")
+FILESYSTEM = importlib.import_module("validation.filesystem")
 FINGERPRINT_CACHE = importlib.import_module("validation.fingerprint_cache")
 LOCATOR = importlib.import_module("validation.locator")
 RECORDS = importlib.import_module("validation.records")
 REPORT = importlib.import_module("validation.report")
 RESULTS = importlib.import_module("validation.mechanical_results")
+VALIDATION_CACHE = importlib.import_module("validation.validation_cache")
 
 
 _log = mechanical_log
+
+
+def _cache_path(summary: Path) -> Path:
+    return summary.with_suffix("") / ".cache" / VALIDATION_CACHE.CACHE_FILENAME
+
+
+def _cache_rows(path: Path, table: str) -> int:
+    with closing(sqlite3.connect(path)) as connection:
+        return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
 class MechanicalControllerTests(unittest.TestCase):
@@ -126,17 +139,23 @@ class MechanicalControllerTests(unittest.TestCase):
             record = json.loads(
                 (log_root / "validation" / "mechanical.json").read_text()
             )
-            cache = json.loads(
-                (log_root / "validation" / ".cache" / "mechanical.json").read_text()
-            )
+            cache_path = _cache_path(summary)
             report = (log_root / "validation.md").read_text()
             self.assertEqual(result["status"], "complete_clear")
             self.assertTrue(result["published"])
+            self.assertGreaterEqual(
+                result["metrics"]["validation_cache_sqlite_writes"], 4
+            )
+            self.assertEqual(result["metrics"]["legacy_cache_cleanup_failures"], 0)
             self.assertEqual(record["schema"], "research-log-mechanical/1")
-            self.assertEqual(cache["schema"], "research-log-mechanical-cache/6")
-            self.assertNotIn("directory_identities", cache)
-            self.assertIn("artifact_identities", cache)
-            self.assertNotIn("input_observations", cache)
+            self.assertTrue(cache_path.is_file())
+            with closing(sqlite3.connect(cache_path)) as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    VALIDATION_CACHE.CACHE_SCHEMA_VERSION,
+                )
+            self.assertGreater(_cache_rows(cache_path, "check_comparison"), 0)
+            self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
             self.assertIn("## Mechanical Validation", report)
             self.assertIn("## Reproduction", report)
             self.assertIn("Status: `not_yet_run`", report)
@@ -151,7 +170,12 @@ class MechanicalControllerTests(unittest.TestCase):
                     for path in (log_root / "validation").rglob("*")
                     if path.is_file()
                 ),
-                [".cache/lock", ".cache/mechanical.json", "mechanical.json"],
+                ["mechanical.json"],
+            )
+            cache_names = {path.name for path in (log_root / ".cache").iterdir()}
+            self.assertTrue(
+                {VALIDATION_CACHE.CACHE_FILENAME, VALIDATION_CACHE.LOCK_FILENAME}
+                <= cache_names
             )
 
     def test_findings_are_complete_and_grouped_without_passing_rows(self) -> None:
@@ -263,37 +287,45 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
 
     def test_invalid_cache_recomputes_without_changing_the_result(self) -> None:
-        invalid_caches = (
-            b"{\n",
-            b'{"checks":{},"rules_version":"old","schema":'
-            b'"research-log-mechanical-cache/2"}\n',
-            b'{"checks":{},"rules_version":"irrelevant","schema":"unsupported"}\n',
-        )
-        for invalid in invalid_caches:
-            with (
-                self.subTest(cache=invalid),
-                tempfile.TemporaryDirectory() as (directory),
-            ):
-                summary, _ = _log(Path(directory))
-                first = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-                )
-                cache_path = (
-                    summary.with_suffix("") / "validation/.cache/mechanical.json"
-                )
-                cache_path.write_bytes(invalid)
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            first = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+            cache_path = _cache_path(summary)
+            cache_path.write_bytes(b"not a sqlite database")
 
-                result = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-                )
+            result = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
 
-                self.assertEqual(first["status"], "complete_clear")
-                self.assertEqual(result["status"], "complete_clear")
-                self.assertEqual(result["metrics"]["checks_unchanged"], 0)
+            self.assertEqual(first["status"], "complete_clear")
+            self.assertEqual(result["status"], "complete_clear")
+            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
+            with closing(sqlite3.connect(cache_path)) as connection:
                 self.assertEqual(
-                    json.loads(cache_path.read_text())["schema"],
-                    "research-log-mechanical-cache/6",
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    VALIDATION_CACHE.CACHE_SCHEMA_VERSION,
                 )
+
+    def test_future_cache_schema_is_preserved_and_bypassed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            cache_path = _cache_path(summary)
+            cache_path.parent.mkdir(parents=True)
+            with closing(sqlite3.connect(cache_path)) as connection:
+                connection.execute(
+                    f"PRAGMA user_version={VALIDATION_CACHE.CACHE_SCHEMA_VERSION + 1}"
+                )
+            before = cache_path.read_bytes()
+
+            result = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+
+            self.assertEqual(result["status"], "complete_clear")
+            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
+            self.assertEqual(cache_path.read_bytes(), before)
 
     def test_unchanged_validation_reports_matching_checks_and_reuses_cache(
         self,
@@ -305,18 +337,48 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = summary.with_suffix("")
             tracked = (
                 log_root / "validation/mechanical.json",
-                log_root / "validation/.cache/mechanical.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
+            mechanical_before = (log_root / "validation/mechanical.json").stat()
 
-            second = CONTROLLER.validate(request)
+            with (
+                mock.patch.object(
+                    LOCATOR,
+                    "_bounded_text_payload",
+                    side_effect=AssertionError("warm hit must not read full payload"),
+                ),
+                mock.patch.object(
+                    LOCATOR,
+                    "_evaluate_record_table",
+                    side_effect=AssertionError("warm hit must not parse the source"),
+                ),
+            ):
+                second = CONTROLLER.validate(request)
 
             self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(second["status"], "complete_clear")
+            self.assertEqual(first["record"], second["record"])
             self.assertGreater(second["metrics"]["checks_unchanged"], 0)
             self.assertGreater(second["metrics"]["source_hashes_reused"], 0)
+            self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(second["metrics"]["source_payload_reads"], 0)
+            self.assertEqual(second["metrics"]["source_evaluations"], 0)
+            self.assertEqual(second["metrics"]["fingerprint_cache_file_hashes"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+            mechanical_after = (log_root / "validation/mechanical.json").stat()
+            self.assertEqual(
+                (
+                    mechanical_after.st_ino,
+                    mechanical_after.st_mtime_ns,
+                    mechanical_after.st_ctime_ns,
+                ),
+                (
+                    mechanical_before.st_ino,
+                    mechanical_before.st_mtime_ns,
+                    mechanical_before.st_ctime_ns,
+                ),
+            )
 
     def test_unchanged_local_input_reuses_its_verified_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -346,21 +408,17 @@ class MechanicalControllerTests(unittest.TestCase):
 
             first = CONTROLLER.validate(request)
             second = CONTROLLER.validate(request)
-            cache = json.loads(
-                (
-                    summary.with_suffix("") / "validation/.cache/mechanical.json"
-                ).read_text()
-            )
 
             self.assertEqual(first["metrics"]["input_fingerprints_reused"], 0)
             self.assertEqual(second["metrics"]["input_fingerprints_reused"], 1)
-            self.assertNotIn("input_observations", cache)
-            self.assertEqual(second["metrics"]["fingerprint_cache_file_reuses"], 1)
+            self.assertGreaterEqual(
+                second["metrics"]["fingerprint_cache_file_reuses"], 1
+            )
             self.assertTrue(
                 (Path(directory) / ".cache/research-log-fingerprints.sqlite3").is_file()
             )
 
-    def test_schema_5_input_observation_seeds_the_project_cache(self) -> None:
+    def test_legacy_json_cache_is_ignored_then_removed_after_cutover(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = _log(root)
@@ -402,64 +460,103 @@ class MechanicalControllerTests(unittest.TestCase):
             cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
             write(cache_path, json.dumps(legacy_cache) + "\n")
 
+            result = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+
+            self.assertGreater(result["metrics"]["fingerprint_cache_file_hashes"], 0)
+            self.assertFalse(cache_path.exists())
+            self.assertTrue(_cache_path(summary).is_file())
+
+    def test_legacy_cutover_preserves_unknown_cache_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            legacy_root = summary.with_suffix("") / "validation" / ".cache"
+            write(legacy_root / "mechanical.json", "legacy\n")
+            write(legacy_root / "lock", "")
+            write(legacy_root / "unknown.txt", "preserve\n")
+
+            result = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+
+            self.assertTrue(result["published"])
+            self.assertFalse((legacy_root / "mechanical.json").exists())
+            self.assertFalse((legacy_root / "lock").exists())
+            self.assertEqual((legacy_root / "unknown.txt").read_text(), "preserve\n")
+
+    def test_legacy_cleanup_failure_is_non_authoritative_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
             with mock.patch.object(
-                FINGERPRINT_CACHE,
-                "observe_file_content",
-                side_effect=AssertionError("legacy observation must seed content"),
+                CONTROLLER,
+                "remove_legacy_validation_cache",
+                return_value=("fixture cleanup failure",),
             ):
                 result = CONTROLLER.validate(
                     CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
                 )
 
-            self.assertEqual(
-                result["metrics"]["fingerprint_cache_legacy_files_imported"], 1
-            )
-            self.assertEqual(result["metrics"]["fingerprint_cache_file_reuses"], 1)
-            self.assertEqual(
-                json.loads(cache_path.read_text())["schema"],
-                "research-log-mechanical-cache/6",
-            )
+            log_root = summary.with_suffix("")
+            self.assertTrue(result["published"])
+            self.assertEqual(result["metrics"]["legacy_cache_cleanup_failures"], 1)
+            self.assertTrue((log_root / "validation/mechanical.json").is_file())
+            self.assertTrue((log_root / "validation.md").is_file())
 
-    def test_rebuilt_cache_drops_unused_seed_observations(self) -> None:
+    def test_symlinked_legacy_cache_directory_is_rejected_before_writing(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = _log(root)
+            log_root = summary.with_suffix("")
+            external = root / "external"
+            external.mkdir()
+            validation = log_root / "validation"
+            validation.mkdir()
+            (validation / ".cache").symlink_to(external, target_is_directory=True)
+
+            with self.assertRaisesRegex(
+                CONTROLLER.ValidationControllerError, "must not contain a symlink"
+            ):
+                CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
+
+            self.assertFalse((log_root / "validation/mechanical.json").exists())
+
+    def test_completed_run_drops_obsolete_selection_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
             request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
             CONTROLLER.validate(request)
-            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
-            cache = json.loads(cache_path.read_text())
-            unused = root / "unused-seed.csv"
-            write(unused, "value\n1\n")
-            observation = unused.stat()
-            cache["artifact_identities"]["unused-seed.csv"] = {
-                "ctime_ns": observation.st_ctime_ns,
-                "mtime_ns": observation.st_mtime_ns,
-                "sha256": hashlib.sha256(unused.read_bytes()).hexdigest(),
-                "size": observation.st_size,
-            }
-            write(cache_path, json.dumps(cache) + "\n")
+            cache_path = _cache_path(summary)
+            self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
+            write(entry.parent / "evidence.json", "{\n")
 
-            CONTROLLER.validate(request)
+            result = CONTROLLER.validate(request)
 
-            rebuilt = json.loads(cache_path.read_text())
-            self.assertNotIn("unused-seed.csv", rebuilt["artifact_identities"])
+            self.assertEqual(result["status"], "complete_findings")
+            self.assertEqual(_cache_rows(cache_path, "evidence_selections"), 0)
 
-    def test_rules_change_invalidates_checks_but_preserves_artifact_identities(
+    def test_rules_change_invalidates_checks_but_preserves_selection_reuse(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
             CONTROLLER.validate(request)
-            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
-            cache = json.loads(cache_path.read_text())
-            cache["rules_version"] = "superseded-rules"
-            write(cache_path, json.dumps(cache) + "\n")
+            cache_path = _cache_path(summary)
+            with closing(sqlite3.connect(cache_path)) as connection:
+                connection.execute(
+                    "UPDATE check_comparison SET rules_version = ?",
+                    ("superseded-rules",),
+                )
+                connection.commit()
 
             rebuilt = CONTROLLER.validate(request)
 
             self.assertEqual(rebuilt["metrics"]["checks_unchanged"], 0)
-            self.assertGreater(rebuilt["metrics"]["artifact_identity_seeds"], 0)
+            self.assertGreater(rebuilt["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(rebuilt["metrics"]["source_payload_reads"], 0)
             self.assertGreater(rebuilt["metrics"]["source_hashes_reused"], 0)
 
     def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
@@ -473,6 +570,22 @@ class MechanicalControllerTests(unittest.TestCase):
 
             self.assertEqual(changed["status"], "complete_findings")
             self.assertEqual(changed["metrics"]["source_hashes_reused"], 0)
+
+    def test_changed_presentation_reuses_selection_then_compares_freshly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            CONTROLLER.validate(request)
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace("`67.6%`", "`67.5%`"),
+            )
+
+            changed = CONTROLLER.validate(request)
+
+            self.assertEqual(changed["status"], "complete_findings")
+            self.assertGreater(changed["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(changed["metrics"]["source_payload_reads"], 0)
 
     def test_recompute_bypasses_cache_and_publishes_rebuilt_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -490,15 +603,13 @@ class MechanicalControllerTests(unittest.TestCase):
                 )
             )
 
-            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
+            cache_path = _cache_path(summary)
             self.assertEqual(recomputed["status"], "complete_clear")
             self.assertTrue(recomputed["published"])
             self.assertEqual(recomputed["metrics"]["checks_unchanged"], 0)
             self.assertEqual(recomputed["metrics"]["source_hashes_reused"], 0)
-            self.assertEqual(
-                json.loads(cache_path.read_text())["schema"],
-                "research-log-mechanical-cache/6",
-            )
+            self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
+            self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
 
     def test_recompute_dry_run_neither_reads_cache_nor_publishes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -509,8 +620,8 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = summary.with_suffix("")
             tracked = (
                 log_root / "validation/mechanical.json",
-                log_root / "validation/.cache/mechanical.json",
                 log_root / "validation.md",
+                _cache_path(summary),
             )
             before = {path: path.read_bytes() for path in tracked}
             project_cache = Path(directory) / ".cache/research-log-fingerprints.sqlite3"
@@ -518,9 +629,9 @@ class MechanicalControllerTests(unittest.TestCase):
 
             with (
                 mock.patch.object(
-                    CONTROLLER,
-                    "_load_cache",
-                    side_effect=AssertionError("recompute must not read the cache"),
+                    VALIDATION_CACHE.ValidationCache,
+                    "_open_once",
+                    side_effect=AssertionError("recompute dry-run must not open cache"),
                 ),
                 mock.patch.object(
                     FINGERPRINT_CACHE.FingerprintCache,
@@ -544,29 +655,21 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
             self.assertEqual(project_cache.read_bytes(), b"not a sqlite database")
 
-    def test_oversized_cache_is_ignored_and_replaced(self) -> None:
+    def test_oversized_selection_is_valid_but_not_cached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-            CONTROLLER.validate(request)
-            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
-            self.assertGreater(cache_path.stat().st_size, 1)
-
-            with (
-                mock.patch.object(CONTROLLER, "MAX_CACHE_BYTES", 1),
-                mock.patch.object(
-                    Path,
-                    "read_bytes",
-                    side_effect=AssertionError("whole-file read is forbidden"),
-                ),
-            ):
+            with mock.patch.object(VALIDATION_CACHE, "MAX_SELECTION_BYTES", 1):
+                first = CONTROLLER.validate(request)
                 result = CONTROLLER.validate(request)
 
+            self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(result["status"], "complete_clear")
-            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
+            self.assertGreater(result["metrics"]["selection_cache_oversized"], 0)
+            self.assertEqual(result["metrics"]["selection_cache_hits"], 0)
+            self.assertGreater(result["metrics"]["source_payload_reads"], 0)
             self.assertEqual(
-                json.loads(cache_path.read_text())["schema"],
-                "research-log-mechanical-cache/6",
+                _cache_rows(_cache_path(summary), "evidence_selections"), 0
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -578,7 +681,9 @@ class MechanicalControllerTests(unittest.TestCase):
                 "V2: Expanded Mechanical Locator Language",
                 outcome="unavailable",
             )
-            with mock.patch.object(ENGINE, "observe_source", side_effect=unavailable):
+            with mock.patch.object(
+                ENGINE, "observe_source_identity", side_effect=unavailable
+            ):
                 result = CONTROLLER.validate(
                     CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
                 )
@@ -652,7 +757,6 @@ class MechanicalControllerTests(unittest.TestCase):
             write(transaction, "{}\n")
             tracked = (
                 log_root / "validation/mechanical.json",
-                log_root / "validation/.cache/mechanical.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -700,7 +804,6 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = Path(directory) / "log"
             old = {
                 "validation/mechanical.json": b"old record\n",
-                "validation/.cache/mechanical.json": b"old cache\n",
                 "validation.md": b"old report\n",
             }
             for relative, payload in old.items():
@@ -710,12 +813,12 @@ class MechanicalControllerTests(unittest.TestCase):
             original = RECORDS._atomic_write_bytes
             calls = 0
 
-            def fail_second(path: Path, payload: bytes) -> None:
+            def fail_second(path: Path, payload: bytes):
                 nonlocal calls
                 calls += 1
                 if calls == 2:
                     raise OSError("fixture failure")
-                original(path, payload)
+                return original(path, payload)
 
             with mock.patch.object(
                 RECORDS, "_atomic_write_bytes", side_effect=fail_second
@@ -745,6 +848,21 @@ class MechanicalControllerTests(unittest.TestCase):
                 )
 
             self.assertEqual(prior.read_text(encoding="utf-8"), "new record\n")
+
+    def test_locked_publication_returns_exact_installed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root = Path(directory) / "log"
+            relative = "validation/mechanical.json"
+            with RECORDS.validation_lock(log_root):
+                identities = RECORDS.publish_validation_outputs_locked(
+                    log_root,
+                    {relative: b"new record\n"},
+                )
+
+            published = log_root / relative
+            self.assertEqual(
+                identities[relative], FILESYSTEM.file_identity(published.lstat())
+            )
 
     def test_incomplete_rollback_is_reported_truthfully(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -786,6 +904,70 @@ class MechanicalControllerTests(unittest.TestCase):
                     )
             self.assertFalse((log_root / "validation/mechanical.json").exists())
 
+    def test_controller_holds_writer_lock_through_evaluation_and_promotion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            log_root = summary.with_suffix("")
+            original_evaluate = CONTROLLER.evaluate_mechanical
+            original_finish = VALIDATION_CACHE.ValidationCache.finish_published_run
+
+            def evaluate_while_locked(*args: object, **kwargs: object):
+                with self.assertRaisesRegex(
+                    RECORDS.RecordPublicationError, "another validation writer"
+                ):
+                    with RECORDS.validation_lock(log_root):
+                        pass
+                return original_evaluate(*args, **kwargs)
+
+            def finish_while_locked(cache: object, *args: object, **kwargs: object):
+                with self.assertRaisesRegex(
+                    RECORDS.RecordPublicationError, "another validation writer"
+                ):
+                    with RECORDS.validation_lock(log_root):
+                        pass
+                return original_finish(cache, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    CONTROLLER,
+                    "evaluate_mechanical",
+                    side_effect=evaluate_while_locked,
+                ),
+                mock.patch.object(
+                    VALIDATION_CACHE.ValidationCache,
+                    "finish_published_run",
+                    autospec=True,
+                    side_effect=finish_while_locked,
+                ),
+            ):
+                result = CONTROLLER.validate(
+                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                )
+
+            self.assertTrue(result["published"])
+
+    def test_post_publication_cache_failure_preserves_authoritative_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+
+            with mock.patch.object(
+                VALIDATION_CACHE.ValidationCache,
+                "finish_published_run",
+                return_value=False,
+            ):
+                result = CONTROLLER.validate(
+                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                )
+
+            log_root = summary.with_suffix("")
+            self.assertTrue(result["published"])
+            self.assertTrue((log_root / "validation/mechanical.json").is_file())
+            self.assertTrue((log_root / "validation.md").is_file())
+
     def test_symlinked_publication_directory_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -815,7 +997,6 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = summary.with_suffix("")
             tracked = (
                 log_root / "validation/mechanical.json",
-                log_root / "validation/.cache/mechanical.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -823,7 +1004,9 @@ class MechanicalControllerTests(unittest.TestCase):
             with mock.patch.object(
                 CONTROLLER, "evaluate_mechanical", side_effect=OSError("fixture")
             ):
-                with self.assertRaisesRegex(OSError, "fixture"):
+                with self.assertRaisesRegex(
+                    CONTROLLER.ValidationControllerError, "fixture"
+                ):
                     CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
@@ -836,7 +1019,6 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = summary.with_suffix("")
             tracked = (
                 log_root / "validation/mechanical.json",
-                log_root / "validation/.cache/mechanical.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -845,12 +1027,13 @@ class MechanicalControllerTests(unittest.TestCase):
 
             unsupported = log_root / "validation/manifest.json"
 
-            def introduce_unsupported_metadata(path: Path, payload: bytes) -> None:
+            def introduce_unsupported_metadata(path: Path, payload: bytes):
                 nonlocal introduced
-                original(path, payload)
+                identity = original(path, payload)
                 if path.name == "validation.md" and not introduced:
                     introduced = True
                     write(unsupported, "{}\n")
+                return identity
 
             with mock.patch.object(
                 RECORDS,

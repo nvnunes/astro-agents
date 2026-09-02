@@ -112,23 +112,37 @@ The research-log test gate must verify:
 - the active standard route imports no semantic review, decision,
   continuation, reproduction, or unsupported evidence runtime;
 - `validation/mechanical.json` uses schema
-  `research-log-mechanical/1`, while the disposable per-log cache uses the
-  independent `research-log-mechanical-cache/6` schema;
+  `research-log-mechanical/1`, while the disposable per-log SQLite cache uses
+  database schema version 1 with independently versioned check-comparison and
+  evidence-selection components;
+- the per-log cache and writer lock live beneath `<log>/.cache/`, are excluded
+  from discovery and source control, and the lock is held from writable cache
+  open through evaluation, publication, baseline promotion, and selection
+  cleanup;
 - the project-level fingerprint cache uses SQLite schema version 1 at
   `<project>/.cache/research-log-fingerprints.sqlite3`, remains independent of
   mechanical rules and report schemas, and is excluded from source control;
 - the nearest enclosing non-symlink Git worktree marker owns the project cache,
   including when the maintained log is outside `docs/` or the project itself is
   named `docs`;
-- cache absence, corruption, or an unsupported cache schema causes bounded
-  recomputation, and evaluated checks count as unchanged only when the complete
-  cache contract, rules version, dependency projection, and check content
-  match;
+- per-log cache absence, corruption, unsupported state, rejected rows, or I/O
+  failure causes bounded recomputation without changing conclusions, while an
+  unsupported future database or component version is preserved and bypassed;
+- evaluated checks count as unchanged only when the current authoritative
+  report digest, rules version, dependency projection, and strict check content
+  all match;
 - a rules-version change makes cached checks ineligible for unchanged
-  comparison while preserving artifact identities whose cache entry and
-  current file identity still match exactly;
-- cached artifact identities avoid rehashing only when the project-relative
-  regular file has the same byte size, modification time, and change time;
+  comparison while preserving eligible evidence selections and Phase 10
+  identities;
+- successful selections round-trip every canonical type and are keyed by
+  strong source identity, source profile, canonical locator identity, and
+  evaluator version;
+- warm CSV, TSV, JSON, text, NPZ, and HDF5 selection hits perform no full
+  payload read, source parse, archive open, or dataset materialization, while
+  still checking reader availability and final source stability;
+- malformed and failed selections are never reused, 256 KiB per-result and
+  16 MiB per-log limits omit cache state only, and obsolete rows are removed
+  only after a completed published run;
 - newly hashed scripts and locator sources publish digest and filesystem
   metadata from one unchanged before-and-after observation, and a concurrent
   change is unavailable rather than cacheable;
@@ -148,20 +162,19 @@ The research-log test gate must verify:
   100,000 immediate candidates, and never traverse undeclared descendants;
 - repeated declarations, overlapping directories, and different logs in one
   project share one content observation by canonical path;
-- schema-5 per-log input observations and compatible artifact identities seed
-  the project cache when current filesystem metadata still matches, while one
-  hydration scan captures directory-member hashes omitted by the old cache;
+- retired JSON per-log cache state is never read or migrated; a successful
+  writable cutover removes only the known old cache and lock while preserving
+  unknown legacy-directory contents;
 - completed file observations survive interruption, concurrent validators do
   not hash the same uncached file twice, and a corrupt generated project cache
   is rebuilt without changing validation semantics;
-- dry-run treats unusable project cache state as absent, preserves unsupported
-  future schemas, and recompute dry-run never opens the project cache;
-- rebuilt mechanical caches contain only artifact observations used by the
-  current evaluation, so removed artifacts do not persist as stale per-log
-  cache state;
-- `--recompute` bypasses every existing mechanical and fingerprint-cache entry,
-  publishes a newly rebuilt mechanical cache after a completed run, and writes
-  nothing when combined with `--dry-run`;
+- dry-run treats unusable cache state as absent, opens compatible cache state
+  read-only, and creates, updates, and garbage-collects nothing;
+- incomplete or interrupted writable runs may retain completed fingerprints
+  and selections but never replace comparison rows or remove prior selections;
+- `--recompute` bypasses check, selection, and fingerprint-cache reuse,
+  repopulates disposable state after a completed published run, and opens no
+  cache or other generated path when combined with `--dry-run`;
 - `validation.md` contains separate Mechanical Validation and Reproduction
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;
@@ -173,8 +186,9 @@ The research-log test gate must verify:
 - canonical discovery finds maintained summaries from their stable navigation
   contract without filename-based exclusions;
 - dry-run writes nothing, incomplete evaluation publishes no per-log bundle,
-  completed fingerprint observations may persist from a writable incomplete
-  run, and an ordinary publication failure restores the prior per-log bundle;
+  completed fingerprint observations and bounded selections may persist from
+  a writable incomplete run, and an ordinary publication failure restores the
+  prior per-log bundle;
 - validation leaves all research-owned bytes unchanged and preserves the
   maintained summary's exact stable report link;
 - evidence comparison, provenance, summary forwarding, and orphan detection

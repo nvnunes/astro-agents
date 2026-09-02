@@ -36,6 +36,11 @@ class ValidationCliTests(unittest.TestCase):
                 "# Validation\n\n## Mechanical Validation\n"
                 + ("generated finding\n" * 10_000),
             )
+            write(
+                ordinary.with_suffix("") / ".cache" / "nested.md",
+                "# Cache decoy\n\n"
+                "Validation: [latest completed report](nested/validation.md)\n",
+            )
             output = io.StringIO()
 
             with redirect_stdout(output):

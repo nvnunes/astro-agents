@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--recompute",
         action="store_true",
-        help="ignore the existing mechanical cache and rebuild it after evaluation",
+        help="bypass validation and fingerprint reuse for this evaluation",
     )
     return parser
 

@@ -221,7 +221,7 @@ class CommandContext:
         Callable[[InputResource], FingerprintObservation | None] | None
     ) = None
     script_identity_cache: MutableMapping[str, ScriptObservation] | None = None
-    script_identity_seeds: Mapping[str, Mapping[str, object]] | None = None
+    script_identity_observer: Callable[[Path], ScriptObservation] | None = None
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ def discover_commands(
         context.require_experimental_context,
         context.input_fingerprint_verifier,
         context.script_identity_cache,
-        context.script_identity_seeds,
+        context.script_identity_observer,
     )
     invocations: list[Invocation] = []
     unsupported: list[Mapping[str, object]] = []
@@ -828,7 +828,11 @@ def _resolve_script(
     observation = _reusable_script_observation(path, canonical, context)
     if observation is not None:
         return canonical, observation.digest
-    observation = _observe_script(path)
+    observation = (
+        context.script_identity_observer(path)
+        if context.script_identity_observer is not None
+        else _observe_script(path)
+    )
     if context.script_identity_cache is not None:
         context.script_identity_cache[canonical] = observation
     return canonical, observation.digest
@@ -842,8 +846,6 @@ def _reusable_script_observation(
     candidates: list[ScriptObservation | None] = []
     if context.script_identity_cache is not None:
         candidates.append(context.script_identity_cache.get(canonical))
-    if context.script_identity_seeds is not None:
-        candidates.append(_script_seed(context.script_identity_seeds.get(canonical)))
     for candidate in candidates:
         if candidate is None:
             continue
@@ -853,35 +855,6 @@ def _reusable_script_observation(
                 context.script_identity_cache[canonical] = observation
             return observation
     return None
-
-
-def _script_seed(value: object) -> ScriptObservation | None:
-    if not isinstance(value, Mapping) or set(value) != {
-        "ctime_ns",
-        "mtime_ns",
-        "sha256",
-        "size",
-    }:
-        return None
-    digest = value.get("sha256")
-    size = value.get("size")
-    mtime_ns = value.get("mtime_ns")
-    ctime_ns = value.get("ctime_ns")
-    if (
-        not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        or not isinstance(size, int)
-        or isinstance(size, bool)
-        or size < 0
-        or not isinstance(mtime_ns, int)
-        or isinstance(mtime_ns, bool)
-        or mtime_ns < 0
-        or not isinstance(ctime_ns, int)
-        or isinstance(ctime_ns, bool)
-        or ctime_ns < 0
-    ):
-        return None
-    return ScriptObservation(digest, size, mtime_ns, ctime_ns)
 
 
 def _validated_script_observation(

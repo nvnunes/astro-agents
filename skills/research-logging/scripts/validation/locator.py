@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, NoReturn, Sequence, cast
 
 from .errors import MechanicalContractError
+from .fingerprint_cache import FingerprintCache, FingerprintCacheError
 from .json_codec import V2JsonError, canonical_json, decode_json
 from .mechanical_values import (
     CanonicalValue,
@@ -50,6 +51,7 @@ DECIMAL_TEXT_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]
 SHAPE_PROPERTY_RE = re.compile(r"shape(?:\[(?P<index>0|[1-9][0-9]*)\])?\Z")
 HDF_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+LOCATOR_EVALUATOR_VERSION = "research-log-locator-evaluator/1"
 
 
 # Locator contracts and evaluation state.
@@ -73,6 +75,17 @@ class SourceObservation:
 
     path: Path
     payload: bytes | None
+    profile: str
+    source_identity: str
+    file_observation: tuple[int, int, int, int, int]
+    identity_reused: bool = False
+
+
+@dataclass(frozen=True)
+class SourceIdentityObservation:
+    """Stable source identity established before full payload loading."""
+
+    path: Path
     profile: str
     source_identity: str
     file_observation: tuple[int, int, int, int, int]
@@ -235,6 +248,23 @@ def observe_source(
 ) -> SourceObservation:
     """Read, classify, and identify one stable retained source exactly once."""
 
+    identity = observe_source_identity(
+        source,
+        declared_profile=declared_profile,
+        trusted_identity=trusted_identity,
+    )
+    return load_source(identity)
+
+
+def observe_source_identity(
+    source: Path,
+    *,
+    declared_profile: str | None = None,
+    trusted_identity: Mapping[str, object] | None = None,
+    fingerprint_cache: FingerprintCache | None = None,
+) -> SourceIdentityObservation:
+    """Establish current source profile and strong identity without its payload."""
+
     if source.is_symlink():
         _fail("locator.source.unsafe", str(source), {"reason": "symlink"})
     source = source.resolve()
@@ -242,22 +272,87 @@ def observe_source(
         _fail("locator.path.unresolved", str(source), {"regular_file": False})
     before = _file_observation(source)
     profile = _classify_source(source, _source_prefix(source), declared_profile)
-    payload = _bounded_text_payload(source, before) if _textual(profile) else None
     reused_identity = _trusted_source_identity(trusted_identity, before)
-    observation = SourceObservation(
+    if reused_identity is None and fingerprint_cache is not None:
+        try:
+            fingerprint = fingerprint_cache.observe_regular_file(source)
+        except FingerprintCacheError as error:
+            _fail(
+                "locator.reader.unavailable",
+                str(source),
+                {"error": str(error)},
+                outcome="unavailable",
+            )
+        reused_identity = fingerprint.fingerprint.digest
+        identity_reused = fingerprint.identity_reused
+    else:
+        identity_reused = reused_identity is not None
+    observation = SourceIdentityObservation(
         path=source,
-        payload=payload,
         profile=profile,
         source_identity=(
             f"sha256:{reused_identity}"
             if reused_identity is not None
-            else _source_identity(source, payload)
+            else _source_identity(source, None)
         ),
         file_observation=before,
-        identity_reused=reused_identity is not None,
+        identity_reused=identity_reused,
     )
     _require_unchanged(observation)
     return observation
+
+
+def load_source(identity: SourceIdentityObservation) -> SourceObservation:
+    """Load one full source payload after identity-based reuse has missed."""
+
+    require_source_reader(identity)
+    payload = (
+        _bounded_text_payload(identity.path, identity.file_observation)
+        if _textual(identity.profile)
+        else None
+    )
+    observation = SourceObservation(
+        path=identity.path,
+        payload=payload,
+        profile=identity.profile,
+        source_identity=identity.source_identity,
+        file_observation=identity.file_observation,
+        identity_reused=identity.identity_reused,
+    )
+    _require_unchanged(observation)
+    return observation
+
+
+def require_source_reader(observation: SourceIdentityObservation) -> None:
+    """Require the optional reader needed by a cached binary selection."""
+
+    if observation.profile == "npz":
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            _fail(
+                "locator.reader.unavailable",
+                str(observation.path),
+                {"reader": "numpy"},
+                outcome="unavailable",
+            )
+    elif observation.profile == "hdf5":
+        try:
+            import h5py  # noqa: F401
+        except ImportError:
+            _fail(
+                "locator.reader.unavailable",
+                str(observation.path),
+                {"reader": "h5py"},
+                outcome="unavailable",
+            )
+    _require_unchanged(observation)
+
+
+def require_source_unchanged(observation: SourceIdentityObservation) -> None:
+    """Reject a source that changed after its retained identity was observed."""
+
+    _require_unchanged(observation)
 
 
 def evaluate_observed_locator(
@@ -1638,7 +1733,9 @@ def _trusted_source_identity(
     return digest
 
 
-def _require_unchanged(observation: SourceObservation) -> None:
+def _require_unchanged(
+    observation: SourceObservation | SourceIdentityObservation,
+) -> None:
     if _file_observation(observation.path) != observation.file_observation:
         _fail(
             "locator.source.changed",

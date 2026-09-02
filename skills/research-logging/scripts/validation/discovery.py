@@ -12,6 +12,7 @@ MAX_HEADER_CHARACTERS = 64 * 1024
 IGNORED_DIRECTORY_NAMES = frozenset(
     {
         ".conda",
+        ".cache",
         ".git",
         ".hg",
         ".mypy_cache",

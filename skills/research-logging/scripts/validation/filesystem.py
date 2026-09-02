@@ -7,6 +7,8 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+FileIdentity = tuple[int, int, int, int, int]
+
 
 @dataclass(frozen=True)
 class BoundedTraversalError(RuntimeError):
@@ -66,8 +68,8 @@ def bounded_file_bytes(path: Path, *, maximum_bytes: int) -> bytes:
         raise BoundedFileReadError(
             path, "byte_limit", maximum_bytes, observed=len(payload)
         )
-    before_identity = _file_identity(before)
-    if before_identity != _file_identity(after) or before_identity != _file_identity(
+    before_identity = file_identity(before)
+    if before_identity != file_identity(after) or before_identity != file_identity(
         current
     ):
         raise BoundedFileReadError(
@@ -79,7 +81,9 @@ def bounded_file_bytes(path: Path, *, maximum_bytes: int) -> bytes:
     return payload
 
 
-def _file_identity(observation: os.stat_result) -> tuple[int, int, int, int, int]:
+def file_identity(observation: os.stat_result) -> FileIdentity:
+    """Return the exact local identity used for stable file observations."""
+
     return (
         observation.st_dev,
         observation.st_ino,

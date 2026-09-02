@@ -431,7 +431,7 @@ tool --output-data {external}
                 ):
                     COMMAND._observe_script(script)
 
-    def test_stale_script_cache_and_seed_are_revalidated(self) -> None:
+    def test_stale_in_memory_script_observation_is_revalidated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context = _context(root)
@@ -444,7 +444,6 @@ tool --output-data {external}
             context = replace(
                 context,
                 script_identity_cache={canonical: stale},
-                script_identity_seeds={canonical: stale.as_cache_record()},
             )
 
             invocation = COMMAND.discover_commands(

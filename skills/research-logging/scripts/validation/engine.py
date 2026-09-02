@@ -8,7 +8,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from research_log_data import (
     DataContractError,
@@ -59,12 +59,17 @@ from .evidence import (
     resolve_summary_references,
 )
 from .filesystem import BoundedTraversalError, bounded_descendants
-from .fingerprint_cache import FingerprintCache, project_root
+from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .json_codec import canonical_json
 from .locator import (
-    SourceObservation,
+    LOCATOR_EVALUATOR_VERSION,
+    SourceIdentityObservation,
     evaluate_observed_locator,
-    observe_source,
+    load_source,
+    observe_source_identity,
+    parse_locator,
+    require_source_reader,
+    require_source_unchanged,
 )
 from .material_graph import (
     DirectArtifactConnection,
@@ -85,24 +90,18 @@ from .mechanical_results import (
     MechanicalCheck,
     MechanicalGeneratedRecord,
 )
+from .mechanical_values import SelectionResult
 from .provenance import evaluate_provenance
 from .retention import RetentionFile, load_retention_file
+from .selection_codec import encode_selection
 from .transformation import (
     TransformationResult,
     compare_presentation,
     evaluate_transformation,
 )
+from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
 RULES_VERSION = "research-log-mechanical/input-registry-5"
-CACHE_SCHEMA = "research-log-mechanical-cache/6"
-CACHE_FIELDS = frozenset(
-    {
-        "artifact_identities",
-        "checks",
-        "rules_version",
-        "schema",
-    }
-)
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 ENTRY_DATA_REFERENCE_RE = re.compile(r"<(e[0-9]+)>/([^<>]*)\Z")
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
@@ -168,6 +167,8 @@ class _ScanState:
     log_root: Path
     project_root: Path
     fingerprint_cache: FingerprintCache | None = None
+    validation_cache: ValidationCache | None = None
+    check_comparison: Mapping[str, CheckComparisonEntry] | None = None
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
@@ -176,20 +177,24 @@ class _ScanState:
     records: list[_RecordOutcome] = field(default_factory=list)
     direct: list[DirectArtifactConnection] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
-    selection_cache: dict[tuple[str, str], object] = field(default_factory=dict)
-    source_cache: dict[str, SourceObservation] = field(default_factory=dict)
-    script_cache: dict[str, ScriptObservation] = field(default_factory=dict)
-    script_identity_seeds: dict[str, Mapping[str, object]] = field(default_factory=dict)
-    artifact_identity_seeds: dict[str, Mapping[str, object]] = field(
+    selection_cache: dict[tuple[str, str], SelectionResult] = field(
         default_factory=dict
     )
-    artifact_identities: dict[str, Mapping[str, object]] = field(default_factory=dict)
+    source_cache: dict[str, SourceIdentityObservation] = field(default_factory=dict)
+    script_cache: dict[str, ScriptObservation] = field(default_factory=dict)
     input_observations: dict[str, FingerprintObservation] = field(default_factory=dict)
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
     source_hashes_reused: int = 0
+    source_opens: int = 0
+    source_payload_reads: int = 0
     input_fingerprints_reused: int = 0
+    selection_serialized_bytes: int = 0
+    selection_serialized_max_bytes: int = 0
+    selection_serialized_by_profile: dict[str, dict[str, int]] = field(
+        default_factory=dict
+    )
     timings: dict[str, float] = field(default_factory=dict)
     text_cache: dict[Path, str] = field(default_factory=dict)
 
@@ -223,14 +228,9 @@ def _scan(
         summary.with_suffix(""),
         project_root(summary),
         request.fingerprint_cache,
+        request.validation_cache,
+        request.check_comparison,
     )
-    state.artifact_identity_seeds = _accepted_artifact_identities(
-        request.prior_cache, state.project_root
-    )
-    state.script_identity_seeds = {
-        (state.project_root / relative).resolve().as_posix(): value
-        for relative, value in state.artifact_identity_seeds.items()
-    }
     try:
         summary_text = _read_text(summary, state)
         phase = time.perf_counter()
@@ -248,7 +248,6 @@ def _scan(
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
-        _record_script_identities(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
         state.checks.append(
@@ -267,13 +266,10 @@ def _scan(
                 )
             )
         _compose_graph(state)
+        _verify_source_stability(state)
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
         state.checks.append(_pass_check("conformance:log", CheckScope.CONFORMANCE))
-    checks, unchanged = _compare_checks(state.checks, request.prior_cache)
-    cache = _cache_projection(
-        checks,
-        state.artifact_identities,
-    )
+    checks, unchanged = _compare_checks(state.checks, state.check_comparison)
     metrics = {
         "checks_unchanged": unchanged,
         "elapsed_seconds": time.perf_counter() - started,
@@ -282,7 +278,6 @@ def _scan(
         "invocations": len(state.invocations),
         "markdown_reads": state.markdown_reads,
         "script_hashes": len(state.script_cache),
-        "artifact_identities": len(state.artifact_identities),
         "directory_observations": sum(
             observation.fingerprint.algorithm == "directory-sha256-v1"
             for observation in state.input_observations.values()
@@ -295,10 +290,14 @@ def _scan(
             observation.fingerprint.algorithm == "identity-patterns-sha256-v1"
             for observation in state.input_observations.values()
         ),
-        "artifact_identity_seeds": len(state.artifact_identity_seeds),
         "source_evaluations": state.source_evaluations,
         "source_reads": len(state.source_cache),
+        "source_opens": state.source_opens,
+        "source_payload_reads": state.source_payload_reads,
         "source_hashes_reused": state.source_hashes_reused,
+        "selection_serialized_bytes": state.selection_serialized_bytes,
+        "selection_serialized_max_bytes": state.selection_serialized_max_bytes,
+        "selection_serialized_by_profile": state.selection_serialized_by_profile,
         "input_observations": len(state.input_observations),
         "input_fingerprints_reused": state.input_fingerprints_reused,
         **(
@@ -306,11 +305,15 @@ def _scan(
             if state.fingerprint_cache is not None
             else {}
         ),
+        **(
+            state.validation_cache.metrics.as_dict()
+            if state.validation_cache is not None
+            else {}
+        ),
         **state.timings,
         **(state.graph.metrics if state.graph else {}),
     }
     return {
-        "cache": cache,
         "checks": checks,
         "summary": summary.as_posix(),
     }, metrics
@@ -582,6 +585,35 @@ def _verify_input(
     return observation
 
 
+def _observe_script_identity(path: Path, state: _ScanState) -> ScriptObservation:
+    """Observe one script through the project-level strong-identity store."""
+
+    assert state.fingerprint_cache is not None
+    try:
+        observation = state.fingerprint_cache.observe_regular_file(path)
+    except FingerprintCacheError as error:
+        _fail("provenance.observation.unavailable", str(path), {"error": str(error)})
+    identity = observation.cache_identity
+    digest = observation.fingerprint.digest
+    if not isinstance(identity, Mapping) or not isinstance(digest, str):
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"reason": "invalid_strong_identity"},
+        )
+    values = tuple(identity.get(name) for name in ("size", "mtime_ns", "ctime_ns"))
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) for value in values
+    ):
+        _fail(
+            "provenance.observation.unavailable",
+            str(path),
+            {"reason": "invalid_filesystem_identity"},
+        )
+    size, mtime_ns, ctime_ns = cast(tuple[int, int, int], values)
+    return ScriptObservation(digest, size, mtime_ns, ctime_ns)
+
+
 def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
     result: list[Path] = []
     for target in index_entry_documents(text):
@@ -610,7 +642,11 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                     resource, state
                 ),
                 script_identity_cache=state.script_cache,
-                script_identity_seeds=state.script_identity_seeds,
+                script_identity_observer=(
+                    (lambda path: _observe_script_identity(path, state))
+                    if state.fingerprint_cache is not None
+                    else None
+                ),
             )
             discovery = discover_commands(text, context)
             documents.append(discovery.invocations)
@@ -890,30 +926,80 @@ def _transform_and_compare(
         ) + (time.perf_counter() - started)
 
 
-def _selection(source: EvidenceSource, path: Path, state: _ScanState) -> Any:
+def _selection(
+    source: EvidenceSource, path: Path, state: _ScanState
+) -> SelectionResult:
     source_key = path.resolve().as_posix()
-    key = (source_key, canonical_json(source.locator))
+    parsed_locator = parse_locator(source.locator)
+    key = (source_key, parsed_locator.identity)
     if key not in state.selection_cache:
-        started = time.perf_counter()
-        observation = state.source_cache.get(source_key)
-        if observation is None:
-            relative = _project_relative(path, state.project_root)
-            trusted = state.artifact_identity_seeds.get(relative) if relative else None
-            observation = observe_source(path, trusted_identity=trusted)
-            state.source_cache[source_key] = observation
-            if observation.identity_reused:
+        evaluation_started = time.perf_counter()
+        identity = state.source_cache.get(source_key)
+        if identity is None:
+            started = time.perf_counter()
+            identity = observe_source_identity(
+                path,
+                fingerprint_cache=state.fingerprint_cache,
+            )
+            state.timings["source_identity_seconds"] = state.timings.get(
+                "source_identity_seconds", 0.0
+            ) + (time.perf_counter() - started)
+            state.source_opens += 1
+            state.source_cache[source_key] = identity
+            if identity.identity_reused:
                 state.source_hashes_reused += 1
-            if relative is not None:
-                state.artifact_identities[relative] = _source_artifact_identity(
-                    observation
-                )
-        state.selection_cache[key] = evaluate_observed_locator(
-            observation, source.locator
+        started = time.perf_counter()
+        selection = (
+            state.validation_cache.lookup_selection(
+                source_identity=identity.source_identity,
+                source_profile=identity.profile,
+                locator_identity=parsed_locator.identity,
+                evaluator_version=LOCATOR_EVALUATOR_VERSION,
+            )
+            if state.validation_cache is not None
+            else None
         )
+        state.timings["selection_cache_lookup_seconds"] = state.timings.get(
+            "selection_cache_lookup_seconds", 0.0
+        ) + (time.perf_counter() - started)
+        if selection is not None:
+            require_source_reader(identity)
+        else:
+            started = time.perf_counter()
+            observation = load_source(identity)
+            state.source_payload_reads += 1
+            state.source_opens += 1
+            state.timings["source_payload_read_seconds"] = state.timings.get(
+                "source_payload_read_seconds", 0.0
+            ) + (time.perf_counter() - started)
+            started = time.perf_counter()
+            selection = evaluate_observed_locator(observation, parsed_locator.value)
+            state.source_evaluations += 1
+            state.timings["source_parsing_and_locator_evaluation_seconds"] = (
+                state.timings.get("source_parsing_and_locator_evaluation_seconds", 0.0)
+                + (time.perf_counter() - started)
+            )
+            if state.validation_cache is not None:
+                state.validation_cache.store_selection(
+                    selection,
+                    evaluator_version=LOCATOR_EVALUATOR_VERSION,
+                )
+        state.selection_cache[key] = selection
+        serialized_bytes = len(encode_selection(selection))
+        state.selection_serialized_bytes += serialized_bytes
+        state.selection_serialized_max_bytes = max(
+            state.selection_serialized_max_bytes, serialized_bytes
+        )
+        profile = state.selection_serialized_by_profile.setdefault(
+            selection.source_profile,
+            {"count": 0, "maximum_bytes": 0, "total_bytes": 0},
+        )
+        profile["count"] += 1
+        profile["maximum_bytes"] = max(profile["maximum_bytes"], serialized_bytes)
+        profile["total_bytes"] += serialized_bytes
         state.timings["source_evaluation_seconds"] = state.timings.get(
             "source_evaluation_seconds", 0.0
-        ) + (time.perf_counter() - started)
-        state.source_evaluations += 1
+        ) + (time.perf_counter() - evaluation_started)
     return state.selection_cache[key]
 
 
@@ -1721,155 +1807,41 @@ def _within(path: Path, root: Path) -> bool:
 
 
 def _compare_checks(
-    checks: Sequence[MechanicalCheck], prior: Mapping[str, Any] | None
+    checks: Sequence[MechanicalCheck], prior: Mapping[str, CheckComparisonEntry] | None
 ) -> tuple[tuple[MechanicalCheck, ...], int]:
-    if (
-        not isinstance(prior, Mapping)
-        or not cache_envelope_supported(prior)
-        or prior.get("rules_version") != RULES_VERSION
-    ):
+    if not isinstance(prior, Mapping):
         return tuple(checks), 0
-    prior_checks = prior.get("checks")
-    assert isinstance(prior_checks, Mapping)
     result: list[MechanicalCheck] = []
     unchanged = 0
     for check in checks:
-        cached = prior_checks.get(check.identity)
-        dependency = _check_dependency(check)
+        cached = prior.get(check.identity)
+        dependency = check_dependency(check, RULES_VERSION)
         if (
             check.status is CheckStatus.PASS
             and check.dependencies
-            and isinstance(cached, Mapping)
-            and set(cached) == {"check", "dependency_projection"}
-            and cached.get("dependency_projection") == dependency
+            and isinstance(cached, CheckComparisonEntry)
+            and cached.dependency_projection == dependency
+            and cached.check == check
+            and cached.check.status is CheckStatus.PASS
         ):
-            try:
-                previous = MechanicalCheck.from_dict(cached.get("check"))
-            except (TypeError, ValueError):
-                pass
-            else:
-                if previous == check and previous.status is CheckStatus.PASS:
-                    unchanged += 1
+            unchanged += 1
         result.append(check)
     return tuple(result), unchanged
 
 
-def _cache_projection(
-    checks: Sequence[MechanicalCheck],
-    artifact_identities: Mapping[str, Mapping[str, object]],
-) -> Mapping[str, object]:
-    return {
-        "artifact_identities": dict(sorted(artifact_identities.items())),
-        "checks": {
-            check.identity: {
-                "check": check.as_dict(),
-                "dependency_projection": _check_dependency(check),
-            }
-            for check in checks
-            if check.status is CheckStatus.PASS and check.dependencies
-        },
-        "rules_version": RULES_VERSION,
-        "schema": CACHE_SCHEMA,
-    }
-
-
-def _accepted_artifact_identities(
-    prior: Mapping[str, Any] | None, project_root: Path
-) -> dict[str, Mapping[str, object]]:
-    if not isinstance(prior, Mapping) or not cache_envelope_supported(prior):
-        return {}
-    candidates = prior.get("artifact_identities")
-    if not isinstance(candidates, Mapping):
-        return {}
-    accepted: dict[str, Mapping[str, object]] = {}
-    for relative, value in candidates.items():
-        if not isinstance(relative, str) or not isinstance(value, Mapping):
-            continue
-        path = PurePosixPath(relative)
-        if (
-            path.is_absolute()
-            or not path.parts
-            or any(part in {"", ".", ".."} for part in path.parts)
-        ):
-            continue
-        target = project_root.joinpath(*path.parts)
-        if (
-            target.is_symlink()
-            or not target.is_file()
-            or not _within(target, project_root)
-        ):
-            continue
-        digest = value.get("sha256")
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            continue
+def _verify_source_stability(state: _ScanState) -> None:
+    for source, observation in sorted(state.source_cache.items()):
         try:
-            observed = _artifact_identity(target, digest)
-        except OSError:
-            continue
-        if observed == value:
-            accepted[relative] = dict(value)
-    return accepted
-
-
-def cache_envelope_supported(value: object) -> bool:
-    """Return whether a decoded value has the complete cache envelope."""
-
-    return (
-        isinstance(value, Mapping)
-        and set(value) == CACHE_FIELDS
-        and value.get("schema") == CACHE_SCHEMA
-        and isinstance(value.get("rules_version"), str)
-        and isinstance(value.get("artifact_identities"), Mapping)
-        and isinstance(value.get("checks"), Mapping)
-    )
-
-
-def _artifact_identity(path: Path, digest: object) -> Mapping[str, object]:
-    stat = path.stat()
-    return {
-        "ctime_ns": stat.st_ctime_ns,
-        "mtime_ns": stat.st_mtime_ns,
-        "sha256": digest,
-        "size": stat.st_size,
-    }
-
-
-def _source_artifact_identity(
-    observation: SourceObservation,
-) -> Mapping[str, object]:
-    _device, _inode, size, mtime_ns, ctime_ns = observation.file_observation
-    return {
-        "ctime_ns": ctime_ns,
-        "mtime_ns": mtime_ns,
-        "sha256": observation.source_identity.removeprefix("sha256:"),
-        "size": size,
-    }
-
-
-def _project_relative(path: Path, project_root: Path) -> str | None:
-    try:
-        return path.resolve().relative_to(project_root.resolve()).as_posix()
-    except ValueError:
-        return None
-
-
-def _record_script_identities(state: _ScanState) -> None:
-    for absolute, observation in state.script_cache.items():
-        path = Path(absolute)
-        relative = _project_relative(path, state.project_root)
-        if relative is not None:
-            state.artifact_identities[relative] = observation.as_cache_record()
-
-
-def _check_dependency(check: MechanicalCheck) -> str:
-    payload = {
-        "dependencies": [dict(item) for item in check.dependencies],
-        "identity": check.identity,
-        "rules_version": RULES_VERSION,
-        "scope": check.scope.value,
-        "subject": check.subject,
-    }
-    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+            require_source_unchanged(observation)
+        except MechanicalContractError as error:
+            identity = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            state.checks.append(
+                _error_check(
+                    f"evidence:source-stability:{identity}",
+                    CheckScope.EVIDENCE,
+                    error,
+                )
+            )
 
 
 def _fail(code: str, subject: str, observed: object) -> NoReturn:

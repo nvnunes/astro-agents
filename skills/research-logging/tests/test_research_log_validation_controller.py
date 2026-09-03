@@ -63,6 +63,8 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
+        self.assertIn("| structure | checks | `fail` | 0 | 1 | 0 | 0 | 1 |", report)
+        self.assertNotIn("| conformance | checks |", report)
         self.assertIn("| evidence | checks |  | 0 | 0 | 0 | 0 | 0 |", report)
         self.assertNotIn("| evidence | checks | `not_applicable`", report)
 
@@ -123,6 +125,211 @@ class MechanicalControllerTests(unittest.TestCase):
 
         self.assertIn(
             "| provenance | artifacts | `fail` | 1 | 1 | 0 | 0 | 2 |",
+            report,
+        )
+
+    def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:
+        artifact = "/project/data/migrated.csv"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:migrated",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    artifact,
+                    ({"artifacts": [artifact]},),
+                    RESULTS.FailurePayload(
+                        "provenance.output.unconfirmed",
+                        artifact,
+                        {"output": "data/migrated.csv"},
+                        "Mechanical Validation Evaluation And Outcomes",
+                    ),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `unavailable` | 0 | 0 | 1 | 0 | 1 |",
+            report,
+        )
+
+    def test_report_prefers_actual_failure_over_unconfirmed_output(self) -> None:
+        artifact = "/project/data/migrated.csv"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:migrated",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    artifact,
+                    ({"artifacts": [artifact]},),
+                    RESULTS.FailurePayload(
+                        "provenance.output.unconfirmed",
+                        artifact,
+                        {"output": "data/migrated.csv"},
+                        "Mechanical Validation Evaluation And Outcomes",
+                    ),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:missing-producer",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    artifact,
+                    ({"artifacts": [artifact]},),
+                    RESULTS.FailurePayload(
+                        "producer.missing",
+                        artifact,
+                        {"material": artifact},
+                        "Provenance Starting Points And Traversal",
+                    ),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `fail` | 0 | 1 | 0 | 0 | 1 |",
+            report,
+        )
+
+    def test_report_status_prefers_failed_artifact_over_distinct_unconfirmed(
+        self,
+    ) -> None:
+        failed = "/project/data/failed.csv"
+        unconfirmed = "/project/data/unconfirmed.csv"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:failed",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    failed,
+                    ({"artifacts": [failed]},),
+                    RESULTS.FailurePayload(
+                        "producer.missing",
+                        failed,
+                        {"material": failed},
+                        "Provenance Starting Points And Traversal",
+                    ),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:unconfirmed",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    unconfirmed,
+                    ({"artifacts": [unconfirmed]},),
+                    RESULTS.FailurePayload(
+                        "provenance.output.unconfirmed",
+                        unconfirmed,
+                        {"output": "data/unconfirmed.csv"},
+                        "Mechanical Validation Evaluation And Outcomes",
+                    ),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `fail` | 0 | 1 | 1 | 0 | 2 |",
+            report,
+        )
+
+    def test_report_counts_artifact_blocked_by_provenance_failure_as_failed(
+        self,
+    ) -> None:
+        artifact = "/project/data/downstream.csv"
+        declaration = "entry:e001:input:catalog-declaration"
+        command = "entry:e001:command:1:1"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    declaration,
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "catalog",
+                    failure=RESULTS.FailurePayload(
+                        "data.fingerprint.mismatch",
+                        "catalog",
+                        {"expected": "old", "observed": "current"},
+                        "Fingerprints",
+                    ),
+                ),
+                RESULTS.MechanicalCheck(
+                    command,
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.NOT_APPLICABLE,
+                    command,
+                    ({"dependency": declaration},),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:downstream",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.NOT_APPLICABLE,
+                    artifact,
+                    ({"artifacts": [artifact]}, {"dependency": command}),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `fail` | 0 | 1 | 0 | 0 | 1 |",
+            report,
+        )
+
+    def test_report_keeps_artifact_blocked_by_other_scope_not_applicable(
+        self,
+    ) -> None:
+        artifact = "/project/data/downstream.csv"
+        evidence = "evidence:e001:downstream"
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md",
+            "test-rules",
+            "2026-08-30",
+            (
+                RESULTS.MechanicalCheck(
+                    evidence,
+                    RESULTS.CheckScope.EVIDENCE,
+                    RESULTS.CheckStatus.FAIL,
+                    artifact,
+                    failure=RESULTS.FailurePayload(
+                        "evidence.value.mismatch",
+                        artifact,
+                        {"expected": 1, "observed": 2},
+                        "Evidence Values",
+                    ),
+                ),
+                RESULTS.MechanicalCheck(
+                    "provenance:e001:downstream",
+                    RESULTS.CheckScope.PROVENANCE,
+                    RESULTS.CheckStatus.NOT_APPLICABLE,
+                    artifact,
+                    ({"artifacts": [artifact]}, {"dependency": evidence}),
+                ),
+            ),
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn(
+            "| provenance | artifacts | `not_applicable` | 0 | 0 | 0 | 1 | 1 |",
             report,
         )
 

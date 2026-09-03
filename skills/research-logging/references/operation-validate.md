@@ -106,53 +106,63 @@ Report according to the returned status:
 
 When summarizing several completed logs in a Markdown table:
 
-- Use separate `Research log`, `Conformance`, `Evidence`, `Provenance`,
-  `Hygiene`, and `Reports` columns with a valid Markdown header row.
-- Introduce the table with: `Conformance, Evidence, and Provenance show Pass
-  when all applicable checks pass; otherwise they are shown as
-  passed/applicable. Hygiene is the total number of orphan artifacts,
-  unmatched outputs, and unused input declarations.
-  Unconfirmed Provenance is unavailable rather than failed and is shown
-  separately as N/A. Not-applicable checks are excluded from applicable
-  denominators and reported separately as not applicable.`
-- Render Conformance and Evidence with one or more applicable checks as `Pass`
-  when every applicable check passes. When either scope has a failing check,
-  render it as `passed/applicable`, where `applicable = pass + fail`.
+- Use separate `Research log`, `Structure Failures`, `Evidence Failures`,
+  `Provenance`, `Hygiene Issues`, and `Reports` columns with a valid
+  Markdown header row.
+- Treat Structure as the human-facing projection of machine scope
+  `conformance`; do not rename the machine scope in generated JSON.
+- Introduce the table with: `Structure Failures and Evidence Failures report
+  failing mechanical checks. Provenance reports failed and unconfirmed unique
+  starting artifacts. Hygiene Issues is the total number of orphan artifacts,
+  unmatched outputs, and unused input declarations.`
+- Render Structure Failures as `None` when the scope has applicable checks and
+  none fail; otherwise render the integer failure count. Do not use a ratio:
+  the Structure pass check is a clear-log sentinel rather than a coverage
+  denominator.
+- Render Evidence Failures as `None` when one or more applicable checks exist
+  and none fail. When a check fails, render `failed/applicable`, where
+  `applicable = pass + fail`.
 - Render Provenance from the unique-artifact row in `validation.md`, not from
-  the number of provenance checks. Use `Pass` only when all counted artifacts
-  pass, none are unavailable, and the scope status is `pass`; otherwise render
-  `passed/applicable artifacts`. A `provenance.output.unconfirmed` artifact is
-  unavailable, not failed: exclude it from the applicable denominator and
-  append `(+N N/A)` for `N` such artifacts. When all counted Provenance
-  artifacts are unconfirmed, render `N/A (N artifacts)`. If the scope fails
-  without a failed counted artifact, append ` (scope findings)` so
-  command-level findings remain visible.
-- Report actual `not_applicable` checks as `(+N not applicable)` when a scope
-  also has applicable checks, or as `N not applicable` when it has no
-  applicable checks. Exclude them from the applicable denominator. Do not use
-  `N/A` for `not_applicable`; in this summary `N/A` means an unavailable
-  Provenance observation.
-- Render Hygiene from its single finding-count row in `validation.md`. Do not
-  reconstruct or deduplicate that number from individual machine checks.
-  Render `0` when Hygiene evaluation ran without a finding.
+  the number of provenance checks. Render nonzero artifact states as
+  `N failed` and `N unconfirmed`, joined by ` · ` when both occur. Use the
+  human row's unavailable count for `unconfirmed`; do not call it unavailable
+  or describe the remedy in the summary. Omit zero states and render `None`
+  when neither state occurs. Do not use a ratio.
+- An artifact whose `not_applicable` machine check depends transitively on an
+  actual failed Provenance prerequisite is already projected as failed in the
+  human artifact row. Preserve the authoritative machine check as
+  `not_applicable`; do not count unconfirmed-output checks as actual failures
+  when propagating this artifact outcome.
+- Do not show other `not_applicable` checks in the multi-log summary. They
+  remain explicit in `validation.md` and `mechanical.json`. Do not abbreviate
+  `not_applicable` as N/A.
+- If the Provenance scope fails without a failed counted artifact, append
+  `scope findings` as another nonzero state so command-level findings remain
+  visible.
+- Render Hygiene Issues as the integer from its single finding-count row in
+  `validation.md`. Do not reconstruct or deduplicate that number from
+  individual machine checks. Render `0` when Hygiene evaluation ran without a
+  finding.
 - Leave the scope cell blank when its total check count is zero. Do not render
-  an empty scope as `0/0`, `NA`, `N/A`, or `not applicable`.
-- Count `not_applicable` checks separately from failures in both per-log and
-  aggregate totals.
+  an empty scope as `None`, `0/0`, `NA`, `N/A`, or `not applicable`.
+- Keep `not_applicable` checks separate from failures in detailed and
+  machine-readable results; exclude them from multi-log summary cells and
+  aggregate finding totals.
 - Describe the failure total as `failing checks` or `findings`, not
   `non-passing checks`, when `not_applicable` checks are excluded.
 
 Use this shape:
 
 ```md
-| Research log | Conformance | Evidence | Provenance | Hygiene | Reports |
+| Research log | Structure Failures | Evidence Failures | Provenance | Hygiene Issues | Reports |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Example findings | Pass | 3/5 | 4/5 artifacts | 7 | [Human](...) · [JSON](...) |
-| Passing scopes | Pass | Pass | Pass | 0 | [Human](...) · [JSON](...) |
-| Awaiting confirmed runs | Pass | Pass | 4/4 artifacts (+2 N/A) | 0 | [Human](...) · [JSON](...) |
-| Only unconfirmed provenance | Pass | Pass | N/A (6 artifacts) | 0 | [Human](...) · [JSON](...) |
-| No evidence checks | Pass |  |  | 0 | [Human](...) · [JSON](...) |
-| Hygiene evaluation not run | 0/1 | 0/1 |  |  | [Human](...) · [JSON](...) |
+| Example findings | 2 | 2/5 | 1 failed · 2 unconfirmed | 7 | [Human](...) · [JSON](...) |
+| Passing scopes | None | None | None | 0 | [Human](...) · [JSON](...) |
+| Awaiting confirmed runs | None | None | 2 unconfirmed | 0 | [Human](...) · [JSON](...) |
+| Only unconfirmed provenance | None | None | 6 unconfirmed | 0 | [Human](...) · [JSON](...) |
+| Scope-only provenance findings | None | None | scope findings | 0 | [Human](...) · [JSON](...) |
+| No evidence checks | None |  |  | 0 | [Human](...) · [JSON](...) |
+| Hygiene evaluation not run | 1 | 1/1 |  |  | [Human](...) · [JSON](...) |
 ```
 
 Do not invent item-specific repair guidance. A separately authorized Record

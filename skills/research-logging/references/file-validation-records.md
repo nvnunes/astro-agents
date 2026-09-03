@@ -81,15 +81,24 @@ incomplete result or interruption. `--dry-run` never creates or updates it.
 
 `validation.md` is the shared human-facing projection. Its Mechanical
 Validation section shows the completion state and date, check counts for
-Conformance and Evidence, unique starting-artifact counts for Provenance, and
-one total finding count for Hygiene. Orphan artifacts, unmatched output
+Structure and Evidence, unique starting-artifact counts for Provenance, and
+one total finding count for Hygiene. Structure projects machine scope
+`conformance`; Hygiene projects machine scope `orphan`. These display labels
+do not alter the stable machine schema. Orphan artifacts, unmatched output
 records, and unused input declarations remain separately identified in
 `mechanical.json`; the human table does not split their counts. An output
 supported only by an unconfirmed reconstructed `pyrun` record is an
 unavailable Provenance observation, not a failed Provenance check. The human
-Provenance count reports those artifacts separately as N/A; it does not include
-them in the failed or applicable artifact counts. Confirmed fingerprint or
-lineage mismatches remain failures. Its independent Reproduction section shows
+Provenance count reports those artifacts separately as unavailable; a
+multi-log summary renders the count as `N unconfirmed`. It does not include
+them in the failed artifact count. A downstream artifact whose
+`not_applicable` check depends transitively on a confirmed Provenance failure
+is instead a failed artifact in the human count; the authoritative dependent
+check remains `not_applicable` in `mechanical.json`. Confirmed fingerprint or
+lineage mismatches therefore propagate through the human artifact outcome
+without duplicating machine failures. When failed and unconfirmed artifacts
+both occur, the human Provenance row has failed aggregate status. Its
+independent Reproduction section shows
 `not_yet_run` when no reproduction result exists. The report never combines
 the two operations into one pass/fail conclusion and is never authoritative.
 

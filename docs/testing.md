@@ -191,10 +191,18 @@ The research-log test gate must verify:
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;
 - the mechanical report shows completion and date, check counts for
-  Conformance and Evidence, unique starting-artifact counts for Provenance,
-  one Hygiene finding count, and every non-Hygiene non-passing check grouped by
-  entry without rendering individual passing checks; `mechanical.json` keeps
-  orphan artifacts, unmatched outputs, and unused declarations distinct;
+  Structure and Evidence, unique starting-artifact counts for Provenance, one
+  Hygiene finding count, and every non-Hygiene non-passing check grouped by
+  entry without rendering individual passing checks; Structure projects
+  machine scope `conformance`, while `mechanical.json` keeps orphan artifacts,
+  unmatched outputs, and unused declarations distinct;
+- the human Provenance artifact count treats
+  `provenance.output.unconfirmed` as unavailable rather than failed, gives an
+  actual failure precedence when failed and unconfirmed states coexist,
+  projects downstream artifacts blocked by an actual Provenance failure as
+  failed without changing their authoritative `not_applicable` checks, and
+  supports multi-log summaries that render unavailable artifacts as
+  `N unconfirmed`;
 - canonical discovery finds maintained summaries from their stable navigation
   contract without filename-based exclusions;
 - dry-run writes nothing, incomplete evaluation publishes no per-log bundle,

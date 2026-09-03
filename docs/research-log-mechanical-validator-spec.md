@@ -3266,10 +3266,12 @@ byte-identical.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, check counts for
-Conformance and Evidence, unique Provenance starting-artifact counts, and one
-Hygiene finding count. Hygiene combines orphan artifacts, unmatched output
-records, and unused input declarations; their distinct checks remain
-authoritative in `mechanical.json`. Human detail may collapse maximal
+Structure and Evidence, unique Provenance starting-artifact counts, and one
+Hygiene finding count. Structure projects machine scope `conformance`, and
+Hygiene projects machine scope `orphan`; neither display label changes the
+machine schema. Hygiene combines orphan artifacts, unmatched output records,
+and unused input declarations; their distinct checks remain authoritative in
+`mechanical.json`. Human detail may collapse maximal
 all-orphan directories for discussion. The section contains every non-Hygiene
 non-passing check grouped by entry with its status, identity, subject, and
 dependencies. Failed and unavailable checks additionally show their code,
@@ -3280,6 +3282,17 @@ aggregate status; the report does not present absent checks as
 until the Reproduction workflow publishes `validation/reproduction.json`. The
 report has no combined pass/fail conclusion, and standard mechanical validation
 reads or writes no reproduction record.
+
+In the human Provenance artifact count, a
+`provenance.output.unconfirmed` check projects as unavailable rather than as a
+failed artifact. Multi-log summaries label that count `N unconfirmed`. A
+downstream artifact whose `not_applicable` check depends transitively on an
+actual failed Provenance prerequisite projects as a failed artifact, while its
+authoritative machine check remains `not_applicable`. A failed Provenance
+artifact takes precedence over an unconfirmed status for both an individual
+artifact and the human row's aggregate status. Other `not_applicable` checks
+remain visible in detailed and machine-readable results but are omitted from
+multi-log summary cells; they are not abbreviated as N/A.
 
 Writable validation acquires
 `<log>/.cache/research-log-validation.lock` before opening the per-log database

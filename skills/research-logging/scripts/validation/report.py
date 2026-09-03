@@ -48,7 +48,9 @@ def compose_validation_report(
         total = scope.checks
         unit = "checks"
         label = scope.scope.value
-        if scope.scope is CheckScope.PROVENANCE:
+        if scope.scope is CheckScope.CONFORMANCE:
+            label = "structure"
+        elif scope.scope is CheckScope.PROVENANCE:
             counts = provenance_artifact_counts(record)
             total = sum(counts.values())
             unit = "artifacts"
@@ -57,7 +59,15 @@ def compose_validation_report(
             total = sum(counts.values())
             unit = "findings"
             label = "hygiene"
-        displayed_status = f"`{_status_from_counts(counts).value}`" if total else ""
+        if total:
+            status = (
+                _provenance_status_from_counts(counts)
+                if scope.scope is CheckScope.PROVENANCE
+                else _status_from_counts(counts)
+            )
+            displayed_status = f"`{status.value}`"
+        else:
+            displayed_status = ""
         lines.append(
             "| "
             + " | ".join(
@@ -109,15 +119,18 @@ def provenance_artifact_counts(
 ) -> dict[str, int]:
     """Count unique provenance starting artifacts by their worst check status."""
 
+    failure_affected_checks = _provenance_failure_affected_checks(record.checks)
     artifacts: dict[str, set[CheckStatus]] = defaultdict(set)
     for check in record.checks:
         if check.scope is not CheckScope.PROVENANCE:
             continue
         for artifact in _check_artifacts(check):
-            artifacts[artifact].add(check.status)
+            artifacts[artifact].add(
+                _provenance_artifact_status(check, failure_affected_checks)
+            )
     counts = {status.value: 0 for status in CheckStatus}
     for statuses in artifacts.values():
-        counts[_aggregate_status(statuses).value] += 1
+        counts[_aggregate_provenance_artifact_status(statuses).value] += 1
     return counts
 
 
@@ -136,6 +149,11 @@ def _status_from_counts(counts: Mapping[str, int]) -> CheckStatus:
     return _aggregate_status(statuses)
 
 
+def _provenance_status_from_counts(counts: Mapping[str, int]) -> CheckStatus:
+    statuses = {status for status in CheckStatus if counts.get(status.value, 0) > 0}
+    return _aggregate_provenance_artifact_status(statuses)
+
+
 def _check_artifacts(check: MechanicalCheck) -> set[str]:
     artifacts: set[str] = set()
     for dependency in check.dependencies:
@@ -145,6 +163,81 @@ def _check_artifacts(check: MechanicalCheck) -> set[str]:
                 value for value in values if isinstance(value, str) and value
             )
     return artifacts
+
+
+def _check_dependencies(check: MechanicalCheck) -> set[str]:
+    dependencies: set[str] = set()
+    for dependency in check.dependencies:
+        value = dependency.get("dependency")
+        if isinstance(value, str) and value:
+            dependencies.add(value)
+    return dependencies
+
+
+def _provenance_failure_affected_checks(
+    checks: Sequence[MechanicalCheck],
+) -> set[str]:
+    """Return provenance checks that fail directly or through prerequisites."""
+
+    affected = {
+        check.identity
+        for check in checks
+        if check.scope is CheckScope.PROVENANCE
+        and check.status is CheckStatus.FAIL
+        and (
+            check.failure is None
+            or check.failure.code != "provenance.output.unconfirmed"
+        )
+    }
+    pending = [
+        check
+        for check in checks
+        if check.scope is CheckScope.PROVENANCE
+        and check.status is CheckStatus.NOT_APPLICABLE
+    ]
+    while pending:
+        next_pending: list[MechanicalCheck] = []
+        changed = False
+        for check in pending:
+            if _check_dependencies(check) & affected:
+                affected.add(check.identity)
+                changed = True
+            else:
+                next_pending.append(check)
+        if not changed:
+            break
+        pending = next_pending
+    return affected
+
+
+def _provenance_artifact_status(
+    check: MechanicalCheck,
+    failure_affected_checks: set[str],
+) -> CheckStatus:
+    if (
+        check.failure is not None
+        and check.failure.code == "provenance.output.unconfirmed"
+    ):
+        return CheckStatus.UNAVAILABLE
+    if (
+        check.status is CheckStatus.NOT_APPLICABLE
+        and check.identity in failure_affected_checks
+    ):
+        return CheckStatus.FAIL
+    return check.status
+
+
+def _aggregate_provenance_artifact_status(
+    statuses: set[CheckStatus],
+) -> CheckStatus:
+    for status in (
+        CheckStatus.FAIL,
+        CheckStatus.UNAVAILABLE,
+        CheckStatus.PASS,
+    ):
+        if status in statuses:
+            return status
+    return CheckStatus.NOT_APPLICABLE
 
 
 def _aggregate_status(statuses: set[CheckStatus]) -> CheckStatus:

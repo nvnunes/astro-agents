@@ -126,8 +126,9 @@ When summarizing several completed logs in a Markdown table:
   the number of provenance checks. Render nonzero artifact states as
   `N failed` and `N unconfirmed`, joined by ` · ` when both occur. Use the
   human row's unavailable count for `unconfirmed`; do not call it unavailable
-  or describe the remedy in the summary. Omit zero states and render `None`
-  when neither state occurs. Do not use a ratio.
+  or describe the remedy in the summary. Never render a zero-valued component,
+  including `0 failed` or `0 unconfirmed`: omit it and show only the nonzero
+  component. Render `None` when neither state occurs. Do not use a ratio.
 - An artifact whose `not_applicable` machine check depends transitively on an
   actual failed Provenance prerequisite is already projected as failed in the
   human artifact row. Preserve the authoritative machine check as

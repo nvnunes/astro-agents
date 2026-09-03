@@ -114,10 +114,10 @@ relationship.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
-relationship. A producerless declared input terminates lineage only through
-its explicit `data.json` external boundary. A generated input must omit that
-boundary and trace to its unique earlier producer regardless of storage
-location.
+relationship after its confirmed output support is validated. A declared input
+terminates lineage only when `data.json` sets `origin: true`. A generated input
+normally uses `origin: false` and traces to its unique earlier producer
+regardless of storage location.
 
 Annotations classify material already visible in the selected command. They do
 not bind a producer by name, extract a path from an opaque `label=path` value,
@@ -153,30 +153,44 @@ Example:
   --output-summary-csv data/study-summary.csv
 ```
 
-In recorded commands, keep entry-local script and output paths relative to the entry root, such as `scripts/plot_residuals.py` and `images/residuals.png`. Use `<log>` only for true log-level shared resources, and use `<name>` tokens for indexed data inputs or durable external data locations.
+In recorded commands, keep entry-local script and output paths relative to the
+entry root, such as `scripts/plot_residuals.py` and
+`images/residuals.png`. Use `<log>` only for true log-level shared resources,
+and use `<name>` tokens for indexed local data inputs.
 
 For a split entry, record each invocation in the document that presents its
 outputs, even when the script lives in the parent entry's `scripts/`.
 
-When stdout or stderr supports presented evidence, save it during the recorded
-run through a program log option or a shell target such as `tee` or
-redirection. Never create the retained log later from output held only in agent
-context. Do not create a CSV merely to transfer formatted text into an entry;
-retain structured data when it supports analysis, reuse, or provenance.
+When stdout or stderr supports presented evidence, capture it through `pyrun`
+so it receives an output support record. Use `--capture-stdout <path>` and
+`--capture-stderr <path>` separately, or use
+`--capture-stdout-stderr <path>` for a merged stream. Capture options and `--`
+stay on the first line:
+
+```bash
+./pyrun --capture-stdout-stderr data/run.log -- \
+  scripts/run_study.py \
+  --parameter value
+```
+
+Raw shell redirection and `tee` do not establish execution-linked Provenance.
+Never create the retained log later from output held only in agent context. Do
+not create a CSV merely to transfer formatted text into an entry; retain
+structured data when it supports analysis, reuse, or provenance.
 
 Every material command input must already have one matching item in the owning
 entry-root `data.json`. When adding a producerless input, ask whether it should
-be copied into the entry or referenced at its current location and obtain the
-exact external source and version identity. Add the item with
-`./pyrun data add <name> <file|directory> <location>`, declare its boundary,
-and record the command with its token instead of the raw path. A generated
-output enters `data.json` only when a later recorded command consumes it; it
-has no external boundary.
+be copied into the entry or referenced at its current local location. Add the
+item with `./pyrun data add <name> <file|directory> <location>` and record the
+command with its token instead of the raw path. A generated output enters
+`data.json` only when a later recorded command consumes it; set its origin to
+false with `./pyrun data origin <name> false`.
 
-Never add output-only results, scripts, command logs, or images to `data.json`.
-Keep script and output paths directly in commands or Markdown. An image that is
-actually consumed by a later command is an input and follows the same registry
-rule.
+Never add output-only results, scripts, command logs, or images to `data.json`
+unless an exact directly presented non-`pyrun` artifact needs an explicit
+`origin: true` boundary. Otherwise keep script and output paths directly in
+commands or Markdown. An image that is actually consumed by a later command is
+an input and follows the same registry rule.
 
 `pyrun` reads only `./data.json` at the current owning entry root. It does not
 search a parent entry or the log root.
@@ -193,7 +207,10 @@ directly. Record the approved exception beside the command; do not copy
 
 After creating or changing an entry Python script, `data.json`, `pyrun` symlink,
 or recorded command, run the command from the entry root and confirm its saved
-outputs can be read before presenting them.
+outputs can be read before presenting them. `pyrun` updates the entry-root
+`pyrun-outputs.json` only after successful execution and complete output
+observation, provided the script and direct input bytes also remained stable
+across execution; do not edit that file by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader

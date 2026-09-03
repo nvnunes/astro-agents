@@ -12,50 +12,64 @@ import stat
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import BinaryIO, Callable, Iterable, Iterator
 
 from research_log_data import (
     DATA_SCHEMA,
     DataContractError,
     DataFile,
-    ExternalBoundary,
     Fingerprint,
     InputResource,
     build_identity_directory,
     build_identity_pattern_directory,
     build_local_input,
-    build_remote_input,
     data_file_from_inputs,
     input_token_candidate,
     load_data_file,
     observe_fingerprint,
     resolve_input_token,
-    verify_fingerprint,
+)
+from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
+from validation.pyrun_contract import (
+    PyrunContractError,
+    automatic_option_role,
+    parse_pyrun_arguments,
+    split_argument_values,
+)
+from validation.pyrun_outputs import (
+    OutputSupport,
+    PyrunOutputsError,
+    ScriptSupport,
+    portable_output_path,
+    update_pyrun_outputs,
 )
 
 RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
+CAPTURE_POLL_SECONDS = 0.05
+CAPTURE_TERMINATION_SECONDS = 1.0
 
 
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
+        "       pyrun [--capture-stdout <path>] "
+        "[--capture-stderr <path>] -- <script> [args...]\n"
+        "       pyrun --capture-stdout-stderr <path> -- <script> [args...]\n"
         "       pyrun data add <name> <file|directory> <location>\n"
         "       pyrun data add-identity-directory <name> <location> "
         "<identity-file>...\n"
         "       pyrun data add-identity-pattern-directory <name> <location> "
         "<identity-pattern>...\n"
-        "       pyrun data add-remote <name> <uri> <source> <identity> "
-        "<immutable-id|sha256:digest>\n"
         "       pyrun data update <name> <file|directory> <location>\n"
         "       pyrun data update-identity-directory <name> <location> "
         "<identity-file>...\n"
         "       pyrun data update-identity-pattern-directory <name> <location> "
         "<identity-pattern>...\n"
-        "       pyrun data external <name> <source> <identity>\n"
-        "       pyrun data external-remove <name>\n"
+        "       pyrun data origin <name> <true|false>\n"
         "       pyrun data fingerprint <name>\n"
         "       pyrun data remove <name>",
         file=sys.stderr,
@@ -262,6 +276,7 @@ def add_local(
                     location,
                     identity_files,
                     entry_root=entry,
+                    origin=True,
                 )
             elif identity_patterns:
                 item = build_identity_pattern_directory(
@@ -269,48 +284,18 @@ def add_local(
                     location,
                     identity_patterns,
                     entry_root=entry,
+                    origin=True,
                 )
             else:
-                item = build_local_input(name, kind, location, entry_root=entry)
+                item = build_local_input(
+                    name, kind, location, entry_root=entry, origin=True
+                )
         except DataContractError as error:
             raise SystemExit(f"pyrun: {error}") from error
         return (*_items(data), item)
 
     _update_data(entry, operation)
     print(f"pyrun: added {name!r} to {entry / 'data.json'}")
-
-
-def _remote_fingerprint(value: str) -> Fingerprint:
-    if value.startswith("sha256:"):
-        return Fingerprint("sha256", digest=value.removeprefix("sha256:"))
-    return Fingerprint("immutable-source", value=value)
-
-
-def add_remote(
-    entry: Path,
-    name: str,
-    location: str,
-    source: str,
-    identity: str,
-    fingerprint: str,
-) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        if data is not None and name in data.by_name:
-            raise SystemExit(f"pyrun: duplicate data input {name!r}")
-        try:
-            item = build_remote_input(
-                name,
-                location,
-                external=ExternalBoundary(source, identity),
-                fingerprint=_remote_fingerprint(fingerprint),
-                entry_root=entry,
-            )
-        except DataContractError as error:
-            raise SystemExit(f"pyrun: {error}") from error
-        return (*_items(data), item)
-
-    _update_data(entry, operation)
-    print(f"pyrun: added remote input {name!r} to {entry / 'data.json'}")
 
 
 def update_local(
@@ -331,7 +316,7 @@ def update_local(
                     location,
                     identity_files,
                     entry_root=entry,
-                    external=current.external,
+                    origin=current.origin,
                 )
             elif identity_patterns:
                 item = build_identity_pattern_directory(
@@ -339,7 +324,7 @@ def update_local(
                     location,
                     identity_patterns,
                     entry_root=entry,
-                    external=current.external,
+                    origin=current.origin,
                 )
             else:
                 item = build_local_input(
@@ -347,7 +332,7 @@ def update_local(
                     kind,
                     location,
                     entry_root=entry,
-                    external=current.external,
+                    origin=current.origin,
                 )
         except DataContractError as error:
             raise SystemExit(f"pyrun: {error}") from error
@@ -357,33 +342,18 @@ def update_local(
     print(f"pyrun: updated {name!r} in {entry / 'data.json'}")
 
 
-def set_external(entry: Path, name: str, source: str, identity: str) -> None:
+def set_origin(entry: Path, name: str, origin: bool) -> None:
     def operation(data: DataFile | None) -> tuple[InputResource, ...]:
         current = _named(data, name)
-        return _replace_item(
-            data, name, replace(current, external=ExternalBoundary(source, identity))
-        )
+        return _replace_item(data, name, replace(current, origin=origin))
 
     _update_data(entry, operation)
-    print(f"pyrun: set external boundary for {name!r}")
-
-
-def remove_external(entry: Path, name: str) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        current = _named(data, name)
-        if current.remote:
-            raise SystemExit("pyrun: remote inputs require an external boundary")
-        return _replace_item(data, name, replace(current, external=None))
-
-    _update_data(entry, operation)
-    print(f"pyrun: removed external boundary for {name!r}")
+    print(f"pyrun: set origin={str(origin).lower()} for {name!r}")
 
 
 def refresh_fingerprint(entry: Path, name: str) -> None:
     def operation(data: DataFile | None) -> tuple[InputResource, ...]:
         current = _named(data, name)
-        if current.remote:
-            raise SystemExit("pyrun: revise remote identities with data add-remote")
         try:
             observed = observe_fingerprint(current)
         except DataContractError as error:
@@ -424,9 +394,6 @@ def _data_operation(argv: list[str], entry: Path) -> int:
             identity_patterns=tuple(argv[5:]),
         )
         return 0
-    if operation == "add-remote" and len(argv) == 8:
-        add_remote(entry, *argv[3:])
-        return 0
     if operation == "update" and len(argv) == 6:
         update_local(entry, argv[3], argv[4], argv[5])
         return 0
@@ -448,11 +415,8 @@ def _data_operation(argv: list[str], entry: Path) -> int:
             identity_patterns=tuple(argv[5:]),
         )
         return 0
-    if operation == "external" and len(argv) == 6:
-        set_external(entry, argv[3], argv[4], argv[5])
-        return 0
-    if operation == "external-remove" and len(argv) == 4:
-        remove_external(entry, argv[3])
+    if operation == "origin" and len(argv) == 5 and argv[4] in {"true", "false"}:
+        set_origin(entry, argv[3], argv[4] == "true")
         return 0
     if operation == "fingerprint" and len(argv) == 4:
         refresh_fingerprint(entry, argv[3])
@@ -481,6 +445,8 @@ def resolve_arg(
     log: Path,
     data: DataFile | None,
     verified: set[str],
+    observed_inputs: dict[str, Fingerprint],
+    fingerprint_cache: FingerprintCache,
 ) -> str:
     expanded = _reserved_tokens(arg, root, log)
     if not input_token_candidate(expanded):
@@ -492,11 +458,246 @@ def resolve_arg(
     resource = resolved.resource
     if resource.name not in verified:
         try:
-            verify_fingerprint(resource)
-        except DataContractError as error:
+            observation = fingerprint_cache.verify(resource)
+        except (DataContractError, FingerprintCacheError) as error:
             raise SystemExit(f"pyrun: {error}") from error
+        if observation is None:
+            raise SystemExit(f"pyrun: could not observe input {resource.name!r}")
+        observed_inputs[resource.name] = observation.fingerprint
         verified.add(resource.name)
     return resolved.path
+
+
+def _execution_layout(
+    argv: list[str],
+) -> tuple[str, tuple[str, ...], tuple[str, ...], dict[str, str]]:
+    """Return script, script arguments, signature parameters, and captures."""
+
+    try:
+        layout = parse_pyrun_arguments(argv[1:])
+    except PyrunContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+    return (
+        layout.script,
+        layout.script_arguments,
+        layout.parameters,
+        dict(layout.captures),
+    )
+
+
+def _declared_outputs(
+    arguments: tuple[str, ...],
+    captures: dict[str, str],
+    entry: Path,
+    root: Path,
+    log: Path,
+) -> dict[str, tuple[Path, str | None]]:
+    """Resolve outputs and any runner-enforced kind at the process boundary."""
+
+    outputs: list[tuple[str, str | None]] = [
+        (target, "file") for target in captures.values()
+    ]
+    for option in split_argument_values(arguments)[0]:
+        if automatic_option_role(option.name) == "output":
+            outputs.append((option.value, None))
+    result: dict[str, tuple[Path, str | None]] = {}
+    for raw, kind in outputs:
+        expanded = _reserved_tokens(raw, root, log)
+        path = Path(expanded) if Path(expanded).is_absolute() else entry / expanded
+        key = portable_output_path(path, entry_root=entry)
+        if key in result:
+            raise SystemExit(f"pyrun: duplicate output target: {key}")
+        result[key] = (path, kind)
+    return result
+
+
+def _capture_paths(
+    captures: dict[str, str], entry: Path, root: Path, log: Path
+) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for option, raw in captures.items():
+        expanded = _reserved_tokens(raw, root, log)
+        path = Path(expanded) if Path(expanded).is_absolute() else entry / expanded
+        portable_output_path(path, entry_root=entry)
+        result[option] = path
+    return result
+
+
+def _run_with_captures(command: list[str], captures: dict[str, Path], cwd: Path) -> int:
+    """Run one process while mirroring each requested captured byte stream."""
+
+    if not captures:
+        return subprocess.run(command, cwd=cwd, check=False).returncode
+    capture_errors: list[BaseException] = []
+    mirror_errors: list[BaseException] = []
+    capture_failed = threading.Event()
+    error_lock = threading.Lock()
+    combined = captures.get("--capture-stdout-stderr")
+    with ExitStack() as stack:
+        handles = {
+            option: stack.enter_context(path.open("wb"))
+            for option, path in captures.items()
+        }
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE
+            if combined is not None or "--capture-stdout" in captures
+            else None,
+            stderr=(
+                subprocess.STDOUT
+                if combined is not None
+                else subprocess.PIPE
+                if "--capture-stderr" in captures
+                else None
+            ),
+        )
+        pumps: list[threading.Thread] = []
+
+        if process.stdout is not None:
+            option = (
+                "--capture-stdout-stderr"
+                if combined is not None
+                else "--capture-stdout"
+            )
+            thread = threading.Thread(
+                target=_pump_captured_stream,
+                args=(
+                    process.stdout,
+                    handles[option],
+                    sys.stdout.buffer,
+                    capture_failed,
+                    capture_errors,
+                    mirror_errors,
+                    error_lock,
+                ),
+                daemon=True,
+            )
+            pumps.append(thread)
+            thread.start()
+        if process.stderr is not None:
+            thread = threading.Thread(
+                target=_pump_captured_stream,
+                args=(
+                    process.stderr,
+                    handles["--capture-stderr"],
+                    sys.stderr.buffer,
+                    capture_failed,
+                    capture_errors,
+                    mirror_errors,
+                    error_lock,
+                ),
+                daemon=True,
+            )
+            pumps.append(thread)
+            thread.start()
+        returncode = _wait_for_captured_process(process, capture_failed)
+        for thread in pumps:
+            thread.join()
+        _flush_capture_handles(handles.values(), capture_errors, error_lock)
+        if capture_errors:
+            raise SystemExit(f"pyrun: capture failed: {capture_errors[0]}")
+        if mirror_errors:
+            raise SystemExit(f"pyrun: stream mirror failed: {mirror_errors[0]}")
+        return returncode
+
+
+def _pump_captured_stream(
+    source: BinaryIO,
+    destination: BinaryIO,
+    mirror: BinaryIO,
+    capture_failed: threading.Event,
+    capture_errors: list[BaseException],
+    mirror_errors: list[BaseException],
+    error_lock: threading.Lock,
+) -> None:
+    """Capture one pipe completely, disabling only a failed destination."""
+
+    capture_enabled = True
+    mirror_enabled = True
+    try:
+        while chunk := source.read(1024 * 1024):
+            if capture_enabled:
+                try:
+                    destination.write(chunk)
+                    destination.flush()
+                except BaseException as error:  # pragma: no cover - OS failure
+                    _record_stream_error(capture_errors, error, error_lock)
+                    capture_failed.set()
+                    capture_enabled = False
+            if mirror_enabled:
+                try:
+                    mirror.write(chunk)
+                    mirror.flush()
+                except BaseException as error:  # pragma: no cover - OS failure
+                    _record_stream_error(mirror_errors, error, error_lock)
+                    mirror_enabled = False
+    except BaseException as error:  # pragma: no cover - OS pipe failure
+        _record_stream_error(capture_errors, error, error_lock)
+        capture_failed.set()
+
+
+def _wait_for_captured_process(
+    process: subprocess.Popen[bytes], capture_failed: threading.Event
+) -> int:
+    """Wait normally, but terminate a child whose capture destination failed."""
+
+    while process.poll() is None:
+        if not capture_failed.wait(CAPTURE_POLL_SECONDS):
+            continue
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        try:
+            return process.wait(timeout=CAPTURE_TERMINATION_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            return process.wait()
+    return process.wait()
+
+
+def _flush_capture_handles(
+    handles: Iterable[BinaryIO],
+    errors: list[BaseException],
+    error_lock: threading.Lock,
+) -> None:
+    for handle in handles:
+        try:
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException as error:  # pragma: no cover - OS failure
+            _record_stream_error(errors, error, error_lock)
+
+
+def _record_stream_error(
+    errors: list[BaseException],
+    error: BaseException,
+    lock: threading.Lock,
+) -> None:
+    with lock:
+        if not errors:
+            errors.append(error)
+
+
+def _observe_output(
+    path: Path, expected_kind: str | None, fingerprint_cache: FingerprintCache
+) -> Fingerprint:
+    """Observe a captured file or the completed kind of an ordinary output."""
+
+    kind = expected_kind or ("directory" if path.is_dir() else "file")
+    try:
+        observation = (
+            fingerprint_cache.observe_directory(path)
+            if kind == "directory"
+            else fingerprint_cache.observe_regular_file(path)
+        )
+    except (DataContractError, FingerprintCacheError) as error:
+        raise SystemExit(f"pyrun: could not observe output {path}: {error}") from error
+    return observation.fingerprint
 
 
 def main(argv: list[str]) -> int:
@@ -510,13 +711,86 @@ def main(argv: list[str]) -> int:
     if argv[1] == "data":
         return _data_operation(argv, require_entry_root(cwd, log))
 
-    entry = find_entry_root(cwd, log)
+    entry = require_entry_root(cwd, log)
     data = _load_data(entry)
+    script_argument, script_args, parameters, captures = _execution_layout(argv)
     verified: set[str] = set()
-    resolved = [resolve_arg(arg, root, log, data, verified) for arg in argv[1:]]
-    return subprocess.run(
-        [python_executable(root), *resolved], cwd=cwd, check=False
-    ).returncode
+    observed_inputs: dict[str, Fingerprint] = {}
+    try:
+        with FingerprintCache(root, writable=True) as fingerprint_cache:
+            resolved_script = _reserved_tokens(script_argument, root, log)
+            script_path = (
+                Path(resolved_script)
+                if Path(resolved_script).is_absolute()
+                else entry / resolved_script
+            )
+            try:
+                script_observation = fingerprint_cache.observe_regular_file(script_path)
+            except FingerprintCacheError as error:
+                raise SystemExit(f"pyrun: could not observe script: {error}") from error
+            resolved_arguments = [
+                resolve_arg(
+                    arg,
+                    root,
+                    log,
+                    data,
+                    verified,
+                    observed_inputs,
+                    fingerprint_cache,
+                )
+                for arg in script_args
+            ]
+            output_paths = _declared_outputs(
+                script_args, captures, entry, root, log
+            )
+            capture_paths = _capture_paths(captures, entry, root, log)
+            returncode = _run_with_captures(
+                [python_executable(root), str(script_path), *resolved_arguments],
+                capture_paths,
+                cwd,
+            )
+            if returncode != 0:
+                return returncode
+            try:
+                current_script = fingerprint_cache.observe_regular_file(script_path)
+            except FingerprintCacheError as error:
+                raise SystemExit(
+                    f"pyrun: could not re-observe script: {error}"
+                ) from error
+            if current_script.fingerprint != script_observation.fingerprint:
+                raise SystemExit("pyrun: script bytes changed during execution")
+            if data is not None:
+                for name, expected in sorted(observed_inputs.items()):
+                    try:
+                        current_input = fingerprint_cache.verify(data.by_name[name])
+                    except (DataContractError, FingerprintCacheError) as error:
+                        raise SystemExit(
+                            f"pyrun: could not re-observe input {name!r}: {error}"
+                        ) from error
+                    if (
+                        current_input is None
+                        or current_input.fingerprint != expected
+                    ):
+                        raise SystemExit(
+                            f"pyrun: input {name!r} changed during execution"
+                        )
+            script_support = ScriptSupport(
+                script_argument, script_observation.fingerprint
+            )
+            records: dict[str, OutputSupport] = {}
+            for key, (path, kind) in output_paths.items():
+                records[key] = OutputSupport(
+                    True,
+                    _observe_output(path, kind, fingerprint_cache),
+                    script_support,
+                    parameters,
+                    tuple(sorted(observed_inputs.items())),
+                )
+            if records:
+                update_pyrun_outputs(entry, records)
+            return returncode
+    except PyrunOutputsError as error:
+        raise SystemExit(f"pyrun: {error}") from error
 
 
 if __name__ == "__main__":

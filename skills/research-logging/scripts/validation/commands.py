@@ -25,6 +25,12 @@ from .entry_materials import (
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
+from .pyrun_contract import (
+    OptionOccurrence,
+    automatic_option_role,
+    parse_pyrun_arguments,
+    split_argument_values,
+)
 from .static_shell import (
     StaticCommand,
     StaticFailure,
@@ -111,7 +117,7 @@ class MaterialRelationship:
     proof: str
     target: str | None = None
     named_input: str | None = None
-    external: bool = False
+    origin: bool = False
     input_resource: InputResource | None = None
 
 
@@ -156,6 +162,9 @@ class Invocation:
     sequence: int
     tokens: tuple[str, ...]
     executable: str
+    via_pyrun: bool
+    script_argument: str | None
+    parameters: tuple[str, ...]
     script: str | None
     script_identity: str | None
     inputs: tuple[MaterialRelationship, ...]
@@ -184,20 +193,16 @@ class CommandDiscoveryFailure:
 
 
 @dataclass(frozen=True)
-class _OptionOccurrence:
-    name: str
-    value: str
-
-
-@dataclass(frozen=True)
 class _ParsedCommand:
     tokens: tuple[str, ...]
     executable_index: int
     script_index: int | None
-    options: tuple[_OptionOccurrence, ...]
+    parameters: tuple[str, ...]
+    options: tuple[OptionOccurrence, ...]
     positionals: tuple[str, ...]
     redirections: tuple[tuple[str, str], ...]
     tee_outputs: tuple[str, ...]
+    capture_outputs: tuple[tuple[str, str], ...]
     static_projection: tuple[str, ...] = ()
 
 
@@ -334,14 +339,6 @@ def discover_commands(
     )
 
 
-def automatic_option_role(name: str) -> str | None:
-    """Return the closed leading-or-trailing input/output option role."""
-
-    name = name.lstrip("-")
-    matches = [role for role in ("input", "output") if _role_name(name, role)]
-    return matches[0] if len(matches) == 1 else None
-
-
 def order_invocations(
     documents: Sequence[Sequence[Invocation]],
 ) -> tuple[Invocation, ...]:
@@ -358,13 +355,6 @@ def order_invocations(
         replace(invocation, sequence=sequence)
         for sequence, invocation in enumerate(ordered)
     )
-
-
-def _role_name(name: str, role: str) -> bool:
-    if name == role:
-        return True
-    atom = r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?"
-    return re.fullmatch(rf"(?:{role}[-_]{atom}|{atom}[-_]{role})", name) is not None
 
 
 def _command_fences(
@@ -549,13 +539,24 @@ def _parse_command(
         raise ValueError("missing executable")
     executable_index = _unwrap_caffeinate(principal, executable_index)
     executable = Path(principal[executable_index].value).name
-    script_index = (
-        executable_index + 1
-        if executable == "pyrun" or executable.startswith("python")
-        else None
-    )
     redirections, ordinary = _redirections(principal)
-    options, positionals = _arguments(ordinary, executable_index, script_index)
+    capture_outputs: tuple[tuple[str, str], ...] = ()
+    parameters: tuple[str, ...] = ()
+    if executable == "pyrun":
+        script_index, parameters, capture_outputs = _pyrun_layout(
+            ordinary, executable_index
+        )
+    elif executable.startswith("python"):
+        script_index = executable_index + 1
+        if script_index >= len(ordinary):
+            raise ValueError("interpreter lacks script")
+        parameters = tuple(ordinary[script_index + 1 :])
+    else:
+        script_index = None
+    argument_start = (
+        script_index + 1 if script_index is not None else executable_index + 1
+    )
+    options, positionals = split_argument_values(ordinary[argument_start:])
     tee_outputs: tuple[str, ...] = ()
     if len(components) == 2:
         tee_outputs = _terminal_tee(tuple(token.value for token in components[1]))
@@ -563,12 +564,26 @@ def _parse_command(
         tokens,
         executable_index,
         script_index,
+        parameters,
         options,
         positionals,
         redirections,
         tee_outputs,
+        capture_outputs,
         static_projection,
     )
+
+
+def _pyrun_layout(
+    tokens: Sequence[str], executable_index: int
+) -> tuple[int, tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """Resolve the script, exact parameter vector, and runner capture outputs."""
+
+    layout = parse_pyrun_arguments(tokens[executable_index + 1 :])
+    captures = tuple(
+        (option.removeprefix("--"), target) for option, target in layout.captures
+    )
+    return executable_index + 1 + layout.script_index, layout.parameters, captures
 
 
 def _unwrap_caffeinate(principal: Sequence[StaticToken], executable_index: int) -> int:
@@ -636,35 +651,6 @@ def _redirections(
         ordinary.append(token.value)
         index += 1
     return tuple(redirections), ordinary
-
-
-def _arguments(
-    tokens: Sequence[str], executable_index: int, script_index: int | None
-) -> tuple[tuple[_OptionOccurrence, ...], tuple[str, ...]]:
-    options: list[_OptionOccurrence] = []
-    positionals: list[str] = []
-    index = executable_index + 1
-    if script_index == index:
-        if index >= len(tokens):
-            raise ValueError("interpreter lacks script")
-        index += 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token.startswith("-") and token not in {"-", "--"}:
-            if "=" in token:
-                name, value = token.lstrip("-").split("=", 1)
-                options.append(_OptionOccurrence(name, value))
-                index += 1
-                continue
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
-                options.append(_OptionOccurrence(token.lstrip("-"), tokens[index + 1]))
-                index += 2
-                continue
-            index += 1
-            continue
-        positionals.append(token)
-        index += 1
-    return tuple(options), tuple(positionals)
 
 
 def _terminal_tee(tokens: Sequence[str]) -> tuple[str, ...]:
@@ -769,6 +755,9 @@ def _build_invocation(
         position.sequence,
         command.tokens,
         executable,
+        Path(executable).name == "pyrun",
+        script_token,
+        command.parameters,
         script,
         script_identity,
         inputs,
@@ -974,6 +963,13 @@ def _relationships(
                 _RelationshipRequest(value, direction, "shell", None), context
             )
         )
+    for target, value in command.capture_outputs:
+        relationships.append(
+            _relationship(
+                _RelationshipRequest(value, "output", "pyrun-capture", target),
+                context,
+            )
+        )
     for occurrence in command.options:
         role = annotated.get(occurrence.name, automatic_option_role(occurrence.name))
         _collect_argument(occurrence.value, occurrence.name, role, state, candidates)
@@ -1119,7 +1115,7 @@ def _named_input(
         "named-input",
         target or resource.name,
         resource.name,
-        resource.external is not None,
+        resource.origin,
         resource,
     )
 
@@ -1177,7 +1173,6 @@ def _reject_raw_input(value: str, context: CommandContext) -> NoReturn:
                 continue
             if (
                 resource.kind == "directory"
-                and not resource.remote
                 and path is not None
             ):
                 try:
@@ -1228,7 +1223,7 @@ def _named_directory_collection(
         _fail(
             "directory.membership.invalid",
             context.document,
-            {"value": value, "reason": "remote_directory"},
+            {"value": value, "reason": "observation_unavailable"},
         )
     resource = resolved.resource
     if resource.fingerprint.algorithm in {
@@ -1246,7 +1241,7 @@ def _named_directory_collection(
             collection_kind,
             target,
             resource.name,
-            resource.external is not None,
+            resource.origin,
             resource,
         )
         return (
@@ -1275,7 +1270,7 @@ def _named_directory_collection(
             "directory",
             target,
             resource.name,
-            resource.external is not None,
+            resource.origin,
             resource,
         )
         for member in members

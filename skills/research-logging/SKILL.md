@@ -30,8 +30,9 @@ For every Record turn:
   only matching references. Before finishing, reapply this map only to material
   changed or consumed by the current operation and load any newly triggered
   reference. This bounded check is not Review or Validate.
-- Do not infer authority to update the summary, Replace or Reorganize material,
-  alter decisions, or inspect unrelated work.
+- Do not infer authority to revise current understanding or summary
+  `## Follow-ups`, Replace or Reorganize material, alter decisions, or inspect
+  unrelated work.
 - Keep entries focused on research evidence, not agent activity or routine
   successful checks.
 
@@ -51,7 +52,7 @@ Use this Record routing map:
   and `references/file-evidence-tables.md`. A numerical result in experimental
   prose is separate evidence even when the same value appears in a Results
   table.
-- `data.json`, a `<name>` token, or a durable external input: always read
+- `data.json`, a `<name>` token, or an explicit origin boundary: always read
   `references/file-data-index.md` when introduced.
 - `retention.json` or intentional disconnected retention: always read
   `references/file-retention.md` when introduced.

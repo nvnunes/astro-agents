@@ -3,8 +3,10 @@
 Use this file when the user asks to review a research log's structure,
 consistency, synthesis, or writing.
 
-`Review` is report-first. Do not edit the log or create a review entry unless
-the user explicitly asks for fixes or a persistent record.
+`Review` is report-first and does not own log edits. Complete findings before
+any separately authorized fix. Route entry changes through Record or Replace,
+summary changes through Update Summary, and a persistent review record through
+Record.
 
 ## Scope
 
@@ -80,8 +82,8 @@ Also look for:
 - interpreter fallback used despite a declared project environment without researcher approval
 - duplicate `data.json` names or targets, items unused by recorded `<name>`
   tokens, missing input items, raw-path token bypasses, fingerprint drift,
-  conflicting external boundaries, unresolved tokens, or raw absolute and
-  external input paths that should use `<name>`
+  conflicting origin boundaries, unresolved tokens, or raw absolute and
+  outside-entry input paths that should use `<name>`
 - active-work figures without a generating command in the document that presents them
 - active-work plot scripts that accept missing cases, non-finite values, or incompatible units
 - saved figures with evidence-affecting defects
@@ -103,6 +105,6 @@ explain the applicable rule and why it matters, and suggest a corrective
 direction. If no material findings exist, say so and name any residual risk or
 unverified area.
 
-If the user asks to apply fixes, preserve source wording unless the fix requires
-a specific rewrite. Do not omit, condense, paraphrase, or materially rewrite
-source content without explicit direction.
+During an authorized follow-on operation, preserve source wording unless the
+fix requires a specific rewrite. Do not omit, condense, paraphrase, or
+materially rewrite source content without explicit direction.

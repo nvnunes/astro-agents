@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping, NoReturn, Sequence, cast
 from research_log_data import (
     DataContractError,
     DataFile,
+    Fingerprint,
     FingerprintObservation,
     InputResource,
     find_log_consistency_conflicts,
@@ -92,7 +93,14 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .mechanical_values import SelectionResult
-from .provenance import evaluate_provenance, require_external_boundary
+from .provenance import evaluate_provenance, require_origin_boundary
+from .pyrun_outputs import (
+    OutputSupport,
+    PyrunOutputsFile,
+    empty_pyrun_outputs,
+    load_pyrun_outputs,
+    portable_output_path,
+)
 from .retention import RetentionFile, load_retention_file
 from .selection_codec import encode_selection
 from .transformation import (
@@ -102,7 +110,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/input-registry-6"
+RULES_VERSION = "research-log-mechanical/end-to-end-provenance-1"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -138,7 +146,7 @@ class _EntrySurface:
 @dataclass(frozen=True)
 class _ResolvedSource:
     path: Path
-    external: bool
+    origin: bool
     input_name: str
     resource: InputResource
 
@@ -177,20 +185,43 @@ class _ScanState:
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
     command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
+    command_blocker_candidates: (
+        tuple[tuple[Path, bool, tuple[str, ...]], ...] | None
+    ) = None
     command_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     records: list[_RecordOutcome] = field(default_factory=list)
     direct: list[DirectArtifactConnection] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
+    output_files: dict[str, PyrunOutputsFile] = field(default_factory=dict)
+    output_record_errors: dict[str, MechanicalContractError] = field(
+        default_factory=dict
+    )
+    missing_output_paths: set[str] = field(default_factory=set)
+    provenance_observations: dict[str, tuple[str, Fingerprint]] = field(
+        default_factory=dict
+    )
+    output_file_observations: dict[str, str] = field(default_factory=dict)
     selection_cache: dict[tuple[str, str], SelectionResult] = field(
         default_factory=dict
     )
     source_cache: dict[str, SourceIdentityObservation] = field(default_factory=dict)
     script_cache: dict[str, ScriptObservation] = field(default_factory=dict)
     input_observations: dict[str, FingerprintObservation] = field(default_factory=dict)
+    input_resources: dict[str, InputResource] = field(default_factory=dict)
     input_prerequisite_checks: dict[str, list[MechanicalCheck]] = field(
         default_factory=dict
     )
+    input_prerequisite_files: dict[str, list[MechanicalCheck]] = field(
+        default_factory=dict
+    )
+    input_prerequisite_directories: dict[str, list[MechanicalCheck]] = field(
+        default_factory=dict
+    )
     graph_failure_owners: dict[str, set[str]] = field(default_factory=dict)
+    logical_material_roots: tuple[tuple[Path, str, str], ...] | None = None
+    owner_surface_prerequisite_checks: dict[
+        str, tuple[MechanicalCheck, ...]
+    ] = field(default_factory=dict)
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
@@ -256,6 +287,7 @@ def _scan(
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
+        _load_output_support(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
         state.checks.append(
@@ -275,6 +307,7 @@ def _scan(
             )
         _compose_graph(state)
         _verify_source_stability(state)
+        _verify_provenance_stability(state)
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
         state.checks.append(_pass_check("conformance:log", CheckScope.CONFORMANCE))
     checks, unchanged = _compare_checks(state.checks, state.check_comparison)
@@ -574,8 +607,6 @@ def _record_entry_surface_error(
 def _verify_input(
     resource: InputResource, state: _ScanState
 ) -> FingerprintObservation | None:
-    if resource.remote:
-        return None
     key = resource.canonical_target
     observation = state.input_observations.get(key)
     if observation is not None:
@@ -590,6 +621,7 @@ def _verify_input(
     if observation.identity_reused:
         state.input_fingerprints_reused += 1
     state.input_observations[key] = observation
+    state.input_resources[key] = resource
     return observation
 
 
@@ -617,6 +649,12 @@ def _add_input_prerequisite_for_root(
     owner = root.relative_to(state.log_root).as_posix()
     key = _input_declaration_key(owner, resource)
     state.input_prerequisite_checks.setdefault(key, []).append(check)
+    targets = (
+        state.input_prerequisite_directories
+        if resource.kind == "directory"
+        else state.input_prerequisite_files
+    )
+    targets.setdefault(resource.canonical_target, []).append(check)
 
 
 def _observe_script_identity(path: Path, state: _ScanState) -> ScriptObservation:
@@ -821,6 +859,236 @@ def _register_invocation_blockers(
     state.command_failure_owners.setdefault(invocation.material_owner, set()).add(
         identity
     )
+
+
+def _load_output_support(state: _ScanState) -> None:
+    """Load each shared entry-root output map once through the fingerprint cache."""
+
+    owners: dict[str, Path] = {}
+    for entry in state.entries:
+        owners.setdefault(_material_owner(entry, state), entry.root)
+    for owner, root in sorted(owners.items()):
+        path = root / "pyrun-outputs.json"
+        if not path.exists():
+            state.output_files[owner] = empty_pyrun_outputs(root)
+            continue
+        try:
+            if state.fingerprint_cache is not None:
+                observation = state.fingerprint_cache.observe_regular_file(path)
+            else:
+                with FingerprintCache(
+                    state.project_root, writable=False, reuse=False
+                ) as direct_cache:
+                    observation = direct_cache.observe_regular_file(path)
+            digest = observation.fingerprint.digest
+            if digest is None:
+                _fail(
+                    "pyrun.outputs.unavailable",
+                    str(path),
+                    {"reason": "missing_digest"},
+                )
+            state.output_file_observations[path.resolve().as_posix()] = digest
+            state.output_files[owner] = load_pyrun_outputs(path, entry_root=root)
+        except MechanicalContractError as error:
+            state.output_record_errors[owner] = error
+            state.checks.append(
+                _error_check(
+                    f"entry:{owner}:pyrun-outputs",
+                    CheckScope.PROVENANCE,
+                    error,
+                )
+            )
+
+
+def _entry_root_for_owner(owner: str, state: _ScanState) -> Path:
+    for entry in state.entries:
+        if _material_owner(entry, state) == owner:
+            return entry.root
+    _fail("pyrun.outputs.invalid", owner, {"reason": "unknown_owner"})
+
+
+def _output_record(
+    invocation: Invocation, material: str, state: _ScanState
+) -> tuple[str, OutputSupport | None]:
+    root = _entry_root_for_owner(invocation.material_owner, state)
+    try:
+        key = portable_output_path(material, entry_root=root)
+    except MechanicalContractError:
+        _fail(
+            "pyrun.output.identity_invalid",
+            material,
+            {"owner": invocation.material_owner},
+        )
+    file = state.output_files.get(invocation.material_owner)
+    return key, file.outputs.get(key) if file is not None else None
+
+
+def _has_confirmed_output_record(
+    invocation: Invocation, material: str, state: _ScanState
+) -> bool:
+    try:
+        _, record = _output_record(invocation, material, state)
+    except MechanicalContractError:
+        return False
+    return record is not None and record.confirmed
+
+
+def _validate_output_support(
+    invocation: Invocation, material: str, state: _ScanState
+) -> Mapping[str, object]:
+    """Require one exact confirmed observation for a reached graph output."""
+
+    key, record = _output_record(invocation, material, state)
+    path = Path(material)
+    if not path.is_file() and not path.is_dir():
+        state.missing_output_paths.add(path.resolve().as_posix())
+        _fail(
+            "provenance.output.missing",
+            material,
+            {"output": key, "producer": invocation.identity},
+        )
+    record = _required_output_record(invocation, material, key, record, state)
+    current_output = _observe_provenance_path(path, state)
+    expected_inputs = _output_signature_inputs(invocation, material)
+    mismatches = _output_signature_mismatches(
+        invocation, record, current_output, expected_inputs
+    )
+    if mismatches:
+        _fail(
+            "provenance.output.signature_mismatch",
+            material,
+            {
+                "fields": mismatches,
+                "output": key,
+                "producer": invocation.identity,
+            },
+        )
+    support_file = state.output_files[invocation.material_owner]
+    return {
+        "output": key,
+        "record": record.as_dict(),
+        "record_file": support_file.path.as_posix(),
+        "record_file_sha256": state.output_file_observations.get(
+            support_file.path.resolve().as_posix()
+        ),
+    }
+
+
+def _required_output_record(
+    invocation: Invocation,
+    material: str,
+    key: str,
+    record: OutputSupport | None,
+    state: _ScanState,
+) -> OutputSupport:
+    error = state.output_record_errors.get(invocation.material_owner)
+    if error is not None:
+        raise error
+    if record is None:
+        _fail(
+            "provenance.output.unrecorded",
+            material,
+            {"output": key, "producer": invocation.identity},
+        )
+    if not record.confirmed:
+        _fail(
+            "provenance.output.unconfirmed",
+            material,
+            {"output": key, "producer": invocation.identity},
+        )
+    if not invocation.via_pyrun:
+        _fail(
+            "provenance.output.signature_mismatch",
+            material,
+            {"output": key, "reason": "producer_not_pyrun"},
+        )
+    return record
+
+
+def _output_signature_inputs(
+    invocation: Invocation, material: str
+) -> dict[str, Fingerprint]:
+    expected_inputs: dict[str, Fingerprint] = {}
+    for relationship in invocation.inputs:
+        resource = relationship.input_resource
+        if resource is None:
+            _fail(
+                "provenance.output.signature_unsupported",
+                material,
+                {"input": relationship.path, "producer": invocation.identity},
+            )
+        prior = expected_inputs.setdefault(resource.name, resource.fingerprint)
+        if prior != resource.fingerprint:
+            _fail(
+                "provenance.output.signature_unsupported",
+                material,
+                {"input": resource.name, "reason": "conflicting_identity"},
+            )
+    return expected_inputs
+
+
+def _output_signature_mismatches(
+    invocation: Invocation,
+    record: OutputSupport,
+    current_output: Fingerprint,
+    expected_inputs: Mapping[str, Fingerprint],
+) -> list[str]:
+    current_script = (
+        Fingerprint("sha256", digest=invocation.script_identity)
+        if invocation.script_identity is not None
+        else None
+    )
+    mismatches: list[str] = []
+    if record.fingerprint != current_output:
+        mismatches.append("output_fingerprint")
+    if record.script.path != invocation.script_argument:
+        mismatches.append("script")
+    if current_script is None or record.script.fingerprint != current_script:
+        mismatches.append("script_fingerprint")
+    if record.parameters != invocation.parameters:
+        mismatches.append("parameters")
+    if dict(record.inputs) != expected_inputs:
+        mismatches.append("inputs")
+    return mismatches
+
+
+def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
+    canonical = path.resolve().as_posix()
+    cached = state.provenance_observations.get(canonical)
+    if cached is not None:
+        return cached[1]
+    if state.fingerprint_cache is None:
+        try:
+            with FingerprintCache(
+                state.project_root, writable=False, reuse=False
+            ) as temporary_cache:
+                observation = (
+                    temporary_cache.observe_directory(path)
+                    if path.is_dir()
+                    else temporary_cache.observe_regular_file(path)
+                )
+        except FingerprintCacheError as error:
+            _fail(
+                "provenance.observation.unavailable",
+                canonical,
+                {"error": str(error)},
+            )
+        kind = "directory" if path.is_dir() else "file"
+        state.provenance_observations[canonical] = (kind, observation.fingerprint)
+        return observation.fingerprint
+    try:
+        if path.is_dir():
+            observation = state.fingerprint_cache.observe_directory(path)
+            kind = "directory"
+        else:
+            observation = state.fingerprint_cache.observe_regular_file(path)
+            kind = "file"
+    except FingerprintCacheError as error:
+        _fail(
+            "provenance.observation.unavailable", canonical, {"error": str(error)}
+        )
+    state.provenance_observations[canonical] = (kind, observation.fingerprint)
+    return observation.fingerprint
 
 
 # Evidence, presentations, and provenance evaluation.
@@ -1030,11 +1298,13 @@ def _evaluate_record(
         evidence = _checks_depending_on(
             identity, CheckScope.EVIDENCE, verification_checks
         )
-        provenance = _checks_depending_on(
-            f"provenance:{entry.id}:{record.id}",
-            CheckScope.PROVENANCE,
-            verification_checks,
-        )
+        provenance = _record_provenance(entry, record, materials, state)
+        if provenance.status is CheckStatus.PASS:
+            provenance = _checks_depending_on(
+                f"provenance:{entry.id}:{record.id}",
+                CheckScope.PROVENANCE,
+                verification_checks,
+            )
         return _RecordOutcome(
             entry.id, record, item, materials, evidence, provenance, None, ()
         )
@@ -1196,15 +1466,29 @@ def _record_provenance(
     try:
         dependencies: list[Mapping[str, object]] = [artifact_dependency]
         for material in materials:
-            if material.external:
-                require_external_boundary(
-                    material.path, material.resource, state.invocations
+            if material.origin:
+                require_origin_boundary(
+                    material.path,
+                    material.resource,
+                    state.invocations,
+                    confirmed_record=lambda invocation, output: (
+                        _has_confirmed_output_record(invocation, output, state)
+                    ),
                 )
                 dependencies.append(
-                    {"kind": "external", "material": material.path.as_posix()}
+                    {"kind": "origin", "material": material.path.as_posix()}
                 )
                 continue
-            result = evaluate_provenance(material.path, state.invocations)
+            result = evaluate_provenance(
+                material.path,
+                state.invocations,
+                producer_validator=lambda invocation, output: (
+                    _validate_output_support(invocation, output, state)
+                ),
+                confirmed_record=lambda invocation, output: (
+                    _has_confirmed_output_record(invocation, output, state)
+                ),
+            )
             dependencies.append(
                 {
                     "dependency_projection": result.dependency_projection,
@@ -1238,11 +1522,82 @@ def _evaluate_direct_artifacts(
     for artifact in artifacts:
         identity = f"artifact:{artifact.document}:{artifact.line}"
         target = state.log_root / artifact.normalized_target
+        canonical = target.resolve().as_posix()
+        origin_resource = next(
+            (
+                resource
+                for resource in (
+                    entry.data_file.inputs if entry.data_file is not None else ()
+                )
+                if resource.origin and resource.canonical_target == canonical
+            ),
+            None,
+        )
+        input_names = (
+            (f"{_material_owner(entry, state)}:{origin_resource.name}",)
+            if origin_resource is not None
+            else ()
+        )
         state.direct.append(
-            DirectArtifactConnection(entry.id, identity, target.resolve().as_posix())
+            DirectArtifactConnection(
+                entry.id,
+                identity,
+                canonical,
+                origin=origin_resource is not None,
+                input_names=input_names,
+            )
         )
         try:
-            result = evaluate_provenance(target, state.invocations)
+            if origin_resource is not None:
+                prerequisites = tuple(
+                    state.input_prerequisite_checks.get(
+                        _input_declaration_key(
+                            _material_owner(entry, state), origin_resource
+                        ),
+                        (),
+                    )
+                )
+                if prerequisites:
+                    state.checks.append(
+                        _checks_depending_on(
+                            f"provenance:{identity}",
+                            CheckScope.PROVENANCE,
+                            prerequisites,
+                        )
+                    )
+                    continue
+                require_origin_boundary(
+                    target,
+                    origin_resource,
+                    state.invocations,
+                    confirmed_record=lambda invocation, output: (
+                        _has_confirmed_output_record(invocation, output, state)
+                    ),
+                )
+                state.checks.append(
+                    _pass_check(
+                        f"provenance:{identity}",
+                        CheckScope.PROVENANCE,
+                        dependencies=(
+                            {"artifacts": [canonical]},
+                            {
+                                "declaration": origin_resource.content_identity,
+                                "kind": "origin",
+                            },
+                        ),
+                    )
+                )
+                continue
+            result = evaluate_provenance(
+                target,
+                state.invocations,
+                producer_validator=lambda invocation, output: (
+                    _validate_output_support(invocation, output, state)
+                ),
+                confirmed_record=lambda invocation, output: (
+                    _has_confirmed_output_record(invocation, output, state)
+                ),
+            )
             state.checks.append(
                 _pass_check(
                     f"provenance:{identity}",
@@ -1343,6 +1698,75 @@ def _require_complete_summary_references(
 
 
 def _compose_graph(state: _ScanState) -> None:
+    request = MaterialGraphRequest(
+        entry_roots={entry.id: entry.root for entry in state.entries},
+        evidence=_graph_evidence_connections(state),
+        direct_artifacts=tuple(state.direct),
+        invocations=state.invocations,
+        retention_files=_unique_retention_files(state.entries),
+        input_registries=_input_registry_surfaces(state),
+    )
+    try:
+        state.graph = compose_material_graph(request)
+    except MechanicalContractError as error:
+        state.checks.append(
+            _error_check("graph:log", _error_scope(error, CheckScope.PROVENANCE), error)
+        )
+        return
+    orphan = state.graph.orphan
+    _record_missing_outputs(state)
+    unmatched = _record_unmatched_outputs(state)
+    orphaned = tuple(path for path in orphan.orphaned if path not in unmatched)
+    _record_orphan_artifacts(state, orphan.inventory, orphaned)
+    _record_unused_inputs(state, orphan.unused_input_names)
+    if not orphaned and not orphan.unused_input_names and not unmatched:
+        state.checks.append(
+            _pass_check(
+                "orphan:log",
+                CheckScope.ORPHAN,
+                dependencies=({"dependency_projection": orphan.dependency_projection},),
+            )
+        )
+
+
+def _record_missing_outputs(state: _ScanState) -> None:
+    """Report graph outputs absent outside evidence-rooted traversal."""
+
+    producers: dict[str, list[tuple[Invocation, str]]] = {}
+    for invocation in state.invocations:
+        root = _entry_root_for_owner(invocation.material_owner, state)
+        for relationship in invocation.outputs:
+            canonical = Path(relationship.path).resolve().as_posix()
+            if canonical in state.missing_output_paths:
+                continue
+            path = Path(canonical)
+            if path.is_file() or path.is_dir():
+                continue
+            key = portable_output_path(canonical, entry_root=root)
+            producers.setdefault(canonical, []).append((invocation, key))
+    for canonical, declarations in sorted(producers.items()):
+        invocation, key = declarations[0]
+        state.missing_output_paths.add(canonical)
+        state.checks.append(
+            _failure_check(
+                f"provenance:missing-output:{invocation.material_owner}:{key}",
+                CheckScope.PROVENANCE,
+                _FailureSpec(
+                    "provenance.output.missing",
+                    canonical,
+                    {
+                        "output": key,
+                        "producers": [
+                            item.identity for item, _ in declarations
+                        ],
+                    },
+                    "Output Reconciliation",
+                ),
+            )
+        )
+
+
+def _graph_evidence_connections(state: _ScanState) -> tuple[EvidenceConnection, ...]:
     connections: list[EvidenceConnection] = []
     for outcome in state.records:
         input_names = _evidence_input_names(outcome.entry, outcome.record, state)
@@ -1358,29 +1782,52 @@ def _compose_graph(state: _ScanState) -> None:
                 frozenset(
                     material.path.as_posix()
                     for material in outcome.materials
-                    if material.external
+                    if material.origin
                 ),
                 input_names,
             )
         )
-    request = MaterialGraphRequest(
-        entry_roots={entry.id: entry.root for entry in state.entries},
-        evidence=tuple(connections),
-        direct_artifacts=tuple(state.direct),
-        invocations=state.invocations,
-        retention_files=_unique_retention_files(state.entries),
-        input_registries=_input_registry_surfaces(state),
-    )
-    try:
-        state.graph = compose_material_graph(request)
-    except MechanicalContractError as error:
-        state.checks.append(
-            _error_check("graph:log", _error_scope(error, CheckScope.PROVENANCE), error)
-        )
-        return
-    orphan = state.graph.orphan
-    orphan_groups = _orphan_group_metadata(state, orphan.inventory, orphan.orphaned)
-    for path in orphan.orphaned:
+    return tuple(connections)
+
+
+def _record_unmatched_outputs(state: _ScanState) -> set[str]:
+    graph_outputs = {
+        relationship.path
+        for invocation in state.invocations
+        for relationship in invocation.outputs
+    }
+    unmatched: set[str] = set()
+    for owner, output_file in sorted(state.output_files.items()):
+        root = _entry_root_for_owner(owner, state)
+        for key in sorted(output_file.outputs):
+            canonical = (root / key).resolve().as_posix()
+            if canonical in graph_outputs:
+                continue
+            unmatched.add(canonical)
+            state.checks.append(
+                _failure_check(
+                    f"hygiene:unmatched-output:{owner}:{key}",
+                    CheckScope.ORPHAN,
+                    _FailureSpec(
+                        "hygiene.output.unmatched",
+                        canonical,
+                        {
+                            "classification": "unmatched_output",
+                            "output": key,
+                            "record": output_file.path.as_posix(),
+                        },
+                        "Output Reconciliation",
+                    ),
+                )
+            )
+    return unmatched
+
+
+def _record_orphan_artifacts(
+    state: _ScanState, inventory: Sequence[str], orphaned: Sequence[str]
+) -> None:
+    orphan_groups = _orphan_group_metadata(state, inventory, orphaned)
+    for path in orphaned:
         material_blockers = _material_graph_blockers(path, state)
         if material_blockers:
             state.checks.append(
@@ -1408,7 +1855,10 @@ def _compose_graph(state: _ScanState) -> None:
                 ),
             )
         )
-    for name in orphan.unused_input_names:
+
+
+def _record_unused_inputs(state: _ScanState, names: Sequence[str]) -> None:
+    for name in names:
         owner = name.rsplit(":", 1)[0]
         input_blockers = _input_graph_blockers(name, owner, state)
         if input_blockers:
@@ -1431,14 +1881,6 @@ def _compose_graph(state: _ScanState) -> None:
                     {"classification": "unused"},
                     "Orphan Detection",
                 ),
-            )
-        )
-    if not orphan.orphaned and not orphan.unused_input_names:
-        state.checks.append(
-            _pass_check(
-                "orphan:log",
-                CheckScope.ORPHAN,
-                dependencies=({"dependency_projection": orphan.dependency_projection},),
             )
         )
 
@@ -1536,27 +1978,36 @@ def _collapse_orphan_directory(
 
 
 def _logical_entry_material(material: str, state: _ScanState) -> tuple[str, str] | None:
-    path = Path(material).resolve()
+    path = Path(material)
+    for root, owner, prefix in _logical_material_roots(state):
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        return owner, f"{prefix}{relative}"
+    return None
+
+
+def _logical_material_roots(state: _ScanState) -> tuple[tuple[Path, str, str], ...]:
+    """Build canonical entry and symlink roots once for graph-material lookup."""
+
+    if state.logical_material_roots is not None:
+        return state.logical_material_roots
+    roots: list[tuple[Path, str, str]] = []
     seen: set[Path] = set()
     for entry in state.entries:
         if entry.root in seen:
             continue
         seen.add(entry.root)
         owner = _material_owner(entry, state)
-        try:
-            return owner, path.relative_to(entry.root.resolve()).as_posix()
-        except ValueError:
-            pass
+        roots.append((entry.root, owner, ""))
         for name in ("data", "images"):
             logical_root = entry.root / name
             if not logical_root.is_symlink():
                 continue
-            try:
-                relative = path.relative_to(logical_root.resolve()).as_posix()
-            except ValueError:
-                continue
-            return owner, f"{name}/{relative}"
-    return None
+            roots.append((logical_root.resolve(), owner, f"{name}/"))
+    state.logical_material_roots = tuple(roots)
+    return state.logical_material_roots
 
 
 def _material_graph_blockers(material: str, state: _ScanState) -> tuple[str, ...]:
@@ -1592,37 +2043,33 @@ def _input_graph_blockers(
 def _owner_surface_prerequisites(
     owner: str, state: _ScanState
 ) -> tuple[MechanicalCheck, ...]:
-    return _unique_checks(
+    cached = state.owner_surface_prerequisite_checks.get(owner)
+    if cached is not None:
+        return cached
+    prerequisites = _unique_checks(
         check
         for entry in state.entries
         if _material_owner(entry, state) == owner
         for check in (entry.data_failure, entry.evidence_failure)
         if check is not None
     )
+    state.owner_surface_prerequisite_checks[owner] = prerequisites
+    return prerequisites
 
 
 def _material_input_prerequisites(
     material: str, state: _ScanState
 ) -> tuple[MechanicalCheck, ...]:
-    path = Path(material).resolve()
-    checks: list[MechanicalCheck] = []
-    for entry in state.entries:
-        if entry.data_file is None:
+    """Return failed input declarations covering one canonical graph material."""
+
+    path = Path(material)
+    checks = list(state.input_prerequisite_files.get(material, ()))
+    for target, prerequisites in state.input_prerequisite_directories.items():
+        try:
+            path.relative_to(Path(target))
+        except ValueError:
             continue
-        owner = _material_owner(entry, state)
-        for resource in entry.data_file.inputs:
-            if resource.remote:
-                continue
-            target = Path(resource.canonical_target).resolve()
-            if path != target and (
-                resource.kind != "directory" or not _within(path, target)
-            ):
-                continue
-            checks.extend(
-                state.input_prerequisite_checks.get(
-                    _input_declaration_key(owner, resource), ()
-                )
-            )
+        checks.extend(prerequisites)
     return _unique_checks(checks)
 
 
@@ -1672,13 +2119,6 @@ def _resolve_source(
     except DataContractError as error:
         _fail(error.code, value, error.observed)
     resource = resolved.resource
-    if resource.remote:
-        _fail(
-            "locator.reader.unavailable",
-            value,
-            {"location": resolved.path, "retained_observation": False},
-            outcome="unavailable",
-        )
     if resolved.member is None and resource.kind != "file":
         _fail(
             "evidence.declaration.invalid",
@@ -1687,15 +2127,9 @@ def _resolve_source(
         )
     path = Path(resolved.path)
     _validate_entry_source_path(path, entry, value)
-    if path.is_symlink() or not path.is_file():
-        _fail(
-            "locator.path.unresolved",
-            value,
-            {"path": path.resolve().as_posix(), "regular_file": False},
-        )
     return _ResolvedSource(
         path.resolve(),
-        resource.external is not None,
+        resource.origin,
         f"{_material_owner(entry, state)}:{resource.name}",
         resource,
     )
@@ -1988,18 +2422,36 @@ def _command_blockers(subject: str, state: _ScanState) -> tuple[str, ...]:
     path = Path(subject)
     if not path.is_absolute():
         return ()
-    resolved = path.resolve()
     blockers: set[str] = set()
-    for candidate, identities in state.command_candidate_dependencies.items():
-        candidate_path = Path(candidate)
-        if not candidate_path.is_absolute():
-            continue
-        candidate_path = candidate_path.resolve()
-        if resolved == candidate_path or (
-            candidate_path.is_dir() and _within(resolved, candidate_path)
-        ):
+    for candidate, directory, identities in _indexed_command_blockers(state):
+        if path == candidate or (directory and _lexically_within(path, candidate)):
             blockers.update(identities)
     return tuple(sorted(blockers))
+
+
+def _indexed_command_blockers(
+    state: _ScanState,
+) -> tuple[tuple[Path, bool, tuple[str, ...]], ...]:
+    """Resolve and classify failed-command material candidates once per scan."""
+
+    if state.command_blocker_candidates is not None:
+        return state.command_blocker_candidates
+    candidates: list[tuple[Path, bool, tuple[str, ...]]] = []
+    for candidate, identities in state.command_candidate_dependencies.items():
+        path = Path(candidate)
+        if path.is_absolute():
+            path = path.resolve()
+            candidates.append((path, path.is_dir(), tuple(sorted(identities))))
+    state.command_blocker_candidates = tuple(candidates)
+    return state.command_blocker_candidates
+
+
+def _lexically_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _error_check(
@@ -2088,7 +2540,6 @@ def _error_scope(error: MechanicalContractError, default: CheckScope) -> CheckSc
         "association.presentation.syntax_invalid",
         "association.resource.too_large",
         "data.input.token_missing",
-        "data.remote.identity_invalid",
         "evidence.declaration.invalid",
         "material.candidate.unresolved",
         "provenance.resource.too_large",
@@ -2168,6 +2619,111 @@ def _verify_source_stability(state: _ScanState) -> None:
                     error,
                 )
             )
+
+
+def _verify_provenance_stability(state: _ScanState) -> None:
+    """Require every execution-linked byte observation to remain current."""
+
+    cache = state.fingerprint_cache
+    if cache is None:
+        with FingerprintCache(
+            state.project_root, writable=False, reuse=False
+        ) as direct_cache:
+            _verify_provenance_stability_with_cache(state, direct_cache)
+        return
+    _verify_provenance_stability_with_cache(state, cache)
+
+
+def _verify_provenance_stability_with_cache(
+    state: _ScanState, cache: FingerprintCache
+) -> None:
+    """Re-observe execution support through one shared fingerprint service."""
+
+    expected_files = dict(state.output_file_observations)
+    expected_files.update(
+        {path: observation.digest for path, observation in state.script_cache.items()}
+    )
+    for path, expected_digest in sorted(expected_files.items()):
+        try:
+            observed_digest = cache.observe_regular_file(Path(path)).fingerprint.digest
+        except FingerprintCacheError as error:
+            _record_provenance_stability_error(path, {"error": str(error)}, state)
+            continue
+        if observed_digest != expected_digest:
+            _record_provenance_stability_error(
+                path,
+                {
+                    "expected": expected_digest,
+                    "observed": observed_digest,
+                    "reason": "changed",
+                },
+                state,
+            )
+    for path, (kind, expected_fingerprint) in sorted(
+        state.provenance_observations.items()
+    ):
+        try:
+            observation = (
+                cache.observe_directory(Path(path))
+                if kind == "directory"
+                else cache.observe_regular_file(Path(path))
+            )
+        except FingerprintCacheError as error:
+            _record_provenance_stability_error(path, {"error": str(error)}, state)
+            continue
+        if observation.fingerprint != expected_fingerprint:
+            _record_provenance_stability_error(
+                path,
+                {
+                    "expected": expected_fingerprint.as_dict(),
+                    "observed": observation.fingerprint.as_dict(),
+                    "reason": "changed",
+                },
+                state,
+            )
+    for path, expected_input in sorted(state.input_observations.items()):
+        resource = state.input_resources[path]
+        try:
+            observed_input = cache.verify(resource)
+        except (FingerprintCacheError, MechanicalContractError) as error:
+            _record_provenance_stability_error(path, {"error": str(error)}, state)
+            continue
+        if (
+            observed_input is None
+            or observed_input.fingerprint != expected_input.fingerprint
+        ):
+            _record_provenance_stability_error(
+                path,
+                {
+                    "expected": expected_input.fingerprint.as_dict(),
+                    "observed": (
+                        observed_input.fingerprint.as_dict()
+                        if observed_input is not None
+                        else None
+                    ),
+                    "reason": "changed",
+                },
+                state,
+            )
+
+
+def _record_provenance_stability_error(
+    path: str, observed: Mapping[str, object], state: _ScanState
+) -> None:
+    identity = hashlib.sha256(path.encode()).hexdigest()
+    state.checks.append(
+        _failure_check(
+            f"provenance:stability:{identity}",
+            CheckScope.PROVENANCE,
+            _FailureSpec(
+                "provenance.observation.unavailable",
+                path,
+                observed,
+                "Stable Byte Observation",
+                status=CheckStatus.UNAVAILABLE,
+            ),
+        )
+    )
 
 
 def _fail(

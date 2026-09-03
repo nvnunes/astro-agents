@@ -76,18 +76,22 @@ frontmatter is the source of truth for exact activation wording.
 
 ### Research logging
 
-Research logging has three complementary surfaces with different audiences:
+Research logging has three distinct surfaces with separate authority:
 
-- `docs/research-logging.md` explains the workflow, responsibilities, and
-  visible research record for researchers.
 - `skills/research-logging/` is the self-contained runtime surface containing
-  the detailed operational and authoring instructions used by agents. It
-  implements the current evidence contract without loading the maintainer
-  specification into agent context.
+  the operational and authoring instructions used by agents. It is
+  self-documenting and owns agent behavior.
 - `docs/research-log-mechanical-validator-spec.md` is the normative
-  implementation contract for the code-only validator, its tests, generated
-  state, cache, and diagnostics. It specifies evidence metadata as validator
-  input rather than as ordinary research-agent context.
+  implementation contract that the mechanical-validation CLI and its
+  supporting tools must follow.
+- `docs/research-logging.md` is human-facing researcher documentation. It
+  explains how researchers use the skill, what they should expect from it, and
+  which research decisions remain theirs.
+
+Keep these roles separate. The human guide is not a specification or
+completeness checklist for either the agent surface or the validation tools.
+The three surfaces must remain conceptually compatible, but they are not
+mirrors and should not be expected to repeat the same detail.
 
 ### Other starting points
 

@@ -38,10 +38,7 @@ def data_fixture(root: Path) -> tuple[Path, Path]:
                         "kind": "file",
                         "location": "data/source.csv",
                         "fingerprint": {"algorithm": "sha256", "digest": digest},
-                        "external": {
-                            "source": "Study fixture",
-                            "identity": "source/v1",
-                        },
+                        "origin": True,
                     }
                 ],
             },
@@ -160,7 +157,7 @@ class DataFileTests(unittest.TestCase):
             ):
                 DATA.load_data_file(path, entry_root=entry)
 
-    def test_path_uri_and_remote_shapes_are_closed(self) -> None:
+    def test_remote_locations_and_immutable_fingerprints_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry, _ = data_fixture(Path(directory))
             path = entry / "data.json"
@@ -170,17 +167,12 @@ class DataFileTests(unittest.TestCase):
                 "kind": "file",
                 "location": "s3://archive/catalog.csv?versionId=v2",
                 "fingerprint": {"algorithm": "immutable-source", "value": "v2"},
-                "external": {"source": "Archive", "identity": "catalog/v2"},
+                "origin": True,
             }
             payload["inputs"] = [remote]
             path.write_text(json.dumps(payload), encoding="utf-8")
-            decoded = DATA.load_data_file(path, entry_root=entry)
-            self.assertTrue(decoded.inputs[0].remote)
-
-            payload["inputs"][0]["kind"] = "directory"
-            path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(
-                DATA.DataContractError, "data.remote.identity_invalid"
+                DATA.DataContractError, "data.declaration.invalid"
             ):
                 DATA.load_data_file(path, entry_root=entry)
 
@@ -215,6 +207,7 @@ class DataFileTests(unittest.TestCase):
                                 "algorithm": "directory-sha256-v1",
                                 "digest": "0" * 64,
                             },
+                            "origin": True,
                         }
                     ]
                     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -483,9 +476,8 @@ class DataFileTests(unittest.TestCase):
                     digest="0" * 64,
                     patterns=("maps-*.h5",),
                 ),
-                None,
-                build.resolve().as_posix(),
                 False,
+                build.resolve().as_posix(),
             )
             observed = 0
 
@@ -533,9 +525,8 @@ class DataFileTests(unittest.TestCase):
                     digest="0" * 64,
                     patterns=("maps-*.h5", "metrics-*.csv"),
                 ),
-                None,
-                build.resolve().as_posix(),
                 False,
+                build.resolve().as_posix(),
             )
 
             with mock.patch.object(
@@ -563,6 +554,7 @@ class DataFileTests(unittest.TestCase):
                             "files": ["../outside", "build.h5"],
                             "digest": "0" * 64,
                         },
+                        "origin": False,
                     }
                 ],
             }
@@ -605,7 +597,7 @@ class DataFileTests(unittest.TestCase):
             )
             DATA.validate_log_consistency((first, second))
 
-            payload["inputs"][0]["external"]["identity"] = "source/v2"
+            payload["inputs"][0]["origin"] = False
             write(second_entry / "data.json", json.dumps(payload))
             second = DATA.load_data_file(
                 second_entry / "data.json", entry_root=second_entry
@@ -627,9 +619,8 @@ class DataFileTests(unittest.TestCase):
                 "directory",
                 "data/collection",
                 DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
-                DATA.ExternalBoundary("Fixture", "collection/v1"),
+                True,
                 str(collection),
-                False,
             )
 
             baseline = DATA.observe_fingerprint(resource)
@@ -667,9 +658,8 @@ class DataFileTests(unittest.TestCase):
                 "directory",
                 str(collection),
                 DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
-                None,
-                str(collection),
                 False,
+                str(collection),
             )
             with self.assertRaisesRegex(
                 DATA.DataContractError, "directory.membership.invalid"
@@ -695,9 +685,8 @@ class DataFileTests(unittest.TestCase):
                 "directory",
                 str(collection),
                 DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
-                None,
-                str(collection),
                 False,
+                str(collection),
             )
             original = DATA._hash_file_observation
 

@@ -47,20 +47,22 @@ def compose_validation_report(
         counts = scope.counts
         total = scope.checks
         unit = "checks"
+        label = scope.scope.value
         if scope.scope is CheckScope.PROVENANCE:
             counts = provenance_artifact_counts(record)
             total = sum(counts.values())
             unit = "artifacts"
         elif scope.scope is CheckScope.ORPHAN:
-            counts = orphan_artifact_counts(record)
+            counts = hygiene_finding_counts(record)
             total = sum(counts.values())
-            unit = "artifacts"
+            unit = "findings"
+            label = "hygiene"
         displayed_status = f"`{_status_from_counts(counts).value}`" if total else ""
         lines.append(
             "| "
             + " | ".join(
                 (
-                    scope.scope.value,
+                    label,
                     unit,
                     displayed_status,
                     str(counts[CheckStatus.PASS.value]),
@@ -72,21 +74,12 @@ def compose_validation_report(
             )
             + " |"
         )
-    unused_inputs = sum(
-        1
-        for check in record.checks
-        if check.failure is not None and check.failure.code == "orphan.input.unused"
-    )
-    orphan_lines, material_check_ids = _orphan_lines(record)
-    lines.extend(("", f"Unused input declarations: `{unused_inputs}`"))
-    if orphan_lines:
-        lines.extend(("", "### Orphan material", "", *orphan_lines))
     lines.extend(("", "### Non-passing checks", ""))
     findings = [
         check
         for check in record.checks
         if check.status is not CheckStatus.PASS
-        and check.identity not in material_check_ids
+        and check.scope is not CheckScope.ORPHAN
     ]
     if not findings:
         lines.append("None.")
@@ -128,16 +121,12 @@ def provenance_artifact_counts(
     return counts
 
 
-def orphan_artifact_counts(record: MechanicalGeneratedRecord) -> dict[str, int]:
-    """Count authoritative artifact-level orphan checks by status."""
+def hygiene_finding_counts(record: MechanicalGeneratedRecord) -> dict[str, int]:
+    """Count distinct machine-readable hygiene findings by status."""
 
     counts = {status.value: 0 for status in CheckStatus}
     for check in record.checks:
-        if (
-            check.scope is CheckScope.ORPHAN
-            and check.failure is not None
-            and check.failure.code == "orphan.material.unused"
-        ):
+        if check.scope is CheckScope.ORPHAN and check.failure is not None:
             counts[check.status.value] += 1
     return counts
 
@@ -145,56 +134,6 @@ def orphan_artifact_counts(record: MechanicalGeneratedRecord) -> dict[str, int]:
 def _status_from_counts(counts: Mapping[str, int]) -> CheckStatus:
     statuses = {status for status in CheckStatus if counts.get(status.value, 0) > 0}
     return _aggregate_status(statuses)
-
-
-def _orphan_lines(
-    record: MechanicalGeneratedRecord,
-) -> tuple[list[str], set[str]]:
-    checks = [
-        check
-        for check in record.checks
-        if check.failure is not None and check.failure.code == "orphan.material.unused"
-    ]
-    if not checks:
-        return [], set()
-    groups: dict[str, dict[str, object]] = {}
-    individuals: list[tuple[str, str, str]] = []
-    for check in checks:
-        assert check.failure is not None
-        observed = check.failure.observed
-        owner = str(observed.get("owner", "Log"))
-        relative = str(observed.get("relative", check.subject))
-        identity = observed.get("group_identity")
-        directory = observed.get("directory")
-        if isinstance(identity, str) and isinstance(directory, str):
-            groups.setdefault(
-                identity,
-                {
-                    "count": int(observed.get("artifact_count", 0)),
-                    "directory": directory,
-                    "owner": owner,
-                },
-            )
-        else:
-            individuals.append((owner, relative, check.subject))
-    lines = [
-        "Finding code: `orphan.material.unused`",
-        f"Unique orphan artifacts: `{len(checks)}`",
-        f"Maximal directory groups: `{len(groups)}`",
-        f"Individual artifacts: `{len(individuals)}`",
-        "",
-    ]
-    for identity, group in sorted(
-        groups.items(),
-        key=lambda item: (str(item[1]["owner"]), str(item[1]["directory"])),
-    ):
-        lines.append(
-            f"- `{group['owner']}/{group['directory']}` — "
-            f"{group['count']} artifacts (`{identity}`)"
-        )
-    for owner, relative, subject in sorted(individuals):
-        lines.append(f"- `{owner}/{relative}` — individual artifact (`{subject}`)")
-    return lines, {check.identity for check in checks}
 
 
 def _check_artifacts(check: MechanicalCheck) -> set[str]:

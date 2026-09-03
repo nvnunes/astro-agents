@@ -35,7 +35,11 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n",
     )
     write(entry_root / "scripts" / "model.py", "# retained model\n")
+    write(entry_root / "data" / "catalog.csv", "id\n1\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
+    catalog_digest = hashlib.sha256(
+        (entry_root / "data" / "catalog.csv").read_bytes()
+    ).hexdigest()
     results_digest = hashlib.sha256(
         (entry_root / "data" / "results.csv").read_bytes()
     ).hexdigest()
@@ -43,20 +47,17 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v2",
+                "schema": "research-log-data/v3",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
-                        "location": "https://example.test/catalog.csv",
+                        "location": "data/catalog.csv",
                         "fingerprint": {
-                            "algorithm": "immutable-source",
-                            "value": "fixture-catalog/v1",
+                            "algorithm": "sha256",
+                            "digest": catalog_digest,
                         },
-                        "external": {
-                            "source": "test fixture",
-                            "identity": "fixture-catalog/v1",
-                        },
+                        "origin": True,
                     },
                     {
                         "name": "results",
@@ -66,6 +67,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
                             "algorithm": "sha256",
                             "digest": results_digest,
                         },
+                        "origin": False,
                     },
                 ],
             },
@@ -96,6 +98,46 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
   ]
 }
 """,
+    )
+    write(
+        entry_root / "pyrun-outputs.json",
+        json.dumps(
+            {
+                "schema": "research-log-pyrun-outputs/v1",
+                "outputs": {
+                    "data/results.csv": {
+                        "confirmed": True,
+                        "fingerprint": {
+                            "algorithm": "sha256",
+                            "digest": results_digest,
+                        },
+                        "inputs": {
+                            "catalog": {
+                                "algorithm": "sha256",
+                                "digest": catalog_digest,
+                            }
+                        },
+                        "parameters": [
+                            "--catalog",
+                            "<catalog>",
+                            f"--{output_option}",
+                            "data/results.csv",
+                        ],
+                        "script": {
+                            "path": "scripts/model.py",
+                            "fingerprint": {
+                                "algorithm": "sha256",
+                                "digest": hashlib.sha256(
+                                    (entry_root / "scripts/model.py").read_bytes()
+                                ).hexdigest(),
+                            },
+                        },
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
     )
     write(
         entry,
@@ -133,24 +175,23 @@ def _evaluate(summary: Path, *, check_comparison: dict[str, Any] | None = None) 
     )
 
 
-def _remote_data_json() -> str:
+def _origin_data_json(entry_root: Path) -> str:
+    source = entry_root / "data/catalog.csv"
+    write(source, "id\n1\n")
     return (
         json.dumps(
             {
-                "schema": "research-log-data/v2",
+                "schema": "research-log-data/v3",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
-                        "location": "https://example.test/catalog.csv",
+                        "location": "data/catalog.csv",
                         "fingerprint": {
-                            "algorithm": "immutable-source",
-                            "value": "fixture-catalog/v1",
+                            "algorithm": "sha256",
+                            "digest": hashlib.sha256(source.read_bytes()).hexdigest(),
                         },
-                        "external": {
-                            "source": "test fixture",
-                            "identity": "fixture-catalog/v1",
-                        },
+                        "origin": True,
                     }
                 ],
             },
@@ -161,6 +202,253 @@ def _remote_data_json() -> str:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_output_support_parameter_change_breaks_provenance_until_replaced(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text().replace(
+                    "--catalog '<catalog>' ", "--catalog '<catalog>' --mode revised "
+                ),
+            )
+
+            changed = _evaluate(summary).result
+
+            provenance = next(
+                check
+                for check in changed.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
+            assert provenance.failure is not None
+            self.assertEqual(
+                provenance.failure.code, "provenance.output.signature_mismatch"
+            )
+            self.assertEqual(provenance.failure.observed["fields"], ["parameters"])
+
+            output_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(output_path.read_text())
+            support["outputs"]["data/results.csv"]["parameters"] = [
+                "--catalog",
+                "<catalog>",
+                "--mode",
+                "revised",
+                "--output-data",
+                "data/results.csv",
+            ]
+            write(output_path, json.dumps(support, indent=2) + "\n")
+            self.assertEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+
+    def test_recursive_chain_requires_each_link_and_uses_byte_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            entry_root = entry.parent
+            intermediate = entry_root / "data" / "intermediate.csv"
+            write(intermediate, "id\n1\n")
+            write(entry_root / "scripts" / "preprocess.py", "# preprocess\n")
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text())
+            intermediate_digest = hashlib.sha256(intermediate.read_bytes()).hexdigest()
+            data["inputs"].append(
+                {
+                    "name": "intermediate",
+                    "kind": "file",
+                    "location": "data/intermediate.csv",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": intermediate_digest,
+                    },
+                    "origin": False,
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text().replace(
+                    "./pyrun scripts/model.py --catalog '<catalog>' ",
+                    "./pyrun scripts/preprocess.py --input-data '<catalog>' "
+                    "--output-data data/intermediate.csv\n"
+                    "./pyrun scripts/model.py --input-data '<intermediate>' ",
+                ),
+            )
+            support_path = entry_root / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            result_record = support["outputs"]["data/results.csv"]
+            result_record["inputs"] = {
+                "intermediate": {
+                    "algorithm": "sha256",
+                    "digest": intermediate_digest,
+                }
+            }
+            result_record["parameters"] = [
+                "--input-data",
+                "<intermediate>",
+                "--output-data",
+                "data/results.csv",
+            ]
+            catalog = entry_root / "data" / "catalog.csv"
+            support["outputs"]["data/intermediate.csv"] = {
+                "confirmed": True,
+                "fingerprint": {
+                    "algorithm": "sha256",
+                    "digest": intermediate_digest,
+                },
+                "inputs": {
+                    "catalog": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+                    }
+                },
+                "parameters": [
+                    "--input-data",
+                    "<catalog>",
+                    "--output-data",
+                    "data/intermediate.csv",
+                ],
+                "script": {
+                    "path": "scripts/preprocess.py",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(
+                            (entry_root / "scripts" / "preprocess.py").read_bytes()
+                        ).hexdigest(),
+                    },
+                },
+            }
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            self.assertEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+            original = catalog.read_bytes()
+            write(catalog, "id\n2\n")
+            self.assertNotEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+            catalog.write_bytes(original)
+            self.assertEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+            write(entry_root / "scripts" / "preprocess.py", "# changed\n")
+            self.assertNotEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+
+    def test_unconfirmed_and_missing_output_records_fail_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            output_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(output_path.read_text())
+            support["outputs"]["data/results.csv"]["confirmed"] = False
+            write(output_path, json.dumps(support) + "\n")
+
+            unconfirmed = _evaluate(summary).result
+            check = next(
+                item
+                for item in unconfirmed.checks
+                if item.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(check.failure.code, "provenance.output.unconfirmed")
+
+            output_path.unlink()
+            unrecorded = _evaluate(summary).result
+            check = next(
+                item
+                for item in unrecorded.checks
+                if item.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(check.failure.code, "provenance.output.unrecorded")
+
+    def test_missing_output_takes_precedence_with_or_without_a_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            output = entry.parent / "data/results.csv"
+            output.unlink()
+
+            recorded = _evaluate(summary).result
+            check = next(
+                item
+                for item in recorded.checks
+                if item.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(check.failure.code, "provenance.output.missing")
+
+            (entry.parent / "pyrun-outputs.json").unlink()
+            unrecorded = _evaluate(summary).result
+            check = next(
+                item
+                for item in unrecorded.checks
+                if item.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(check.failure.code, "provenance.output.missing")
+
+    def test_missing_graph_output_outside_evidence_closure_fails_provenance(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            text = entry.read_text(encoding="utf-8")
+            write(
+                entry,
+                text.replace(
+                    "```\n\n`Results:`",
+                    "./pyrun scripts/model.py --catalog '<catalog>' "
+                    "--output-data data/missing.csv\n"
+                    "```\n\n`Results:`",
+                ),
+            )
+
+            result = _evaluate(summary).result
+
+            missing = [
+                check
+                for check in result.checks
+                if check.failure is not None
+                and check.failure.code == "provenance.output.missing"
+                and check.subject.endswith("/data/missing.csv")
+            ]
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(missing[0].scope, RESULTS.CheckScope.PROVENANCE)
+
+    def test_unmatched_record_is_one_hygiene_finding_not_an_orphan_duplicate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            stale = entry.parent / "data/stale.csv"
+            write(stale, "stale\n")
+            output_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(output_path.read_text())
+            support["outputs"]["data/stale.csv"] = {
+                **support["outputs"]["data/results.csv"],
+                "fingerprint": {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(stale.read_bytes()).hexdigest(),
+                },
+            }
+            write(output_path, json.dumps(support) + "\n")
+
+            result = _evaluate(summary).result
+            stale_findings = [
+                check
+                for check in result.checks
+                if check.subject == stale.resolve().as_posix()
+                and check.failure is not None
+            ]
+            self.assertEqual(len(stale_findings), 1)
+            self.assertEqual(
+                stale_findings[0].failure.code, "hygiene.output.unmatched"
+            )
+
     def test_input_verification_dependencies_include_the_entry_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -173,6 +461,69 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ENGINE._input_declaration_key("entries/first", resource),
                 ENGINE._input_declaration_key("entries/second", resource),
             )
+
+    def test_material_input_prerequisites_use_precomputed_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            exact = (root / "exact.csv").as_posix()
+            managed = (root / "managed").as_posix()
+            exact_check = ENGINE._pass_check(
+                "entry:e001:input:exact-declaration", RESULTS.CheckScope.PROVENANCE
+            )
+            directory_check = ENGINE._pass_check(
+                "entry:e001:input:managed-declaration", RESULTS.CheckScope.PROVENANCE
+            )
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            state.input_prerequisite_files[exact] = [exact_check]
+            state.input_prerequisite_directories[managed] = [directory_check]
+            state.logical_material_roots = (
+                (root, "entries/2026-08-29-e001-study", ""),
+            )
+            state.command_blocker_candidates = (
+                (
+                    root / "managed",
+                    True,
+                    ("entry:e001:command:1:1",),
+                ),
+            )
+            state.owner_surface_prerequisite_checks[
+                "entries/2026-08-29-e001-study"
+            ] = (exact_check,)
+
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=AssertionError("lookup must not access the filesystem"),
+            ):
+                self.assertEqual(
+                    ENGINE._material_input_prerequisites(exact, state), (exact_check,)
+                )
+                self.assertEqual(
+                    ENGINE._material_input_prerequisites(
+                        f"{managed}/nested/result.csv", state
+                    ),
+                    (directory_check,),
+                )
+                self.assertEqual(
+                    ENGINE._material_input_prerequisites(
+                        (root / "unrelated.csv").as_posix(), state
+                    ),
+                    (),
+                )
+                self.assertEqual(
+                    ENGINE._logical_entry_material(exact, state),
+                    ("entries/2026-08-29-e001-study", "exact.csv"),
+                )
+                self.assertEqual(
+                    ENGINE._command_blockers(f"{managed}/nested/result.csv", state),
+                    ("entry:e001:command:1:1",),
+                )
+                self.assertEqual(
+                    ENGINE._owner_surface_prerequisites(
+                        "entries/2026-08-29-e001-study", state
+                    ),
+                    (exact_check,),
+                )
 
     def test_shared_input_observation_checks_every_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -329,10 +680,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         "algorithm": "sha256",
                         "digest": "0" * 64,
                     },
-                    "external": {
-                        "source": "test fixture",
-                        "identity": "bad/v1",
-                    },
+                    "origin": True,
                 }
             )
             write(data_path, json.dumps(payload, indent=2) + "\n")
@@ -389,7 +737,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.failure is not None
             }
             self.assertNotIn("producer.missing", failure_codes)
-            self.assertNotIn("orphan.material.unused", failure_codes)
+            self.assertIn("hygiene.output.unmatched", failure_codes)
 
     def test_invalid_data_file_blocks_dependent_checks_without_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -477,7 +825,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v2",
+                        "schema": "research-log-data/v3",
                         "inputs": [
                             {
                                 "name": "shared-catalog",
@@ -487,10 +835,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                     "algorithm": "sha256",
                                     "digest": digest,
                                 },
-                                "external": {
-                                    "source": "conflicting fixture",
-                                    "identity": "catalog/v2",
-                                },
+                                "origin": False,
                             }
                         ],
                     },
@@ -531,12 +876,15 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             self.assertNotIn("data.input.undeclared", failure_codes)
             self.assertNotIn("orphan.input.unused", failure_codes)
-            self.assertNotIn("orphan.material.unused", failure_codes)
+            self.assertIn("hygiene.output.unmatched", failure_codes)
 
     def test_cross_entry_data_conflict_does_not_block_unrelated_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = _log(root)
+            conflict_path = root / "shared-conflict.csv"
+            write(conflict_path, "conflict\n")
+            conflict_digest = hashlib.sha256(conflict_path.read_bytes()).hexdigest()
             links: list[str] = []
             for entry_id, date, identity in (
                 ("e002", "2026-08-30", "conflict/v1"),
@@ -544,6 +892,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ):
                 entry_root = root / f"docs/study/entries/{date}-{entry_id}-conflict"
                 write(entry_root / "scripts/model.py", "# fixture\n")
+                safe_path = entry_root / f"data/{entry_id}.csv"
+                write(safe_path, f"safe/{entry_id}")
                 write(
                     entry_root / f"{entry_id}.md",
                     f"# Entry {entry_id}\n\n## Trial\n\n`Steps:`\n\n"
@@ -556,35 +906,31 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     entry_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v2",
+                            "schema": "research-log-data/v3",
                             "inputs": [
                                 {
                                     "name": "conflict",
                                     "kind": "file",
-                                    "location": "https://example.test/conflict.csv",
+                                    "location": conflict_path.as_posix(),
                                     "fingerprint": {
-                                        "algorithm": "immutable-source",
-                                        "value": identity,
+                                        "algorithm": "sha256",
+                                        "digest": conflict_digest,
                                     },
-                                    "external": {
-                                        "source": "fixture",
-                                        "identity": identity,
-                                    },
+                                    "origin": entry_id == "e002",
                                 },
                                 {
                                     "name": f"safe-{entry_id}",
                                     "kind": "file",
                                     "location": (
-                                        f"https://example.test/{entry_id}.csv"
+                                        f"data/{entry_id}.csv"
                                     ),
                                     "fingerprint": {
-                                        "algorithm": "immutable-source",
-                                        "value": f"safe/{entry_id}",
+                                        "algorithm": "sha256",
+                                        "digest": hashlib.sha256(
+                                            safe_path.read_bytes()
+                                        ).hexdigest(),
                                     },
-                                    "external": {
-                                        "source": "fixture",
-                                        "identity": f"safe/{entry_id}",
-                                    },
+                                    "origin": True,
                                 },
                             ],
                         }
@@ -670,7 +1016,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(first, "# First\n")
             write(second, "# Second\n")
             write(entry_root / "evidence.json", "{}\n")
-            write(entry_root / "data.json", _remote_data_json())
+            write(entry_root / "data.json", _origin_data_json(entry_root))
             state = ENGINE._ScanState(summary, log_root, project_root)
             evidence = object()
 
@@ -744,7 +1090,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [First](study/entries/2026-08-29-e001-study/e001a.md)\n"
                 "- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
             )
-            write(entry_root / "data.json", _remote_data_json())
+            write(entry_root / "data.json", _origin_data_json(entry_root))
             write(
                 first,
                 "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
@@ -861,16 +1207,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evidence.dependencies,
             )
 
-    def test_generated_evidence_input_rejects_an_external_boundary(self) -> None:
+    def test_generated_evidence_input_rejects_an_origin_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             data_path = entry.parent / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
             results = next(item for item in data["inputs"] if item["name"] == "results")
-            results["external"] = {
-                "source": "incorrect fixture boundary",
-                "identity": "incorrect/results-v1",
-            }
+            results["origin"] = True
             write(data_path, json.dumps(data, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
@@ -881,13 +1224,19 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
             assert provenance.failure is not None
-            self.assertEqual(provenance.failure.code, "data.external.invalid")
+            self.assertEqual(provenance.failure.code, "data.origin.invalid")
 
-    def test_remote_evidence_is_unavailable_but_still_uses_its_input(self) -> None:
+    def test_origin_evidence_is_valid_but_unrelated_output_is_hygiene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             data_path = entry.parent / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
+            catalog_path = entry.parent / "data/catalog.csv"
+            write(catalog_path, "success_rate\n0.676\n")
+            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
+            catalog["fingerprint"]["digest"] = hashlib.sha256(
+                catalog_path.read_bytes()
+            ).hexdigest()
             data["inputs"] = [
                 item for item in data["inputs"] if item["name"] == "catalog"
             ]
@@ -907,15 +1256,16 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             checks = {check.identity: check for check in evaluation.result.checks}
             self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.INCOMPLETE
+                evaluation.result.completion,
+                RESULTS.CompletionState.COMPLETE_FINDINGS,
             )
             self.assertEqual(
                 checks["evidence:e001:success-rate"].status,
-                RESULTS.CheckStatus.UNAVAILABLE,
+                RESULTS.CheckStatus.PASS,
             )
             self.assertEqual(
                 checks["provenance:e001:success-rate"].status,
-                RESULTS.CheckStatus.UNAVAILABLE,
+                RESULTS.CheckStatus.PASS,
             )
             failure_codes = {
                 check.failure.code
@@ -924,7 +1274,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             self.assertNotIn("orphan.input.unused", failure_codes)
 
-    def test_invalid_evidence_input_remains_declared_and_blocks_dependents(
+    def test_changed_generated_evidence_fails_provenance_and_blocks_evidence(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -940,7 +1290,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
             assert declaration.failure is not None
             self.assertEqual(declaration.failure.code, "data.fingerprint.mismatch")
             self.assertEqual(evidence.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
+            assert provenance.failure is not None
+            self.assertEqual(
+                provenance.failure.code,
+                "provenance.output.signature_mismatch",
+            )
             self.assertIn(
                 {"dependency": declaration.identity}, evidence.dependencies
             )
@@ -977,6 +1332,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 (entry.parent / "data" / "results.csv").read_bytes()
             ).hexdigest()
             write(data_path, json.dumps(data, indent=2) + "\n")
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            support["outputs"]["data/results.csv"]["fingerprint"]["digest"] = (
+                results["fingerprint"]["digest"]
+            )
+            write(support_path, json.dumps(support, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
 
@@ -1097,7 +1458,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v2",
+                        "schema": "research-log-data/v3",
                         "inputs": [
                             {
                                 "name": "prior-results",
@@ -1111,6 +1472,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                         (retained / "results.csv").read_bytes()
                                     ).hexdigest(),
                                 },
+                                "origin": False,
                             }
                         ],
                     },
@@ -1299,6 +1661,27 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "[Retained report](data/report.txt)\n\nThe success rate was",
                 ),
             )
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            parameters = [
+                "--catalog",
+                "<catalog>",
+                "--output-data",
+                "data/results.csv",
+                "--output-report",
+                "data/report.txt",
+            ]
+            support["outputs"]["data/results.csv"]["parameters"] = parameters
+            support["outputs"]["data/report.txt"] = {
+                **support["outputs"]["data/results.csv"],
+                "fingerprint": {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(
+                        (entry.parent / "data/report.txt").read_bytes()
+                    ).hexdigest(),
+                },
+            }
+            write(support_path, json.dumps(support, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
 
@@ -1312,6 +1695,48 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     for identity in identities
                 )
             )
+
+    def test_direct_artifact_may_use_an_explicit_origin_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            report = entry.parent / "data" / "historical-report.txt"
+            write(report, "retained historical report\n")
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text())
+            data["inputs"].append(
+                {
+                    "name": "historical_report",
+                    "kind": "file",
+                    "location": "data/historical-report.txt",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(report.read_bytes()).hexdigest(),
+                    },
+                    "origin": True,
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "[Historical report](data/historical-report.txt)\n\n"
+                    "The success rate was",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+            failures = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertNotIn("producer.missing", failures)
+            self.assertNotIn("orphan.input.unused", failures)
 
     def test_unavailable_and_resource_limit_completion_is_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1514,7 +1939,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 (RESULTS.CheckScope.EVIDENCE, "summary.reference.missing"), failures
             )
 
-    def test_unrelated_script_body_never_changes_producer_edges(self) -> None:
+    def test_changed_script_bytes_break_execution_linked_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             first = _evaluate(summary)
@@ -1531,7 +1956,42 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in second.result.checks
                 if check.scope is RESULTS.CheckScope.PROVENANCE
             ]
-            self.assertEqual(first_provenance, second_provenance)
+            self.assertTrue(
+                all(
+                    status is RESULTS.CheckStatus.PASS
+                    for status in first_provenance
+                )
+            )
+            self.assertTrue(
+                any(
+                    status is RESULTS.CheckStatus.FAIL
+                    for status in second_provenance
+                )
+            )
+
+    def test_input_changed_during_validation_is_unavailable_without_cache(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            catalog = entry.parent / "data" / "catalog.csv"
+            original_compose = ENGINE._compose_graph
+
+            def change_after_graph(state: Any) -> None:
+                original_compose(state)
+                write(catalog, "id\n2\n")
+
+            with mock.patch.object(
+                ENGINE, "_compose_graph", side_effect=change_after_graph
+            ):
+                evaluation = _evaluate(summary)
+
+            failures = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertIn("provenance.observation.unavailable", failures)
 
     def test_automatic_simulation_and_untyped_terminal_are_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1545,6 +2005,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 .replace("scripts/model.py", "scripts/simulate_trials.py")
                 .replace("\n<!-- command type = model -->", ""),
             )
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            record = support["outputs"]["data/results.csv"]
+            record["script"]["path"] = "scripts/simulate_trials.py"
+            record["script"]["fingerprint"]["digest"] = hashlib.sha256(
+                simulation.read_bytes()
+            ).hexdigest()
+            write(support_path, json.dumps(support, indent=2) + "\n")
 
             recognized = _evaluate(summary)
 
@@ -1582,7 +2050,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "--catalog '<catalog>' --input-data data/unrooted.csv ",
                 ),
             )
-
             evaluation = _evaluate(summary)
 
             codes = [
@@ -1614,10 +2081,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                             external_source.read_bytes()
                         ).hexdigest(),
                     },
-                    "external": {
-                        "source": "Other research log",
-                        "identity": "other:e001:results",
-                    },
+                    "origin": True,
                 }
             )
             write(data_path, json.dumps(data, indent=2) + "\n")
@@ -1716,7 +2180,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 unchanged.metrics["checks_unchanged"],
             )
             self.assertEqual(
-                changed.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+                changed.result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
             )
 
     def test_unchanged_comparison_requires_exact_check_and_cache_contract(self) -> None:

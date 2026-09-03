@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -65,7 +66,7 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
         (entry / "data.json").write_text(
             json.dumps(
                 {
-                    "schema": "research-log-data/v2",
+                    "schema": "research-log-data/v3",
                     "inputs": [
                         {
                             "name": "input_csv",
@@ -75,10 +76,7 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
                                 "algorithm": "sha256",
                                 "digest": digest(source),
                             },
-                            "external": {
-                                "source": "Fixture",
-                                "identity": "input/v1",
-                            },
+                            "origin": True,
                         }
                     ],
                 },
@@ -163,29 +161,21 @@ class PyrunResolutionTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, argument)
                 self.assertNotIn("Traceback", result.stderr)
 
-    def test_remote_tokens_preserve_exact_uri(self) -> None:
+    def test_remote_data_authoring_is_not_supported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root, with_data=False)
-            uri = "s3://archive/catalog.csv?versionId=v2"
             added = run_data(
                 entry,
                 "add-remote",
                 "catalog",
-                uri,
+                "s3://archive/catalog.csv?versionId=v2",
                 "Archive",
                 "catalog/v2",
                 "versionId=v2",
             )
-            self.assertEqual(added.returncode, 0, added.stderr)
-
-            result = run(
-                [sys.executable, str(PYRUN), "scripts/print_args.py", "<catalog>"],
-                cwd=entry,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), uri)
+            self.assertNotEqual(added.returncode, 0)
+            self.assertFalse((entry / "data.json").exists())
 
     def test_fingerprint_drift_blocks_execution_without_rewriting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -264,7 +254,7 @@ class PyrunAuthoringTests(unittest.TestCase):
                 self.assertEqual((entry / "data.json").read_bytes(), before)
                 self.assertNotIn("Traceback", result.stderr)
 
-    def test_update_external_refresh_and_remove_are_explicit(self) -> None:
+    def test_update_origin_refresh_and_remove_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -274,15 +264,13 @@ class PyrunAuthoringTests(unittest.TestCase):
             self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
             self.assertEqual(inputs(entry)[0]["fingerprint"]["digest"], digest(source))
 
-            external = run_data(
-                entry, "external", "input_csv", "Updated fixture", "input/v2"
-            )
-            self.assertEqual(external.returncode, 0, external.stderr)
-            self.assertEqual(inputs(entry)[0]["external"]["identity"], "input/v2")
+            generated = run_data(entry, "origin", "input_csv", "false")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            self.assertIs(inputs(entry)[0]["origin"], False)
 
-            removed_boundary = run_data(entry, "external-remove", "input_csv")
-            self.assertEqual(removed_boundary.returncode, 0, removed_boundary.stderr)
-            self.assertNotIn("external", inputs(entry)[0])
+            origin = run_data(entry, "origin", "input_csv", "true")
+            self.assertEqual(origin.returncode, 0, origin.stderr)
+            self.assertIs(inputs(entry)[0]["origin"], True)
 
             (entry / "data" / "replacement.csv").write_text(
                 "value\n3\n", encoding="utf-8"
@@ -394,23 +382,281 @@ class PyrunAuthoringTests(unittest.TestCase):
                 fingerprint["digest"],
             )
 
-    def test_remote_sha256_and_remote_boundary_removal_rules(self) -> None:
+    def test_origin_operation_requires_a_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            result = run_data(
-                entry,
-                "add-remote",
-                "archive",
-                "https://example.test/archive.csv",
-                "Archive",
-                "archive/v1",
-                "sha256:" + "a" * 64,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(inputs(entry)[0]["fingerprint"]["algorithm"], "sha256")
-            rejected = run_data(entry, "external-remove", "archive")
+            entry = make_entry(root)
+            rejected = run_data(entry, "origin", "input_csv", "maybe")
             self.assertNotEqual(rejected.returncode, 0)
+
+
+class PyrunOutputSupportTests(unittest.TestCase):
+    def test_success_records_exact_output_support_and_failed_run_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build.py").write_text(
+                """import argparse
+p = argparse.ArgumentParser()
+p.add_argument('--input-data')
+p.add_argument('--output-data')
+p.add_argument('--fail', action='store_true')
+a = p.parse_args()
+if a.fail:
+    raise SystemExit(3)
+open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
+""",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PYRUN),
+                "scripts/build.py",
+                "--input-data",
+                "<input_csv>",
+                "--output-data",
+                "data/output.csv",
+            ]
+
+            result = run(command, cwd=entry)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads((entry / "pyrun-outputs.json").read_text())
+            self.assertEqual(payload["schema"], "research-log-pyrun-outputs/v1")
+            record = payload["outputs"]["data/output.csv"]
+            self.assertIs(record["confirmed"], True)
+            self.assertEqual(record["script"]["path"], "scripts/build.py")
+            self.assertEqual(record["parameters"], command[3:])
+            self.assertEqual(set(record["inputs"]), {"input_csv"})
+            self.assertEqual(
+                record["fingerprint"]["digest"],
+                digest(entry / "data/output.csv"),
+            )
+
+            before = (entry / "pyrun-outputs.json").read_bytes()
+            failed = run([*command, "--fail"], cwd=entry)
+            self.assertEqual(failed.returncode, 3)
+            self.assertEqual((entry / "pyrun-outputs.json").read_bytes(), before)
+
+    def test_success_records_directory_output_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build_directory.py").write_text(
+                """import argparse
+from pathlib import Path
+
+p = argparse.ArgumentParser()
+p.add_argument('--output-dir')
+a = p.parse_args()
+target = Path(a.output_dir)
+target.mkdir()
+(target / 'result.csv').write_text('value\\n1\\n', encoding='utf-8')
+""",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PYRUN),
+                "scripts/build_directory.py",
+                "--output-dir",
+                "data/trials",
+            ]
+
+            result = run(command, cwd=entry)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads((entry / "pyrun-outputs.json").read_text())
+            record = payload["outputs"]["data/trials"]
+            self.assertIs(record["confirmed"], True)
+            self.assertEqual(
+                record["fingerprint"]["algorithm"], "directory-sha256-v1"
+            )
+            self.assertEqual(record["parameters"], command[3:])
+
+    def test_input_change_during_execution_publishes_no_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/mutate_input.py").write_text(
+                """import argparse
+p = argparse.ArgumentParser()
+p.add_argument('--input-data')
+p.add_argument('--output-data')
+a = p.parse_args()
+content = open(a.input_data, 'rb').read()
+open(a.output_data, 'wb').write(content)
+open(a.input_data, 'wb').write(b'value\\n2\\n')
+""",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/mutate_input.py",
+                    "--input-data",
+                    "<input_csv>",
+                    "--output-data",
+                    "data/output.csv",
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("data.fingerprint.mismatch", result.stderr)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_capture_options_mirror_and_record_stream_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/streams.py").write_text(
+                "import sys\nprint('out')\nprint('err', file=sys.stderr)\n",
+                encoding="utf-8",
+            )
+
+            separate = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--capture-stdout",
+                    "data/out.log",
+                    "--capture-stderr",
+                    "data/err.log",
+                    "--",
+                    "scripts/streams.py",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(separate.returncode, 0, separate.stderr)
+            self.assertEqual(separate.stdout, "out\n")
+            self.assertEqual(separate.stderr, "err\n")
+            self.assertEqual((entry / "data/out.log").read_text(), "out\n")
+            self.assertEqual((entry / "data/err.log").read_text(), "err\n")
+            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
+            self.assertEqual(set(outputs), {"data/err.log", "data/out.log"})
+
+            combined = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--capture-stdout-stderr",
+                    "data/combined.log",
+                    "--",
+                    "scripts/streams.py",
+                ],
+                cwd=entry,
+            )
+            self.assertEqual(combined.returncode, 0, combined.stderr)
+            self.assertIn("out\n", combined.stdout)
+            self.assertIn("err\n", combined.stdout)
+            self.assertEqual(
+                (entry / "data/combined.log").read_text(), combined.stdout
+            )
+
+    def test_capture_contract_rejects_ambiguous_forms_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            forms = (
+                ["--capture-stdout", "data/a.log", "scripts/print_args.py"],
+                [
+                    "--capture-stdout",
+                    "data/a.log",
+                    "--capture-stdout",
+                    "data/b.log",
+                    "--",
+                    "scripts/print_args.py",
+                ],
+                [
+                    "--capture-stdout",
+                    "data/a.log",
+                    "--capture-stderr",
+                    "data/a.log",
+                    "--",
+                    "scripts/print_args.py",
+                ],
+                [
+                    "--capture-stdout-stderr",
+                    "data/a.log",
+                    "--capture-stderr",
+                    "data/b.log",
+                    "--",
+                    "scripts/print_args.py",
+                ],
+            )
+            for arguments in forms:
+                with self.subTest(arguments=arguments):
+                    result = run([sys.executable, str(PYRUN), *arguments], cwd=entry)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_closed_mirror_does_not_stop_capture_or_deadlock_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            byte_count = 8 * 1024 * 1024
+            (entry / "scripts/large_stdout.py").write_text(
+                f"import sys\nsys.stdout.buffer.write(b'x' * {byte_count})\n",
+                encoding="utf-8",
+            )
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--capture-stdout",
+                    "data/run.log",
+                    "--",
+                    "scripts/large_stdout.py",
+                ],
+                cwd=entry,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            assert process.stderr is not None
+            process.stdout.read(1)
+            process.stdout.close()
+            try:
+                returncode = process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                self.fail("pyrun deadlocked after its mirror pipe closed")
+            stderr = process.stderr.read().decode()
+            process.stderr.close()
+
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("stream mirror failed", stderr)
+            self.assertEqual((entry / "data/run.log").stat().st_size, byte_count)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_capture_write_failure_still_drains_the_source(self) -> None:
+        class FailingCapture(io.BytesIO):
+            def write(self, value: bytes) -> int:
+                raise OSError("capture unavailable")
+
+        content = b"x" * (2 * 1024 * 1024)
+        source = io.BytesIO(content)
+        capture_failed = PYRUN_MODULE.threading.Event()
+        errors: list[BaseException] = []
+
+        PYRUN_MODULE._pump_captured_stream(
+            source,
+            FailingCapture(),
+            io.BytesIO(),
+            capture_failed,
+            errors,
+            [],
+            PYRUN_MODULE.threading.Lock(),
+        )
+
+        self.assertTrue(capture_failed.is_set())
+        self.assertEqual(source.tell(), len(content))
+        self.assertEqual(str(errors[0]), "capture unavailable")
 
     def test_malformed_json_and_wrong_working_directory_do_not_mutate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

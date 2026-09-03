@@ -39,6 +39,10 @@ Given an explicit request to record an investigation and update the summary,
 the agent completes Record first and then runs Update Summary as a separately
 authorized operation.
 
+Given a new-entry Record, the agent adds the completed entry to the maintained
+summary's `## Entries` inventory without changing current understanding or
+log-level follow-ups.
+
 ## Work Outside The Log Boundary
 
 Given a request for a quick calculation, scratch script, or exploratory plot
@@ -61,7 +65,7 @@ not authorize recording or summary changes.
 
 A new-log Record loads summary-validation guidance to initialize the stable
 validation-report link. Later Record operations preserve that link without
-loading validation guidance solely to assess freshness.
+loading validation guidance solely to assess whether retained material is current.
 
 At each researcher turn, Record resolves the operation and authorized scope
 from the current request and durable workspace state. Earlier discussion may
@@ -90,7 +94,7 @@ A summary reference or direct artifact does not load locator, transformation,
 or table guidance merely because another item in the entry uses it. It does not
 load citation guidance without citation work.
 
-When `data.json`, a `<name>` token, or a durable external input first becomes
+When `data.json`, a `<name>` token, or a durable origin input first becomes
 necessary after an investigation has begun, Record treats it as a new routing
 event and loads input-registry guidance before finishing. An earlier routing pass
 without that trigger does not satisfy this requirement.
@@ -178,12 +182,13 @@ and heading, and retains a failed structural target until review repairs it.
 
 ## Recorded Command Output
 
-Given a `bash` command under `Steps:` that ends with
-`2>&1 | tee data/run.log` and a `text` excerpt under `Results:`, record accepts
-the form, puts one stable `eid` marker immediately before the fence, and adds
-one `output` record to entry-level `evidence.json` with `data/run.log` as its
-only source. Review checks the marker and record shape. Validation verifies the
-excerpt-to-log association.
+Given a Python command under `Steps:` whose retained output supports a `text`
+excerpt under `Results:`, Record captures that output through `pyrun`, puts one
+stable `eid` marker immediately before the fence, and adds one `output` record
+to entry-level `evidence.json` for the retained command log. Raw shell
+redirection or `tee` does not establish the required output support. Review
+checks the marker and record shape. Validation verifies the excerpt-to-log
+association.
 
 Given only a `text` excerpt under `Results:` with a statement that an agent
 copied terminal output, review reports that the recorded command did not retain
@@ -197,8 +202,8 @@ when maintaining the real command interface.
 Given a real interface whose natural option is `--results data/results.csv`,
 Record preserves the command and places
 `<!-- command results = output -->` immediately after the fence. It does not
-rename only the recorded command. An annotation may also identify positional,
-directory, manifest, model, or simulation roles.
+rename only the recorded command. An annotation may also identify positional
+or whole-directory input and output roles.
 
 Given several commands in one fence, an annotation uses `command-N` to select
 only the command that needs it. Commands without annotations require no empty
@@ -349,15 +354,16 @@ and deterministic collections enter the material graph. Script internals are
 irrelevant. An ambiguous output directory or unsupported collection
 relationship fails until research-owned metadata makes the relationship exact.
 
-Given a file outside the validated log and consumed by an active recorded
-workflow, validation treats it as external evidence for the current log. It
-does not inspect another log's validation state or use that external reference
-to change orphan classification in the file's owning log.
+Given a locally accessible file outside the validated log and consumed by an
+active recorded workflow, validation treats it as an origin of the current log
+when `data.json` says `origin: true`. It does not inspect another log's
+validation state or use that reference to change Hygiene classification in the
+file's owning log.
 
 Given retained material outside the evidence-rooted command closure and not
 covered by an explicit retention declaration,
-validation reports the exact residual path as an orphan finding. Mechanical
-validation never asks an agent to classify the orphan semantically.
+validation reports the exact residual path as an orphan Hygiene finding.
+Mechanical validation never asks an agent to classify the orphan semantically.
 
 ## Input Registry
 
@@ -369,4 +375,15 @@ that should use `<name>`.
 
 A valid declared input in a workflow branch that does not reach presented
 evidence remains a used declaration; the workflow's retained material
-remains eligible for orphan detection.
+remains eligible for Hygiene evaluation.
+
+A reached generated output passes Provenance only when its output-keyed
+`pyrun-outputs.json` record is confirmed and exactly matches the current output
+fingerprint, script path and fingerprint, ordered parameters, and direct input
+fingerprints. Changing any one without a matching successful run fails that
+starting artifact's Provenance.
+
+An output record absent from the complete current graph is an unmatched Hygiene
+finding. If its file exists, validation does not also report that file as an
+orphan. A graph-declared output whose file is missing is a Provenance failure,
+not Hygiene.

@@ -23,9 +23,8 @@ def file_resource(path: Path, *, digest: str | None = None) -> object:
         "file",
         path.as_posix(),
         DATA.Fingerprint("sha256", digest=observed),
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
 
 
@@ -35,9 +34,8 @@ def directory_resource(path: Path) -> object:
         "directory",
         path.as_posix(),
         DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
     observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
@@ -45,9 +43,8 @@ def directory_resource(path: Path) -> object:
         "directory",
         path.as_posix(),
         observed.fingerprint,
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
 
 
@@ -61,9 +58,8 @@ def identity_files_resource(path: Path) -> object:
             digest="0" * 64,
             files=("build.h5", "build.yaml"),
         ),
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
     observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
@@ -71,9 +67,8 @@ def identity_files_resource(path: Path) -> object:
         "directory",
         path.as_posix(),
         observed.fingerprint,
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
 
 
@@ -87,9 +82,8 @@ def identity_patterns_resource(path: Path) -> object:
             digest="0" * 64,
             patterns=("build.h5", "maps-*.h5"),
         ),
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
     observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
@@ -97,9 +91,8 @@ def identity_patterns_resource(path: Path) -> object:
         "directory",
         path.as_posix(),
         observed.fingerprint,
-        None,
-        path.resolve().as_posix(),
         False,
+        path.resolve().as_posix(),
     )
 
 

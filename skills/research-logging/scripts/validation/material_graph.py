@@ -34,6 +34,7 @@ IGNORED_FILE_NAMES = frozenset(
         "data.json",
         "evidence.json",
         "pyrun",
+        "pyrun-outputs.json",
         "retention.json",
     }
 )
@@ -69,7 +70,7 @@ class EvidenceConnection:
     presentation: str
     materials: tuple[str, ...]
     dependencies: tuple[str, ...] = ()
-    external_materials: frozenset[str] = frozenset()
+    origin_materials: frozenset[str] = frozenset()
     input_names: tuple[str, ...] = ()
 
 
@@ -81,6 +82,8 @@ class DirectArtifactConnection:
     presentation: str
     material: str
     dependencies: tuple[str, ...] = ()
+    origin: bool = False
+    input_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,7 +169,10 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         request.retention_files, roots, inventory, state.connected
     )
     unused_names = _unused_input_names(
-        request.input_registries, request.invocations, request.evidence
+        request.input_registries,
+        request.invocations,
+        request.evidence,
+        request.direct_artifacts,
     )
     orphan = _orphan_result(inventory, state.connected, retained, unused_names)
     orphan_seconds = time.perf_counter() - orphan_started
@@ -206,11 +212,11 @@ def _add_evidence(
         presentation = _node(state.nodes, "presentation", connection.presentation)
         state.edges.add(GraphEdge("presentation", record, presentation))
         for raw in connection.materials:
-            external = raw in connection.external_materials
-            material = _material_node(state.nodes, raw, external=external)
+            origin = raw in connection.origin_materials
+            material = _material_node(state.nodes, raw)
             state.edges.add(GraphEdge("evidence-source", record, material))
             _connect_local(state.connected, material.identity, state.roots)
-            if not external:
+            if not origin:
                 _trace_material(material.identity, None, state, depth=0)
         state.dependencies.append(_evidence_projection(connection))
 
@@ -223,7 +229,8 @@ def _add_direct_artifacts(
         material = _material_node(state.nodes, connection.material)
         state.edges.add(GraphEdge("direct-artifact", presentation, material))
         _connect_local(state.connected, material.identity, state.roots)
-        _trace_material(material.identity, None, state, depth=0)
+        if not connection.origin:
+            _trace_material(material.identity, None, state, depth=0)
         state.dependencies.append(_artifact_projection(connection))
 
 
@@ -278,9 +285,7 @@ def _add_reached_input(
     *,
     depth: int,
 ) -> None:
-    material = _material_node(
-        state.nodes, relationship.path, external=relationship.external
-    )
+    material = _material_node(state.nodes, relationship.path)
     state.edges.add(GraphEdge("input", material, command))
     _connect_local(state.connected, material.identity, state.roots)
     resource = relationship.input_resource
@@ -302,7 +307,7 @@ def _reached_prior_producer(
     consumer: Invocation,
     state: _GraphState,
 ) -> Invocation | None:
-    if relationship.external:
+    if relationship.origin:
         return None
     resource = relationship.input_resource
     if resource is None or resource.kind == "file":
@@ -383,11 +388,7 @@ def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
     return node
 
 
-def _material_node(
-    nodes: set[GraphNode], value: str, *, external: bool = False
-) -> GraphNode:
-    if external or "://" in value:
-        return _node(nodes, "external-material", value)
+def _material_node(nodes: set[GraphNode], value: str) -> GraphNode:
     return _node(nodes, "material", Path(value).resolve().as_posix())
 
 
@@ -562,6 +563,7 @@ def _unused_input_names(
     surfaces: Sequence[InputRegistrySurface],
     invocations: Sequence[Invocation],
     evidence: Sequence[EvidenceConnection],
+    direct_artifacts: Sequence[DirectArtifactConnection],
 ) -> set[str]:
     used = {
         f"{invocation.material_owner}:{relationship.input_resource.name}"
@@ -570,6 +572,9 @@ def _unused_input_names(
         if relationship.input_resource is not None
     }
     used.update(name for connection in evidence for name in connection.input_names)
+    used.update(
+        name for connection in direct_artifacts for name in connection.input_names
+    )
     declared = {
         f"{surface.owner}:{resource.name}"
         for surface in surfaces
@@ -582,7 +587,7 @@ def _evidence_projection(connection: EvidenceConnection) -> object:
     return {
         "dependencies": list(connection.dependencies),
         "entry": connection.entry,
-        "external_materials": sorted(connection.external_materials),
+        "origin_materials": sorted(connection.origin_materials),
         "input_names": sorted(connection.input_names),
         "materials": sorted(connection.materials),
         "presentation": connection.presentation,
@@ -594,7 +599,9 @@ def _artifact_projection(connection: DirectArtifactConnection) -> object:
     return {
         "dependencies": list(connection.dependencies),
         "entry": connection.entry,
+        "input_names": sorted(connection.input_names),
         "material": connection.material,
+        "origin": connection.origin,
         "presentation": connection.presentation,
     }
 
@@ -614,6 +621,8 @@ def _invocation_projection(invocation: Invocation) -> object:
         "identity": invocation.identity,
         "inputs": [_relationship_projection(item) for item in invocation.inputs],
         "outputs": [_relationship_projection(item) for item in invocation.outputs],
+        "parameters": list(invocation.parameters),
+        "script_argument": invocation.script_argument,
         "script_identity": invocation.script_identity,
     }
 
@@ -622,7 +631,7 @@ def _relationship_projection(relationship: MaterialRelationship) -> object:
     resource = relationship.input_resource
     return {
         "direction": relationship.direction,
-        "external": relationship.external,
+        "origin": relationship.origin,
         "input_identity": resource.content_identity if resource is not None else None,
         "named_input": relationship.named_input,
         "path": relationship.path,

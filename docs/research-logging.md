@@ -1,15 +1,18 @@
 # Research Logging
 
-This document explains the research-log workflow for researchers. It describes
-how to organize a log, record work, retain the material needed to reproduce
-results, present evidence, keep the summary current, review the record, and
-check its integrity.
+This is human-facing researcher documentation for using the
+`research-logging` skill. It explains what researchers can ask the skill to do,
+what to expect from the workflow and visible research record, and which
+research decisions remain theirs.
 
-The `research-logging` skill implements the detailed authoring and maintenance
-rules used by AI agents. This document stays at the researcher-facing level:
-it explains the workflow, research responsibilities, and visible record without
-duplicating the skill's schemas or exact metadata grammar. Their conceptual
-agreement is checked whenever either one changes.
+This document is not a specification for agent behavior, metadata grammar, or
+validator implementation. Do not use it as a completeness checklist or proxy
+for the `research-logging` skill. The skill is a separate, self-contained and
+self-documenting agent surface; it does not depend on this guide. The
+mechanical-validation CLI and its supporting tools must instead adhere to
+`docs/research-log-mechanical-validator-spec.md`. These three surfaces must be
+conceptually compatible, but they have separate authority and do not repeat the
+same detail.
 
 ## Workflow at a glance
 
@@ -65,10 +68,14 @@ A populated log may contain:
   refs.bib
   scripts/
   validation.md
+  validation/
+  .cache/
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
       data.json
+      evidence.json
+      pyrun-outputs.json
       retention.json
       pyrun -> <installed launcher>
       data/
@@ -483,33 +490,42 @@ the additional metadata needed for validation. Researchers should not have to
 reshape a natural command merely to satisfy validation.
 
 Run a new or changed script through the recorded command from the entry folder
-to produce or check its saved outputs before presenting them as results. Save
-command output during that run with a program log option, `tee`, or
-redirection; output available only in an agent's temporary context is not
-evidence. This is original research execution, not validation or reproduction;
-do not rerun an unchanged command solely to test reproducibility or provenance.
+to produce or check its saved outputs before presenting them as results.
+`pyrun` records each output's current script, parameters, inputs, and bytes.
+When stdout or stderr is retained as evidence, use
+`./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
+`--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
+confirmed output record. Output available only in an agent's temporary context
+is not evidence. This is original research execution, not validation or
+reproduction; do not rerun an unchanged command solely to test reproducibility
+or Provenance.
 
 ### Input registry
 
 Use entry-root `data.json` for every file or directory consumed as a material
 input by a recorded command or evidence record. It contains all and only those
-inputs, with one stable name, location, strong fingerprint, and—only for a
-producerless input—an explicit external source and version identity.
+inputs, plus a directly presented artifact when an explicit origin boundary is
+needed. Each has one stable name, local location, strong fingerprint, and
+Boolean `origin`. An origin stops the Provenance chain at that artifact;
+generated material continues to its unique earlier producer regardless of
+where the file is stored.
 
 Add an accessible local input from the entry folder with:
 
 ```bash
 ./pyrun data add development_set file /data/project/development.csv
-./pyrun data external development_set "Project archive" development-set/v2
 ```
 
 `pyrun` fingerprints local content and resolves the item through
-`"<development_set>"`. Raw command-input and evidence-source paths and URIs
+`"<development_set>"` and marks a newly added input as an origin. Raw
+command-input and evidence-source paths and URIs
 are invalid. Evidence sources use one complete `<name>` or
 `<directory-name>/member` token and must resolve to one local regular file. A
 generated output enters `data.json` when a later recorded command or evidence
-record consumes it; it omits the external boundary and traces to its earlier
-producer. Omit `data.json` when the entry has no command or evidence inputs.
+record consumes it; set `origin: false` with
+`./pyrun data origin <name> false` so it traces to its earlier producer. Omit
+`data.json` when the entry has no command or evidence inputs and no direct
+artifact origin.
 
 Use `retention.json` only for intentionally retained material outside the
 evidence-rooted graph. Retention affects orphan classification and cannot
@@ -538,12 +554,12 @@ investigation; do not turn them into an entry-wide or log-wide audit. For
 completed work, preserve checks that were actually performed and identify what
 remains unknown rather than repeating them for documentation.
 
-### External inputs and references
+### Origin inputs and references
 
-For an external workflow input, record what it is and how it was used. Keep a
-copy when practical; otherwise record a stable reference. Validation checks
-that the input is identified, not that the external source is scientifically
-trustworthy.
+For an origin workflow input, record what it is and how it was used. Keep or
+materialize a locally accessible copy so validation can confirm its current
+bytes. Provenance stops at that declared artifact; scientific review, not
+mechanical validation, determines whether the source is trustworthy.
 
 Use optional `<log>/refs.bib` for papers, documentation, and other cited
 sources. Verify new bibliographic details against an authoritative source and
@@ -583,11 +599,12 @@ uncertainty, or table assembly. Researchers do not need to author or inspect its
 technical syntax during normal work. Review and validation report when the
 connection is missing, ambiguous, unsupported, or inconsistent.
 
-Every presented project-generated result must trace through the recorded
-workflow until it reaches an external data source or a model or simulation that
-originated the data. External data is trusted as a provenance boundary;
-scientific review, rather than mechanical validation, determines whether it is
-appropriate and persuasive.
+Every presented generated result must trace through the recorded workflow until
+it reaches an explicit origin or an inputless confirmed producer. Every reached
+generated output must match `pyrun`'s current output and script fingerprints,
+exact ordered parameters, and direct-input fingerprints. This bounded
+Provenance result does not claim causation, complete dependency capture,
+scientific validity, or reproduction.
 
 Material may also be retained intentionally for later investigation even when
 it is not used by a current result. Tell the research-logging agent why it is
@@ -704,7 +721,7 @@ Validation: [latest completed report](<log>/validation.md)
 ```
 
 The link is stable research-document scaffolding. It contains no date, status,
-failure count, freshness claim, or rules version. Do not add a `## Validation`
+failure count, artifact-currentness claim, or rules version. Do not add a `## Validation`
 section or a Validation item to `## Contents`. Before the first validation, the
 link may point to a report that does not yet exist.
 
@@ -745,9 +762,9 @@ Check the requested area against these questions:
   files checked against their expected structure? For work completed
   elsewhere, does the record preserve the actual workflow and identify missing
   material rather than replacing it with a cleaner reconstruction? Does
-  `data.json` contain all and only command and evidence inputs, use unique names and
-  targets, resolve every token, preserve fingerprints, and distinguish exact
-  external boundaries from generated inputs? Are intentional disconnected
+  `data.json` contain all and only command and evidence inputs plus any direct
+  artifact origin, use unique names and targets, resolve every token, preserve
+  fingerprints, and distinguish explicit origins from generated inputs? Are intentional disconnected
   artifacts declared only through `retention.json`?
 - **Summary:** Is every substantive point supported by an entry? Does the
   summary describe current understanding, preserve the stable validation-report
@@ -771,9 +788,11 @@ At a high level, validation checks four things:
 
 - the research log and its supporting metadata are structurally consistent;
 - presented computational results match their declared retained sources;
-- generated evidence can be traced through recorded commands to external data,
-  a model, or a simulation; and
-- retained files are connected to the recorded work or intentionally kept.
+- generated evidence can be traced through confirmed current output and script
+  fingerprints, exact ordered parameters, and direct-input fingerprints to
+  explicit origins; and
+- retained files and output records are connected to the recorded work,
+  intentionally kept, or reported as Hygiene findings.
 
 These checks are intentionally strict. A missing or ambiguous relationship is
 reported as a concrete finding instead of being guessed. Findings in one area
@@ -804,10 +823,12 @@ completed, summarizes the four check areas, and lists non-passing checks by
 entry. Its separate Reproduction section remains independent and shows that
 reproduction has not yet run until that workflow produces its own result.
 
-The adjacent `<log>/validation/` directory contains machine-readable results
-and reusable state maintained by the validator. Researchers and research agents
-should not edit those generated files directly. Validation reads the research
-record but changes only its own generated output.
+The adjacent `<log>/validation/` directory contains machine-readable results.
+Disposable validator caches live beneath `<log>/.cache/` and the research
+project's `.cache/` directory. Entry-root `pyrun-outputs.json` is separate
+current output-support state maintained by `pyrun`. Researchers and research
+agents should not edit these generated files directly. Validation reads the
+research record but changes only its own generated output.
 
 ### Resolving findings
 

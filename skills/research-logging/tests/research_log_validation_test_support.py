@@ -41,7 +41,11 @@ def mechanical_log(
         "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n",
     )
     write(entry_root / "scripts" / "model.py", "# retained model\n")
+    write(entry_root / "data" / "catalog.csv", "id\n1\n")
     write(entry_root / "data" / "results.csv", "success_rate\n0.676\n")
+    catalog_digest = hashlib.sha256(
+        (entry_root / "data" / "catalog.csv").read_bytes()
+    ).hexdigest()
     results_digest = hashlib.sha256(
         (entry_root / "data" / "results.csv").read_bytes()
     ).hexdigest()
@@ -49,20 +53,17 @@ def mechanical_log(
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v2",
+                "schema": "research-log-data/v3",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
-                        "location": "https://example.test/catalog.csv",
+                        "location": "data/catalog.csv",
                         "fingerprint": {
-                            "algorithm": "immutable-source",
-                            "value": "fixture-catalog/v1",
+                            "algorithm": "sha256",
+                            "digest": catalog_digest,
                         },
-                        "external": {
-                            "source": "test fixture",
-                            "identity": "fixture-catalog/v1",
-                        },
+                        "origin": True,
                     },
                     {
                         "name": "results",
@@ -72,6 +73,7 @@ def mechanical_log(
                             "algorithm": "sha256",
                             "digest": results_digest,
                         },
+                        "origin": False,
                     },
                 ],
             },
@@ -101,6 +103,46 @@ def mechanical_log(
                         },
                     }
                 ],
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    write(
+        entry_root / "pyrun-outputs.json",
+        json.dumps(
+            {
+                "schema": "research-log-pyrun-outputs/v1",
+                "outputs": {
+                    "data/results.csv": {
+                        "confirmed": True,
+                        "fingerprint": {
+                            "algorithm": "sha256",
+                            "digest": results_digest,
+                        },
+                        "inputs": {
+                            "catalog": {
+                                "algorithm": "sha256",
+                                "digest": catalog_digest,
+                            }
+                        },
+                        "parameters": [
+                            "--catalog",
+                            "<catalog>",
+                            f"--{output_option}",
+                            "data/results.csv",
+                        ],
+                        "script": {
+                            "path": "scripts/model.py",
+                            "fingerprint": {
+                                "algorithm": "sha256",
+                                "digest": hashlib.sha256(
+                                    (entry_root / "scripts/model.py").read_bytes()
+                                ).hexdigest(),
+                            },
+                        },
+                    }
+                },
             },
             indent=2,
         )

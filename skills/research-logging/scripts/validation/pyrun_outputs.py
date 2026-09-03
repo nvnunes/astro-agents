@@ -1,0 +1,319 @@
+"""Strict artifact-linked execution observations owned by ``pyrun``."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterator, Mapping, NoReturn, cast
+
+from research_log_data import DataContractError, Fingerprint, parse_fingerprint
+
+from .entry_materials import is_entry_material_path
+from .errors import MechanicalContractError
+from .json_codec import V2JsonError, decode_json
+
+PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
+PYRUN_OUTPUTS_FILENAME = "pyrun-outputs.json"
+MAX_FILE_BYTES = 16 * 1024 * 1024
+MAX_OUTPUTS = 10_000
+MAX_INPUTS = 128
+MAX_PARAMETERS = 4_096
+MAX_STRING_BYTES = 8 * 1024
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+class PyrunOutputsError(MechanicalContractError):
+    """One exact output-support contract failure."""
+
+
+@dataclass(frozen=True)
+class ScriptSupport:
+    """The directly executed script and its observed byte identity."""
+
+    path: str
+    fingerprint: Fingerprint
+
+    def as_dict(self) -> dict[str, object]:
+        return {"fingerprint": self.fingerprint.as_dict(), "path": self.path}
+
+
+@dataclass(frozen=True)
+class OutputSupport:
+    """Current execution support for one exact output artifact."""
+
+    confirmed: bool
+    fingerprint: Fingerprint
+    script: ScriptSupport
+    parameters: tuple[str, ...]
+    inputs: tuple[tuple[str, Fingerprint], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "confirmed": self.confirmed,
+            "fingerprint": self.fingerprint.as_dict(),
+            "inputs": {name: value.as_dict() for name, value in self.inputs},
+            "parameters": list(self.parameters),
+            "script": self.script.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class PyrunOutputsFile:
+    """One entry-owned mapping from output identity to current support."""
+
+    path: Path
+    entry_root: Path
+    outputs: Mapping[str, OutputSupport]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "outputs": {
+                key: self.outputs[key].as_dict() for key in sorted(self.outputs)
+            },
+            "schema": PYRUN_OUTPUTS_SCHEMA,
+        }
+
+    def serialized(self) -> str:
+        return json.dumps(
+            self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True
+        ) + "\n"
+
+
+def load_pyrun_outputs(path: Path, *, entry_root: Path) -> PyrunOutputsFile:
+    """Read one strict entry-root output-support file."""
+
+    expected = entry_root.resolve() / PYRUN_OUTPUTS_FILENAME
+    if path.is_symlink() or path.resolve() != expected:
+        _invalid(path, {"expected": str(expected), "reason": "location"})
+    try:
+        raw = path.read_text(encoding="utf-8")
+        value = decode_json(raw, maximum_bytes=MAX_FILE_BYTES, subject=str(path))
+    except (OSError, UnicodeError, V2JsonError) as error:
+        _invalid(path, {"error": str(error)})
+    if not isinstance(value, Mapping) or set(value) != {"schema", "outputs"}:
+        _invalid(path, {"fields": _fields(value)})
+    value = cast(Mapping[str, Any], value)
+    raw_outputs = value.get("outputs")
+    if value.get("schema") != PYRUN_OUTPUTS_SCHEMA or not isinstance(
+        raw_outputs, Mapping
+    ):
+        _invalid(path, {"schema": value.get("schema")})
+    if len(raw_outputs) > MAX_OUTPUTS:
+        _invalid(path, {"outputs": len(raw_outputs), "limit": MAX_OUTPUTS})
+    outputs: dict[str, OutputSupport] = {}
+    for key, raw_record in raw_outputs.items():
+        output = portable_output_path(key, entry_root=entry_root)
+        if output != key:
+            _invalid(path, {"output": key, "canonical": output})
+        outputs[key] = _decode_record(raw_record, f"{path}:outputs[{key!r}]")
+    return PyrunOutputsFile(expected, entry_root.resolve(), outputs)
+
+
+def empty_pyrun_outputs(entry_root: Path) -> PyrunOutputsFile:
+    """Return an empty current-support surface for one entry."""
+
+    root = entry_root.resolve()
+    return PyrunOutputsFile(root / PYRUN_OUTPUTS_FILENAME, root, {})
+
+
+def portable_output_path(value: str | Path, *, entry_root: Path) -> str:
+    """Return the exact entry-relative identity of one output artifact."""
+
+    raw = value.as_posix() if isinstance(value, Path) else value
+    if not isinstance(raw, str) or not raw or len(raw.encode()) > MAX_STRING_BYTES:
+        _invalid("output", {"path": raw})
+    root = entry_root.resolve()
+    lexical = Path(raw) if Path(raw).is_absolute() else root / raw
+    relative: Path | None = None
+    try:
+        relative = lexical.absolute().relative_to(root)
+    except ValueError:
+        canonical = lexical.resolve()
+        for name in ("data", "images"):
+            material_root = root / name
+            if not material_root.is_symlink():
+                continue
+            try:
+                member = canonical.relative_to(material_root.resolve())
+            except ValueError:
+                continue
+            relative = Path(name) / member
+            break
+    if relative is None:
+        _invalid("output", {"path": raw, "reason": "outside_entry"})
+    portable = PurePosixPath(*relative.parts).as_posix()
+    if (
+        portable in {"", "."}
+        or any(part in {"", ".", ".."} for part in PurePosixPath(portable).parts)
+        or not is_entry_material_path(root / portable, root)
+    ):
+        _invalid("output", {"path": raw, "reason": "not_entry_material"})
+    return portable
+
+
+def update_pyrun_outputs(
+    entry_root: Path, updates: Mapping[str, OutputSupport]
+) -> PyrunOutputsFile:
+    """Atomically replace support for only the supplied output identities."""
+
+    root = entry_root.resolve()
+    path = root / PYRUN_OUTPUTS_FILENAME
+    normalized = {
+        portable_output_path(key, entry_root=root): value
+        for key, value in updates.items()
+    }
+    if len(normalized) != len(updates):
+        _invalid(path, {"reason": "duplicate_output"})
+    try:
+        with _outputs_lock(path):
+            current = (
+                load_pyrun_outputs(path, entry_root=root)
+                if path.exists()
+                else empty_pyrun_outputs(root)
+            )
+            outputs = dict(current.outputs)
+            outputs.update(normalized)
+            result = PyrunOutputsFile(path, root, outputs)
+            serialized = _validated_serialization(result)
+            _atomic_write(path, serialized)
+            return result
+    except OSError as error:
+        raise PyrunOutputsError(
+            "pyrun.outputs.unavailable",
+            str(path),
+            {"error": str(error)},
+            "Pyrun Output Support Records",
+        ) from error
+
+
+def _validated_serialization(value: PyrunOutputsFile) -> str:
+    """Return serialized state only when the writer and reader contracts agree."""
+
+    if len(value.outputs) > MAX_OUTPUTS:
+        _invalid(value.path, {"outputs": len(value.outputs), "limit": MAX_OUTPUTS})
+    for key, record in value.outputs.items():
+        canonical = portable_output_path(key, entry_root=value.entry_root)
+        if canonical != key or not isinstance(record, OutputSupport):
+            _invalid(value.path, {"output": key})
+        _decode_record(record.as_dict(), f"{value.path}:outputs[{key!r}]")
+    serialized = value.serialized()
+    size = len(serialized.encode("utf-8"))
+    if size > MAX_FILE_BYTES:
+        _invalid(value.path, {"bytes": size, "limit": MAX_FILE_BYTES})
+    return serialized
+
+
+def _decode_record(value: object, subject: str) -> OutputSupport:
+    required = {"confirmed", "fingerprint", "inputs", "parameters", "script"}
+    if not isinstance(value, Mapping) or set(value) != required:
+        _invalid(subject, {"fields": _fields(value)})
+    value = cast(Mapping[str, Any], value)
+    confirmed = value.get("confirmed")
+    parameters = value.get("parameters")
+    inputs = value.get("inputs")
+    script = value.get("script")
+    if not isinstance(confirmed, bool):
+        _invalid(subject, {"confirmed": confirmed})
+    if (
+        not isinstance(parameters, list)
+        or len(parameters) > MAX_PARAMETERS
+        or not all(_bounded_parameter(item) for item in parameters)
+    ):
+        _invalid(subject, {"parameters": parameters})
+    if not isinstance(inputs, Mapping) or len(inputs) > MAX_INPUTS:
+        _invalid(subject, {"inputs": _fields(inputs)})
+    decoded_inputs: list[tuple[str, Fingerprint]] = []
+    for name, fingerprint in inputs.items():
+        if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
+            _invalid(subject, {"input": name})
+        decoded_inputs.append((name, _decode_fingerprint(fingerprint, subject)))
+    if not isinstance(script, Mapping) or set(script) != {"path", "fingerprint"}:
+        _invalid(subject, {"script": _fields(script)})
+    script_path = script.get("path")
+    if not _bounded_string(script_path):
+        _invalid(subject, {"script_path": script_path})
+    return OutputSupport(
+        confirmed,
+        _decode_fingerprint(value.get("fingerprint"), subject),
+        ScriptSupport(
+            cast(str, script_path),
+            _decode_fingerprint(script.get("fingerprint"), subject, file_only=True),
+        ),
+        tuple(cast(list[str], parameters)),
+        tuple(sorted(decoded_inputs)),
+    )
+
+
+def _decode_fingerprint(
+    value: object, subject: str, *, file_only: bool = False
+) -> Fingerprint:
+    try:
+        return parse_fingerprint(
+            value, subject, kind="file" if file_only else None
+        )
+    except DataContractError as error:
+        _invalid(subject, {"fingerprint": value, "reason": error.code})
+
+
+@contextmanager
+def _outputs_lock(path: Path) -> Iterator[None]:
+    identity = hashlib.sha256(str(path.resolve()).encode()).hexdigest()
+    lock = Path(tempfile.gettempdir()) / f"pyrun-outputs-{identity}.lock"
+    with lock.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    try:
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _bounded_string(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value.encode("utf-8")) <= MAX_STRING_BYTES
+    )
+
+
+def _bounded_parameter(value: object) -> bool:
+    return isinstance(value, str) and len(value.encode("utf-8")) <= MAX_STRING_BYTES
+
+
+def _fields(value: object) -> object:
+    return sorted(value) if isinstance(value, Mapping) else type(value).__name__
+
+
+def _invalid(subject: object, observed: object) -> NoReturn:
+    raise PyrunOutputsError(
+        "pyrun.outputs.invalid",
+        str(subject),
+        observed,
+        "Pyrun Output Support Records",
+    )

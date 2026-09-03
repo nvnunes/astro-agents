@@ -1,35 +1,35 @@
 # Input Registry Instructions
 
 Use this file when creating or revising an entry-root `data.json`, using a
-`<name>` input token, or declaring a durable external command input.
+`<name>` input token, or declaring where a Provenance chain stops.
 
 `data.json` is the complete material-input registry. It contains all and only
-file and directory resources consumed by recorded commands or by mechanical
-evidence records owned by one entry root. It is not an artifact inventory,
+file and directory resources consumed by recorded commands or mechanical
+evidence, plus an exact directly presented artifact only when `origin: true`
+is needed to stop its Provenance chain. It is not a general artifact inventory,
 evidence declaration, or producer registry.
 
-Omit `data.json` when the entry has no command or evidence inputs. A present
-file uses schema `research-log-data/v2` and contains a non-empty `inputs`
-array. Split documents at one entry root share that file. Do not create a
-parent-entry or log-level registry and do not inherit or merge another file.
+Omit `data.json` when the entry has no command or evidence inputs and no direct
+artifact origin. A present file uses schema `research-log-data/v3` and contains
+a non-empty `inputs` array. Split documents at one entry root share that file.
+Do not create a parent-entry or log-level registry and do not inherit or merge
+another file.
 
 Each input has:
 
 - `name`: a unique entry-scoped ASCII token name; `log`, `project`, `theme`,
   and numeric entry-family names such as `e004` are reserved;
 - `kind`: `file` or `directory`;
-- `location`: a normalized path from the entry root, absolute path, or exact
-  URI;
+- `location`: a normalized local path from the entry root or an absolute local
+  path;
 - `fingerprint`: SHA-256 for a local file, `directory-sha256-v1` for a small
   byte-complete directory, `identity-files-sha256-v1` for a managed directory
   with explicit authoritative identity files,
   `identity-patterns-sha256-v1` for a managed directory with bounded exact and
-  wildcard file selectors, or an immutable source identity for an inaccessible
-  remote file;
-  and
-- `external`, only when no earlier recorded command in the maintained log
-  produced the input. It contains exact non-empty `source` and `identity`
-  strings.
+  wildcard file selectors; and
+- `origin`: a required boolean. `true` explicitly stops the Provenance chain at
+  this artifact after its current byte fingerprint is verified. `false`
+  requires a validated producer and recursive upstream lineage.
 
 Use exact `<name>` arguments for file inputs. Use `<directory-name>` with an
 `input-directory` role to consume either every byte-complete descendant or one
@@ -87,20 +87,12 @@ fingerprint covers the selectors, sorted matched paths, and each file's SHA-256.
 It scans each distinct wildcard parent once, examines at most 100,000 immediate
 entries in that parent, and never traverses undeclared descendants.
 
-For an inaccessible remote object, supply the boundary and immutable identity:
+`data add` fingerprints accessible local content and initially marks it as an
+origin. Change that boundary explicitly when the item is a generated input:
 
 ```bash
-./pyrun data add-remote catalog \
-  https://example.org/catalog.csv \
-  "Example archive" catalog-object/v3 catalog-object/v3
-```
-
-`data add` fingerprints accessible local content. It does not make the input
-external automatically. Declare or revise a boundary intentionally:
-
-```bash
-./pyrun data external development_set "Project archive" development-set/v2
-./pyrun data external-remove generated_samples
+./pyrun data origin generated_samples false
+./pyrun data origin development_set true
 ```
 
 Fingerprint drift is a validation failure and never updates the registry as a
@@ -119,17 +111,21 @@ identity-file list or identity-pattern set while refreshing its digest. Use
 `data update-identity-pattern-directory` to revise a pattern-managed directory.
 
 A generated output belongs in `data.json` when a later recorded command or an
-evidence record consumes it. It has no `external` object and must trace to its
-unique earlier producer. Outputs consumed by neither surface do not belong in
-the registry. Images, command logs, and scripts follow the same rule: register
-them only when they are material inputs to a command or evidence record.
+evidence record consumes it. Set `origin: false` so it must trace to its unique
+earlier producer. An output of a historical non-`pyrun` workflow may instead
+be marked `origin: true` only when the researcher deliberately chooses to stop
+validated lineage at those current bytes. Outputs consumed by neither surface
+do not belong in the registry, except for an exact directly presented
+non-`pyrun` artifact declared as an origin. Images, command logs, and scripts
+otherwise follow the same rule: register them only when they are material
+inputs to a command or evidence record.
 
-Storage location does not decide externality. A producerless external input may
-be stored inside the entry; a generated intermediate may be outside it. Base
-the boundary only on maintained-log producer history.
+Storage location does not decide origin status. An origin may be inside the
+entry, and a generated intermediate may be elsewhere. Base the boundary on the
+intended Provenance chain.
 
 During review, report missing input declarations, raw-path token bypasses,
 unused items, duplicate targets, conflicting declarations for one target,
-fingerprint drift, weak remote identity, and an external boundary that
-conflicts with an earlier producer. Do not refresh fingerprints or decide
-external identities without researcher authority.
+fingerprint drift, remote-only material, and an origin boundary that hides a
+confirmed `pyrun` producer. Do not refresh fingerprints or decide origin status
+without researcher authority.

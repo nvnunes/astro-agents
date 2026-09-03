@@ -199,6 +199,8 @@ class MechanicalControllerTests(unittest.TestCase):
                     self.assertNotIn(check["identity"], report)
                 else:
                     failure = check.get("failure")
+                    if check["scope"] == "orphan":
+                        continue
                     if failure is None:
                         self.assertEqual(check["status"], "not_applicable")
                         self.assertIn(f"`{check['identity']}`", report)
@@ -207,7 +209,7 @@ class MechanicalControllerTests(unittest.TestCase):
                         self.assertIn(f"`{failure['code']}`", report)
                         if failure["code"] != "orphan.material.unused":
                             self.assertIn(f"`{failure['subject']}`", report)
-            self.assertIn("Maximal directory groups:", report)
+            self.assertIn("| hygiene | findings | `fail`", report)
 
     def test_report_renders_the_cause_of_dependent_not_applicable_checks(
         self,
@@ -359,9 +361,9 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(second["status"], "complete_clear")
             self.assertEqual(first["record"], second["record"])
-            # The script and evidence input are each hashed once; evidence
-            # selection reuses the input observation instead of hashing a third file.
-            self.assertEqual(first["metrics"]["fingerprint_cache_file_hashes"], 2)
+            # The script, two data artifacts, and output-support file are each
+            # hashed once; later consumers reuse those observations.
+            self.assertEqual(first["metrics"]["fingerprint_cache_file_hashes"], 4)
             self.assertGreater(second["metrics"]["checks_unchanged"], 0)
             self.assertGreater(second["metrics"]["input_fingerprints_reused"], 0)
             self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
@@ -427,10 +429,7 @@ class MechanicalControllerTests(unittest.TestCase):
                         "algorithm": "sha256",
                         "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
                     },
-                    "external": {
-                        "source": "fixture catalog",
-                        "identity": "fixture-catalog/v1",
-                    },
+                    "origin": True,
                 }
             ]
             write(data_path, json.dumps(payload) + "\n")
@@ -466,10 +465,7 @@ class MechanicalControllerTests(unittest.TestCase):
                         "algorithm": "sha256",
                         "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
                     },
-                    "external": {
-                        "source": "fixture catalog",
-                        "identity": "fixture-catalog/v1",
-                    },
+                    "origin": True,
                 }
             ]
             write(data_path, json.dumps(payload) + "\n")

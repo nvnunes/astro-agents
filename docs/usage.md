@@ -108,9 +108,10 @@ For example:
 
 ### Research Logs
 
-Use `docs/research-logging.md` for the researcher-facing workflow and durable
-file contracts. `$research-logging` is the independent agent implementation;
-downstream projects may use it without making their logs depend on this guide.
+Use `docs/research-logging.md` for the researcher-facing workflow,
+responsibilities, and visible research record. `$research-logging` is the
+self-documenting agent implementation; downstream projects may use it without
+making their logs depend on this guide.
 
 A downstream project may add a short `## Research Logs` section to root
 `AGENTS.md` so agents can recognize which local files are research logs.

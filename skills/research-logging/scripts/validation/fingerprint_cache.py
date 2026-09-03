@@ -155,9 +155,6 @@ class FingerprintCache:
 
     def verify(self, resource: InputResource) -> FingerprintObservation | None:
         """Observe one local resource and compare it with its authored identity."""
-
-        if resource.remote:
-            return None
         path = Path(resource.canonical_target)
         if (
             path.is_symlink()
@@ -199,6 +196,15 @@ class FingerprintCache:
             cache_identity=identity,
             identity_reused=reused,
         )
+
+    def observe_directory(self, path: Path) -> FingerprintObservation:
+        """Return one current full-directory identity without an expectation."""
+
+        if path.is_symlink() or not path.is_dir():
+            raise FingerprintCacheError(
+                f"strong identity requires a regular non-symlink directory: {path}"
+            )
+        return self._observe_directory(path.resolve())
 
     def remember_regular_file(
         self,

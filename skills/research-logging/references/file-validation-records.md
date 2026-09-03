@@ -2,7 +2,9 @@
 
 Use this file when mechanical validation reads research material and publishes
 its generated result. The paths, statuses, and boundaries below are the
-complete operating instructions for generated validation records.
+complete operating instructions for generated validation records. Entry-root
+`pyrun-outputs.json` is separate `pyrun`-owned current support state; validation
+reads it but never writes or repairs it.
 
 ## Ownership And Layout
 
@@ -20,8 +22,10 @@ mechanical operation:
 
 `validation/mechanical.json` is the authoritative machine-readable result. It
 uses schema `research-log-mechanical/1` and records every mechanical check,
-independent conformance, evidence, provenance, and orphan-scope aggregates, the
-rules version, and the result date.
+independent conformance, evidence, provenance, and internal orphan-scope
+aggregates, the rules version, and the result date. The human report labels
+that broader finding scope Hygiene; this does not introduce a new validation
+class or alter the stable machine schema.
 
 `<log>/.cache/research-log-validation.sqlite3` is disposable validation
 acceleration state. SQLite schema version 1 contains independently versioned
@@ -78,10 +82,14 @@ incomplete result or interruption. `--dry-run` never creates or updates it.
 `validation.md` is the shared human-facing projection. Its Mechanical
 Validation section shows the completion state and date, check counts for
 Conformance and Evidence, unique starting-artifact counts for Provenance, and
-unique orphan-artifact counts for Orphan. It collapses maximal all-orphan
-directories for discussion while leaving artifact-level findings in
-`mechanical.json`, reports unused input declarations separately, and groups
-other non-passing checks by entry. Its independent Reproduction section shows
+one total finding count for Hygiene. Orphan artifacts, unmatched output
+records, and unused input declarations remain separately identified in
+`mechanical.json`; the human table does not split their counts. An output
+supported only by an unconfirmed reconstructed `pyrun` record is an
+unavailable Provenance observation, not a failed Provenance check. The human
+Provenance count reports those artifacts separately as N/A; it does not include
+them in the failed or applicable artifact counts. Confirmed fingerprint or
+lineage mismatches remain failures. Its independent Reproduction section shows
 `not_yet_run` when no reproduction result exists. The report never combines
 the two operations into one pass/fail conclusion and is never authoritative.
 

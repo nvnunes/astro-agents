@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 
 from research_log_data import (  # noqa: E402
-    ExternalBoundary,
     build_local_input,
     data_file_from_inputs,
 )
@@ -53,7 +52,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             self.assertFalse(result.lineage)
             self.assertTrue(result.dependency_projection)
 
-    def test_external_input_is_a_terminal_boundary(self) -> None:
+    def test_origin_input_is_a_terminal_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             entry_root = root / "docs/log/entries/entry"
@@ -66,7 +65,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 "file",
                 "data/source.csv",
                 entry_root=entry_root,
-                external=ExternalBoundary("fixture", "source/v1"),
+                origin=True,
             )
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
@@ -135,7 +134,7 @@ tool --input-data '<generated>' --output-data data/final.csv
             ):
                 PROVENANCE.evaluate_provenance(target, commands)
 
-    def test_external_boundary_conflicts_with_earlier_producer(self) -> None:
+    def test_origin_boundary_conflicts_with_confirmed_pyrun_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             entry_root = root / "docs/log/entries/entry"
@@ -148,22 +147,26 @@ tool --input-data '<generated>' --output-data data/final.csv
                 "file",
                 "data/source.csv",
                 entry_root=entry_root,
-                external=ExternalBoundary("fixture", "source/v1"),
+                origin=True,
             )
             context = _context(root, (source,))
+            write(entry_root / "scripts/build.py", "# fixture\n")
+            write(entry_root / "scripts/final.py", "# fixture\n")
             commands = COMMAND.discover_commands(
                 """```bash
-tool --output-data data/source.csv
-tool --input-data '<source>' --output-data data/final.csv
+./pyrun scripts/build.py --output-data data/source.csv
+./pyrun scripts/final.py --input-data '<source>' --output-data data/final.csv
 ```
 """,
                 context,
             ).invocations
 
             with self.assertRaisesRegex(
-                PROVENANCE.ProvenanceV2Error, "data.external.invalid"
+                PROVENANCE.ProvenanceV2Error, "data.origin.invalid"
             ):
-                PROVENANCE.evaluate_provenance(target, commands)
+                PROVENANCE.evaluate_provenance(
+                    target, commands, confirmed_record=lambda *_: True
+                )
 
     def test_missing_and_ambiguous_starting_producers_are_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -214,7 +217,7 @@ tool --input-directory '<bundle>' --output-data data/final.csv
             self.assertEqual(len(result.producers), 2)
             self.assertEqual(len(result.lineage), 1)
 
-    def test_external_directory_rejects_member_producer(self) -> None:
+    def test_origin_directory_rejects_confirmed_member_producer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             entry_root = root / "docs/log/entries/entry"
@@ -226,13 +229,15 @@ tool --input-directory '<bundle>' --output-data data/final.csv
                 "directory",
                 "data/bundle",
                 entry_root=entry_root,
-                external=ExternalBoundary("fixture", "bundle/v1"),
+                origin=True,
             )
             context = _context(root, (bundle,))
+            write(entry_root / "scripts/build.py", "# fixture\n")
+            write(entry_root / "scripts/final.py", "# fixture\n")
             commands = COMMAND.discover_commands(
                 """```bash
-tool --output-data data/bundle/a.csv
-tool --input-directory '<bundle>' --output-data data/final.csv
+./pyrun scripts/build.py --output-data data/bundle/a.csv
+./pyrun scripts/final.py --input-directory '<bundle>' --output-data data/final.csv
 ```
 <!-- command-2 input-directory = input-directory -->
 """,
@@ -240,14 +245,19 @@ tool --input-directory '<bundle>' --output-data data/final.csv
             ).invocations
 
             with self.assertRaisesRegex(
-                PROVENANCE.ProvenanceV2Error, "directory.external.conflict"
+                PROVENANCE.ProvenanceV2Error, "directory.origin.conflict"
             ):
-                PROVENANCE.evaluate_provenance(target, commands)
+                PROVENANCE.evaluate_provenance(
+                    target, commands, confirmed_record=lambda *_: True
+                )
             with self.assertRaisesRegex(
-                PROVENANCE.ProvenanceV2Error, "directory.external.conflict"
+                PROVENANCE.ProvenanceV2Error, "directory.origin.conflict"
             ):
-                PROVENANCE.require_external_boundary(
-                    entry_root / "data/bundle/a.csv", bundle, commands
+                PROVENANCE.require_origin_boundary(
+                    entry_root / "data/bundle/a.csv",
+                    bundle,
+                    commands,
+                    confirmed_record=lambda *_: True,
                 )
 
 

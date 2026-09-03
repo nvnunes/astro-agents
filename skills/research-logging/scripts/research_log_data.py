@@ -7,7 +7,6 @@ import os
 import re
 import stat
 import unicodedata
-import urllib.parse
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from glob import has_magic
@@ -28,7 +27,7 @@ from validation.filesystem import (
 )
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
-DATA_SCHEMA = "research-log-data/v2"
+DATA_SCHEMA = "research-log-data/v3"
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
 DIRECTORY_OBSERVATION_SCHEMA = "research-log-directory-observation/1"
 IDENTITY_FILES_FINGERPRINT_SCHEMA = "research-log-identity-files-fingerprint/1"
@@ -37,7 +36,6 @@ MAX_DATA_FILE_BYTES = 8 * 1024 * 1024
 MAX_INPUTS = 10_000
 MAX_NAME_BYTES = 96
 MAX_LOCATION_BYTES = 2_048
-MAX_EXTERNAL_FIELD_BYTES = 1_024
 MAX_DIRECTORY_ENTRIES = 100_000
 MAX_DIRECTORY_PATH_BYTES = 512
 MAX_DIRECTORY_CONTENT_BYTES = 1024**4
@@ -52,7 +50,6 @@ INPUT_TOKEN_RE = re.compile(
     r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)>(?:/(?P<member>.+))?\Z"
 )
 INPUT_TOKEN_CANDIDATE_RE = re.compile(r"<[A-Za-z0-9][A-Za-z0-9_-]*>")
-SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*\Z")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 RESERVED_NAMES = frozenset({"log", "project", "theme"})
 
@@ -62,49 +59,27 @@ class DataContractError(MechanicalContractError):
 
 
 @dataclass(frozen=True)
-class ExternalBoundary:
-    """One explicit producerless prior-provenance boundary."""
-
-    source: str
-    identity: str
-
-    def as_dict(self) -> dict[str, str]:
-        """Return the canonical external-boundary object."""
-
-        return {"identity": self.identity, "source": self.source}
-
-    @property
-    def content_identity(self) -> str:
-        """Return the stable canonical boundary identity."""
-
-        return _identity(self.as_dict())
-
-
-@dataclass(frozen=True)
 class Fingerprint:
-    """One local-resource or immutable-source fingerprint."""
+    """One local-resource byte-derived fingerprint."""
 
     algorithm: str
     digest: str | None = None
-    value: str | None = None
     files: tuple[str, ...] = ()
     patterns: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         """Return the canonical fingerprint object."""
 
-        if self.digest is not None:
-            value: dict[str, object] = {
-                "algorithm": self.algorithm,
-                "digest": self.digest,
-            }
-            if self.files:
-                value["files"] = list(self.files)
-            if self.patterns:
-                value["patterns"] = list(self.patterns)
-            return value
-        assert self.value is not None
-        return {"algorithm": self.algorithm, "value": self.value}
+        assert self.digest is not None
+        value: dict[str, object] = {
+            "algorithm": self.algorithm,
+            "digest": self.digest,
+        }
+        if self.files:
+            value["files"] = list(self.files)
+        if self.patterns:
+            value["patterns"] = list(self.patterns)
+        return value
 
     @property
     def content_identity(self) -> str:
@@ -148,9 +123,8 @@ class InputResource:
     kind: str
     location: str
     fingerprint: Fingerprint
-    external: ExternalBoundary | None
+    origin: bool
     canonical_target: str
-    remote: bool
 
     def as_dict(self) -> dict[str, object]:
         """Return authored canonical fields without resolved observations."""
@@ -160,9 +134,8 @@ class InputResource:
             "kind": self.kind,
             "location": self.location,
             "name": self.name,
+            "origin": self.origin,
         }
-        if self.external is not None:
-            value["external"] = self.external.as_dict()
         return value
 
     @property
@@ -305,7 +278,7 @@ def build_local_input(
     location: str,
     *,
     entry_root: Path,
-    external: ExternalBoundary | None = None,
+    origin: bool = False,
 ) -> InputResource:
     """Build one local declaration with a freshly observed strong fingerprint."""
 
@@ -315,14 +288,12 @@ def build_local_input(
             "name": name,
             "kind": kind,
             "location": location,
+            "origin": origin,
             "fingerprint": {"algorithm": algorithm, "digest": "0" * 64},
-            **({"external": external.as_dict()} if external is not None else {}),
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    if provisional.remote:
-        _invalid(f"input:{name}", {"location": location, "reason": "remote"})
     observation = observe_fingerprint(provisional)
     return replace(provisional, fingerprint=observation.fingerprint)
 
@@ -333,7 +304,7 @@ def build_identity_directory(
     identity_files: tuple[str, ...],
     *,
     entry_root: Path,
-    external: ExternalBoundary | None = None,
+    origin: bool = False,
 ) -> InputResource:
     """Build one managed local directory from exact authoritative files."""
 
@@ -342,18 +313,16 @@ def build_identity_directory(
             "name": name,
             "kind": "directory",
             "location": location,
+            "origin": origin,
             "fingerprint": {
                 "algorithm": "identity-files-sha256-v1",
                 "digest": "0" * 64,
                 "files": list(identity_files),
             },
-            **({"external": external.as_dict()} if external is not None else {}),
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    if provisional.remote:
-        _invalid(f"input:{name}", {"location": location, "reason": "remote"})
     observation = observe_fingerprint(provisional)
     return replace(provisional, fingerprint=observation.fingerprint)
 
@@ -364,7 +333,7 @@ def build_identity_pattern_directory(
     identity_patterns: tuple[str, ...],
     *,
     entry_root: Path,
-    external: ExternalBoundary | None = None,
+    origin: bool = False,
 ) -> InputResource:
     """Build one managed local directory from bounded file selectors."""
 
@@ -373,43 +342,18 @@ def build_identity_pattern_directory(
             "name": name,
             "kind": "directory",
             "location": location,
+            "origin": origin,
             "fingerprint": {
                 "algorithm": "identity-patterns-sha256-v1",
                 "digest": "0" * 64,
                 "patterns": list(identity_patterns),
             },
-            **({"external": external.as_dict()} if external is not None else {}),
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    if provisional.remote:
-        _invalid(f"input:{name}", {"location": location, "reason": "remote"})
     observation = observe_fingerprint(provisional)
     return replace(provisional, fingerprint=observation.fingerprint)
-
-
-def build_remote_input(
-    name: str,
-    location: str,
-    *,
-    external: ExternalBoundary,
-    fingerprint: Fingerprint,
-    entry_root: Path,
-) -> InputResource:
-    """Build one exact inaccessible remote-file declaration."""
-
-    return _decode_input(
-        {
-            "name": name,
-            "kind": "file",
-            "location": location,
-            "fingerprint": fingerprint.as_dict(),
-            "external": external.as_dict(),
-        },
-        f"input:{name}",
-        entry_root.resolve(),
-    )
 
 
 def data_file_from_inputs(
@@ -497,14 +441,6 @@ def input_token_candidate(value: str) -> bool:
 
 def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
     """Observe one accessible local input without changing its declaration."""
-
-    if resource.remote:
-        _fail(
-            "data.remote.identity_invalid",
-            resource.name,
-            {"reason": "remote_observation_prohibited"},
-            "Fingerprints",
-        )
     path = Path(resource.canonical_target)
     if path.is_symlink():
         _fail(
@@ -651,8 +587,7 @@ def identity_file_paths(resource: InputResource) -> Mapping[str, Path]:
     """Resolve the exact identity files of one managed local directory."""
 
     if (
-        resource.remote
-        or resource.kind != "directory"
+        resource.kind != "directory"
         or resource.fingerprint.algorithm != "identity-files-sha256-v1"
     ):
         _invalid(resource.name, {"reason": "identity_files_not_applicable"})
@@ -686,8 +621,7 @@ def identity_pattern_paths(resource: InputResource) -> Mapping[str, Path]:
     """Resolve bounded exact and wildcard selectors to managed files."""
 
     if (
-        resource.remote
-        or resource.kind != "directory"
+        resource.kind != "directory"
         or resource.fingerprint.algorithm != "identity-patterns-sha256-v1"
     ):
         _invalid(resource.name, {"reason": "identity_patterns_not_applicable"})
@@ -838,10 +772,7 @@ def verify_fingerprint(
     *,
     cached: Mapping[str, object] | None = None,
 ) -> FingerprintObservation | None:
-    """Verify one local fingerprint; remote immutable identities are declarative."""
-
-    if resource.remote:
-        return None
+    """Verify one local byte-derived fingerprint."""
     observation = _reuse_fingerprint_observation(resource, cached)
     if observation is None:
         observation = observe_fingerprint(resource)
@@ -877,7 +808,7 @@ def fingerprint_observation_record(
 ) -> Mapping[str, object]:
     """Return one strict cache record for a verified local observation."""
 
-    if resource.remote or observation.cache_identity is None:
+    if observation.cache_identity is None:
         _invalid(resource.name, {"reason": "uncacheable_observation"})
     return {
         "entries": (
@@ -1089,32 +1020,25 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})
     value = cast(Mapping[str, Any], value)
-    allowed = {"name", "kind", "location", "fingerprint", "external"}
-    required = allowed - {"external"}
-    if not required <= set(value) <= allowed:
+    required = {"name", "kind", "location", "fingerprint", "origin"}
+    if set(value) != required:
         _invalid(subject, {"fields": sorted(value)})
     name = _name(value.get("name"), subject)
     kind = value.get("kind")
     if kind not in {"file", "directory"}:
         _invalid(subject, {"kind": kind})
-    location, remote, target = _location(value.get("location"), subject, entry_root)
-    fingerprint = _fingerprint(value.get("fingerprint"), subject, remote, kind)
-    external = _external(value["external"], subject) if "external" in value else None
-    if remote and (kind != "file" or external is None):
-        _fail(
-            "data.remote.identity_invalid",
-            subject,
-            {"kind": kind, "external": external is not None},
-            "External Boundaries",
-        )
+    location, target = _location(value.get("location"), subject, entry_root)
+    fingerprint = parse_fingerprint(value.get("fingerprint"), subject, kind=kind)
+    origin = value.get("origin")
+    if not isinstance(origin, bool):
+        _invalid(subject, {"origin": origin})
     return InputResource(
         name=name,
         kind=kind,
         location=location,
         fingerprint=fingerprint,
-        external=external,
+        origin=origin,
         canonical_target=target,
-        remote=remote,
     )
 
 
@@ -1131,7 +1055,7 @@ def _name(value: object, subject: str) -> str:
     return value
 
 
-def _location(value: object, subject: str, entry_root: Path) -> tuple[str, bool, str]:
+def _location(value: object, subject: str, entry_root: Path) -> tuple[str, str]:
     if (
         not isinstance(value, str)
         or not value
@@ -1139,21 +1063,13 @@ def _location(value: object, subject: str, entry_root: Path) -> tuple[str, bool,
     ):
         _invalid(subject, {"location": value})
     if "://" in value:
-        parsed = urllib.parse.urlsplit(value)
-        if (
-            SCHEME_RE.fullmatch(parsed.scheme) is None
-            or not value.startswith(parsed.scheme + "://")
-            or not parsed.netloc
-            or "\\" in value
-        ):
-            _invalid(subject, {"location": value})
-        return value, True, value
+        _invalid(subject, {"location": value, "reason": "remote"})
     _validate_posix_location(value, subject)
     lexical = Path(value) if Path(value).is_absolute() else entry_root / value
     if is_entry_material_root(lexical, entry_root):
         _invalid(subject, {"location": value, "reason": "artifact_root"})
     _validate_local_symlink_surface(lexical, entry_root, subject)
-    return value, False, lexical.resolve().as_posix()
+    return value, lexical.resolve().as_posix()
 
 
 def _validate_posix_location(value: str, subject: str) -> None:
@@ -1180,9 +1096,7 @@ def _validate_local_symlink_surface(path: Path, entry_root: Path, subject: str) 
 def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
     pure = PurePosixPath(member)
     if (
-        resource.kind != "directory"
-        or resource.remote
-        or not _valid_input_member(member)
+        resource.kind != "directory" or not _valid_input_member(member)
     ):
         _invalid(subject, {"member": member, "resource": resource.name})
     root = Path(resource.canonical_target)
@@ -1201,17 +1115,28 @@ def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
     return target.resolve().as_posix()
 
 
-def _fingerprint(
-    value: object, subject: str, remote: bool, kind: object
+def parse_fingerprint(
+    value: object, subject: str, *, kind: object | None = None
 ) -> Fingerprint:
+    """Parse one closed local fingerprint, inferring resource kind if omitted."""
+
+    if kind is None:
+        if not isinstance(value, Mapping):
+            _invalid(subject, {"fingerprint": value})
+        algorithm = value.get("algorithm")
+        kind = "file" if algorithm == "sha256" else "directory"
+    return _fingerprint(value, subject, kind)
+
+
+def _fingerprint(value: object, subject: str, kind: object) -> Fingerprint:
     if not isinstance(value, Mapping):
         _invalid(subject, {"fingerprint": value})
     value = cast(Mapping[str, Any], value)
     algorithm = value.get("algorithm")
     if algorithm == "identity-files-sha256-v1":
-        return _identity_files_fingerprint(value, subject, remote, kind)
+        return _identity_files_fingerprint(value, subject, kind)
     if algorithm == "identity-patterns-sha256-v1":
-        return _identity_pattern_fingerprint(value, subject, remote, kind)
+        return _identity_pattern_fingerprint(value, subject, kind)
     if algorithm in {"sha256", "directory-sha256-v1"}:
         digest = value.get("digest")
         if (
@@ -1220,36 +1145,23 @@ def _fingerprint(
             or DIGEST_RE.fullmatch(digest) is None
         ):
             _invalid(subject, {"fingerprint": dict(value)})
-        if algorithm == "directory-sha256-v1" and (remote or kind != "directory"):
+        if algorithm == "directory-sha256-v1" and kind != "directory":
             _invalid(subject, {"fingerprint": dict(value), "kind": kind})
-        if algorithm == "sha256" and not remote and kind != "file":
+        if algorithm == "sha256" and kind != "file":
             _invalid(subject, {"fingerprint": dict(value), "kind": kind})
         return Fingerprint(algorithm, digest=digest)
-    if algorithm == "immutable-source":
-        source_value = value.get("value")
-        if (
-            set(value) != {"algorithm", "value"}
-            or not remote
-            or not isinstance(source_value, str)
-            or not source_value
-            or len(source_value.encode("utf-8")) > MAX_EXTERNAL_FIELD_BYTES
-        ):
-            _invalid(subject, {"fingerprint": dict(value)})
-        return Fingerprint(algorithm, value=source_value)
     _invalid(subject, {"fingerprint": dict(value)})
 
 
 def _identity_files_fingerprint(
     value: Mapping[str, Any],
     subject: str,
-    remote: bool,
     kind: object,
 ) -> Fingerprint:
     digest = value.get("digest")
     files = _identity_files(value.get("files"), subject)
     if (
         set(value) != {"algorithm", "digest", "files"}
-        or remote
         or kind != "directory"
         or not isinstance(digest, str)
         or DIGEST_RE.fullmatch(digest) is None
@@ -1261,14 +1173,12 @@ def _identity_files_fingerprint(
 def _identity_pattern_fingerprint(
     value: Mapping[str, Any],
     subject: str,
-    remote: bool,
     kind: object,
 ) -> Fingerprint:
     digest = value.get("digest")
     patterns = _identity_patterns(value.get("patterns"), subject)
     if (
         set(value) != {"algorithm", "digest", "patterns"}
-        or remote
         or kind != "directory"
         or not isinstance(digest, str)
         or DIGEST_RE.fullmatch(digest) is None
@@ -1372,19 +1282,6 @@ def _require_unchanged_identity_patterns(
             {"reason": "pattern_matches_changed"},
             "Identity Patterns",
         )
-
-
-def _external(value: object, subject: str) -> ExternalBoundary:
-    if not isinstance(value, Mapping) or set(value) != {"source", "identity"}:
-        _invalid(subject, {"external": _fields(value)})
-    source = value.get("source")
-    identity = value.get("identity")
-    if not _bounded_text(source, MAX_EXTERNAL_FIELD_BYTES) or not _bounded_text(
-        identity, MAX_EXTERNAL_FIELD_BYTES
-    ):
-        _invalid(subject, {"external": dict(value)})
-    assert isinstance(source, str) and isinstance(identity, str)
-    return ExternalBoundary(source, identity)
 
 
 def _require_unique_inputs(inputs: tuple[InputResource, ...], path: Path) -> None:
@@ -1643,7 +1540,7 @@ def _read_json(path: Path) -> object:
 def _consistency_projection(item: InputResource) -> str:
     return canonical_json(
         {
-            "external": item.external.as_dict() if item.external else None,
+            "origin": item.origin,
             "fingerprint": item.fingerprint.as_dict(),
             "kind": item.kind,
         }

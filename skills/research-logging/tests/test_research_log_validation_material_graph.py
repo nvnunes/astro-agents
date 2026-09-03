@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest import mock
 
 from research_log_data import (  # noqa: E402
-    ExternalBoundary,
     build_local_input,
     data_file_from_inputs,
 )
@@ -31,7 +30,7 @@ def _surface(root: Path) -> tuple[Path, Path, object, object]:
         "file",
         "data/source.csv",
         entry_root=entry_root,
-        external=ExternalBoundary("fixture", "fixture-source/v1"),
+        origin=True,
     )
     data_file = data_file_from_inputs(
         entry_root / "data.json", entry_root=entry_root, inputs=(source,)

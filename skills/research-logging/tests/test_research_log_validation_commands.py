@@ -8,13 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 from research_log_data import (
-    ExternalBoundary,
-    Fingerprint,
     FingerprintObservation,
     InputResource,
     build_identity_directory,
     build_local_input,
-    build_remote_input,
     data_file_from_inputs,
     verify_fingerprint,
 )
@@ -28,29 +25,15 @@ def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
     entry_root.mkdir(parents=True, exist_ok=True)
     inputs = []
     for name, location in (data_index or {}).items():
-        boundary = ExternalBoundary("test fixture", f"fixture:{name}:v1")
-        if "://" in location:
-            inputs.append(
-                build_remote_input(
-                    name,
-                    location,
-                    external=boundary,
-                    fingerprint=Fingerprint(
-                        "immutable-source", value=f"fixture:{name}:v1"
-                    ),
-                    entry_root=entry_root,
-                )
+        inputs.append(
+            build_local_input(
+                name,
+                "directory" if Path(location).is_dir() else "file",
+                location,
+                entry_root=entry_root,
+                origin=True,
             )
-        else:
-            inputs.append(
-                build_local_input(
-                    name,
-                    "directory" if Path(location).is_dir() else "file",
-                    location,
-                    entry_root=entry_root,
-                    external=boundary,
-                )
-            )
+        )
     data_file = (
         data_file_from_inputs(
             entry_root / "data.json",
@@ -73,6 +56,31 @@ def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
 
 
 class CommandV2RoleTests(unittest.TestCase):
+    def test_pyrun_capture_is_an_exact_output_and_signature_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            write(context.entry_root / "scripts/run.py", "# fixture\n")
+            invocation = COMMAND.discover_commands(
+                """```bash
+./pyrun --capture-stdout data/run.log -- \\
+  scripts/run.py \\
+  --mode exact
+```
+""",
+                context,
+            ).invocations[0]
+
+            self.assertTrue(invocation.via_pyrun)
+            self.assertEqual(invocation.script_argument, "scripts/run.py")
+            self.assertEqual(
+                invocation.parameters,
+                ("--capture-stdout", "data/run.log", "--", "--mode", "exact"),
+            )
+            self.assertEqual(len(invocation.outputs), 1)
+            self.assertEqual(invocation.outputs[0].proof, "pyrun-capture")
+            self.assertEqual(invocation.outputs[0].target, "capture-stdout")
+
     def test_option_role_vocabulary_is_closed_and_unambiguous(self) -> None:
         accepted = {
             "input": "input",
@@ -93,10 +101,11 @@ class CommandV2RoleTests(unittest.TestCase):
             root = Path(directory)
             entry_root = root / "docs/log/entries/entry"
             write(entry_root / "data/model.csv", "value\n1\n")
+            write(entry_root / "data/catalog.csv", "value\n1\n")
             context = _context(
                 root,
                 {
-                    "catalog": "https://example.test/catalog.csv",
+                    "catalog": "data/catalog.csv",
                     "model": "data/model.csv",
                 },
             )
@@ -114,7 +123,7 @@ class CommandV2RoleTests(unittest.TestCase):
 
             self.assertEqual(len(result.invocations), 2)
             model, simulation = result.invocations
-            self.assertTrue(model.inputs[0].external)
+            self.assertTrue(model.inputs[0].origin)
             self.assertTrue(model.outputs[0].path.endswith("data/model.csv"))
             self.assertTrue(simulation.inputs[0].path.endswith("data/model.csv"))
             self.assertTrue(simulation.outputs[0].path.endswith("data/trials.npz"))
@@ -1262,7 +1271,7 @@ class CommandV2CollectionTests(unittest.TestCase):
                 "build",
                 ("build.h5", "build.yaml"),
                 entry_root=entry_root,
-                external=ExternalBoundary("fixture", "build/v1"),
+                origin=True,
             )
             context = replace(
                 _context(root),

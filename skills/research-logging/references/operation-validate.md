@@ -1,7 +1,9 @@
 # Validate Operation Instructions
 
 Use this operation for independent mechanical validation of one or more
-maintained research logs. Run Validate as a separate, read-only operation after Record. The
+maintained research logs. Run Validate as a separate operation after Record.
+It is read-only for research-owned material but normally writes generated
+validation state; use `--dry-run` for an entirely non-writing evaluation. The
 same agent may invoke it, but while validating it must not edit or repair
 research-owned material. A research-owned finding requires a later, separately
 authorized Record operation. `unsupported_metadata` is instead a
@@ -105,28 +107,34 @@ Report according to the returned status:
 When summarizing several completed logs in a Markdown table:
 
 - Use separate `Research log`, `Conformance`, `Evidence`, `Provenance`,
-  `Orphan findings`, and `Reports` columns with a valid Markdown header row.
+  `Hygiene`, and `Reports` columns with a valid Markdown header row.
 - Introduce the table with: `Conformance, Evidence, and Provenance show Pass
   when all applicable checks pass; otherwise they are shown as
-  passed/applicable. Orphan findings are unused-material artifact counts.
-  Not-applicable checks are excluded from applicable denominators and reported
-  separately.`
+  passed/applicable. Hygiene is the total number of orphan artifacts,
+  unmatched outputs, and unused input declarations.
+  Unconfirmed Provenance is unavailable rather than failed and is shown
+  separately as N/A. Not-applicable checks are excluded from applicable
+  denominators and reported separately as not applicable.`
 - Render Conformance and Evidence with one or more applicable checks as `Pass`
   when every applicable check passes. When either scope has a failing check,
   render it as `passed/applicable`, where `applicable = pass + fail`.
 - Render Provenance from the unique-artifact row in `validation.md`, not from
   the number of provenance checks. Use `Pass` only when all counted artifacts
-  pass and the scope status is `pass`; otherwise render
-  `passed/applicable artifacts`. If the scope fails without a failed counted
-  artifact, append ` (scope findings)` so command-level findings remain visible.
-- Append `(+N N/A)` only when a scope with applicable checks contains `N`
-  actual `not_applicable` checks. When a scope has no applicable checks and
-  only `N` not-applicable checks, render it as `N N/A`. Exclude
-  not-applicable checks from the applicable denominator.
-- Render Orphan findings from the unique orphan-artifact row in
-  `validation.md`. Do not add separately reported `orphan.input.unused`
-  declarations to that artifact count. Render `0` when orphan classification
-  ran without a material finding.
+  pass, none are unavailable, and the scope status is `pass`; otherwise render
+  `passed/applicable artifacts`. A `provenance.output.unconfirmed` artifact is
+  unavailable, not failed: exclude it from the applicable denominator and
+  append `(+N N/A)` for `N` such artifacts. When all counted Provenance
+  artifacts are unconfirmed, render `N/A (N artifacts)`. If the scope fails
+  without a failed counted artifact, append ` (scope findings)` so
+  command-level findings remain visible.
+- Report actual `not_applicable` checks as `(+N not applicable)` when a scope
+  also has applicable checks, or as `N not applicable` when it has no
+  applicable checks. Exclude them from the applicable denominator. Do not use
+  `N/A` for `not_applicable`; in this summary `N/A` means an unavailable
+  Provenance observation.
+- Render Hygiene from its single finding-count row in `validation.md`. Do not
+  reconstruct or deduplicate that number from individual machine checks.
+  Render `0` when Hygiene evaluation ran without a finding.
 - Leave the scope cell blank when its total check count is zero. Do not render
   an empty scope as `0/0`, `NA`, `N/A`, or `not applicable`.
 - Count `not_applicable` checks separately from failures in both per-log and
@@ -137,12 +145,14 @@ When summarizing several completed logs in a Markdown table:
 Use this shape:
 
 ```md
-| Research log | Conformance | Evidence | Provenance | Orphan findings | Reports |
+| Research log | Conformance | Evidence | Provenance | Hygiene | Reports |
 | --- | ---: | ---: | ---: | ---: | --- |
 | Example findings | Pass | 3/5 | 4/5 artifacts | 7 | [Human](...) · [JSON](...) |
-| Passing scopes | Pass | Pass | Pass (+2 N/A) | 0 | [Human](...) · [JSON](...) |
+| Passing scopes | Pass | Pass | Pass | 0 | [Human](...) · [JSON](...) |
+| Awaiting confirmed runs | Pass | Pass | 4/4 artifacts (+2 N/A) | 0 | [Human](...) · [JSON](...) |
+| Only unconfirmed provenance | Pass | Pass | N/A (6 artifacts) | 0 | [Human](...) · [JSON](...) |
 | No evidence checks | Pass |  |  | 0 | [Human](...) · [JSON](...) |
-| Orphan classification not run | 0/1 | 0/1 |  |  | [Human](...) · [JSON](...) |
+| Hygiene evaluation not run | 0/1 | 0/1 |  |  | [Human](...) · [JSON](...) |
 ```
 
 Do not invent item-specific repair guidance. A separately authorized Record

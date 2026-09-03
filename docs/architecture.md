@@ -42,25 +42,21 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
-Research logging has three complementary surfaces with distinct audiences and
-ownership:
+Research logging has three distinct surfaces with separate authority:
 
-- `docs/research-logging.md` explains the workflow, responsibilities, and
-  visible research record for researchers. It does not duplicate technical
-  metadata syntax or agent procedures.
 - `skills/research-logging/` is the self-contained runtime surface containing
-  the detailed operational and authoring instructions used by agents. It
-  implements the current evidence contract without importing the maintainer
-  specification into agent context.
+  the operational and authoring instructions used by agents. It is
+  self-documenting and owns agent behavior.
 - `docs/research-log-mechanical-validator-spec.md` is the normative
-  implementation contract for the code-only validator, its tests, generated
-  state, cache, and diagnostics. It specifies evidence metadata because that
-  metadata is validator input, not because agents load the specification.
+  implementation contract that the mechanical-validation CLI and its
+  supporting tools must follow.
+- `docs/research-logging.md` is human-facing researcher documentation. It
+  explains how researchers use the skill, what they should expect from it, and
+  which research decisions remain theirs.
 
-The human guide and agent skill remain conceptually aligned, but they do not
-need to repeat the same level of detail. The skill carries the bounded
-operational rules agents need; the specification resolves implementation and
-maintenance questions and must describe only the current system.
+The three surfaces must remain conceptually compatible, but they are not
+mirrors. The human guide is not a specification or completeness checklist for
+the agent surface or validation tools.
 
 ## AGENTS.md As Project Brief
 
@@ -208,9 +204,9 @@ Future validation changes must preserve these invariants:
 - **Observational validation:** A log may change while validation is in
   progress. Validation reflects the information observed when each check was
   performed.
-- **External evidence:** Evidence may extend across logs. Treat that material
-  as external evidence to the log being validated without adding repository
-  coordination or reconciliation requirements.
+- **Origin evidence:** Evidence may extend across logs. Declare the locally
+  accessible material as an origin of the consuming log without importing the
+  other log's graph or adding repository coordination requirements.
 - **Explicit uncertainty:** Missing, inaccessible, or ambiguous evidence must
   remain visible and must not be treated as successful validation.
 - **Completed publication:** Publish a coherent completed mechanical bundle.
@@ -231,6 +227,16 @@ Future validation changes must preserve these invariants:
 - **Code-only mechanical scope:** Mechanical validation uses deterministic
   code and precise authored metadata. Semantic review and reproduction are
   separate workflows with separate ownership.
+- **End-to-end Provenance:** A passing evidence-rooted chain identifies the
+  retained artifact, reaches explicit origins through unique producers, and
+  matches each generated output to current output and script fingerprints,
+  exact ordered parameters, and direct-input fingerprints recorded by `pyrun`.
+  This is a bounded support claim, not causation, complete dependency capture,
+  scientific validity, or reproduction.
+- **Output-owned execution state:** `pyrun-outputs.json` is keyed by output so
+  command splitting, merging, and renaming reconcile through current graph
+  membership rather than command identity. Validation reads this state but
+  does not write it.
 - **Separate write ownership:** Validation agents manage validation artifacts
   and do not modify research-log entries, scripts, or artifacts. Research
   agents manage research material and do not modify validation artifacts.

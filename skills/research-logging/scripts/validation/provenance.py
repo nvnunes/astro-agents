@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, NoReturn, Sequence
+from typing import Callable, Mapping, NoReturn, Sequence
 
 from research_log_data import InputResource
 
@@ -39,19 +39,34 @@ class _WalkState:
     lineage: list[tuple[str, str]]
     lineage_seen: set[tuple[str, str]]
     visiting: set[str]
+    support: list[Mapping[str, object]]
+    producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
+    confirmed_record: Callable[[Invocation, str], bool] | None
 
 
 def evaluate_provenance(
     material: Path | str,
     invocations: Sequence[Invocation],
+    *,
+    producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None = None,
+    confirmed_record: Callable[[Invocation, str], bool] | None = None,
 ) -> ProvenanceResult:
     """Require one producer and trace only its mechanically proved inputs."""
 
     canonical = Path(material).resolve().as_posix()
-    if not Path(canonical).is_file() and not Path(canonical).is_dir():
-        _fail("material.unresolved", canonical, {"exists": False})
     outputs = _output_index(invocations)
-    state = _WalkState(outputs, invocations, [], set(), [], set(), set())
+    state = _WalkState(
+        outputs,
+        invocations,
+        [],
+        set(),
+        [],
+        set(),
+        set(),
+        [],
+        producer_validator,
+        confirmed_record,
+    )
     _walk_material(canonical, None, state, starting=True, depth=0)
     by_identity = {invocation.identity: invocation for invocation in invocations}
     payload = {
@@ -62,7 +77,8 @@ def evaluate_provenance(
             _invocation_dependency(by_identity[identity])
             for identity in state.producers
         ],
-        "version": "input-registry-2",
+        "support": state.support,
+        "version": "end-to-end-provenance-1",
     }
     dependency = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     return ProvenanceResult(
@@ -81,49 +97,70 @@ def evaluate_many(
     return tuple(evaluate_provenance(material, invocations) for material in materials)
 
 
-def require_external_boundary(
+def require_origin_boundary(
     material: Path | str,
     resource: InputResource,
     invocations: Sequence[Invocation],
+    *,
+    confirmed_record: Callable[[Invocation, str], bool] | None = None,
 ) -> None:
-    """Require a declared external evidence input to have no local producer."""
+    """Reject an origin only when it hides confirmed ``pyrun`` production."""
 
-    if resource.external is None:
-        raise ValueError("external-boundary validation requires external metadata")
+    if not resource.origin:
+        raise ValueError("origin-boundary validation requires origin: true")
     if resource.kind == "directory":
         directory_producers = _directory_producers(
             Path(resource.canonical_target), invocations
         )
-        if directory_producers:
+        confirmed = [
+            producer
+            for producer in directory_producers
+            if producer.via_pyrun
+            and confirmed_record is not None
+            and any(
+                confirmed_record(producer, output)
+                for output in _producer_outputs_within(
+                    producer, Path(resource.canonical_target)
+                )
+            )
+        ]
+        if confirmed:
             _fail(
-                "directory.external.conflict",
+                "directory.origin.conflict",
                 resource.name,
-                {"producers": sorted(directory_producers)},
+                {"producers": sorted(item.identity for item in confirmed)},
             )
         return
     canonical = Path(material).resolve().as_posix()
     file_producers = _output_index(invocations).get(canonical, ())
-    if len(file_producers) == 1:
+    confirmed = [
+        producer
+        for producer in file_producers
+        if producer.via_pyrun
+        and confirmed_record is not None
+        and confirmed_record(producer, canonical)
+    ]
+    if len(confirmed) == 1:
         _fail(
-            "data.external.invalid",
+            "data.origin.invalid",
             resource.name,
-            {"producer": file_producers[0].identity},
+            {"producer": confirmed[0].identity},
         )
-    if len(file_producers) > 1:
+    if len(confirmed) > 1:
         _fail(
             "lineage.ambiguous",
             canonical,
-            {"producers": [producer.identity for producer in file_producers]},
+            {"producers": [producer.identity for producer in confirmed]},
         )
 
 
 def _directory_producers(
     root: Path, invocations: Sequence[Invocation]
-) -> set[str]:
+) -> tuple[Invocation, ...]:
     """Return commands producing a directory root, member, or overlapping tree."""
 
     root = root.resolve()
-    result = {
+    identities = {
         invocation.identity
         for invocation in invocations
         if any(
@@ -131,7 +168,7 @@ def _directory_producers(
             for output in invocation.outputs
         )
     }
-    result.update(
+    identities.update(
         invocation.identity
         for invocation in invocations
         for collection in invocation.collections
@@ -143,7 +180,26 @@ def _directory_producers(
             or _within(root, Path(collection.root).resolve())
         )
     )
-    return result
+    return tuple(
+        invocation for invocation in invocations if invocation.identity in identities
+    )
+
+
+def _producer_outputs_within(invocation: Invocation, root: Path) -> tuple[str, ...]:
+    root = root.resolve()
+    outputs = {
+        output.path
+        for output in invocation.outputs
+        if _within(Path(output.path), root)
+    }
+    outputs.update(
+        collection.root
+        for collection in invocation.collections
+        if collection.direction == "output"
+        and collection.root is not None
+        and _within(Path(collection.root), root)
+    )
+    return tuple(sorted(outputs))
 
 
 def _walk_material(
@@ -160,6 +216,21 @@ def _walk_material(
             material,
             {"depth": depth, "limit": MAX_LINEAGE_DEPTH},
         )
+    producer = _unique_producer(material, consumer, state, starting=starting)
+    _require_producer_ready(material, producer, state)
+    _record_producer_lineage(producer, consumer, state)
+    state.visiting.add(producer.identity)
+    _walk_invocation(producer, state, depth)
+    state.visiting.remove(producer.identity)
+
+
+def _unique_producer(
+    material: str,
+    consumer: Invocation | None,
+    state: _WalkState,
+    *,
+    starting: bool,
+) -> Invocation:
     candidates = [
         invocation
         for invocation in state.outputs.get(material, ())
@@ -178,7 +249,19 @@ def _walk_material(
             material,
             {"producers": [item.identity for item in candidates]},
         )
-    producer = candidates[0]
+    return candidates[0]
+
+
+def _require_producer_ready(
+    material: str, producer: Invocation, state: _WalkState
+) -> None:
+    path = Path(material)
+    if not path.is_file() and not path.is_dir():
+        _fail(
+            "provenance.output.missing",
+            material,
+            {"producer": producer.identity},
+        )
     if producer.identity in state.visiting:
         _fail("lineage.cycle", material, {"invocation": producer.identity})
     if _requires_local_script(producer) and producer.script_identity is None:
@@ -188,6 +271,13 @@ def _walk_material(
             {"script": producer.script},
         )
     _validate_output_directories(producer, state.invocations)
+    if state.producer_validator is not None:
+        state.support.append(state.producer_validator(producer, material))
+
+
+def _record_producer_lineage(
+    producer: Invocation, consumer: Invocation | None, state: _WalkState
+) -> None:
     if producer.identity not in state.producer_seen:
         state.producers.append(producer.identity)
         state.producer_seen.add(producer.identity)
@@ -196,34 +286,26 @@ def _walk_material(
         if edge not in state.lineage_seen:
             state.lineage.append(edge)
             state.lineage_seen.add(edge)
-    state.visiting.add(producer.identity)
-    _walk_invocation(producer, state, depth)
-    state.visiting.remove(producer.identity)
 
 
 def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> None:
     if not invocation.inputs:
         return
     for relationship in invocation.inputs:
+        if relationship.origin and relationship.input_resource is not None:
+            require_origin_boundary(
+                relationship.path,
+                relationship.input_resource,
+                state.invocations,
+                confirmed_record=state.confirmed_record,
+            )
+            continue
         if (
             relationship.input_resource is not None
             and relationship.input_resource.kind == "directory"
         ):
             _walk_directory_input(relationship, invocation, state, depth)
             continue
-        prior_producers = tuple(
-            producer
-            for producer in state.outputs.get(relationship.path, ())
-            if producer.sequence < invocation.sequence
-        )
-        if relationship.external and not prior_producers:
-            continue
-        if relationship.external and len(prior_producers) == 1:
-            _fail(
-                "data.external.invalid",
-                relationship.named_input or relationship.path,
-                {"producer": prior_producers[0].identity},
-            )
         _walk_material(
             relationship.path,
             invocation,
@@ -241,6 +323,14 @@ def _walk_directory_input(
 ) -> None:
     resource = relationship.input_resource
     assert resource is not None
+    if relationship.origin:
+        require_origin_boundary(
+            relationship.path,
+            resource,
+            state.invocations,
+            confirmed_record=state.confirmed_record,
+        )
+        return
     root = Path(resource.canonical_target)
     earlier = tuple(
         invocation
@@ -277,14 +367,6 @@ def _walk_directory_input(
         )
     }
     conflicts = (producers_within - exact_ids) | overlapping
-    if relationship.external:
-        if exact or producers_within or overlapping:
-            _fail(
-                "directory.external.conflict",
-                resource.name,
-                {"producers": sorted(exact_ids | producers_within | overlapping)},
-            )
-        return
     if len(exact) != 1 or conflicts:
         _fail(
             "directory.producer.conflict",
@@ -325,6 +407,8 @@ def _invocation_dependency(invocation: Invocation) -> Mapping[str, object]:
         "identity": invocation.identity,
         "inputs": [_relationship_dependency(value) for value in invocation.inputs],
         "outputs": [_relationship_dependency(value) for value in invocation.outputs],
+        "parameters": list(invocation.parameters),
+        "script_argument": invocation.script_argument,
         "script_identity": invocation.script_identity,
     }
 
@@ -335,7 +419,7 @@ def _relationship_dependency(
     resource = relationship.input_resource
     return {
         "direction": relationship.direction,
-        "external": relationship.external,
+        "origin": relationship.origin,
         "input": resource.as_dict() if resource is not None else None,
         "input_identity": resource.content_identity if resource is not None else None,
         "named_input": relationship.named_input,

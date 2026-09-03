@@ -10,9 +10,9 @@ blank line:
 Validation: [latest completed report](<log>/validation.md)
 ```
 
-The link contains no date, result, failure count, freshness claim, or rules
-version. It is the summary's complete validation surface and has no matching
-item in `## Contents`.
+The link contains no date, result, failure count, artifact-currentness claim,
+or rules version. It is the summary's complete validation surface and has no
+matching item in `## Contents`.
 
 The link is research-document scaffolding. Record initialization installs it.
 Record, Replace, Update Summary, and Reorganize preserve it exactly and do not

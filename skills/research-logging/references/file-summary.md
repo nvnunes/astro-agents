@@ -77,6 +77,8 @@ wording unless the researcher asks to revise it.
   promote unsupported decision-shaped material merely because it appears in an
   entry.
 - Do not make the summary carry entry-level reconstruction detail unless the user wants it there.
+- Keep tables, images, saved command output, and artifact links in entries, not
+  in the maintained summary.
 - Keep `Entries` complete when entries are added, renamed, split, merged, or retitled.
 - Link summary claims back to supporting entries when that helps later review.
 - Prefer entry-ID link labels, such as `[e004](benchmarking/entries/.../e004.md)`, when the surrounding text gives enough context.

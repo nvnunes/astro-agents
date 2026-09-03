@@ -30,10 +30,16 @@ history for detailed change-by-change context.
   skipped, and association and summary failures use their normative codes and
   scopes. Canonical record dependencies now preserve exact decimal locator
   values while remaining valid generated-record JSON.
-- Renamed the mechanical validation `hygiene` scope to `orphan`, including its
-  check identities, failure codes, cache projections, reports, and authoring
-  guidance. Generated records retain schema 1 and are rebuilt under the new
-  rules version rather than supporting the retired vocabulary. Rules-version
-  changes invalidate cached checks while preserving compatible artifact
-  identities, and zero-dimensional NPZ members requested as aligned arrays now
-  produce a precise type-mismatch finding instead of terminating validation.
+- Added end-to-end Provenance validation. Entry-root `data.json` v3 declares
+  explicit origin boundaries, while `pyrun` maintains output-keyed
+  `pyrun-outputs.json` records containing current output and script
+  fingerprints, exact ordered parameters, and direct-input fingerprints.
+  `pyrun` can also capture stdout, stderr, or a merged stream as a retained
+  output without relying on shell redirection.
+- Kept `orphan` as the schema-1 machine scope while using Hygiene as the
+  human-facing category for orphan artifacts, unmatched output records, and
+  unused input declarations. Missing graph-declared outputs instead fail
+  Provenance. Rules-version changes invalidate cached checks while preserving
+  compatible artifact identities.
+- Zero-dimensional NPZ members requested as aligned arrays now produce a
+  precise type-mismatch finding instead of terminating validation.

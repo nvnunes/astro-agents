@@ -92,15 +92,16 @@ higher complexity score, or growth in the total advisory finding count.
 
 Treat maintained summaries, entries, `data.json`, `retention.json`, evidence
 records, commands, scripts, retained evidence, scientific artifacts, and
-authored prose as research-owned. Mechanical validation may write only the generated artifacts
-defined in
+authored prose as research-owned. `pyrun` alone owns entry-root
+`pyrun-outputs.json`; validation reads but never writes it. Mechanical
+validation may write only the generated artifacts defined in
 `skills/research-logging/references/file-validation-records.md`. Research
 operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
-- the public CLI accepts only `validate`, `--summary`, `--date`,
-  `--recompute`, and `--dry-run`;
+- the public CLI exposes only `discover --root` and `validate` with
+  `--summary`, `--date`, `--recompute`, and `--dry-run`;
 - a published validation prints a bounded result with generated-report paths
   instead of duplicating the complete mechanical record on standard output,
   while an unpublished dry run retains its complete record;
@@ -144,8 +145,9 @@ The research-log test gate must verify:
   expected-fingerprint edits preserve selection-cache eligibility when the
   resolved content identity, source profile, locator, and evaluator are
   unchanged;
-- input verification and evidence selection share one strong source identity,
-  so a cold evidence file is hashed once and a hot run performs no new hash;
+- input verification and evidence selection share one strong source identity;
+  output, script, input, and `pyrun-outputs.json` observations reuse the same
+  fingerprint cache rather than introducing another hash implementation;
 - warm CSV, TSV, JSON, text, NPZ, and HDF5 selection hits perform no full
   payload read, source parse, archive open, or dataset materialization, while
   still checking reader availability and final source stability;
@@ -155,9 +157,10 @@ The research-log test gate must verify:
 - newly hashed scripts and locator sources publish digest and filesystem
   metadata from one unchanged before-and-after observation, and a concurrent
   change is unavailable rather than cacheable;
-- project-cache file observations avoid rehashing local files, including
-  external paths, only when canonical path, kind, size, modification time, and
-  change time still match;
+- project-cache file observations avoid rehashing local files, including paths
+  outside the entry, only when canonical path, kind, size, modification time,
+  and change time still match; metadata drift causes recomputation, while
+  matching recomputed bytes remain unchanged for Provenance;
 - project-cache directory observations retain deterministic membership and
   member-file identities, reuse unchanged members after a partial change, and
   hash only new or changed files before reconstructing the aggregate
@@ -188,10 +191,10 @@ The research-log test gate must verify:
   sections, shows reproduction as `not_yet_run`, and has no combined
   conclusion;
 - the mechanical report shows completion and date, check counts for
-  conformance and evidence, unique starting-artifact counts for provenance,
-  unique artifact counts and maximal directory groups for orphans, unused
-  input declarations separately, and every other non-passing check grouped by
-  entry without rendering individual passing checks;
+  Conformance and Evidence, unique starting-artifact counts for Provenance,
+  one Hygiene finding count, and every non-Hygiene non-passing check grouped by
+  entry without rendering individual passing checks; `mechanical.json` keeps
+  orphan artifacts, unmatched outputs, and unused declarations distinct;
 - canonical discovery finds maintained summaries from their stable navigation
   contract without filename-based exclusions;
 - dry-run writes nothing, incomplete evaluation publishes no per-log bundle,
@@ -200,10 +203,23 @@ The research-log test gate must verify:
   prior per-log bundle;
 - validation leaves all research-owned bytes unchanged and preserves the
   maintained summary's exact stable report link;
-- evidence comparison, provenance, summary forwarding, and orphan detection
+- evidence comparison, Provenance, summary forwarding, and Hygiene evaluation
   remain independent code-only scopes with precise failure payloads;
-- external evidence is observed as a dependency of the current log without
+- cross-log origin evidence is observed as a dependency of the current log without
   reading another log's validation state;
+- every reached generated artifact requires one output-keyed confirmed record
+  whose current output fingerprint, script path and fingerprint, exact ordered
+  parameters, and direct input fingerprint mapping match the current graph;
+- changing a recorded parameter without rerunning, changing script or input
+  bytes, changing output bytes, deleting an expected output, or retaining only
+  an unconfirmed baseline fails Provenance;
+- output records absent from the complete current graph are unmatched Hygiene
+  findings and take precedence over orphan reporting for the same existing
+  file, while graph outputs outside the evidence closure remain ordinary
+  orphans unless retained;
+- `pyrun` capture options record stdout, stderr, or their merged stream without
+  relying on shell redirection, publish no records on failed execution or
+  incomplete observation, and update each output key independently;
 - unchanged dependency projections produce matching passing checks, while
   changed dependencies alter only affected checks;
 - source observations, locator evaluations, script hashes, and command

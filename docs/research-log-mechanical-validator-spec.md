@@ -2,15 +2,47 @@
 
 ## Status And Authority
 
-Status: active mechanical-validator implementation specification as of
-2026-09-01. The approved next material-graph contract is normative for the
-in-place upgrade but becomes active only after implementation and migration.
+Status: current mechanical-validator implementation specification. The
+end-to-end Provenance contract is in force.
 
 This document is the normative implementation contract for the code-only
-research-log mechanical validator, its tests, generated records, cache,
-diagnostics, and public operation. It defines the evidence-record, association,
-provenance, orphan-detection, and generated-state contracts that validator code
-implements.
+research-log mechanical-validation CLI and its supporting tools. Their code,
+tests, generated records, cache, diagnostics, and public operation must adhere
+to this specification. It defines the evidence-record, association, Provenance,
+Hygiene, and generated-state contracts that validator code implements.
+
+This specification does not define agent behavior or teach researchers how to
+use the research-logging workflow. `skills/research-logging/` is the
+self-contained and self-documenting agent surface. `docs/research-logging.md`
+is human-facing researcher documentation concerned only with how that skill is
+used and what researchers should expect from it.
+
+## Current Versions
+
+The specification describes the current contract. This table centralizes its
+versioned surfaces; the rest of the document names a version only where
+mechanical dispatch, serialization, dependency identity, cache compatibility,
+or evolution requires it.
+
+| Surface | Current version |
+| --- | --- |
+| Evidence records | `research-log-evidence/v3` |
+| Locator language | 2; standalone locators use the `v2:` prefix |
+| Transformation language | 2; standalone transformations use the `v2:` prefix |
+| Input registry | `research-log-data/v3` |
+| `pyrun` output support | `research-log-pyrun-outputs/v1` |
+| Retention registry | `research-log-retention/v1` |
+| Directory observations | `research-log-directory-observation/1` |
+| Directory fingerprints | `research-log-directory-fingerprint/1`, `research-log-identity-files-fingerprint/1`, and `research-log-identity-patterns-fingerprint/1` |
+| Locator evaluator | `research-log-locator-evaluator/1` |
+| Section classifier | `entry-section-labels/1` |
+| Selection-cache serialization | `research-log-selection-result/1` |
+| Mechanical rules | `research-log-mechanical/end-to-end-provenance-1` |
+| Mechanical record | `research-log-mechanical/1` |
+| Validation results | `research-log-validation-result/1` and `research-log-validation-cli-result/1` |
+| Discovery results | `research-log-discovery-result/1` |
+| Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
+| Project fingerprint cache | SQLite schema 1 |
 
 The specification includes `evidence.json`, presentation-marker, locator,
 transformation, and command-discovery syntax because these are inputs to the
@@ -19,13 +51,16 @@ authoring and operational rules agents need to produce compatible research
 logs; ordinary research-agent work does not load this implementation
 specification.
 
-The provenance audit is rooted in evidence and direct artifact presentations,
-not in complete validation of every recorded command. Recorded command
-surfaces, optional adjacent command annotations, exact path and named-input
-connections, and observed retained material establish provenance without a
-parallel authored provenance file. Resolved scripts remain workflow and
-currentness inputs, but their internals do not establish material
-associations.
+Provenance lineage and execution-support validation is rooted in evidence and
+direct artifact presentations. Commands outside that closure do not require
+confirmed output support or recursive lineage validation. Separately,
+complete-graph output reconciliation reports every graph-declared output whose
+artifact is absent as a Provenance failure and every output record absent from
+the current graph as a Hygiene finding. Recorded command surfaces, optional
+adjacent command annotations, exact path and named-input connections, `pyrun`
+output support, and observed retained material establish Provenance without an
+authored lineage graph. Resolved script bytes are part of the output-support
+signature, but script internals do not establish material associations.
 
 The complete specification owns:
 
@@ -34,12 +69,15 @@ The complete specification owns:
 - inline summary-to-entry evidence references, including exact table-cell
   coordinates;
 - source expressions and whole-artifact references;
-- locator versions and their ordered typed selections;
+- locator syntax and its ordered typed selections;
 - presentation transformations over those selections;
 - evidence-rooted recorded-command discovery, producer and upstream lineage,
-  trusted external and model/simulation roots, material collections, and
-  named-input connection;
-- orphan detection for unused retained material and input declarations;
+  explicit origin boundaries, `pyrun` output support, material collections,
+  and named-input connection;
+- complete-graph output reconciliation, including missing-output Provenance
+  failures and unmatched-output Hygiene findings;
+- Hygiene classification for unused retained material and unused input
+  declarations;
 - validation evaluation order, result scopes, failures, resource bounds, and
   currentness composition;
 - the public validation operation, result envelope, completion and exit
@@ -107,7 +145,7 @@ not ask an LLM to infer the connection or require a parallel provenance record.
 
 This specification owns:
 
-- active entry-local v2 `evidence.json` serialization, schema, and record-level
+- entry-local evidence serialization, schema, and record-level
   constraints;
 - stable presentation and evidence-record identities;
 - exact presentation-to-record association;
@@ -155,24 +193,21 @@ A locator does not decide:
 - producer, provenance, semantic-review, or reproduction conclusions.
 
 The locator is one evidence-record component. The presentation-transformation,
-evidence-association, command-provenance, material-graph, orphan-detection, and composed
+evidence-association, command-Provenance, material-graph, Hygiene, and composed
 outcome subcontracts below own the remaining stages.
 
-## Active Version
+## Locator Language
 
-V2 is the only active locator language.
-
-- A standalone v2 locator begins with `v2:`.
-- An evidence v3 source embeds the locator's v2 JSON object without that
-  prefix.
+- A standalone locator begins with the `v2:` prefix.
+- An evidence record embeds the locator's JSON object without that prefix.
 - A locator with any other `v<integer>:` prefix fails as unsupported.
 - Version selection occurs before version-specific parsing.
-- A v2 parse or evaluation failure is a mechanical failure and is not retried
+- A parse or evaluation failure is a mechanical failure and is not retried
   under another interpretation.
 
-## Evidence V3 Source Objects
+## Evidence Source Objects
 
-An evidence v3 record does not serialize source expressions into one
+An evidence record does not serialize source expressions into one
 delimited string. Its ordered `sources` array contains objects with exactly
 `source` and `locator`:
 
@@ -189,11 +224,11 @@ delimited string. Its ordered `sources` array contains objects with exactly
 owning entry's input registry. JSON owns field separation; the string has no
 embedded source-list or locator delimiter grammar.
 
-`locator` is the JSON object portion of an explicit v2 locator. It must not
-contain a `v2:` string prefix. The evaluator treats it as v2 before parsing and
-uses `v2:` followed by its canonical JSON serialization as the locator
-identity. A v2 source object cannot contain a serialized locator string or omit
-`locator`.
+`locator` is the JSON object portion of a locator. It must not contain a `v2:`
+string prefix. The evaluator applies the current locator grammar before
+parsing and uses `v2:` followed by its canonical JSON serialization as the
+locator identity. A source object cannot contain a serialized locator string
+or omit `locator`.
 
 Array order defines transformation input slots. There is no outer source-list
 parser, mixed locator version, or CSV escaping in this host form.
@@ -207,11 +242,11 @@ Evaluation proceeds in this order:
 3. Select the locator version.
 4. Parse and normalize under that version.
 5. Evaluate under the source profile and resource bounds.
-6. Verify any declared v2 identity, cardinality, and shape expectations.
+6. Verify any declared identity, cardinality, and shape expectations.
 7. Return a selection, a stable failure, or an unavailable observation.
 
 A conforming evaluator must not guess misspelled fields, choose among ambiguous
-matches, infer omitted historical facts, recursively search unless the selected
+matches, infer omitted facts, recursively search unless the selected
 version explicitly requires it, or reinterpret a failed locator under another
 version.
 
@@ -262,7 +297,7 @@ A failed locator is a completed mechanical result with no semantic fallback.
 
 ## Common Selection Result
 
-The active v2 evaluator returns this ordered selection shape:
+The locator evaluator returns this ordered selection shape:
 
 - the declared and effective locator version;
 - the canonical locator identity;
@@ -312,7 +347,7 @@ express unambiguously.
 
 ### Typed Equality
 
-V2 `eq` and `in` filters use canonical typed equality.
+`eq` and `in` filters use canonical typed equality.
 
 - Equal values have the same canonical type and value projection.
 - NaN is not equal to any value, including another NaN.
@@ -334,13 +369,13 @@ Unless a version or source profile states otherwise:
 A locator does not reorder selected records for display. Presentation ordering
 belongs to the transformation contract.
 
-## V2: Expanded Mechanical Locator Language
+## Mechanical Locator Language
 
-### V2 Purpose
+### Purpose
 
-V2 maximizes deterministic, bounded mechanical selection.
+The locator language provides deterministic, bounded mechanical selection.
 
-V2 adds:
+It supports:
 
 - unambiguous JSON encoding;
 - explicit paths and mechanically typed predicates;
@@ -351,9 +386,9 @@ V2 adds:
 - exact currentness projections;
 - stable, precisely identified failure behavior.
 
-### V2 Encoding
+### Encoding
 
-A v2 locator is `v2:` followed by one UTF-8 JSON object.
+A standalone locator is `v2:` followed by one UTF-8 JSON object.
 
 ```text
 v2:{"path":["simulation",0,"throughput_pix_per_s"]}
@@ -363,10 +398,10 @@ The top-level object may contain only:
 
 | Key | Value | Purpose |
 | --- | --- | --- |
-| `path` | v2 path | Select a base node or expanded node set. |
-| `select` | non-empty array of relative v2 paths | Select fields, members, or child values in declared order. |
+| `path` | locator path | Select a base node or expanded node set. |
+| `select` | non-empty array of relative locator paths | Select fields, members, or child values in declared order. |
 | `where` | non-empty array of conditions | Filter record-like or aligned-array candidates. |
-| `identity` | non-empty array of relative v2 paths | Declare stable record identity fields. |
+| `identity` | non-empty array of relative locator paths | Declare stable record identity fields. |
 | `property` | string | Select a supported structural property. |
 | `text` | text-selector object | Select bounded logical text lines. |
 | `expect` | expectation object | Declare exact membership, item count, and shape. |
@@ -383,9 +418,9 @@ Key relationships:
   source profile.
 - A source profile may require or prohibit additional combinations.
 
-### V2 Paths
+### Paths
 
-A v2 path is a JSON array. The empty array denotes the source root.
+A locator path is a JSON array. The empty array denotes the source root.
 
 Each path segment is exactly one of:
 
@@ -417,7 +452,7 @@ Rules:
   mismatch.
 - Every expanded node contributes its resolved canonical coordinate.
 
-### V2 Field Selection
+### Field Selection
 
 `select` is an ordered array of relative paths evaluated against each candidate
 record, mapping, group, or aligned collection.
@@ -432,7 +467,7 @@ record, mapping, group, or aligned collection.
 - Results use candidate-major, then `select`, order.
 - Relabeling is not a locator operation.
 
-### V2 Authored Literals
+### Authored Literals
 
 Predicate values and expected identity values use ordinary JSON `null`,
 Booleans, strings, integers, and finite numbers whenever those forms are
@@ -463,14 +498,14 @@ tables, mappings, missing values, and masked values are not authored literals.
 A source profile may reject an authored literal type it cannot represent, but
 must not coerce it silently.
 
-### V2 Conditions
+### Conditions
 
 `where` conditions combine with AND. Each condition contains:
 
-- `path`: one relative v2 path;
+- `path`: one relative locator path;
 - `op`: one supported operator;
-- `value`, containing one v2 authored literal, for `eq`;
-- `values`, containing a non-empty array of v2 authored literals, for `in`; and
+- `value`, containing one authored literal, for `eq`;
+- `values`, containing a non-empty array of authored literals, for `in`; and
 - optional `parse`, equal to `integer` or `decimal`, for comparison against a
   lexical string field.
 
@@ -495,7 +530,7 @@ Predicate-side parsing is part of source selection, not presentation:
 - Every condition is type-checked for every candidate presented to `where`.
   Short-circuit evaluation of another condition must not hide a missing field,
   invalid parse, or type mismatch.
-- `integer` accepts exactly the v2 integer-string grammar.
+- `integer` accepts exactly the locator integer-string grammar.
 - `decimal` accepts the JSON number grammar and maps it to the canonical
   coefficient-and-exponent representation. Leading or trailing whitespace,
   non-finite spellings, and locale-specific notation fail.
@@ -512,7 +547,7 @@ surface area.
 Conditions are filters only. They do not calculate aggregates, tolerances,
 scientific classifications, or derived values.
 
-### V2 Record Identity
+### Record Identity
 
 `identity` declares the relative paths whose ordered values identify each
 selected record.
@@ -530,7 +565,7 @@ selected record.
   unless the source profile supplies an inherent stable coordinate, such as an
   array index.
 
-### V2 Expectations
+### Expectations
 
 Optional `expect` may contain only:
 
@@ -549,7 +584,7 @@ When `expect` is present, at least one expectation key is required.
   occurrence selector is applied.
 - `items` counts final selected values after `select`, `property`, or text
   occurrence selection.
-- `identities` requires `identity`. Every expected tuple must contain one v2
+- `identities` requires `identity`. Every expected tuple must contain one
   authored literal per declared identity path, tuples must be unique, and the
   complete ordered tuple list must equal the observed identities.
 - When `matches` and `identities` are both present, `matches` must equal the
@@ -581,7 +616,7 @@ For one selected array:
 "expect":{"items":1,"matches":1,"shape":[2048,64]}
 ```
 
-### V2 Structural Properties
+### Structural Properties
 
 `property` selects metadata defined by the active source profile.
 
@@ -600,7 +635,7 @@ For one selected array:
 - Unsupported properties fail rather than falling back to a generic file
   inspection.
 
-### V2 Text Selection
+### Text Selection
 
 A text selector contains one required `contains` string and may contain
 `occurrence`, a positive one-based integer or `"all"`.
@@ -621,10 +656,11 @@ Rules:
 - The complete matching logical line is the selected string. Context windows,
   prefixes, suffixes, regular expressions, and partial extraction are deferred.
 
-## V2 Source Profiles
+## Source Profiles
 
-The v2 registry distinguishes value selection, structural-property selection,
-whole-artifact selection, and prohibited sources.
+The source-profile registry distinguishes value selection,
+structural-property selection, whole-artifact selection, and prohibited
+sources.
 
 ### Record Tables
 
@@ -687,13 +723,13 @@ whole-artifact selection, and prohibited sources.
 
 #### Plain Text And Command Logs
 
-Plain text follows the v2 text-selector contract. Files must decode as UTF-8
+Plain text follows the text-selector contract. Files must decode as UTF-8
 without replacement characters.
 
-The initial v2 value-selection registry is intentionally limited to CSV/TSV,
-JSON, NPZ, HDF5/MATLAB 7.3, and UTF-8 plain text or command logs because those
-profiles cover the retained locator corpus. Images, PDFs, SVG, and source files
-remain direct artifacts rather than locator containers.
+The value-selection registry is limited to CSV/TSV, JSON, NPZ, HDF5/MATLAB
+7.3, and UTF-8 plain text or command logs because those profiles cover the
+retained locator corpus. Images, PDFs, SVG, and source files remain direct
+artifacts rather than locator containers.
 
 ### Directories, Pickle, And Opaque Sources
 
@@ -704,7 +740,7 @@ Pickle and other execution-capable serialized objects are prohibited as
 mechanically inspected value sources. The repair is to retain a supported
 machine-readable companion artifact through an explicit recorded command.
 
-An otherwise opaque source is not a v2 locator container. Authors may present
+An otherwise opaque source is not a locator container. Authors may present
 it as a direct artifact or retain a supported machine-readable companion.
 
 ### Future Source Profiles If Warranted
@@ -716,16 +752,16 @@ companion artifact would make normal research work materially awkward. The
 addition must be safe, bounded, non-executing, and unable to change dispatch or
 results for an existing profile.
 
-### Indexed And External Sources
+### Indexed And Outside Sources
 
-A resolved indexed source uses its resulting v2 profile. A mutable or
-remote-only source must first yield a stable retained or content-addressed
-observation. The validator must not infer current values from a URL, prose
-description, or unavailable external service.
+A resolved indexed source uses its resulting source profile. A remote-only
+source must first be materialized as a locally accessible, fingerprinted
+input. The validator must not infer current values from a URL, prose
+description, or unavailable service.
 
-## Canonical V2 Serialization
+## Canonical Locator Serialization
 
-A v2 normalizer:
+A locator normalizer:
 
 - emits the `v2:` prefix;
 - rejects duplicate or unknown JSON keys;
@@ -797,7 +833,8 @@ calculation and the surrounding claim are sound.
 The surrounding research prose remains natural. Only the evidence-bearing
 expression associated with an evidence record follows the canonical grammar.
 
-V2 provides a closed, code-only grammar for each supported presentation form.
+The transformation language provides a closed, code-only grammar for each
+supported presentation form.
 Most forms have one accepted spelling. A form may define a small explicit set
 of equivalent surface spellings when this specification lists every accepted
 alternative. The validator never expands that set through inference,
@@ -836,28 +873,26 @@ normalization profile, undeclared or open-ended style, synonym set, or
 free-form instruction. The exact Boolean and sequence style enums defined
 below are closed grammar discriminants, not extensible presentation profiles.
 
-### Transformation Version Model
+### Transformation Encoding And Identity
 
-- In a v2 `evidence.json` record, `transformation: null` declares identity and
-  a non-null transformation is the JSON object portion of a v2 transformation.
+- In an evidence record, `transformation: null` declares identity and a
+  non-null transformation is the JSON object portion of a transformation.
   It has no string prefix in the JSON host.
 - Identity has canonical identity `identity`.
-- An embedded v2 transformation object's canonical identity is `v2:` followed
+- An embedded transformation object's canonical identity is `v2:` followed
   by its canonical JSON serialization, matching the standalone prefixed form.
-- A string, array, number, or Boolean in a v2 JSON `transformation` field fails.
-- A v2 parse or evaluation failure is not retried under another
+- A string, array, number, or Boolean in an evidence-record `transformation`
+  field fails.
+- A parse or evaluation failure is not retried under another
   interpretation.
 - Locator and transformation objects retain independent grammars and canonical
-  identities within the v2 record.
-
-V2 is the only active mechanically executable transformation language.
+  identities within the evidence record.
 
 ### Transformation Input Bundle
 
 The input is an ordered bundle of locator selections. Input slot `0`
-corresponds to the first v2 `sources` object in the evidence record, input slot
-`1` to the second, and so on. Each slot exposes its selected items in locator
-order.
+corresponds to the first evidence source object, input slot `1` to the
+second, and so on. Each slot exposes its selected items in locator order.
 
 An input reference has this form:
 
@@ -884,10 +919,10 @@ performs path traversal; source-internal paths remain locator-owned.
 A direct table contains no authored source reference. Its sole input and
 same-position source fields are implied by the direct-table contract.
 
-Every input item must be referenced exactly once. V2 does not silently drop,
-duplicate, broadcast, coalesce, or reuse values. Authors must narrow the
-locator or retain a purpose-built source when its selection does not correspond
-one-to-one with the presentation.
+Every input item must be referenced exactly once. The transformation does not
+silently drop, duplicate, broadcast, coalesce, or reuse values. Authors must
+narrow the locator or retain a purpose-built source when its selection does
+not correspond one-to-one with the presentation.
 
 A locator must therefore select the specific value or values asserted by the
 presented item. Selecting several equal or similarly rounded values does not
@@ -914,23 +949,23 @@ Identity renders primitive selected values as follows:
 Identity does not parse strings, round, scale, convert units, relabel, reorder,
 or assemble values. Binary floats, quantities, bytes, dates, times, durations,
 compound values, masked values, and structural properties require an explicit
-supported v2 presentation or an exact retained string.
+supported transformation or an exact retained string.
 
 The presentation association and source-cardinality contracts define which
 identity selections correspond directly to one statistic, table, or output
 block. If the one-to-one association is not unique and exact, validation fails.
 
-## V2 Transformations: Closed Presentation Recipes
+## Closed Presentation Recipes
 
 ### Encoding
 
-The standalone v2 transformation form is `v2:` followed immediately by one
+The standalone transformation form is `v2:` followed immediately by one
 UTF-8 JSON object. It is used by this specification and conformance fixtures.
-A v2 `evidence.json` record embeds that same JSON object directly in its
-`transformation` field and omits the prefix. Both forms have identical v2
-meaning and canonical identity.
+An evidence record embeds that same JSON object directly in its
+`transformation` field and omits the prefix. Both forms have identical meaning
+and canonical identity.
 
-The JSON must satisfy the same lexical and duplicate-key requirements as a v2
+The JSON must satisfy the same lexical and duplicate-key requirements as a
 locator. Unknown keys fail. Numeric scale factors use ordinary finite JSON
 numbers decoded directly to exact integer or decimal values.
 
@@ -980,7 +1015,7 @@ A table recipe begins with one of these mode discriminants:
 The table section defines the complete mode-specific grammar and approved cell
 forms.
 
-Canonical serialization uses the common v2 JSON rules and lexicographic object
+Canonical serialization uses the common locator JSON rules and lexicographic object
 keys. Array order is meaningful and preserved. For `percentage`, an explicit
 `decimal_places:1` canonicalizes to the same form as omission, with the default
 field omitted.
@@ -1018,7 +1053,8 @@ offsets, division, ratios between inputs, and authored inexact binary factors
 are unsupported.
 
 `render` is required after parsing, magnitude, or scaling and for any numeric
-input in a v2 recipe. It is forbidden for strings, Booleans, and null.
+input in a transformation recipe. It is forbidden for strings, Booleans, and
+null.
 
 A value expression without numeric fields may pass through one string or null
 exactly, but only a form that explicitly permits that type may use the result:
@@ -1031,8 +1067,9 @@ canonical values are unsupported transformation inputs.
 
 ### Numeric Rendering
 
-V2 uses one rounding mode: decimal round-half-to-even. Rounding is part of the
-declared renderer; no separate rounding operation exists.
+The transformation language uses one rounding mode: decimal
+round-half-to-even. Rounding is part of the declared renderer; no separate
+rounding operation exists.
 
 A finite binary float is interpreted directly from its canonical IEEE bit
 pattern as an exact signed rational value: sign, integer significand, and a
@@ -1103,16 +1140,16 @@ locale-dependent, fractional, or scientific grouping.
 ### Units
 
 `unit` is optional for `scalar`, `range`, `plus_minus`, `interval`, and `tuple`
-and applies once to the complete form. It must be a non-empty Unicode string of at most 32 UTF-8 bytes
-with no leading or trailing whitespace, Markdown delimiters, line breaks, or
-control characters.
+and applies once to the complete form. It must be a non-empty Unicode string
+of at most 32 UTF-8 bytes with no leading or trailing whitespace, Markdown
+delimiters, line breaks, or control characters.
 
 The canonical renderer attaches `%`, `°`, `°C`, `°F`, and `x` directly to the
 preceding form. Every other unit follows one ASCII space. Thus `unit:"x"`
 produces `3.39x`, while `unit:"cases"` produces `4 cases`. Unit aliases are not
-recognized. The declared unit is the exact expected presentation suffix; v2
-does not infer its dimension, decide whether a suffix is scientifically a
-unit, or infer its relationship to `scale`.
+recognized. The declared unit is the exact expected presentation suffix; the
+transformation does not infer its dimension, decide whether a suffix is
+scientifically a unit, or infer its relationship to `scale`.
 
 The exact string `x` is reserved for the multiplier suffix. A longer unit may
 not begin with `x` followed by whitespace. Named comparators such as `MASTSEL
@@ -1130,7 +1167,7 @@ recipe, according to the presented table.
 
 ### Canonical Presentation Forms
 
-V2 supports exactly these non-table forms:
+The transformation language defines exactly these non-table forms:
 
 | Form | Values | Canonical rendering |
 | --- | ---: | --- |
@@ -1172,7 +1209,7 @@ with no leading or trailing whitespace, vertical bar, line break, or control
 character. Heading order is presentation order. Units that apply to a whole
 column belong in its exact heading.
 
-V2 has three table modes:
+The transformation language defines three table modes:
 
 - `direct` consumes one retained table whose rows and columns already
   correspond one-to-one with the presented table;
@@ -1358,7 +1395,7 @@ equivalent direct form without changing the validation result.
 whose locator produced matched candidate records and retained their grouping.
 Its record order is the default output order. A flat selection, one compound
 table item, property selection, whole-artifact selection, or input without
-record grouping cannot drive a structured recipe. The repair is to use a v2
+record grouping cannot drive a structured recipe. The repair is to use a
 record locator, use summary mode, or retain one direct table.
 
 `rows` may additionally contain `order`, an array containing every driver
@@ -1369,7 +1406,7 @@ identity tuple exactly once in the required presentation order:
 ```
 
 An explicit order requires the locator to declare `identity`. Its tuples use
-v2 authored literals, must match the record identity arity and types,
+authored literals, must match the record identity arity and types,
 and must be an exact permutation of the observed driver identities. There is
 no sort expression, descending flag, or inferred order.
 
@@ -1474,7 +1511,8 @@ The transformation dependency projection contains:
 6. effective transformation resource limits.
 
 A change to a used input, transformation, or associated presentation requires
-re-evaluation. V2 never derives a precision, unit, form, label, order, or shape
+re-evaluation. The validator never derives a precision, unit, form, label,
+order, or shape
 from presentation prose.
 
 ### Conformance Examples
@@ -1623,10 +1661,10 @@ index.
 
 ### Future Expansion If Warranted
 
-The initial v2 language deliberately excludes features that would make the
+The transformation language excludes features that would make the
 validator accept more equivalent presentations or become a general-purpose
 formatting engine. A later version may add a feature only when retained corpus
-cases demonstrate that the canonical v2 form would materially harm ordinary
+cases demonstrate that the canonical form would materially harm ordinary
 research prose or force unreasonable evidence duplication.
 
 Candidates for later evaluation are:
@@ -1667,7 +1705,7 @@ canonical form.
 
 ## Resource And Safety Bounds
 
-Active v2 evaluation uses this required default limit profile:
+Evaluation uses this required default limit profile:
 
 | Resource | Limit |
 | --- | ---: |
@@ -1717,21 +1755,21 @@ The downstream evidence comparison also depends on its transformation identity,
 presentation association identity, and resolved source identity.
 
 Source-byte changes require re-evaluation. After re-evaluation, unchanged
-version, locator, membership, and value projections preserve the located
+evaluator, locator, membership, and value projections preserve the located
 evidence outcome. Unselected source changes do not themselves reopen the
 downstream outcome.
 
 Source-profile identity rules are:
 
-- hierarchical values use their complete canonical v2 path;
+- hierarchical values use their complete canonical locator path;
 - arrays use the retained member or dataset path plus exact indexes;
-- record selections use declared v2 identity tuples when present;
+- record selections use declared identity tuples when present;
 - text uses the selector identity, match rank among matching lines, and selected
   text content, not absolute line number;
 - structural properties use the target coordinate and property name;
 - whole artifacts use the complete artifact content identity.
 
-If a v2 record selection has no inherent coordinate and no declared identity,
+If a record selection has no inherent coordinate and no declared identity,
 any source-order change may change its membership projection.
 
 A whole-source hash may detect the need for re-evaluation but must not replace
@@ -1761,7 +1799,7 @@ Reserved codes include:
 | --- | --- | --- |
 | `locator.version.unsupported` | fail | The declared version has no enabled evaluator. |
 | `locator.syntax.invalid` | fail | Version-specific syntax, key, or key relationship is invalid. |
-| `locator.literal.invalid` | fail | A v2 authored scalar or specialized tagged literal is malformed, non-canonical, or unsupported in its syntactic position. |
+| `locator.literal.invalid` | fail | An authored scalar or specialized tagged literal is malformed, non-canonical, or unsupported in its syntactic position. |
 | `locator.encoding.too_large` | fail | The locator exceeds its encoding bound. |
 | `locator.source.unsupported` | fail | The resolved source has no requested locator profile. |
 | `locator.source.format_mismatch` | fail | Declared format conflicts with retained bytes or structure. |
@@ -1779,7 +1817,7 @@ Reserved codes include:
 | `locator.selection.empty` | fail | A valid locator selects no evidence item. |
 | `locator.selection.ambiguous` | fail | An implicit choice remains among multiple candidates. |
 | `locator.selection.too_large` | fail | Expansion or selected output crosses a cardinality bound. |
-| `locator.expectation.mismatch` | fail | Observed matches, items, or shape differs from v2 `expect`. |
+| `locator.expectation.mismatch` | fail | Observed matches, items, or shape differs from `expect`. |
 | `locator.property.unsupported` | fail | The property is not defined for the selected source profile or type. |
 | `locator.text.decode` | fail | A declared text source is not valid UTF-8. |
 | `transformation.version.unsupported` | fail | The declared transformation version has no enabled evaluator. |
@@ -1787,7 +1825,7 @@ Reserved codes include:
 | `transformation.presentation.mismatch` | fail | The associated presented item is not one of the surface spellings defined by the declared transformed form. A table mismatch reports table shapes, the total differing-cell count, and at most 16 one-based heading or cell differences with expected and observed values. |
 | `transformation.input.reference_invalid` | fail | A concrete item reference or structured field reference does not resolve in the required input. |
 | `transformation.input.unused` | fail | A locator-selected item is not consumed by the recipe. |
-| `transformation.input.reused` | fail | One selected item is referenced more than once. V2 requires exact one-time consumption. |
+| `transformation.input.reused` | fail | One selected item is referenced more than once. The transformation requires exact one-time consumption. |
 | `transformation.table.direct_mismatch` | fail | A direct recipe does not have exactly one table or grouped-record input, or its selected columns and declared columns are not one-to-one. |
 | `transformation.table.input_not_records` | fail | A structured table input lacks retained record grouping or uses a prohibited selection kind. |
 | `transformation.table.order_mismatch` | fail | A declared structured row order is not an exact typed permutation of the driver identities. |
@@ -1824,28 +1862,27 @@ The active association surfaces have these roles:
 
 | Role | File | Association |
 | --- | --- | --- |
-| Active v2 entry presentation | Entry-root `evidence.json` | Entry-scoped stable ID shared with one hidden Markdown marker |
-| Active v2 summary reference | Maintained summary Markdown | Hidden reference to one entry ID and entry evidence ID, plus a table coordinate when applicable |
-| Active v2 retention | Entry-root `evidence.json` | Entry-owned declaration; no Markdown marker |
+| Entry presentation | Entry-root `evidence.json` | Entry-scoped stable ID shared with one hidden Markdown marker |
+| Summary reference | Maintained summary Markdown | Hidden reference to one entry ID and entry evidence ID, plus a table coordinate when applicable |
 
 All evidence declarations are in entry-local `evidence.json`. Every eligible
-entry presentation uses its required v2 marker, and every eligible summary
-statistic uses its required v2 reference. Every v2 `evidence.json` belongs to
-the root of the entry whose records it owns; any other placement fails as
+entry presentation uses its required marker, and every eligible summary
+statistic uses its required reference. Every evidence file belongs to the
+root of the entry whose records it owns; any other placement fails as
 `evidence.file.location_invalid`.
 
 The maintained summary's `## Entries` inventory is the only owner-discovery
 surface for the target log. Entry links elsewhere in summary prose are ordinary
 navigation, including links to another maintained log, and do not import those
 entries. Every owned entry resolves beneath the target log's `entries/`
-directory. A directly referenced cross-log artifact remains an external input
-under the command-provenance contract.
+directory. A directly referenced cross-log artifact remains a locally declared
+origin under the command-Provenance contract.
 
 The bounded unsupported-metadata preflight detects recognized unsupported
 generated validation metadata and returns one
 `validation.unsupported_metadata` result listing every path found. It writes
-nothing and does not interpret the unsupported content. Retention records
-participate in entry-local ID uniqueness and orphan classification, but not
+nothing and does not interpret the unsupported content. Retention records use
+their own ID namespace and participate in Hygiene classification, not
 presentation association.
 
 The standard validation operation never removes these paths. They must be
@@ -1871,19 +1908,19 @@ relative to the maintained-log root:
 When no active `validation/mechanical.json` exists, the preflight also treats
 `validation.md` as unsupported generated state if its bounded prefix contains
 the `| Entry | Date | Checked | Reproducibility |` table header or the
-`## Status Summary` marker. It does not parse any obsolete JSON, shard, cache,
-decision, session, or report conclusion. An unrelated file does not become
-obsolete state merely because it is below a directory named `validation`.
+`## Status Summary` marker. It does not parse any unsupported JSON, shard,
+cache, decision, session, or report conclusion. An unrelated file is not
+unsupported state merely because it is below a directory named `validation`.
 
-Evidence v3 records permit only v2 locators and v2 transformations because they
-embed structured JSON objects directly.
+Evidence records embed locator and transformation objects directly under the
+current grammars.
 
 Direct artifact presentations use their Markdown target and the provenance
 contract rather than `evidence.json`.
 
-### Evidence V3 JSON File Schema
+### Evidence JSON File Schema
 
-Evidence v3 uses one exact top-level object:
+`evidence.json` uses one exact top-level object:
 
 ```json
 {
@@ -1919,21 +1956,21 @@ An entry-root presentation record has exactly:
 
 Required keys are `id`, `document`, `kind`, `sources`, and `transformation`;
 unknown keys fail. `kind` is `statistic`, `table`, or `output`. `sources` is a
-non-empty ordered array of exact evidence v3 source objects containing v2
-locators. `transformation` is `null` for identity or the JSON object portion of
-a v2 transformation without a `v2:` prefix. Record kinds are entry
+non-empty ordered array of exact evidence source objects containing locators.
+`transformation` is `null` for identity or the JSON object portion of a
+transformation without a `v2:` prefix. Record kinds are entry
 presentations. Summaries use the Markdown-owned references defined below, and
 disconnected retention belongs in `retention.json`.
 
-Entry-owned disconnected retention uses the separate
-`research-log-retention/v1` contract in `retention.json`. A retention record is
+Entry-owned disconnected retention uses the separate retention contract in
+`retention.json`. A retention record is
 invalid in `evidence.json` and has no presentation marker, source, locator, or
 transformation.
 
-The evaluator treats every embedded locator and non-null transformation as
-explicit v2. Their canonical identities retain the ordinary `v2:` prefix plus
-canonical JSON serialization, even though the host file stores only the JSON
-object.
+The evaluator applies the current grammars to every embedded locator and
+non-null transformation. Their canonical identities retain the `v2:` prefix
+plus canonical JSON serialization, even though the host file stores only the
+JSON object.
 
 `id` uses this grammar and is at most 96 ASCII characters:
 
@@ -1941,12 +1978,12 @@ object.
 [a-z][a-z0-9]*(?:-[a-z0-9]+)*
 ```
 
-IDs must be unique within one entry-local `evidence.json`, including retention
-records. The stable record identity is `(maintained-log identity, entry
-identity, id)`. The same short ID may occur in another entry because summary
-references and validator identities always include the entry identity. Moving
-a record to another entry changes its identity. Changing its presented value
-does not. Copying a record within the same entry requires a new ID.
+IDs must be unique within one entry-local `evidence.json`. The stable record
+identity is `(maintained-log identity, entry identity, id)`. The same short ID
+may occur in another entry. It may also occur in that entry's separate
+retention namespace; the two do not conflict. Moving an evidence record to
+another entry changes its identity. Changing its presented value does not.
+Copying a record within the same entry requires a new ID.
 
 An ID names the evidence role, not its current observation. Use a concise
 description such as `candidate-success-rate` or
@@ -1964,9 +2001,10 @@ or alias. An entry-level record's document must be inside the entry directory
 that contains its `evidence.json`. Document location is an association
 coordinate, not record identity.
 
-### V2 Entry Presentation Markers
+### Entry Presentation Markers
 
-A v2 entry presentation record and its presented item share one exact marker:
+An evidence presentation record and its presented item share one exact
+marker:
 
 ```html
 <!-- eid:median-success-rate -->
@@ -1991,15 +2029,14 @@ One marker binds exactly one presented item. One presented item has exactly one
 marker. A marker ID must resolve to exactly one presentation record whose
 `document` and `kind` agree with the observed item. Duplicate markers, nested
 markers, a marker in a fence, a marker without an eligible item, and a
-presentation record without a marker fail. A marker that names a retention
-record fails as invalid association.
+presentation record without a marker fail.
 
 The marker makes entry evidence identity independent of heading text, line
 number, rendered value, and surrounding prose. Those observations may still
 be currentness or conformance inputs where this subcontract names them
 explicitly.
 
-### V2 Summary Evidence References
+### Summary Evidence References
 
 Each eligible summary statistic carries one exact hidden reference immediately
 after its inline code span on the same source line, with no intervening
@@ -2049,7 +2086,7 @@ The validator does not search the table for the value, infer a row label, or
 choose among matching cells. The coordinate is the association.
 
 `row` and `column` are both required for a table target and both prohibited
-for a statistic target. An output or retention record cannot be referenced.
+for a statistic target. An output presentation record cannot be referenced.
 The referenced entry evidence must complete its own record, source, locator,
 transformation, and presentation evaluation. A failed or unavailable evidence
 target makes the dependent summary evidence fail or unavailable without
@@ -2064,7 +2101,7 @@ fidelity to the entry remain Semantic Review concerns.
 
 ### Eligible Presentation Context
 
-V2 retains the current structural boundary:
+The active association contract has this structural boundary:
 
 - entry statistics are eligible only in an experimental section;
 - entry tables and output blocks are eligible only beneath that experimental
@@ -2077,8 +2114,8 @@ its declared classifier version and classification result are association
 dependencies. A marker cannot override an ineligible context.
 
 Every eligible entry statistic, table, or `text` output block must have one
-valid v2 entry marker, and every eligible summary statistic
-must have one valid v2 summary reference. A missing entry marker fails
+valid entry marker, and every eligible summary statistic must have one valid
+summary reference. A missing entry marker fails
 `association.declaration_missing`; a missing summary reference fails
 `summary.reference.missing`. Other unmarked prose is not promoted to evidence
 by validation. Semantic Review may report an apparently evidential claim that
@@ -2090,10 +2127,10 @@ Their exact Markdown target supplies presentation identity, and
 the recorded-command provenance subcontract below owns their producer and
 lineage checks.
 
-### V2 Source And Transformation Cardinality
+### Evidence Source And Transformation Cardinality
 
 Entry records consume source objects in their declared array order. Each object
-contains one embedded v2 locator and must return one successful ordered typed
+contains one embedded locator and must return one successful ordered typed
 selection. The transformation input slot is the zero-based `sources` array
 position.
 
@@ -2107,14 +2144,14 @@ Cardinality is closed by presentation kind:
 | `table` / `structured` | 1 | Every selected record and field satisfies repeated single-source consumption. |
 | `table` / `summary` | 1–32 | Every selected item is consumed exactly once by an evidence cell. |
 
-An evidence v3 table record must use a non-null v2 table transformation. Null identity is
+An evidence table record must use a non-null table transformation. Null identity is
 not a second table grammar. A statistic may use null identity only when one
 selected primitive renders to exactly one canonical statistic expression. An
 output may use null identity only for one selected string.
 
 A whole-artifact reference is prohibited in an evidence record because it
 returns no source-internal selection to the transformation contract. Authors
-must use a bounded v2 locator. Whole artifacts remain valid for direct artifact
+must use a bounded locator. Whole artifacts remain valid for direct artifact
 presentations outside evidence-record files.
 
 ### Strict Presentation Parsing And Comparison
@@ -2178,7 +2215,7 @@ evidence, or leave it as ordinary synthesis prose rather than marked summary
 evidence.
 
 A reference cannot chain through another summary, cross a maintained-log
-boundary, combine records, or target an output or retention record. It inherits
+boundary, combine records, or target an output presentation record. It inherits
 the referenced entry record's completed evidence and provenance projections but
 not the supporting sentence, heading, interpretation, or semantic claim.
 Whether surrounding summary prose faithfully
@@ -2186,21 +2223,18 @@ synthesizes the entry belongs to the Summary Fidelity review lens.
 
 ### Association Completeness And Conflict Rules
 
-Validation constructs the v2 association index across one maintained log and
-then applies these rules in order:
+Validation constructs the active association index across one maintained log
+and then applies these rules in order:
 
-1. every v2 record ID is unique within its entry;
+1. every evidence record ID is unique within its entry;
 2. every entry marker ID is unique within its entry;
 3. every presentation record resolves its declared document and permitted context;
 4. every presentation record and marker agree on document, ID, and kind;
-5. every marked v2 presentation has exactly one record;
-6. every v2 presentation record has exactly one presentation;
-7. every summary reference resolves exactly one eligible v2 entry record and,
+5. every marked entry presentation has exactly one record;
+6. every presentation record has exactly one presentation;
+7. every summary reference resolves exactly one eligible entry evidence record and,
    for a table, one in-bounds numerical cell; and
 8. source, locator, transformation, and exact presentation comparison succeed.
-
-Retention records participate in entry-local ID uniqueness and their own schema
-and target checks, but not presentation association.
 
 No occurrence number, nearest-heading rule, same-value search, filename
 similarity, or other tie-breaker repairs a conflict. A duplicate or ambiguous
@@ -2209,7 +2243,7 @@ it. Unrelated uniquely associated records remain independently evaluable.
 
 ### Association Dependency Projection And Currentness
 
-One v2 association outcome depends on:
+One association outcome depends on:
 
 1. evidence-file profile and parser version;
 2. canonical record fields;
@@ -2234,7 +2268,7 @@ only identities whose uniqueness changed and dependent summary references.
 
 Entry-local `evidence.json`, entry markers, and summary references participate
 in active association currentness. Adding, removing, or changing a marker
-reopens its attached v2 presentation and dependent summary references. Adding,
+reopens its attached presentation and dependent summary references. Adding,
 removing, or changing a summary reference reopens that summary association. A
 newly observed unsupported generated-state path causes the preflight to return
 `validation.unsupported_metadata`; its contents do not enter currentness.
@@ -2244,31 +2278,31 @@ persist and compare the narrower association projection for outcome reuse.
 
 ### Association Failures
 
-Every failure records the v2 record identity when known, document, kind,
+Every failure records the evidence record identity when known, document, kind,
 observed marker or presentation, and violated clause. Reserved active-validation
 codes are:
 
 | Code | Scope | Condition |
 | --- | --- | --- |
 | `validation.unsupported_metadata` | unsupported-metadata preflight | Active validation encountered recognized unsupported generated validation metadata. The result lists every detected path and writes nothing. |
-| `evidence.json.schema_invalid` | conformance | A v2 JSON file has an invalid top-level schema, shape, or JSON encoding. |
-| `evidence.file.encoding_invalid` | conformance | A v2 JSON file is not permitted UTF-8. |
-| `evidence.file.empty` | conformance | A v2 JSON file has no records. |
+| `evidence.json.schema_invalid` | conformance | An evidence JSON file has an invalid top-level schema, shape, or JSON encoding. |
+| `evidence.file.encoding_invalid` | conformance | An evidence JSON file is not permitted UTF-8. |
+| `evidence.file.empty` | conformance | An evidence JSON file has no records. |
 | `evidence.file.location_invalid` | conformance | An `evidence.json` occurs outside an entry root, including at the maintained-log root. |
-| `evidence.declaration.invalid` | conformance | A v2 record violates its exact field, type, enum, path, or shape constraints. |
-| `evidence.record.id_duplicate` | conformance | One v2 ID occurs in several evidence records within the same entry. |
+| `evidence.declaration.invalid` | conformance | An evidence record violates its exact field, type, enum, path, or shape constraints. |
+| `evidence.record.id_duplicate` | conformance | One evidence ID occurs in several evidence records within the same entry. |
 | `presentation.marker.invalid` | conformance | Marker syntax or placement is invalid. |
-| `presentation.marker.duplicate` | conformance | One v2 ID occurs in several entry presentation markers within the same entry. |
-| `association.declaration_missing` | evidence | An eligible v2 presentation has no matching v2 record. |
-| `association.presentation_missing` | evidence | A v2 presentation record has no matching presentation. |
-| `association.document_mismatch` | evidence | V2 record and marker do not identify the same permitted document. |
+| `presentation.marker.duplicate` | conformance | One evidence ID occurs in several entry presentation markers within the same entry. |
+| `association.declaration_missing` | evidence | An eligible entry presentation has no matching evidence record. |
+| `association.presentation_missing` | evidence | An evidence presentation record has no matching presentation. |
+| `association.document_mismatch` | evidence | The evidence record and marker do not identify the same permitted document. |
 | `association.kind_mismatch` | evidence | Declared and observed presentation kinds differ. |
 | `association.context_invalid` | conformance | The presentation is outside its permitted section or label. |
 | `association.source_cardinality` | evidence | The source count violates its kind or table mode. |
 | `association.presentation.syntax_invalid` | conformance | The marked Markdown item is outside the closed structural parser. |
 | `association.presentation.mismatch` | evidence | Parsed presentation differs from every accepted transformation result. |
 | `association.resource.too_large` | conformance | Association indexing or one parsed item crosses a declared bound. |
-| `summary.reference.missing` | evidence | An eligible summary statistic has no adjacent v2 summary reference. |
+| `summary.reference.missing` | evidence | An eligible summary statistic has no adjacent summary reference. |
 | `summary.reference.invalid` | conformance | A summary reference violates its exact syntax, fields, ordering, spacing, target cardinality, or placement. |
 | `summary.reference.unresolved` | evidence | The declared entry or evidence ID does not resolve exactly once in the current maintained log. |
 | `summary.reference.target_invalid` | evidence | The target is cross-log, unavailable, failed, or has a kind prohibited by the selected reference form. |
@@ -2282,16 +2316,14 @@ mismatch.
 
 ### Association Resource Bounds
 
-The v2 record and association profile permits at most:
+The active evidence-record and association profile permits at most:
 
-- 10,000 v2 records, 10,000 entry presentation markers, and 10,000 summary
+- 10,000 evidence records, 10,000 entry presentation markers, and 10,000 summary
   references per maintained log;
-- 1,000 v2 records in one file;
+- 1,000 evidence records in one file;
 - 96 bytes in an ID;
 - 512 bytes in one summary reference;
 - 512 bytes in a document path;
-- 10,000 exact paths in one retention record;
-- 2,048 bytes in one retention reason;
 - 32 source objects in one record;
 - 8 MiB in one `evidence.json` file;
 - 1 MiB of source Markdown for one marked table or output block; and
@@ -2301,31 +2333,26 @@ The v2 record and association profile permits at most:
 Crossing a stable authored bound is `fail`, not `unavailable`. Implementations
 may stream files and indexes and must not require repository-wide discovery.
 
-## Approved Input Registry And Artifact Graph Contract
+## Input Registry And Artifact Graph Contract
 
-### Status And Version Boundary
+### Registry And Generated-State Ownership
 
-This section defines the active command-input, fingerprint, provenance,
-retention, and orphan contract. It replaces the retired `data.csv`, command
-types, filename-derived simulation roots, root-completion checks,
-`evidence.json` retention records, and command-connected orphan behavior.
+This section defines the command-input, fingerprint, Provenance,
+retention, and Hygiene contract.
 
-The active contract uses `research-log-data/v2`,
-`research-log-retention/v1`, and `research-log-evidence/v3` with retention
-removed. The activated rules version is
-`research-log-mechanical/input-registry-6`. The authoritative generated record
-remains `research-log-mechanical/1` because its serialized shape does not
-change. Disposable per-log validation acceleration uses SQLite database schema
-version 1 with independently versioned `check_comparison` and
-`evidence_selections` components. A rules-version change makes prior checks
-ineligible for unchanged comparison without invalidating compatible selections
-or project-level observations. A per-log database or component change likewise
-does not invalidate project-level input observations.
+The current schema and rules identifiers are listed in `Current Versions`.
+`pyrun-outputs.json` is `pyrun`-owned execution support state, not an authored
+registry or a validator-generated report. Disposable per-log validation
+acceleration uses the listed SQLite schema and component versions. A rules
+change makes prior checks ineligible for unchanged
+comparison without invalidating compatible selections or project-level
+observations. A per-log database or component-version change likewise does not
+invalidate project-level input observations.
 
 Accessible local input observations belong to the generated project-level
 SQLite database at
-`<project>/.cache/research-log-fingerprints.sqlite3`. SQLite schema version 1
-stores file observations by canonical absolute path with kind, size,
+`<project>/.cache/research-log-fingerprints.sqlite3`. Its schema stores file
+observations by canonical absolute path with kind, size,
 nanosecond modification time, nanosecond change time, fingerprint algorithm,
 and observed content digest. It stores directory metadata identities,
 aggregate directory fingerprints, and deterministic membership separately.
@@ -2344,18 +2371,16 @@ the identity of older content.
 All logs in one project share the database. File hashing occurs while holding
 a process-safe SQLite write transaction, so concurrent validators cannot hash
 the same uncached path independently. Each completed file observation commits
-separately and survives later interruption. Schema-5 per-log input observations
-and compatible artifact identities seed schema 1 when current metadata still
-matches. Imported directory aggregates remain unhydrated until one deliberate
-scan records the omitted member-file identities. Mechanical rules, generated
-report schemas, and compatible SQLite schema migrations do not require content
-re-observation. Neither cache changes a conclusion.
+separately and survives later interruption. Mechanical rules and generated
+report schemas do not require content re-observation. Neither cache changes a
+conclusion.
 
 ### Ownership And Completeness
 
-`data.json` is an input registry. It contains all and only resources used as
-material inputs by recorded commands or evidence records owned by one entry
-root.
+`data.json` is primarily an input registry. It contains all and only resources
+used as material inputs by recorded commands or evidence records owned by one
+entry root, plus an exact directly presented artifact only when its explicit
+`origin: true` declaration is needed to stop Provenance.
 
 - Every proven command input and every evidence source has exactly one data
   item in the consuming entry.
@@ -2366,9 +2391,12 @@ root.
   evidence record consumes it. An output consumed by neither surface remains
   absent.
 - Evidence use counts as registry use when evaluating unused declarations.
+- A direct artifact's matching origin declaration counts as registry use. A
+  direct generated artifact does not need a `data.json` item.
 - An evidence source resolves to one local regular file. A bare directory token
   is invalid; select one exact member instead.
-- An entry with no inputs omits `data.json`; a present file is non-empty.
+- An entry with no inputs or direct-artifact origin omits `data.json`; a
+  present file is non-empty.
 - Split documents at one entry root share one file. The validator does not
   search, inherit, merge, or shadow parent-entry or log-level files.
 
@@ -2376,13 +2404,13 @@ root.
 only intentional disconnected retention. Recorded commands own producers and
 ordinary lineage. Generated validation records remain validator-owned.
 
-### `research-log-data/v2`
+### Input Registry
 
 One entry-root file has exactly:
 
 ```json
 {
-  "schema": "research-log-data/v2",
+  "schema": "research-log-data/v3",
   "inputs": []
 }
 ```
@@ -2392,8 +2420,8 @@ JSON uses the UTF-8, duplicate-key, finite-number, and trailing-content rules
 of `evidence.json`. Array order has no meaning; canonicalization sorts by
 `name`. One file is at most 8 MiB and contains at most 10,000 inputs.
 
-Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
-`external` only for a producerless external boundary:
+Every item has exactly `name`, `kind`, `location`, `fingerprint`, and the
+Boolean `origin`:
 
 ```json
 {
@@ -2404,10 +2432,7 @@ Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
     "algorithm": "sha256",
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   },
-  "external": {
-    "source": "GIRMOS development catalog",
-    "identity": "development-catalog/v3"
-  }
+  "origin": true
 }
 ```
 
@@ -2417,24 +2442,23 @@ Every item has exactly `name`, `kind`, `location`, and `fingerprint`, plus
 is reserved for maintained entry identifiers.
 `kind` is `file` or `directory`.
 
-`location` is a normalized POSIX path relative to the owning entry root, an
-absolute POSIX path, or an absolute URI with a scheme followed by `://`. Paths
-have no reverse solidus, empty segment, or `.` segment. Relative paths may use
-`..`; resolution from the entry root determines their canonical target. A
-location contains no token, environment, glob, shell, or template expansion.
-The validator does not fetch a URI. One location is at most 2,048 UTF-8 bytes.
+`location` is a normalized POSIX path relative to the owning entry root or an
+absolute POSIX path. Paths have no reverse solidus, empty segment, or `.`
+segment. Relative paths may use `..`; resolution from the entry root determines
+their canonical target. A location contains no URI, token, environment, glob,
+shell, or template expansion. One location is at most 2,048 UTF-8 bytes.
 
-A local canonical target is the safely resolved filesystem identity after the
+A canonical target is the safely resolved filesystem identity after the
 existing first-class entry `data` or `images` symlink rule. No other declared
-or nested symlink is allowed. A URI target is its normalized URI. Names and
-canonical targets are both unique within one file.
+or nested symlink is allowed. Names and canonical targets are both unique
+within one file.
 
 Separate entries may declare the same target when each consumes it. Within one
 maintained log, all declarations of that target must agree on `kind`,
-`fingerprint`, and complete `external` metadata. Conflict fails; validation
-does not choose one declaration. The conflicting declarations are unavailable
-to dependent command and graph evaluation; other declarations in the same
-registry and entries that do not declare the target continue evaluation.
+`fingerprint`, and `origin`. Conflict fails; validation does not choose one
+declaration. The conflicting declarations are unavailable to dependent command
+and graph evaluation; other declarations in the same registry and entries that
+do not declare the target continue evaluation.
 
 ### Fingerprints
 
@@ -2447,15 +2471,12 @@ Every item has exactly one closed fingerprint:
   `{"algorithm":"identity-files-sha256-v1","files":["<relative path>",...],"digest":"<64 lowercase hex>"}`.
 - A pattern-managed local directory uses
   `{"algorithm":"identity-patterns-sha256-v1","patterns":["<relative selector>",...],"digest":"<64 lowercase hex>"}`.
-- An inaccessible remote object uses
-  `{"algorithm":"immutable-source","value":"<immutable version identity>"}`,
-  unless a known SHA-256 is available.
 
-`immutable-source.value` is non-empty UTF-8 of at most 1,024 bytes. Validation
-checks shape and consistency but does not contact the source or judge the
-claim. Every accessible local resource uses a content digest, including an
-external resource. Size and modification time may seed cache reuse but are not
-serialized identity. Drift fails and validation never rewrites a digest.
+Every resource is locally accessible and uses a byte-derived content digest.
+Size, modification time, and change time may determine whether a cached digest
+must be recomputed, but they are never the identity being validated. If the
+recomputed digest is unchanged, the resource is unchanged for Provenance.
+Fingerprint drift fails and validation never rewrites an authored digest.
 
 `directory-sha256-v1` hashes the UTF-8 bytes of canonical compact JSON:
 
@@ -2556,29 +2577,19 @@ removed, renamed, or changed matches change the digest. Shared cache reuse is
 per matched file and requires exact size and nanosecond modification and change
 times. Unmatched descendants remain outside the bytewise identity.
 
-### External Boundaries
+### Origin Boundaries
 
-`external` has exactly two required non-empty UTF-8 strings of at most 1,024
-bytes:
+`origin` is a required Boolean that says whether Provenance traversal stops at
+the declared, fingerprinted artifact. It is independent of storage location.
+An origin may be inside or outside the entry, and an artifact inside the entry
+may be either an origin or generated material.
 
-```json
-{
-  "source": "Zenodo",
-  "identity": "record:1234567/object:reference-grid.csv/version:2"
-}
-```
-
-`source` names the authority or dataset family. `identity` names the exact
-dataset, object, and version. `location` says where the input is observed;
-`external` says which prior-provenance boundary is claimed.
-
-An item with no earlier maintained-log producer requires `external`, regardless
-of storage location. An item with one earlier producer omits `external` and
-traces to that producer. More than one earlier producer is ambiguous. URI
-resources are inaccessible and producerless in standard validation, require
-`external`, and use an immutable identity or known SHA-256. Version 1 permits
-only exact remote file objects; remote directory prefixes are unbounded and
-unsupported.
+An item with `origin: true` is a terminal byte-identified input. Validation
+does not claim how that artifact came into existence. An item with
+`origin: false` must trace to one unique earlier producer and then through that
+producer's direct inputs. More than one earlier producer is ambiguous. An
+origin boundary that hides a confirmed `pyrun` producer is invalid. An origin
+does not connect an otherwise unreached artifact or suppress a Hygiene finding.
 
 ### Command Tokens And Roles
 
@@ -2604,7 +2615,7 @@ syntax, a natural option name, or an annotation. A dynamic material candidate
 that cannot resolve to one bounded value also fails. Other scalar arguments
 create no edge.
 
-The initial suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
+The suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
 `.npy`, `.h5`, `.hdf5`, `.mat`, `.pkl`, `.pickle`, `.fits`, `.fit`, `.parquet`,
 `.feather`, `.txt`, `.log`, `.yaml`, `.yml`, `.toml`, `.ini`, `.png`, `.jpg`,
 `.jpeg`, `.svg`, and `.pdf`, compared case-sensitively. A suffix identifies a
@@ -2622,26 +2633,142 @@ declaration targeting either exact root fails `material.root.invalid` or
 `data.declaration.invalid`, respectively. Descendant files and exclusively
 owned descendant directories retain ordinary material behavior.
 
+### `pyrun` Output-Support Records
+
+`pyrun-outputs.json` is an entry-root mapping keyed by exact output path. It is
+owned and maintained only by `pyrun`; validators read it and agents do not edit
+it. One invocation that produces several outputs writes one record per output,
+deliberately duplicating the invocation support so later command splitting,
+merging, deletion, or output renaming can be reconciled by output identity.
+
+```json
+{
+  "schema": "research-log-pyrun-outputs/v1",
+  "outputs": {
+    "data/results.csv": {
+      "confirmed": true,
+      "fingerprint": {
+        "algorithm": "sha256",
+        "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      },
+      "script": {
+        "path": "scripts/run_study.py",
+        "fingerprint": {
+          "algorithm": "sha256",
+          "digest": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "parameters": ["--input-data", "<development_catalog>", "--output-csv", "data/results.csv"],
+      "inputs": {
+        "development_catalog": {
+          "algorithm": "sha256",
+          "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      }
+    }
+  }
+}
+```
+
+The top-level keys are exactly `schema` and `outputs`. Output keys are unique,
+normalized entry-relative paths beneath `data/` or `images/`. Each record has
+exactly `confirmed`, `fingerprint`, `script`, `parameters`, and `inputs`.
+`script.path` is the script argument passed to `pyrun`, not an inferred command
+or command ID. `parameters` is the exact ordered argument tail after the script,
+except that capture options, their targets, and the separating `--` precede the
+script arguments so the record matches the validator's normalized `pyrun`
+invocation signature. `inputs` maps every directly consumed `data.json` name to
+the fingerprint used by the run. Fingerprints use the same closed local
+fingerprint forms as `data.json`.
+
+`pyrun` records its current working entry root, resolves the command through
+that entry's `data.json`, and publishes output records only after the process
+succeeds, the script and every direct input still have the pre-execution byte
+fingerprints, and every output can be observed completely. Publication
+replaces only records for outputs produced by that invocation and preserves
+records for other output keys. It is atomic under an entry-specific lock.
+Failed execution, capture, observation, or publication confirms no record.
+
+Ordinary output parameters use the existing mechanical input/output role
+rules. Retained process streams use one of these forms:
+
+```bash
+./pyrun --capture-stdout data/run.log -- \
+  scripts/run_study.py \
+  --parameter value
+
+./pyrun --capture-stderr data/error.log -- \
+  scripts/run_study.py \
+  --parameter value
+
+./pyrun --capture-stdout-stderr data/run.log -- \
+  scripts/run_study.py \
+  --parameter value
+```
+
+`--capture-stdout` and `--capture-stderr` may be combined with distinct
+targets. `--capture-stdout-stderr` is mutually exclusive with both. Capture
+options and `--` are on the first line with `./pyrun`; without capture, the
+script is on that line. Captured bytes are mirrored to the corresponding
+terminal stream. Raw shell redirection and `tee` remain valid shell syntax but
+cannot create confirmed `pyrun` output support.
+
+An existing record may contain `confirmed: false`. Such a record preserves the
+temporary distinction between retained fingerprints and a directly observed
+execution, but does not validate Provenance. The next successful matching
+`pyrun` execution replaces it with confirmed current observations. Historical
+workflows with no record participate in structural graph and Hygiene
+evaluation, but a reached generated output cannot pass Provenance until a
+confirmed record exists.
+
 ### Producer And Lineage Semantics
 
-Evidence and direct presentations begin graph traversal. Each local starting
-artifact requires exactly one producer. The selected producer's inputs trace
-backward:
+Provenance means that the validator can identify the artifact behind every
+presented evidence item; classify that artifact as a declared origin or identify
+its unique producer; follow every generated producer input backward to origins;
+and confirm that every reached output was produced with the current bytes of
+its script and direct inputs under a command signature still present in the
+entry. Failure of any link fails the starting artifact's Provenance.
 
-- one earlier producer creates a lineage edge;
-- no earlier producer requires the item's explicit external boundary;
-- several earlier producers fail as ambiguous; and
-- a later producer never supplies an earlier consumer.
+Evidence and direct presentations begin graph traversal. The validator reuses
+the already constructed command/material graph; it does not build a second
+lineage model from output records. For each reached generated artifact:
 
-When a selected producer has no material inputs and no unresolved path-like
-candidate, traversal terminates successfully at the artifact-producer
-relationship. This is not a generated root. There is no generated-origin
-declaration, command-level root, command type, filename-derived root, or
-`provenance.root.missing` check.
+- exactly one earlier command producer is required;
+- its exact output-keyed `pyrun` record must exist and be confirmed;
+- the current output fingerprint must equal the record;
+- the current script path and fingerprint must equal the record;
+- the exact ordered parameters found by static command expansion must equal the
+  record;
+- the exact direct input names and their current declared fingerprints must
+  equal the record; and
+- every direct input with `origin: false` recursively satisfies these rules,
+  while `origin: true` stops that branch.
 
-Validation never imports another log's generated state. A cross-log input is
-declared by the consuming entry and follows the same producer and boundary
-rules within that log.
+No earlier producer requires `origin: true`; one earlier producer requires
+`origin: false`; several earlier producers fail as ambiguous; and a later
+producer never supplies an earlier consumer. A selected producer with no
+material inputs terminates successfully at its confirmed artifact-producer
+relationship. There is no command-level root, command type, filename-derived
+root, or `provenance.root.missing` check.
+
+Validation finds current command signatures through bounded static expansion of
+the entry and all its subentry Markdown files. `pyrun` does not parse Markdown
+or attempt to identify the command that called it. The entry-root working
+directory identifies record ownership; subentries intentionally share that
+entry-level command and output-support surface.
+
+The resulting claim is bounded: the retained evidence artifact is connected to
+declared origin artifacts by the mechanically visible command graph, and every
+reached generated output matches one confirmed execution observation for the
+current script bytes, declared input fingerprints, exact parameters, and output
+bytes. It does not establish causation, complete dependency capture,
+scientific validity, reproducibility, or the truth of undeclared runtime state.
+Reproduction is a separate workflow and is not performed or evaluated here.
+
+Validation never imports another log's generated validation state. A cross-log
+input is declared locally and follows the same origin and producer rules in the
+consuming log.
 
 ### Directory Resources
 
@@ -2652,12 +2779,12 @@ A local directory is either a byte-complete bounded collection with a
 - `<name>` under `input-directory` consumes every observed regular-file
   descendant and gives each member an input edge.
 - `<name>/member` under an exact input role consumes only that member. The
-  member connects to the aggregate for fingerprint and external-boundary
+  member connects to the aggregate for fingerprint and origin-boundary
   evaluation; siblings receive no command or orphan connection.
 - Both forms count as use of the data item.
-- An external directory is valid only when no maintained-log command produces
-  its root or any member. Its boundary reaches a consumed member through the
-  explicit membership edge, not a path-prefix rule.
+- An origin directory is valid only when no confirmed `pyrun` record identifies
+  its root or any member as generated. Its boundary reaches a consumed member
+  through the explicit membership edge, not a path-prefix rule.
 - A generated directory must match one exact earlier `output-directory`.
   Overlapping roots, separate member producers, or a second directory producer
   fail exclusivity.
@@ -2673,7 +2800,7 @@ A local directory is either a byte-complete bounded collection with a
   consumed descendants.
 - An exact managed-directory member token continues to resolve that member,
   while the resource's declared identity files or pattern matches establish the
-  aggregate input identity and boundary.
+  aggregate input identity and origin boundary.
 - Identity files and pattern matches do not expand member relationships and
   need not be command inputs themselves.
 
@@ -2681,7 +2808,7 @@ No manifest automatically expands member relationships. A manifest may be a
 named file input or one file selected by a managed-directory identity
 fingerprint.
 
-### `research-log-retention/v1`
+### Retention Registry
 
 An optional entry-root `retention.json` has exactly:
 
@@ -2694,7 +2821,7 @@ An optional entry-root `retention.json` has exactly:
 
 Both keys are required and unknown keys fail. `records` is non-empty and sorts
 canonically by `id`. One file is at most 8 MiB and contains at most 1,000
-records. Each record uses one existing v2 retention target form, without
+records. Each record uses exactly one of these closed target forms, without
 `kind`:
 
 ```json
@@ -2714,72 +2841,98 @@ records. Each record uses one existing v2 retention target form, without
 }
 ```
 
-The v2 retention ID, exact-path, all-descendants, containment, symlink,
-overlap, existence, eligibility, reason, and resource-bound rules apply
-unchanged. IDs are unique within `retention.json` and do not share an evidence
-ID namespace. A connected target makes retention redundant and invalid.
+An ID uses the evidence-ID grammar and is at most 96 ASCII characters. A
+`paths` array contains 1–10,000 unique normalized entry-relative paths to
+existing regular non-symlink files. A directory record names one existing,
+non-empty, non-symlink entry-relative directory, sets `membership` to exactly
+`all-descendants`, and may contain at most 100,000 bounded descendants. An
+optional `reason` is at most 2,048 UTF-8 bytes. Targets must not overlap within
+or across records. IDs are unique within `retention.json` and do not share an
+evidence ID namespace. A connected target makes retention redundant and
+invalid.
 
-### Evidence-rooted Orphans
+### Evidence-rooted Hygiene
 
-The orphan universe remains bounded regular files under each entry root,
+The Hygiene universe remains bounded regular files under each entry root,
 including first-class `data` and `images`, and excluding entry Markdown,
-`evidence.json`, `data.json`, `retention.json`, `pyrun`, validator output,
-research-log temporary paths, and runtime-cache descendants.
+`evidence.json`, `data.json`, `retention.json`, `pyrun`,
+`pyrun-outputs.json`, validator output, research-log temporary paths, and
+runtime-cache descendants.
 
 Connectivity starts only at evidence sources and direct presentations and
 traces backward through unique producers and declared inputs. A command outside
 this closure connects none of its scripts, inputs, outputs, or directory
-members. An external boundary terminates a reached branch but never connects
-an unreached artifact or suppresses an orphan.
+members. An origin boundary terminates a reached branch but never connects an
+unreached artifact or suppresses a Hygiene finding.
 
 Each eligible file is connected, declared-retained, or orphaned.
 `validation/mechanical.json` records authoritative artifact-level orphan
 checks. An unused data item produces one `orphan.input.unused` check; unused
 declarations are reported separately and do not inflate artifact counts.
 
-`validation.md` groups maximal all-orphan directories below, but never equal
-to, the owning entry root. Starting with each child directory, collapse the
-highest directory whose every eligible file is orphaned; otherwise recurse in
-normalized lexical order. Root-level files remain individual findings. Mixed
-directories retain individual files or smaller groups. No artifact appears
-twice.
+Complete-graph output reconciliation produces one Provenance condition and one
+Hygiene condition. A current graph output whose file is absent is
+`provenance.output.missing`: it breaks Provenance and is not a Hygiene finding.
+A record in `pyrun-outputs.json` whose output key is absent from the complete
+current graph is an unmatched output. If the file also exists, it is reported
+only as `hygiene.output.unmatched`, not again as an orphan. An existing file
+outside the current graph with no output record is an ordinary orphan.
+
+| Current graph output | Current file | Output record | Result |
+| --- | --- | --- | --- |
+| yes | no | either | Provenance failure: missing output |
+| no | either | yes | Hygiene: unmatched output |
+| no | yes | no | Hygiene: orphan output |
+
+An output present in the complete graph but outside the evidence-rooted closure
+is an orphan unless retained. Its record is not unmatched because the graph
+still identifies its current producer.
+
+`validation.md` reports one Hygiene finding count that combines orphan
+artifacts, unmatched outputs, and unused input declarations. Their distinct
+machine-readable checks remain in `validation/mechanical.json` for repair.
+Machine-readable orphan metadata may group maximal all-orphan directories
+below, but never equal to, the owning entry root. Starting with each child
+directory, collapse the highest directory whose every eligible file is
+orphaned; otherwise recurse in normalized lexical order. Root-level files
+remain individual findings. Mixed directories retain individual files or
+smaller groups. No artifact appears twice.
 
 A group identity is `orphan-group:` plus lowercase SHA-256 of canonical JSON
 for `[maintained-log identity, entry material owner, normalized entry-relative
-directory]`. The report lists group identity, directory, and artifact count,
-and reports both orphan-group and unique orphan-artifact counts. Grouping
-creates no graph edge, retention, or collection.
+directory]`. Grouping creates no graph edge, retention, or collection.
 
 ### Provenance Truth Table
 
-| Data item and token | Earlier producers | External | Producer inputs | Result |
+| Data item and token | Earlier producers | Origin | Producer support | Result |
 | --- | --- | --- | --- | --- |
 | Missing item or raw input | any | any | any | Fail undeclared or missing-token validation before lineage. |
-| Declared and used | 0 | yes | n/a | Terminal external input after identity and fingerprint checks. |
+| Declared and used | 0 | yes | n/a | Terminal origin after current fingerprint validation. |
 | Declared and used | 0 | no | n/a | Fail `lineage.missing`. |
-| Declared and used | 1 | no | n/a | Trace to the unique earlier producer. |
-| Declared and used | 1 | yes | n/a | Fail `data.external.invalid`. |
+| Declared and used | 1 | no | missing, unconfirmed, or unequal | Fail Provenance. |
+| Declared and used | 1 | no | exact confirmed match | Trace to the unique producer's inputs. |
+| Declared and used | 1 | yes | confirmed producer | Fail `data.origin.invalid`. |
 | Declared and used | more than 1 | either | n/a | Fail `lineage.ambiguous`. |
 | Declared but unused | any | either | n/a | Report `orphan.input.unused`; create no graph edge. |
-| Evidence producer | n/a | n/a | 0, no candidate | Terminate at the artifact-producer relationship. |
-| Evidence producer | n/a | n/a | 0, unresolved candidate | Fail `material.candidate.unresolved`. |
-| Evidence producer | n/a | n/a | one or more | Follow every declared input under the rows above. |
+| Reached producer | n/a | n/a | exact confirmed match, no inputs | Terminate at the artifact-producer relationship. |
+| Reached producer | n/a | n/a | unresolved candidate | Fail `material.candidate.unresolved`. |
+| Reached producer | n/a | n/a | exact confirmed match, one or more inputs | Follow every declared input under the rows above. |
 
 ### Directory Truth Table
 
 | Use | Producer state | Boundary | Result |
 | --- | --- | --- | --- |
-| Whole `input-directory` | no root/member producer | external | Consume all fingerprinted members through the aggregate boundary. |
-| Exact member | no root/member producer | external | Consume only that member; siblings stay disconnected. |
+| Whole `input-directory` | no root/member producer | origin | Consume all fingerprinted members through the aggregate boundary. |
+| Exact member | no root/member producer | origin | Consume only that member; siblings stay disconnected. |
 | Whole directory | one exact earlier `output-directory` | absent | Trace all members to that producer. |
 | Exact member | one exact earlier `output-directory` | absent | Trace that member without connecting siblings. |
 | Any directory | overlapping or separate member producers | either | Fail `directory.producer.conflict`. |
 | Generated directory | no exact earlier directory producer | absent | Fail `lineage.missing`. |
-| External directory | any root/member producer | present | Fail `directory.external.conflict`. |
+| Origin directory | confirmed root/member producer | present | Fail `directory.origin.conflict`. |
 | Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
 | Workflow outside evidence closure | any | any | Members remain orphan-eligible unless retained. |
 
-### Approved Diagnostics
+### Diagnostics
 
 | Code | Scope | Condition |
 | --- | --- | --- |
@@ -2792,28 +2945,31 @@ creates no graph edge, retention, or collection.
 | `data.input.token_missing` | conformance | A proven input uses a raw location instead of its item token. |
 | `material.candidate.unresolved` | conformance | A path-like or dynamic material candidate has no proven role. |
 | `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
-| `data.external.invalid` | provenance | A producerless input lacks a boundary or a produced input declares one. |
+| `data.origin.invalid` | provenance | An origin boundary hides a confirmed `pyrun` producer. |
 | `data.target.missing` | provenance | A local input or selected member is absent. |
 | `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
-| `data.remote.identity_invalid` | conformance | A URI input lacks an immutable identity or known SHA-256. |
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
 | `directory.producer.conflict` | provenance | A generated directory lacks one exclusive exact earlier producer. |
-| `directory.external.conflict` | provenance | An external directory root or member has a maintained-log producer. |
+| `directory.origin.conflict` | provenance | An origin directory root or member has a confirmed `pyrun` producer. |
+| `pyrun.outputs.invalid` | provenance | `pyrun-outputs.json` or one record violates its closed schema. |
+| `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
+| `pyrun.output.identity_invalid` | provenance | A reached graph output cannot map to one permitted entry-relative record key. |
+| `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
+| `provenance.output.unconfirmed` | provenance | A reached generated output has only an unconfirmed baseline. |
+| `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, or direct inputs differ from the confirmed record. |
+| `provenance.output.signature_unsupported` | provenance | A reached producer input cannot be represented in the exact record signature. |
+| `provenance.output.missing` | provenance | The current graph declares an output whose artifact is absent. |
+| `provenance.observation.unavailable` | provenance | Execution-linked bytes changed during validation or could not be re-observed. |
 | `retention.file.location_invalid` | conformance | `retention.json` is outside one entry root. |
 | `retention.declaration.invalid` | conformance | A retention file or record violates shape, path, overlap, eligibility, or redundancy. |
 | `retention.target.missing` | conformance | A retention target is absent. |
 | `orphan.material.unused` | orphan | One retained artifact lies outside the evidence closure and retention. |
 | `orphan.input.unused` | orphan | One data item is not consumed by any command. |
+| `hygiene.output.unmatched` | orphan | An output support record has no output in the complete current graph. |
 
-Existing producer, lineage, direction, observation, and resource diagnostics
-remain where their conditions still exist. The new version removes
-`provenance.root.missing`, `data_index.connection.missing`,
-`data_index.raw_external`, `orphan.data_index.unused`, command-type failures,
-simulation filename classification, and manifest diagnostics.
+### Examples
 
-### Approved Examples
-
-A generated intermediate contains no external boundary:
+A generated intermediate explicitly continues Provenance traversal:
 
 ```json
 {
@@ -2823,11 +2979,12 @@ A generated intermediate contains no external boundary:
   "fingerprint": {
     "algorithm": "sha256",
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  }
+  },
+  "origin": false
 }
 ```
 
-A local external directory has both a strong digest and source identity:
+A local origin explicitly stops traversal at its current byte identity:
 
 ```json
 {
@@ -2838,34 +2995,13 @@ A local external directory has both a strong digest and source identity:
     "algorithm": "directory-sha256-v1",
     "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   },
-  "external": {
-    "source": "Reference grid archive",
-    "identity": "reference-grid/v4"
-  }
+  "origin": true
 }
 ```
 
-An inaccessible remote input uses immutable source identity:
-
-```json
-{
-  "name": "archived_catalog",
-  "kind": "file",
-  "location": "s3://example-archive/catalog.csv?versionId=3Lg",
-  "fingerprint": {
-    "algorithm": "immutable-source",
-    "value": "versionId=3Lg"
-  },
-  "external": {
-    "source": "Example archive",
-    "identity": "bucket:example-archive/key:catalog.csv/version:3Lg"
-  }
-}
-```
-
-A producerless entry-relative file uses the external form because location does
-not determine lineage. A local file with one earlier producer uses the
-generated-intermediate form.
+Location does not determine origin status. Both examples may be inside or
+outside the entry so long as the resource is locally accessible and satisfies
+the path-safety contract.
 
 ## Mechanical Validation Evaluation And Outcomes
 
@@ -2873,19 +3009,23 @@ generated-intermediate form.
 
 Standard validation evaluates one target maintained log in this order:
 
-1. parse document, evidence, input-registry, and retention structure, and scan supported
-   command surfaces for relationship candidates;
+1. parse document, evidence, input-registry, output-support, and retention
+   structure, and scan supported command surfaces for relationship candidates;
 2. establish presentation, evidence-record, invocation, and material
    identities;
 3. resolve sources, named inputs, and project-local script identities;
 4. evaluate locators, expectations, transformations, and presentation
    comparison;
-5. establish producers for evidence starting points, then follow mechanically
-   proven upstream inputs, explicit external boundaries, and required
-   directory membership within that closure;
-6. compose evidence and provenance outcomes; and
-7. classify connected, declared-retained, and orphaned material over the
-   completed graph.
+5. establish producers for evidence starting points, match each reached output
+   to confirmed current execution support, then follow mechanically proven
+   upstream inputs, explicit origins, and required directory membership within
+   that closure;
+6. re-observe execution-linked script, input, output, and output-support bytes;
+7. reconcile the complete graph with current files and output-support records,
+   reporting absent graph-declared outputs as Provenance failures and records
+   absent from the graph as Hygiene findings; and
+8. compose evidence and Provenance outcomes, then classify remaining material
+   as connected, declared-retained, or orphaned for Hygiene.
 
 A malformed owned entry or entry-local command surface produces an entry-scoped
 conformance finding and does not prevent unaffected entries from continuing
@@ -2911,9 +3051,9 @@ Unrelated commands and entry material remain independently evaluable.
 | --- | --- | --- |
 | Malformed JSON, Markdown, path, supported source structure, or authored command annotation | Conformance | Fails conformance; dependent evidence or provenance is not applicable. |
 | Missing or conflicting evidence declaration or exact presentation mismatch | Evidence | Fails evidence. |
-| Missing, ambiguous, conflicting, or incomplete producer, lineage, input, boundary, or directory relationship | Provenance | Fails provenance without changing the evidence-value result. |
+| Missing, ambiguous, conflicting, stale, unconfirmed, or incomplete producer, lineage, execution-support, input, origin, or directory relationship | Provenance | Fails Provenance without changing the evidence-value result. |
 | Temporary access failure or material changing during observation | Owning check as unavailable | Makes the aggregate incomplete. |
-| Residual orphaned material or unused input declaration | Orphan | Reports findings without changing evidence or provenance status. |
+| Residual orphaned material, unused input declaration, or unmatched output record | Hygiene (machine scope `orphan`) | Reports findings without changing evidence or Provenance status. |
 | Scientific validity, interpretation, claim support, or summary meaning | Semantic Review | No mechanical result. |
 | Ability to rerun and reproduce a workflow | Reproduction | No standard-validation result. |
 
@@ -2943,8 +3083,10 @@ One evidence-rooted generated-material provenance outcome depends on:
 5. canonical material identity and direction proof;
 6. competing producer identities for the same material;
 7. exact upstream input-output identity matches;
-8. input declaration, fingerprint, and external-boundary projections; and
-9. required directory mechanism and membership projections.
+8. input declaration, fingerprint, and origin-boundary projections;
+9. exact output-support confirmation, output fingerprint, script path and
+   fingerprint, ordered parameters, and direct input fingerprint mapping; and
+10. required directory mechanism and membership projections.
 
 One combined evidence-and-provenance outcome additionally depends on its
 evidence-record, source, locator, transformation, presentation, and association
@@ -2971,8 +3113,8 @@ research_log_validation.py validate --summary PATH
 beneath one regular non-symlink project root. It recognizes a summary by its
 H1-adjacent stable `Validation: [latest completed report](<log>/validation.md)`
 navigation line and regular sibling log root. It does not include or exclude a
-candidate based on the candidate's basename. It emits
-`research-log-discovery-result/1` with the resolved `root` and a sorted
+candidate based on the candidate's basename. It emits the discovery-result
+schema listed in `Current Versions`, with the resolved `root` and a sorted
 `summaries` array. This is the canonical starting point for repo-wide or
 multi-log validation.
 
@@ -2996,8 +3138,8 @@ semantic, or reproduction input.
 
 The CLI writes one bounded JSON result envelope to standard output when
 evaluation or the unsupported-metadata preflight completes. A completed
-published mechanical evaluation uses
-`research-log-validation-cli-result/1` and contains:
+published mechanical evaluation uses the validation CLI result schema listed
+in `Current Versions` and contains:
 
 - `schema`;
 - `summary` is the resolved maintained-summary path;
@@ -3011,9 +3153,9 @@ published mechanical evaluation uses
 
 The published CLI envelope does not duplicate the complete generated record on
 standard output. `validation/mechanical.json` owns those checks. An unpublished
-dry-run or incomplete evaluation retains the complete
-`research-log-validation-result/1` record in its result because no replacement
-bundle was installed. An unsupported-metadata envelope contains
+dry-run or incomplete evaluation retains the complete validation-result record
+in its result because no replacement bundle was installed. An
+unsupported-metadata envelope contains
 `code:"validation.unsupported_metadata"` and `observed.paths`, which lists
 every detected unsupported path. It contains no partial mechanical record.
 
@@ -3038,6 +3180,10 @@ A completed published evaluation owns exactly these active generated paths:
 <log>/.cache/research-log-validation.lock
 ```
 
+`pyrun` independently owns `<entry-root>/pyrun-outputs.json`. Standard
+validation reads this file but never writes it. The file is excluded from
+artifact inventory and report publication ownership.
+
 The SQLite database may have `-journal`, `-wal`, and `-shm` companions. A
 writable evaluation also owns the shared generated SQLite paths:
 
@@ -3048,8 +3194,8 @@ writable evaluation also owns the shared generated SQLite paths:
 <project>/.cache/research-log-fingerprints.sqlite3-shm
 ```
 
-`validation/mechanical.json` is authoritative and uses schema
-`research-log-mechanical/1`. Its exact top-level fields are `schema`,
+`validation/mechanical.json` is authoritative and uses the mechanical-record
+schema listed in `Current Versions`. Its exact top-level fields are `schema`,
 `summary`, `rules_version`, `result_date`, `completion`, `checks`, and
 `scopes`. Checks are unique and sorted by `identity`; each contains
 `identity`, `scope`, `status`, `subject`, `dependencies`, and, only for
@@ -3059,8 +3205,9 @@ writable evaluation also owns the shared generated SQLite paths:
 The record is canonical UTF-8 JSON with one trailing newline.
 
 `<log>/.cache/research-log-validation.sqlite3` is disposable per-log
-acceleration state using SQLite schema version 1. It has independently
-versioned `check_comparison` and `evidence_selections` components.
+acceleration state using the schema and component versions listed in `Current
+Versions`. It has independent `check_comparison` and `evidence_selections`
+components.
 `check_comparison` retains only passing dependency-bearing checks, with the
 rules version, exact dependency projection, strict serialized check, and exact
 SHA-256 identity of the authoritative `validation/mechanical.json` from which
@@ -3075,10 +3222,11 @@ One serialized result is limited to 256 KiB and all retained results for one
 log are limited to 16 MiB. An oversized selection remains a valid evaluation
 result but is omitted from the cache. Each completed stable selection is
 committed independently. Rows used in the current evaluation are assigned its
-retention generation; obsolete rows are removed only after that evaluation
+retention generation; unused rows are removed only after that evaluation
 completes and its authoritative report publishes successfully.
 
-The project-level SQLite fingerprint cache uses schema version 1 at
+The project-level SQLite fingerprint cache uses the schema listed in `Current
+Versions` at
 `<project>/.cache/research-log-fingerprints.sqlite3`. It stores current local
 input observations independently of this per-log cache. File records contain
 canonical absolute path, size, modification time, change time, algorithm, and
@@ -3093,8 +3241,8 @@ mechanical-report bytes match the baseline report identity and the table
 contains the same passing check under the current rules version and exact
 dependency projection. This comparison happens after current evaluation and
 does not skip check computation. A different rules version invalidates only
-check comparison; it does not invalidate current Phase 10 file observations or
-otherwise eligible evidence selections.
+check comparison; it does not invalidate current project-level fingerprint
+observations or otherwise eligible evidence selections.
 
 Selection lookup happens after locator canonicalization and current strong
 source-identity observation but before full source loading. A hit reconstructs
@@ -3118,20 +3266,20 @@ byte-identical.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, check counts for
-conformance and evidence, unique provenance starting-artifact counts, and
-unique orphan-artifact counts. It reports unused input declarations
-separately, collapses maximal all-orphan directories for discussion, and keeps
-artifact-level checks authoritative in `mechanical.json`. The section also
-contains every other non-passing check grouped by entry with its status,
-identity, subject, and dependencies. Failed and unavailable checks additionally show
-their code, observed state, and violated rule. It does not list individual
-passing checks or provide repair instructions. A scope with zero checks has a
-blank displayed aggregate status; the report does not present absent checks as
-`not_applicable`. Its separate Reproduction
-section is visibly `not_yet_run` until Phase 3 defines and publishes
-`validation/reproduction.json`. The report has no combined pass/fail
-conclusion, and standard mechanical validation reads or writes no reproduction
-record.
+Conformance and Evidence, unique Provenance starting-artifact counts, and one
+Hygiene finding count. Hygiene combines orphan artifacts, unmatched output
+records, and unused input declarations; their distinct checks remain
+authoritative in `mechanical.json`. Human detail may collapse maximal
+all-orphan directories for discussion. The section contains every non-Hygiene
+non-passing check grouped by entry with its status, identity, subject, and
+dependencies. Failed and unavailable checks additionally show their code,
+observed state, and violated rule. It does not list individual passing checks
+or provide repair instructions. A scope with zero checks has a blank displayed
+aggregate status; the report does not present absent checks as
+`not_applicable`. Its separate Reproduction section is visibly `not_yet_run`
+until the Reproduction workflow publishes `validation/reproduction.json`. The
+report has no combined pass/fail conclusion, and standard mechanical validation
+reads or writes no reproduction record.
 
 Writable validation acquires
 `<log>/.cache/research-log-validation.lock` before opening the per-log database
@@ -3146,17 +3294,16 @@ termination is subject to the per-destination atomicity boundary; a later
 invocation must not interpret a partial bundle as current. `validation.md` is
 composed from the authoritative operation records under the same lock.
 
-The retired `validation/.cache/mechanical.json` and
-`validation/.cache/lock` are never read or migrated. After the first successful
+The incompatible `validation/.cache/mechanical.json` and
+`validation/.cache/lock` paths are never read. After a successful
 comparison-baseline rebuild, validation removes only those known files and
-removes their directory only when empty. Unknown legacy-directory contents are
-preserved. Mechanical-record, database, component, locator-evaluator, and
-future reproduction-record versions evolve independently of evidence format
-v2.
+removes their directory only when empty. Unknown contents in that directory
+are preserved. The compatibility rules below govern each independently
+versioned surface.
 
-### Command-Provenance And Orphan Diagnostics
+### Command-Provenance And Hygiene Diagnostics
 
-The active command-input, producer, directory, retention, and orphan codes are
+The active command-input, producer, directory, retention, and Hygiene codes are
 the closed set in `Approved Diagnostics` above. Existing invocation,
 direction, producer, lineage, observation, and resource diagnostics remain
 active only where that table and the surrounding contract retain their
@@ -3164,7 +3311,7 @@ conditions.
 
 ### Command-Provenance Resource And Safety Bounds
 
-The initial command-derived provenance profile permits at most:
+The command-derived provenance profile permits at most:
 
 - 64 concrete invocations after static expansion in one eligible command
   fence;
@@ -3192,9 +3339,10 @@ unsafe formats, follow unrestricted external links, or enumerate outside the
 declared scope. Crossing the material-graph node, edge, or producer-lineage
 bound fails the affected graph evaluation; it never silently truncates
 lineage or converts an unresolved tail into an orphan result.
-target maintained log except through the exact entry-local `data` and `images`
-material roots or directly referenced external material. Crossing a stable
-bound is `fail`; temporary material access failure is `unavailable`.
+Validation does not enumerate outside the target maintained log except through
+exact locally declared input paths and the first-class entry `data` and
+`images` material roots. Crossing a stable bound is `fail`; temporary material
+access failure is `unavailable`.
 
 ## Future Command-Discovery Expansion If Warranted
 
@@ -3207,7 +3355,7 @@ fails regardless of whether one relationship appears likely.
 Additional automatic role words, internal-token matching,
 glob grammars, range-to-filename expansion, dynamic output templates, selector
 languages, per-command plugins, and evidence-record provenance hints remain
-deferred until several concrete cases show that the initial forms make natural
+deferred until several concrete cases show that the current forms make natural
 research authoring materially awkward. A proposed addition requires
 retained-corpus evidence and explicit researcher approval. It must be closed,
 independently checkable from recorded state, bounded, and simpler overall than
@@ -3215,7 +3363,7 @@ renaming the option or repairing the command surface with an adjacent
 annotation.
 
 No future mechanism may select a merely plausible producer, suppress an orphan
-without a retention record, invent missing historical lineage, override shell
+without a retention record, invent missing lineage, override shell
 direction, or inspect script internals as provenance authority.
 
 ## Conformance Examples
@@ -3224,7 +3372,7 @@ The first example composes presentation, evidence selection, transformation,
 and recorded-command provenance. The locator and transformation examples that
 follow isolate their respective subcontracts.
 
-### Composed V2 Statistic
+### Composed Statistic
 
 An entry presents:
 
@@ -3261,65 +3409,61 @@ Its entry-local `evidence.json` contains:
 ```
 
 The same entry's `data.json` registers `data/results.csv` as the generated
-`results` file input, using its current SHA-256 fingerprint and no `external`
-boundary.
+`results` file input, using its current SHA-256 fingerprint and
+`"origin": false`.
 
 The same experimental section records one command that names
 `data/results.csv`:
 
 ````markdown
 ```bash
-./pyrun scripts/run_study.py --dataset "<development-set>" --summary-csv data/results.csv
+./pyrun scripts/run_study.py --input-dataset "<development-set>" --output-summary-csv data/results.csv
 ```
-<!-- command summary-csv = output -->
 ````
 
 Mechanical validation resolves the local script without executing or
-inspecting its internals. The adjacent annotation assigns output direction to
-the exact `--summary-csv` option and establishes that invocation as the sole
-producer of `data/results.csv`. It resolves `<development-set>` through the
-entry-root `data.json`, verifies its fingerprint and explicit external
-boundary, and does not traverse beyond that boundary. The evidence check
-compares `67.6%`; the provenance check verifies the producer, declared input,
-and boundary. Neither decides whether success rate is scientifically
-appropriate.
+inspecting its internals. The role-bearing options establish the command graph.
+It resolves `<development-set>` through the entry-root `data.json`, verifies
+its fingerprint and `origin: true`, and does not traverse beyond that origin.
+The entry-root `pyrun-outputs.json` must also contain a confirmed
+`data/results.csv` record whose output bytes, script path and bytes, exact
+parameters, and direct input fingerprints all match this current command and
+filesystem state. The evidence check compares `67.6%`; the Provenance check
+verifies the complete bounded chain. Neither decides whether success rate is
+scientifically appropriate.
 
-Without the annotation, `--summary-csv` has no automatic role and establishes
-no edge. Because `data/results.csv` is an evidence source with no other mechanically proven
-producer, provenance fails as `producer.missing`. Validation does not inspect
-the script to infer the missing relationship.
-
-Instead of adding the annotation, a research agent may change the real script
-interface and every affected recorded command to use a role-bearing option
-such as `--output-summary-csv` when that interface and command are legitimately
-being maintained or rerun. Renaming only the Markdown command while leaving
-the executable interface unchanged is not a valid repair. A completed
-historical invocation that must preserve the command actually run uses an
-annotation rather than a retrospective rename.
+An annotation can make a relationship visible to static validation, but
+`pyrun` cannot discover a Markdown-only role while executing. A retained
+`pyrun` output that needs confirmed support therefore uses a natural
+output-bearing option or an explicit `pyrun` capture option. Renaming only the
+Markdown command while leaving the executable interface unchanged is not a
+valid repair.
 
 ### Other Presentation And Provenance Cases
 
-- A v2 summary statistic names one successful v2 entry evidence record through
-  its adjacent `ref`. A table reference also names one exact row and
-  column. The summary reuses the target record's source and command-provenance
-  projection and does not declare another producer.
+- A summary statistic names one successful entry evidence record through its
+  adjacent `ref`. A table reference also names one exact row and column. The
+  summary reuses the target record's source and command-provenance projection
+  and does not declare another producer.
 - A direct, structured, or summary table uses the applicable closed table
   recipe. Every local source used by the table must independently resolve to
-  exactly one producing invocation unless it reaches an explicit external
-  input boundary.
-- A marked output block may select a retained command log. A command whose
-  supported shell structure contains `> data/run.log` establishes the output
-  relationship directly; the marked fence payload must still match the
+  exactly one producing invocation unless it reaches an explicit origin.
+- A marked output block may select a retained command log. Use
+  `./pyrun --capture-stdout-stderr data/run.log -- ...` so the log has both a
+  graph relationship and confirmed output support; raw redirection or `tee`
+  does not provide that support. The marked fence payload must still match the
   selected retained text exactly.
 - A direct artifact presentation has no evidence record. Its normalized
-  Markdown target must match exactly one mechanically proven command output.
-  A path merely mentioned by a command does not suffice.
-- A cross-log source is observed as external material of the consuming log.
+  Markdown target must match exactly one mechanically proven command output and
+  one exact confirmed output record. A path merely mentioned by a command does
+  not suffice.
+- A cross-log source is observed as a locally declared origin of the consuming log.
   Validation does not import the source log's command graph or validation
   result.
-- Historical material with no mechanically discoverable producer fails
-  `producer.missing`. There is no limitation declaration that converts the gap
-  into a pass.
+- Retained material with no mechanically discoverable producer fails
+  `producer.missing`. Generated material with a discoverable
+  producer but no confirmed output record fails `provenance.output.unrecorded`.
+  There is no limitation declaration that converts either gap into a pass.
 
 ### Directory And Named-Input Case
 
@@ -3333,7 +3477,7 @@ Suppose an entry records:
 ````
 
 `<reference-grid>` must resolve through exactly one entry-root `data.json`
-input with an exact fingerprint and the applicable producer or external
+input with an exact fingerprint and the applicable producer or origin
 boundary.
 The annotation establishes `data/trials` as a dedicated output directory, so
 its complete collection is every retained regular-file descendant observed
@@ -3342,7 +3486,7 @@ validation does not need to understand how it maps to filenames. Without an
 approved directory role or the annotation, the directory remains an unresolved
 material candidate.
 
-### V2
+### Locator Examples
 
 CSV:
 
@@ -3386,7 +3530,7 @@ Text:
 data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 ```
 
-### V2 Failure Examples
+### Locator And Transformation Failure Examples
 
 | Condition | Failure |
 | --- | --- |
@@ -3398,7 +3542,7 @@ data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 | Numeric equality against a CSV lexical string without `parse` | `locator.type.mismatch`. |
 | Explicit CSV decimal parsing encounters `1,25` | `locator.predicate.parse_failed`. |
 | HDF5 external link leaves the retained file | `locator.source.unsafe`. |
-| V2 JSON is malformed | `locator.syntax.invalid`; do not retry under another interpretation. |
+| Locator JSON is malformed | `locator.syntax.invalid`; do not retry under another interpretation. |
 | Wildcard selects more than the configured bound | `locator.selection.too_large`. |
 | Summary `label` occurs outside the first column or is its row's only cell | `transformation.table.label_invalid`. |
 | Boolean cell declares `style:"Yes/No"` | `transformation.boolean.invalid`; use `yes_no`. |
@@ -3406,49 +3550,51 @@ data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 | Binary-float input is not IEEE binary16, binary32, or binary64 | `transformation.type.mismatch`. |
 | Numeric renderer declares `sign:"optional"` | `transformation.render.invalid`; use omission or `always`. |
 
-## Version Evolution
+## Compatibility And Evolution
 
-The active v2 contract uses the following evolution rules:
+The locator contract follows these evolution rules:
 
-- any change that alters the parsing or meaning of an existing valid v2 locator
+- any change that alters the parsing or meaning of an existing valid locator
   requires a new locator version;
-- an additive source profile or structural property may join the v2 registry
+- an additive source profile or structural property may join the registry
   only when it cannot change an existing locator's dispatch or result;
 - changing typed equality, path behavior, expectation semantics, selection
   order, or failure classification requires a new version;
 - resource-limit increases do not change locator meaning but must be recorded;
 - unsupported future versions fail without fallback.
 
-The approved v2 transformation contract applies these evolution rules:
+The transformation contract follows these evolution rules:
 
-- any change that alters the parsing or meaning of an existing valid v2
+- any change that alters the parsing or meaning of an existing valid
   transformation requires a new transformation version;
 - changing the value pipeline, rounding, rendering, unit attachment,
   input-consumption, canonical form, or table semantics requires a new
   version; and
 - a future feature listed under `Future Expansion If Warranted` belongs in a
   later version unless it provably cannot change the result or validity of any
-  existing v2 recipe.
+  existing recipe.
 
-A change to v2 JSON schema dispatch, record or marker identity, field
-ownership, summary-reference syntax or coordinates, cardinality, Markdown parsing, exact comparison,
-command identity, annotation or input-token syntax, provenance proof forms,
-external-boundary semantics, graph semantics, or result scopes
-that alters an existing valid outcome requires the applicable new evidence,
-command-discovery, or mechanical-validation contract version.
+A change to evidence JSON schema dispatch, record or marker identity, field
+ownership, summary-reference syntax or coordinates, cardinality, Markdown
+parsing, exact comparison, command identity, annotation or input-token syntax,
+Provenance proof forms, origin-boundary semantics, output-support semantics,
+graph semantics, or result scopes that alters an existing valid outcome
+requires the applicable new evidence, command-discovery, or
+mechanical-validation contract version.
 
 ## Current Implementation Boundary
 
-Standard validation implements the active v2 locator, transformation,
-association, presentation, command-discovery, provenance, material-graph,
-orphan-detection, composed-outcome, generated-record, cache, report, and
-unsupported-metadata preflight contracts in this document. It does not parse
-unsupported generated validation metadata.
+Standard validation implements the locator and transformation,
+evidence association and presentation, command discovery, end-to-end
+Provenance, material graph, Hygiene, composed outcome, generated record, cache,
+report, and unsupported-metadata preflight contracts in this document. It does
+not parse unsupported generated validation metadata.
 
 No downstream surface may define a competing evidence-record, locator,
-transformation, presentation, command-provenance, collection, orphan-detection,
-or mechanical-outcome contract. Self-contained runtime agent surfaces may
-carry the bounded authoring and operational subset they need without loading or
-linking to this specification, but they must remain compatible with it.
+transformation, presentation, command-Provenance, collection, output-support,
+Hygiene, or mechanical-outcome contract. Self-contained runtime agent surfaces
+may carry the bounded authoring and operational subset they need without
+loading or linking to this specification, but they must remain compatible with
+it.
 Maintainer-facing implementation documentation may omit detail by pointing
 here and must not contradict this specification.

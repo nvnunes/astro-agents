@@ -2621,7 +2621,30 @@ The suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
 `.jpeg`, `.svg`, and `.pdf`, compared case-sensitively. A suffix identifies a
 candidate only; it never assigns direction.
 
-Command annotations retain argument roles only. The roles are `input`,
+`pyrun` accepts runner-visible role declarations before its required `--`
+separator. `--other-inputs <selectors>` and
+`--other-outputs <selectors>` each accept one comma-separated list of script
+option names without leading hyphens or one-based positional selectors written
+as `@N`. Each declaration may occur once. Lists reject empty or whitespace
+items, duplicate selectors, selectors without a matching valued argument, and
+selectors declared in both directions. A selector applies to every occurrence
+of its option. An explicit declaration overrides automatic role inference from
+the option name.
+
+The runner and static command discovery use the same parsed declarations.
+Input kind comes from `data.json`: a whole-directory token is a directory and a
+file or exact directory-member token is a file. Output kind comes from the
+stable target after successful execution. Captures remain file-only. The exact
+entry `data` and `images` roots remain invalid material targets.
+
+Role declarations are classification metadata. They are excluded from the
+persisted `parameters` vector and do not change output support when reordered
+without changing the resolved relationships. Capture options retain their
+existing execution-signature behavior. A successful command publishes no
+record for a declared output that is absent.
+
+Command annotations retain argument roles for historical and non-`pyrun`
+commands. The roles are `input`,
 `output`, `input-directory`, and `output-directory`. A `type` clause and values
 `model` or `simulation` are invalid. Script filenames receive no provenance
 classification.
@@ -2677,7 +2700,9 @@ exactly `confirmed`, `fingerprint`, `script`, `parameters`, and `inputs`.
 or command ID. `parameters` is the exact ordered argument tail after the script,
 except that capture options, their targets, and the separating `--` precede the
 script arguments so the record matches the validator's normalized `pyrun`
-invocation signature. `inputs` maps every directly consumed `data.json` name to
+invocation signature. Runner role declarations are excluded from this vector.
+Their separator is also excluded when no capture is present. `inputs` maps
+every directly consumed `data.json` name to
 the fingerprint used by the run. Fingerprints use the same closed local
 fingerprint forms as `data.json`.
 
@@ -2707,9 +2732,10 @@ rules. Retained process streams use one of these forms:
 ```
 
 `--capture-stdout` and `--capture-stderr` may be combined with distinct
-targets. `--capture-stdout-stderr` is mutually exclusive with both. Capture
-options and `--` are on the first line with `./pyrun`; without capture, the
-script is on that line. Captured bytes are mirrored to the corresponding
+targets. `--capture-stdout-stderr` is mutually exclusive with both. With one
+runner option, that option and `--` stay on the `./pyrun` line. With several,
+put `./pyrun`, each option-value pair, and `--` on separate lines. Line wrapping
+does not change parsing. Captured bytes are mirrored to the corresponding
 terminal stream. Raw shell redirection and `tee` remain valid shell syntax but
 cannot create confirmed `pyrun` output support.
 
@@ -3445,12 +3471,11 @@ filesystem state. The evidence check compares `67.6%`; the Provenance check
 verifies the complete bounded chain. Neither decides whether success rate is
 scientifically appropriate.
 
-An annotation can make a relationship visible to static validation, but
-`pyrun` cannot discover a Markdown-only role while executing. A retained
-`pyrun` output that needs confirmed support therefore uses a natural
-output-bearing option or an explicit `pyrun` capture option. Renaming only the
-Markdown command while leaving the executable interface unchanged is not a
-valid repair.
+A runner declaration makes a non-natural relationship visible to both `pyrun`
+and static validation. A retained `pyrun` output that needs confirmed support
+therefore uses a natural output-bearing option, `--other-outputs`, or an
+explicit capture option. Renaming only the Markdown command while leaving the
+executable interface unchanged is not a valid repair.
 
 ### Other Presentation And Provenance Cases
 
@@ -3484,20 +3509,23 @@ Suppose an entry records:
 
 ````markdown
 ```bash
-./pyrun scripts/run_trials.py --reference "<reference-grid>" --cases 1:40 --output-dir data/trials
+./pyrun --other-outputs output-dir -- \
+  scripts/run_trials.py \
+  --reference "<reference-grid>" \
+  --cases 1:40 \
+  --output-dir data/trials
 ```
-<!-- command output-dir = output-directory -->
 ````
 
 `<reference-grid>` must resolve through exactly one entry-root `data.json`
 input with an exact fingerprint and the applicable producer or origin
 boundary.
-The annotation establishes `data/trials` as a dedicated output directory, so
-its complete collection is every retained regular-file descendant observed
-beneath that directory. The `--cases 1:40` selector is ordinary command input;
-validation does not need to understand how it maps to filenames. Without an
-approved directory role or the annotation, the directory remains an unresolved
-material candidate.
+The runner declaration establishes `data/trials` as a dedicated output
+directory by observing its completed kind. Its complete collection is every
+retained regular-file descendant observed beneath that directory. The
+`--cases 1:40` selector is ordinary command input; validation does not need to
+understand how it maps to filenames. Without an approved directory role, the
+directory remains an unresolved material candidate.
 
 ### Locator Examples
 

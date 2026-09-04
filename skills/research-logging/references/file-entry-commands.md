@@ -84,23 +84,42 @@ argument only. Do not rename an option merely in the recorded Markdown; the
 recorded command must continue to match the real interface and the command
 actually run.
 
-When natural naming is unavailable or a command needs a positional role,
-directory role, or explicit override, put one hidden annotation immediately
-after its command fence:
+When a `pyrun` command cannot use natural naming, declare the affected script
+options through `--other-inputs` or `--other-outputs`. List option selectors
+without leading hyphens and positional selectors as one-based `@N` values:
+
+```bash
+./pyrun \
+  --other-inputs catalog \
+  --other-outputs results,@2 \
+  -- \
+  scripts/run_study.py \
+  --catalog "<development_set>" \
+  --results data/results.csv \
+  trial images/trial.png
+```
+
+The runner infers file or directory kind from the registered input or completed
+output. Captures remain file-only. Use these declarations only when natural
+names do not expose the correct role; an explicit declaration overrides a
+misleading automatic role.
+
+For a non-`pyrun` command, put one hidden annotation immediately after its
+command fence when natural naming is unavailable:
 
 ```html
 <!-- command catalog = input; results = output -->
 ```
 
-For a fence containing several independent commands, add the one-based command
-number only where an annotation is needed:
+For a fence containing several independent non-`pyrun` commands, add the
+one-based command number only where an annotation is needed:
 
 ```html
 <!-- command-1 results = output -->
 <!-- command-3 summary-csv = input; @2 = output -->
 ```
 
-Option targets omit leading hyphens. Positional targets use `@N`, counting
+Annotation option targets omit leading hyphens. Positional targets use `@N`, counting
 positional arguments after the executable or script token. Supported roles are
 `input`, `output`, `input-directory`, and `output-directory`. Use directory
 roles only when the entire non-empty directory has one direction and an output
@@ -119,11 +138,12 @@ terminates lineage only when `data.json` sets `origin: true`. A generated input
 normally uses `origin: false` and traces to its unique earlier producer
 regardless of storage location.
 
-Annotations classify material already visible in the selected command. They do
-not bind a producer by name, extract a path from an opaque `label=path` value,
-or excuse a missing command relationship. Prefer the option-name convention
-when it keeps the real command interface natural; use an annotation as the
-explicit fallback.
+Runner declarations and annotations classify material already visible in the
+selected command. They do not bind a producer by name, extract a path from an
+opaque `label=path` value, or excuse a missing command relationship. Prefer the
+option-name convention when it keeps the real command interface natural; use a
+runner declaration as the `pyrun` fallback and an annotation for another
+command.
 
 Unclassified values are material candidates only when they have positive path
 evidence: an existing filesystem target, an explicit path or URI prefix, an
@@ -164,14 +184,17 @@ outputs, even when the script lives in the parent entry's `scripts/`.
 When stdout or stderr supports presented evidence, capture it through `pyrun`
 so it receives an output support record. Use `--capture-stdout <path>` and
 `--capture-stderr <path>` separately, or use
-`--capture-stdout-stderr <path>` for a merged stream. Capture options and `--`
-stay on the first line:
+`--capture-stdout-stderr <path>` for a merged stream. With one runner option,
+keep that option and `--` on the `./pyrun` line:
 
 ```bash
 ./pyrun --capture-stdout-stderr data/run.log -- \
   scripts/run_study.py \
   --parameter value
 ```
+
+With several runner options, put `./pyrun`, each option-value pair, and `--` on
+separate lines as in the role-declaration example above.
 
 Raw shell redirection and `tee` do not establish execution-linked Provenance.
 Never create the retained log later from output held only in agent context. Do

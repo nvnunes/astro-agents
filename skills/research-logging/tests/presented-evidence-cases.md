@@ -200,15 +200,15 @@ the exact path relationship discoverable. Record prefers this natural naming
 when maintaining the real command interface.
 
 Given a real interface whose natural option is `--results data/results.csv`,
-Record preserves the command and places
-`<!-- command results = output -->` immediately after the fence. It does not
-rename only the recorded command. An annotation may also identify positional
-or whole-directory input and output roles.
+Record preserves the command and invokes `pyrun` with
+`--other-outputs results --`. It does not rename only the recorded command.
+The runner declaration may also identify positional or whole-directory input
+and output roles and infers kind from the registered input or completed output.
 
-Given several commands in one fence, an annotation uses `command-N` to select
-only the command that needs it. Commands without annotations require no empty
-placeholder. Validation does not inspect script internals to infer a missing
-relationship.
+Given several non-`pyrun` commands in one fence, an annotation uses `command-N`
+to select only the command that needs it. Commands without annotations require
+no empty placeholder. Validation does not inspect script internals to infer a
+missing relationship.
 
 ## Statistics
 

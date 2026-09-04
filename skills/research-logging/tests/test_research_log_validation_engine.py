@@ -1918,6 +1918,26 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
 
+    def test_pyrun_other_roles_are_shared_with_static_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory), output_option="results")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "./pyrun scripts/model.py --catalog '<catalog>' "
+                    "--results data/results.csv",
+                    "./pyrun --other-inputs catalog --other-outputs results -- "
+                    "scripts/model.py --catalog '<catalog>' "
+                    "--results data/results.csv",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            self.assertEqual(
+                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+            )
+
     def test_missing_summary_reference_is_precise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

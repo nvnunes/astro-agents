@@ -93,6 +93,79 @@ def inputs(entry: Path) -> list[dict[str, object]]:
 
 
 class PyrunResolutionTests(unittest.TestCase):
+    def test_other_role_layout_is_normalized_and_not_persisted(self) -> None:
+        first = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--other-inputs",
+                "weights,catalog",
+                "--other-outputs",
+                "results",
+                "--",
+                "scripts/model.py",
+                "--catalog",
+                "<input_csv>",
+                "--weights",
+                "<input_csv>",
+                "--results",
+                "data/results.csv",
+            ]
+        )
+        second = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--other-outputs",
+                "results",
+                "--other-inputs",
+                "catalog,weights",
+                "--",
+                "scripts/model.py",
+                "--catalog",
+                "<input_csv>",
+                "--weights",
+                "<input_csv>",
+                "--results",
+                "data/results.csv",
+            ]
+        )
+
+        self.assertEqual(first.roles, second.roles)
+        self.assertEqual(first.parameters, second.parameters)
+        self.assertEqual(
+            first.parameters,
+            (
+                "--catalog",
+                "<input_csv>",
+                "--weights",
+                "<input_csv>",
+                "--results",
+                "data/results.csv",
+            ),
+        )
+
+    def test_other_roles_and_capture_have_distinct_signature_ownership(self) -> None:
+        layout = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--other-outputs",
+                "results",
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "scripts/model.py",
+                "--results",
+                "data/results.csv",
+            ]
+        )
+
+        self.assertEqual(
+            layout.parameters,
+            (
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "--results",
+                "data/results.csv",
+            ),
+        )
+
     def test_resolves_project_log_file_directory_and_member_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
@@ -391,6 +464,180 @@ class PyrunAuthoringTests(unittest.TestCase):
 
 
 class PyrunOutputSupportTests(unittest.TestCase):
+    def test_other_roles_publish_support_without_entering_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build_other.py").write_text(
+                """import argparse
+p = argparse.ArgumentParser()
+p.add_argument('--catalog')
+p.add_argument('--results')
+a = p.parse_args()
+open(a.results, 'wb').write(open(a.catalog, 'rb').read())
+""",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PYRUN),
+                "--other-inputs",
+                "catalog",
+                "--other-outputs",
+                "results",
+                "--",
+                "scripts/build_other.py",
+                "--catalog",
+                "<input_csv>",
+                "--results",
+                "data/results.csv",
+            ]
+
+            result = run(command, cwd=entry)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/results.csv"
+            ]
+            self.assertEqual(
+                record["parameters"],
+                ["--catalog", "<input_csv>", "--results", "data/results.csv"],
+            )
+            self.assertEqual(set(record["inputs"]), {"input_csv"})
+
+    def test_other_role_overrides_a_misleading_automatic_role(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/override.py").write_text(
+                """import argparse
+p = argparse.ArgumentParser()
+p.add_argument('--output-source')
+p.add_argument('--result')
+a = p.parse_args()
+open(a.result, 'wb').write(open(a.output_source, 'rb').read())
+""",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-inputs",
+                    "output-source",
+                    "--other-outputs",
+                    "result",
+                    "--",
+                    "scripts/override.py",
+                    "--output-source",
+                    "<input_csv>",
+                    "--result",
+                    "data/result.csv",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
+            self.assertEqual(set(outputs), {"data/result.csv"})
+
+    def test_other_output_can_select_a_positional_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/positional_directory.py").write_text(
+                """from pathlib import Path
+import sys
+target = Path(sys.argv[1])
+target.mkdir()
+(target / 'result.csv').write_text('value\\n1\\n', encoding='utf-8')
+""",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/positional_directory.py",
+                    "data/results",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/results"
+            ]
+            self.assertEqual(
+                record["fingerprint"]["algorithm"], "directory-sha256-v1"
+            )
+
+    def test_absent_other_output_publishes_no_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "result",
+                    "--",
+                    "scripts/print_args.py",
+                    "--result",
+                    "data/absent.csv",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_other_role_contract_rejects_invalid_forms_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            forms = (
+                ["--other-inputs", "catalog", "scripts/print_args.py"],
+                ["--other-inputs", "", "--", "scripts/print_args.py"],
+                ["--other-inputs", "a, a", "--", "scripts/print_args.py"],
+                ["--other-inputs", "a,a", "--", "scripts/print_args.py"],
+                [
+                    "--other-inputs",
+                    "value",
+                    "--other-inputs",
+                    "other",
+                    "--",
+                    "scripts/print_args.py",
+                    "--value",
+                    "<input_csv>",
+                    "--other",
+                    "<input_csv>",
+                ],
+                [
+                    "--other-inputs",
+                    "value",
+                    "--other-outputs",
+                    "value",
+                    "--",
+                    "scripts/print_args.py",
+                    "--value",
+                    "<input_csv>",
+                ],
+                ["--other-outputs", "missing", "--", "scripts/print_args.py"],
+            )
+            for arguments in forms:
+                with self.subTest(arguments=arguments):
+                    result = run([sys.executable, str(PYRUN), *arguments], cwd=entry)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+
     def test_success_records_exact_output_support_and_failed_run_does_not(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

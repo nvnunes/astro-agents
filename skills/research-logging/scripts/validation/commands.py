@@ -203,6 +203,7 @@ class _ParsedCommand:
     redirections: tuple[tuple[str, str], ...]
     tee_outputs: tuple[str, ...]
     capture_outputs: tuple[tuple[str, str], ...]
+    runner_roles: Mapping[str, str]
     static_projection: tuple[str, ...] = ()
 
 
@@ -541,9 +542,10 @@ def _parse_command(
     executable = Path(principal[executable_index].value).name
     redirections, ordinary = _redirections(principal)
     capture_outputs: tuple[tuple[str, str], ...] = ()
+    runner_roles: Mapping[str, str] = {}
     parameters: tuple[str, ...] = ()
     if executable == "pyrun":
-        script_index, parameters, capture_outputs = _pyrun_layout(
+        script_index, parameters, capture_outputs, runner_roles = _pyrun_layout(
             ordinary, executable_index
         )
     elif executable.startswith("python"):
@@ -570,20 +572,31 @@ def _parse_command(
         redirections,
         tee_outputs,
         capture_outputs,
+        runner_roles,
         static_projection,
     )
 
 
 def _pyrun_layout(
     tokens: Sequence[str], executable_index: int
-) -> tuple[int, tuple[str, ...], tuple[tuple[str, str], ...]]:
-    """Resolve the script, exact parameter vector, and runner capture outputs."""
+) -> tuple[
+    int,
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+    Mapping[str, str],
+]:
+    """Resolve the script, signature, captures, and explicit material roles."""
 
     layout = parse_pyrun_arguments(tokens[executable_index + 1 :])
     captures = tuple(
         (option.removeprefix("--"), target) for option, target in layout.captures
     )
-    return executable_index + 1 + layout.script_index, layout.parameters, captures
+    return (
+        executable_index + 1 + layout.script_index,
+        layout.parameters,
+        captures,
+        dict(layout.roles),
+    )
 
 
 def _unwrap_caffeinate(principal: Sequence[StaticToken], executable_index: int) -> int:
@@ -945,6 +958,7 @@ def _relationships(
     state = _RoleState(context, relationships, collections)
     candidates: list[str] = []
     annotated = annotation.roles if annotation else {}
+    runner_roles = command.runner_roles
     options = {occurrence.name for occurrence in command.options}
     positionals = {f"@{index}" for index in range(1, len(command.positionals) + 1)}
     missing = set(annotated) - options - positionals
@@ -971,15 +985,41 @@ def _relationships(
             )
         )
     for occurrence in command.options:
-        role = annotated.get(occurrence.name, automatic_option_role(occurrence.name))
+        role = runner_roles.get(
+            occurrence.name,
+            annotated.get(occurrence.name, automatic_option_role(occurrence.name)),
+        )
+        if occurrence.name in runner_roles:
+            role = _inferred_runner_role(occurrence.value, role, context)
         _collect_argument(occurrence.value, occurrence.name, role, state, candidates)
     for index, value in enumerate(command.positionals, 1):
         target = f"@{index}"
-        role = annotated.get(target)
+        role = runner_roles.get(target, annotated.get(target))
+        if target in runner_roles:
+            role = _inferred_runner_role(value, role, context)
         _collect_argument(value, target, role, state, candidates)
     collections.extend(_repeated_collections(relationships, context.document))
     relationships = _deduplicate_relationships(relationships, context.document)
     return tuple(relationships), tuple(collections), tuple(candidates)
+
+
+def _inferred_runner_role(
+    value: str, direction: str | None, context: CommandContext
+) -> str | None:
+    """Infer a selected argument's file or whole-directory relationship."""
+
+    if direction == "input":
+        try:
+            resolved = resolve_input_token(value, context.data_file)
+        except DataContractError as error:
+            _fail(error.code, context.document, error.observed)
+        if resolved.resource.kind == "directory" and resolved.member is None:
+            return "input-directory"
+        return "input"
+    if direction == "output":
+        path = _expand_path(value, context)
+        return "output-directory" if path is not None and path.is_dir() else "output"
+    return direction
 
 
 def _collect_argument(

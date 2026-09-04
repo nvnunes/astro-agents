@@ -484,10 +484,12 @@ nontrivial command:
 ```
 
 Make evidence-relevant input and output relationships mechanically visible.
-Prefer natural option names that make input and output paths obvious. When the
-real command cannot do that naturally, the research-logging workflow maintains
-the additional metadata needed for validation. Researchers should not have to
-reshape a natural command merely to satisfy validation.
+Prefer natural option names that make input and output paths obvious. When a
+real `pyrun` interface cannot do that naturally, use `--other-inputs` or
+`--other-outputs` before `--` to list its comma-separated option names or
+one-based positional selectors such as `@2`. The runner infers file or
+directory kind from the registered input or completed output. Researchers
+should not have to reshape a natural command merely to satisfy validation.
 
 Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results.

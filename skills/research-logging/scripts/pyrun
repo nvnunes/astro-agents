@@ -56,7 +56,9 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun [--capture-stdout <path>] "
+        "       pyrun [--other-inputs <selectors>] "
+        "[--other-outputs <selectors>]\n"
+        "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
         "       pyrun --capture-stdout-stderr <path> -- <script> [args...]\n"
         "       pyrun data add <name> <file|directory> <location>\n"
@@ -470,8 +472,14 @@ def resolve_arg(
 
 def _execution_layout(
     argv: list[str],
-) -> tuple[str, tuple[str, ...], tuple[str, ...], dict[str, str]]:
-    """Return script, script arguments, signature parameters, and captures."""
+) -> tuple[
+    str,
+    tuple[str, ...],
+    tuple[str, ...],
+    dict[str, str],
+    dict[str, str],
+]:
+    """Return the shared runner layout used to execute and publish support."""
 
     try:
         layout = parse_pyrun_arguments(argv[1:])
@@ -482,12 +490,47 @@ def _execution_layout(
         layout.script_arguments,
         layout.parameters,
         dict(layout.captures),
+        dict(layout.roles),
     )
+
+
+def _selected_values(
+    arguments: tuple[str, ...], roles: dict[str, str], direction: str
+) -> tuple[str, ...]:
+    """Return every value selected for one explicit material direction."""
+
+    options, positionals = split_argument_values(arguments)
+    result: list[str] = []
+    for occurrence in options:
+        if roles.get(occurrence.name) == direction:
+            result.append(occurrence.value)
+    for index, value in enumerate(positionals, 1):
+        if roles.get(f"@{index}") == direction:
+            result.append(value)
+    return tuple(result)
+
+
+def _require_declared_input_tokens(
+    arguments: tuple[str, ...], roles: dict[str, str], data: DataFile | None
+) -> None:
+    """Require explicit input roles to resolve through the owning registry."""
+
+    for value in _selected_values(arguments, roles, "input"):
+        expanded = value
+        if not input_token_candidate(expanded):
+            raise SystemExit(
+                "pyrun: --other-inputs values must use registered input tokens"
+            )
+        try:
+            resolve_input_token(expanded, data)
+        except DataContractError as error:
+            raise SystemExit(f"pyrun: {error}") from error
 
 
 def _declared_outputs(
     arguments: tuple[str, ...],
     captures: dict[str, str],
+    roles: dict[str, str],
     entry: Path,
     root: Path,
     log: Path,
@@ -497,9 +540,14 @@ def _declared_outputs(
     outputs: list[tuple[str, str | None]] = [
         (target, "file") for target in captures.values()
     ]
-    for option in split_argument_values(arguments)[0]:
-        if automatic_option_role(option.name) == "output":
+    options, positionals = split_argument_values(arguments)
+    for option in options:
+        role = roles.get(option.name, automatic_option_role(option.name))
+        if role == "output":
             outputs.append((option.value, None))
+    for index, value in enumerate(positionals, 1):
+        if roles.get(f"@{index}") == "output":
+            outputs.append((value, None))
     result: dict[str, tuple[Path, str | None]] = {}
     for raw, kind in outputs:
         expanded = _reserved_tokens(raw, root, log)
@@ -713,7 +761,8 @@ def main(argv: list[str]) -> int:
 
     entry = require_entry_root(cwd, log)
     data = _load_data(entry)
-    script_argument, script_args, parameters, captures = _execution_layout(argv)
+    script_argument, script_args, parameters, captures, roles = _execution_layout(argv)
+    _require_declared_input_tokens(script_args, roles, data)
     verified: set[str] = set()
     observed_inputs: dict[str, Fingerprint] = {}
     try:
@@ -741,7 +790,7 @@ def main(argv: list[str]) -> int:
                 for arg in script_args
             ]
             output_paths = _declared_outputs(
-                script_args, captures, entry, root, log
+                script_args, captures, roles, entry, root, log
             )
             capture_paths = _capture_paths(captures, entry, root, log)
             returncode = _run_with_captures(
@@ -779,6 +828,8 @@ def main(argv: list[str]) -> int:
             )
             records: dict[str, OutputSupport] = {}
             for key, (path, kind) in output_paths.items():
+                if not path.exists():
+                    continue
                 records[key] = OutputSupport(
                     True,
                     _observe_output(path, kind, fingerprint_cache),

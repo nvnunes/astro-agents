@@ -128,8 +128,15 @@ class RecordSurfaceTests(unittest.TestCase):
             reached.add(name)
             pending.extend(REFERENCE_PATTERN.findall(path.read_text(encoding="utf-8")))
 
+        candidate_reorganize = {
+            "operation-reorganize-documents.md",
+            "operation-reorganize-identity.md",
+            "operation-reorganize-transfer.md",
+        }
         all_references = {path.name for path in REFERENCES.glob("*.md")}
-        self.assertEqual(reached, all_references)
+        self.assertEqual(reached | candidate_reorganize, all_references)
+        for name in candidate_reorganize:
+            self.assertNotIn(name, reached)
 
     def test_advanced_evidence_cases_route_to_one_focused_definition(self) -> None:
         presented = reference("file-presented-evidence.md")

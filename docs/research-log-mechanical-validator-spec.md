@@ -234,6 +234,11 @@ or omit `locator`.
 Array order defines transformation input slots. There is no outer source-list
 parser, mixed locator version, or CSV escaping in this host form.
 
+Maintenance note: Changes to the evidence-source or locator host contract must
+be reflected in
+[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md)
+and its public-CLI conformance tests.
+
 ## Common Evaluation Contract
 
 Evaluation proceeds in this order:
@@ -753,6 +758,10 @@ companion artifact would make normal research work materially awkward. The
 addition must be safe, bounded, non-executing, and unable to change dispatch or
 results for an existing profile.
 
+Maintenance note: Changes to an accepted source profile must be reflected in
+[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md)
+and its public-CLI conformance tests.
+
 ### Indexed And Outside Sources
 
 A resolved indexed source uses its resulting source profile. A remote-only
@@ -1021,6 +1030,13 @@ keys. Array order is meaningful and preserved. For `percentage`, an explicit
 `decimal_places:1` canonicalizes to the same form as omission, with the default
 field omitted.
 
+Maintenance note: Changes to the non-table transformation grammar must be
+reflected in
+[Advanced Numeric Evidence](../skills/research-logging/references/record-evidence-definition-numeric.md)
+and its public-CLI conformance tests. Changes to exact text passthrough must
+also be reflected in
+[Advanced Retained-Output Evidence](../skills/research-logging/references/record-evidence-definition-outputs.md).
+
 ### Value Expressions
 
 Except for the specialized `percentage` recipe, each value expression has one
@@ -1224,6 +1240,13 @@ one-source table with one source field per presented cell should use `direct`.
 A table that composes fields uses `structured`. A small heterogeneous
 comparison may use `summary`.
 
+Maintenance note: Changes shared by all table modes must be reflected in
+[Direct Evidence Tables](../skills/research-logging/references/record-evidence-definition-direct-tables.md),
+[Structured Evidence Tables](../skills/research-logging/references/record-evidence-definition-structured-tables.md),
+and
+[Summary Evidence Tables](../skills/research-logging/references/record-evidence-definition-summary-tables.md),
+together with their public-CLI conformance tests.
+
 #### Structured And Summary Cell Recipes
 
 A structured or summary table cell recipe uses the non-table `scalar`,
@@ -1361,6 +1384,11 @@ order, the table is not direct. Use `structured` for repeatable composition,
 `summary` for explicit cell mapping, or retain a new direct table through the
 recorded research workflow.
 
+Maintenance note: Changes to direct-table syntax or behavior must be reflected
+in
+[Direct Evidence Tables](../skills/research-logging/references/record-evidence-definition-direct-tables.md)
+and its public-CLI conformance tests.
+
 #### Structured Tables
 
 A structured recipe has exactly these mode-specific fields:
@@ -1431,6 +1459,11 @@ is small; otherwise its oriented result is retained and declared as `direct`.
 This keeps the mechanical grammar closed instead of embedding a dataframe
 language.
 
+Maintenance note: Changes to structured-table syntax or behavior must be
+reflected in
+[Structured Evidence Tables](../skills/research-logging/references/record-evidence-definition-structured-tables.md)
+and its public-CLI conformance tests.
+
 #### Summary Tables
 
 A summary recipe contains `rows` as a non-empty rectangular array of
@@ -1473,6 +1506,11 @@ summary evidence-cell value position. Structural labels are outside that input
 count. Summary mode does not authorize other literals, overrides, input reuse,
 omitted items, inferred labels, or a partial join. If explicit enumeration
 becomes unwieldy, the repair is one retained direct table.
+
+Maintenance note: Changes to summary-table syntax or behavior must be
+reflected in
+[Summary Evidence Tables](../skills/research-logging/references/record-evidence-definition-summary-tables.md)
+and its public-CLI conformance tests.
 
 #### Table Result
 
@@ -3201,6 +3239,18 @@ summary-reference change first and never edit Markdown. Retention actions
 accept either one nonempty directory or one or more regular files and never
 expose registry schemas through ordinary results. Every authoring action leaves
 generated validation state unchanged.
+
+`log evidence add` and `log evidence update` accept either the common
+single-source arguments or `--definition PATH`, never both. A definition is a
+regular non-symlink UTF-8 JSON file no larger than 8 MiB beneath
+`/private/tmp`. Its object contains exactly `sources` and `transformation`;
+the action and `--id` supply the remaining record fields through the unique
+agent-authored presentation marker. The CLI passes those two values through
+the production evidence, locator, transformation, and presentation contracts,
+then uses the same candidate-publication path as common mode. It reads but
+never modifies, retains, copies, or removes the definition. `--dry-run`
+performs the complete source observation, evaluation, presentation comparison,
+candidate build, and mutation preflight without writing the registry.
 
 Each authoring invocation emits exactly one
 `research-log-authoring-result/1` object to standard output. Its stable fields

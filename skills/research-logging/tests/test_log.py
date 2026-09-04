@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
@@ -50,6 +51,17 @@ def add_input(entry: Path, name: str, source: Path) -> None:
 
 def authoring_result(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
+
+
+def write_definition(directory: Path, value: object) -> Path:
+    path = directory / "definition.json"
+    if isinstance(value, bytes):
+        path.write_bytes(value)
+    elif isinstance(value, str):
+        path.write_text(value, encoding="utf-8")
+    else:
+        path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    return path
 
 
 def fixture(root: Path) -> tuple[Path, Path]:
@@ -129,6 +141,7 @@ class LogHelpAndContextTests(unittest.TestCase):
         action = run(Path.cwd(), "evidence", "add", "--help")
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertIn("--source", action.stdout)
+        self.assertIn("--definition", action.stdout)
 
     def test_help_and_selected_family_imports_are_lazy(self) -> None:
         script_root = LOG.parent
@@ -734,7 +747,7 @@ class LogEvidenceTests(unittest.TestCase):
             self.assertNotIn("records", payload)
             self.assertIn("evidence.presentation.unresolved", result.stderr)
 
-    def test_common_mode_rejects_multiple_sources_and_reserved_definition(self) -> None:
+    def test_common_mode_rejects_multiple_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = fixture(Path(directory))
             common = (
@@ -757,7 +770,7 @@ class LogEvidenceTests(unittest.TestCase):
                 "--select",
                 "/rate",
             )
-            reserved = run(
+            missing_definition = run(
                 entry,
                 *common,
                 "--definition",
@@ -768,12 +781,960 @@ class LogEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 authoring_result(multiple)["code"], "evidence.common.unsupported"
             )
-            self.assertEqual(reserved.returncode, 2)
+            self.assertEqual(missing_definition.returncode, 2)
             self.assertEqual(
-                authoring_result(reserved)["code"],
-                "evidence.definition.unavailable",
+                authoring_result(missing_definition)["code"],
+                "evidence.definition.invalid",
             )
             self.assertFalse((entry / "evidence.json").exists())
+
+
+class LogEvidenceDefinitionTests(unittest.TestCase):
+    def test_definition_dry_run_add_no_op_conflict_and_update(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            generated = (
+                logical / "validation.md",
+                logical / "validation" / "mechanical.json",
+            )
+            generated[0].write_text("existing report\n", encoding="utf-8")
+            generated[1].parent.mkdir()
+            generated[1].write_text("existing record\n", encoding="utf-8")
+            unrelated = entry / "notes.txt"
+            unrelated.write_text("unrelated\n", encoding="utf-8")
+            preserved = {
+                path: path.read_bytes() for path in (*generated, unrelated)
+            }
+            transient = Path(definition_directory)
+            definition = {
+                "sources": [
+                    {
+                        "source": "<results>",
+                        "locator": {
+                            "select": [["rate"]],
+                            "expect": {"items": 1, "matches": 1},
+                        },
+                    }
+                ],
+                "transformation": {
+                    "form": "percentage",
+                    "source": {"input": 0, "item": 0},
+                },
+            }
+            path = write_definition(transient, definition)
+            path_before = path.read_bytes()
+            common = (
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "success-rate",
+                "--definition",
+                str(path),
+            )
+
+            dry_run = run(entry, "evidence", "add", *common, "--dry-run")
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertEqual(authoring_result(dry_run)["status"], "dry-run")
+            self.assertFalse((entry / "evidence.json").exists())
+            self.assertEqual(path.read_bytes(), path_before)
+
+            added = run(entry, "evidence", "add", *common)
+            repeated = run(entry, "evidence", "add", *common)
+            self.assertEqual(added.returncode, 0, added.stderr)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(authoring_result(repeated)["status"], "unchanged")
+            record = json.loads((entry / "evidence.json").read_text())["records"][0]
+            self.assertEqual(record["sources"], definition["sources"])
+            self.assertEqual(record["transformation"], definition["transformation"])
+
+            conflicting = {
+                **definition,
+                "sources": [
+                    {
+                        "source": "<results>",
+                        "locator": {"select": [["rate"]]},
+                    }
+                ],
+            }
+            write_definition(transient, conflicting)
+            before_conflict = (entry / "evidence.json").read_bytes()
+            conflict = run(entry, "evidence", "add", *common)
+            self.assertEqual(conflict.returncode, 2)
+            self.assertEqual(
+                authoring_result(conflict)["code"], "evidence.record.conflict"
+            )
+            self.assertEqual((entry / "evidence.json").read_bytes(), before_conflict)
+
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8").replace("67.6%", "67.60%"),
+                encoding="utf-8",
+            )
+            updated_definition = {
+                **definition,
+                "transformation": {
+                    "decimal_places": 2,
+                    "form": "percentage",
+                    "source": {"input": 0, "item": 0},
+                },
+            }
+            write_definition(transient, updated_definition)
+            updated_definition_bytes = path.read_bytes()
+            updated = run(entry, "evidence", "update", *common)
+            self.assertEqual(updated.returncode, 0, updated.stderr)
+            updated_record = json.loads((entry / "evidence.json").read_text())[
+                "records"
+            ][0]
+            self.assertEqual(updated_record["transformation"]["decimal_places"], 2)
+            self.assertEqual(path.read_bytes(), updated_definition_bytes)
+            self.assertEqual(
+                {item: item.read_bytes() for item in preserved}, preserved
+            )
+
+    def test_definition_rejects_shape_encoding_location_and_arguments(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            transient = Path(definition_directory)
+            common = (
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "success-rate",
+            )
+            invalid = (
+                b'{"sources":[],"transformation":null,"id":"x"}',
+                b'{"sources":[]}',
+                b'{"sources":[],"sources":[],"transformation":null}',
+                b'\xef\xbb\xbf{"sources":[],"transformation":null}',
+                b'{"sources":[],"transformation":null} trailing',
+                b'{"sources":[],"transformation":NaN}',
+                b'\xff',
+            )
+            for index, payload in enumerate(invalid):
+                with self.subTest(index=index):
+                    path = write_definition(transient, payload)
+                    before = path.read_bytes()
+                    result = run(entry, *common, "--definition", str(path))
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(
+                        authoring_result(result)["code"],
+                        "evidence.definition.invalid",
+                    )
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertFalse((entry / "evidence.json").exists())
+
+            outside = write_definition(
+                Path(directory), {"sources": [], "transformation": None}
+            )
+            outside_result = run(entry, *common, "--definition", str(outside))
+            self.assertEqual(
+                authoring_result(outside_result)["code"],
+                "evidence.definition.location",
+            )
+            target = write_definition(
+                transient, {"sources": [], "transformation": None}
+            )
+            link = transient / "definition-link.json"
+            link.symlink_to(target)
+            linked = run(entry, *common, "--definition", str(link))
+            self.assertEqual(
+                authoring_result(linked)["code"], "evidence.definition.unsafe"
+            )
+            conflicts = (
+                ("--select", "/rate"),
+                ("--identity", "/case"),
+                ("--where", "/case", "string", "candidate"),
+                ("--as-percentage",),
+                ("--scale", "2"),
+            )
+            for arguments in conflicts:
+                with self.subTest(arguments=arguments):
+                    conflict = run(
+                        entry,
+                        *common,
+                        "--definition",
+                        str(target),
+                        *arguments,
+                    )
+                    self.assertEqual(
+                        authoring_result(conflict)["code"],
+                        "evidence.definition.arguments_conflict",
+                    )
+            source_conflict = run(
+                entry,
+                *common,
+                "--definition",
+                str(target),
+                "--source",
+                "results",
+            )
+            self.assertEqual(source_conflict.returncode, 2)
+            self.assertIn("not allowed with argument", source_conflict.stderr)
+
+    def test_definition_supports_non_table_forms_and_locator_operations(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            source = entry / "data" / "advanced.csv"
+            source.write_text(
+                "case,value,uncertainty,lower,upper,label\n"
+                "case-8,3.417,0.084,1.118,1.449,alpha\n"
+                "case-15,4.184,0.095,1.143,1.319,beta\n",
+                encoding="utf-8",
+            )
+            nested = entry / "data" / "nested.json"
+            nested.write_text(
+                '{"matrix":[["a","b"],["c","d"]],'
+                '"pair":[1.118,1.449],'
+                '"simulation":{"rate":0.676}}\n',
+                encoding="utf-8",
+            )
+            add_input(entry, "advanced", source)
+            add_input(entry, "nested", nested)
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\nThe label was `alpha`<!-- eid:identity-label -->.\n\n"
+                "The scalar was `3.42 ms`<!-- eid:scalar-value -->.\n\n"
+                "The range was `3.42–4.18 ms`<!-- eid:range-value -->.\n\n"
+                "The estimate was `3.42 ± 0.08 mas`<!-- eid:plus-minus -->.\n\n"
+                "The interval was `3.42 [1.12, 1.45] ms`"
+                "<!-- eid:interval-value -->.\n\n"
+                "The bounds were `(1.12, 1.45)`<!-- eid:tuple-value -->.\n\n"
+                "The paired rates were `(0.68, 0.68)`"
+                "<!-- eid:multi-source-tuple -->.\n\n"
+                "The shape count was `2`<!-- eid:shape-count -->.\n\n"
+                "<!-- eid:text-output -->\n```text\ncompleted\n```\n",
+                encoding="utf-8",
+            )
+
+            def numeric(item: int, *, places: int = 2) -> dict[str, object]:
+                return {
+                    "parse": "decimal",
+                    "render": {"decimal_places": places, "mode": "fixed"},
+                    "source": {"input": 0, "item": item},
+                }
+
+            def native_numeric(item: int) -> dict[str, object]:
+                return {
+                    "render": {"decimal_places": 2, "mode": "fixed"},
+                    "source": {"input": 0, "item": item},
+                }
+
+            def one_row(*fields: str) -> dict[str, object]:
+                return {
+                    "select": [[field_name] for field_name in fields],
+                    "where": [
+                        {"op": "eq", "path": ["case"], "value": "case-8"}
+                    ],
+                    "expect": {"items": len(fields), "matches": 1},
+                }
+            definitions: dict[str, object] = {
+                "identity-label": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["label"]],
+                                "where": [
+                                    {
+                                        "op": "in",
+                                        "path": ["case"],
+                                        "values": ["case-8"],
+                                    }
+                                ],
+                                "identity": [["case"]],
+                                "expect": {
+                                    "identities": [["case-8"]],
+                                    "items": 1,
+                                    "matches": 1,
+                                },
+                            },
+                        }
+                    ],
+                    "transformation": None,
+                },
+                "scalar-value": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["value"]],
+                                "where": [
+                                    {
+                                        "op": "eq",
+                                        "path": ["case"],
+                                        "value": "case-8",
+                                    }
+                                ],
+                                "expect": {"items": 1, "matches": 1},
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "scalar",
+                        "unit": "ms",
+                        "values": [numeric(0)],
+                    },
+                },
+                "success-rate": {
+                    "sources": [
+                        {
+                            "source": "<nested>",
+                            "locator": {
+                                "path": ["simulation", "rate"],
+                                "expect": {"items": 1, "matches": 1},
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "percentage",
+                        "source": {"input": 0, "item": 0},
+                    },
+                },
+                "range-value": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["value"]],
+                                "where": [
+                                    {
+                                        "op": "in",
+                                        "path": ["case"],
+                                        "values": ["case-8", "case-15"],
+                                    }
+                                ],
+                                "identity": [["case"]],
+                                "expect": {
+                                    "identities": [["case-8"], ["case-15"]],
+                                    "items": 2,
+                                    "matches": 2,
+                                },
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "range",
+                        "unit": "ms",
+                        "values": [numeric(0), numeric(1)],
+                    },
+                },
+                "plus-minus": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": one_row("value", "uncertainty"),
+                        }
+                    ],
+                    "transformation": {
+                        "form": "plus_minus",
+                        "unit": "mas",
+                        "values": [numeric(0), numeric(1)],
+                    },
+                },
+                "interval-value": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": one_row("value", "lower", "upper"),
+                        }
+                    ],
+                    "transformation": {
+                        "form": "interval",
+                        "unit": "ms",
+                        "values": [numeric(0), numeric(1), numeric(2)],
+                    },
+                },
+                "tuple-value": {
+                    "sources": [
+                        {
+                            "source": "<nested>",
+                            "locator": {
+                                "path": ["pair", {"all": True}],
+                                "expect": {"items": 2},
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "tuple",
+                        "values": [native_numeric(0), native_numeric(1)],
+                    },
+                },
+                "multi-source-tuple": {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["rate"]]},
+                        },
+                        {
+                            "source": "<nested>",
+                            "locator": {"path": ["simulation", "rate"]},
+                        },
+                    ],
+                    "transformation": {
+                        "form": "tuple",
+                        "values": [
+                            {
+                                "parse": "decimal",
+                                "render": {
+                                    "decimal_places": 2,
+                                    "mode": "fixed",
+                                },
+                                "source": {"input": 0, "item": 0},
+                            },
+                            {
+                                "render": {
+                                    "decimal_places": 2,
+                                    "mode": "fixed",
+                                },
+                                "source": {"input": 1, "item": 0},
+                            },
+                        ],
+                    },
+                },
+                "shape-count": {
+                    "sources": [
+                        {
+                            "source": "<nested>",
+                            "locator": {
+                                "path": ["matrix"],
+                                "property": "shape[0]",
+                                "expect": {"items": 1, "matches": 1},
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "scalar",
+                        "values": [
+                            {
+                                "render": {"mode": "integer"},
+                                "source": {"input": 0, "item": 0},
+                            }
+                        ],
+                    },
+                },
+                "text-output": {
+                    "sources": [
+                        {
+                            "source": "<run-log>",
+                            "locator": {
+                                "text": {"contains": "completed", "occurrence": 1},
+                                "expect": {"items": 1, "matches": 1},
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "form": "text",
+                        "values": [{"source": {"input": 0, "item": 0}}],
+                    },
+                },
+            }
+            common = ("--path", str(logical), "--entry", "e001")
+            transient = Path(definition_directory)
+            for record_id, definition in definitions.items():
+                with self.subTest(record_id=record_id):
+                    path = write_definition(transient, definition)
+                    definition_bytes = path.read_bytes()
+                    registry = entry / "evidence.json"
+                    before = registry.read_bytes() if registry.exists() else None
+                    dry_run = run(
+                        entry,
+                        "evidence",
+                        "add",
+                        *common,
+                        "--id",
+                        record_id,
+                        "--definition",
+                        str(path),
+                        "--dry-run",
+                    )
+                    self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+                    self.assertEqual(
+                        registry.read_bytes() if registry.exists() else None, before
+                    )
+                    self.assertEqual(path.read_bytes(), definition_bytes)
+                    added = run(
+                        entry,
+                        "evidence",
+                        "add",
+                        *common,
+                        "--id",
+                        record_id,
+                        "--definition",
+                        str(path),
+                    )
+                    self.assertEqual(added.returncode, 0, added.stderr)
+                    records = {
+                        record["id"]: record
+                        for record in json.loads(registry.read_text())["records"]
+                    }
+                    self.assertEqual(
+                        records[record_id]["sources"], definition["sources"]
+                    )
+                    self.assertEqual(
+                        records[record_id]["transformation"],
+                        definition["transformation"],
+                    )
+
+    def test_definition_supports_all_table_modes_and_multiple_sources(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            source = entry / "data" / "advanced.csv"
+            source.write_text(
+                "case,lower,upper,flag\n"
+                "case-8,1.118,1.449,True\n"
+                "case-15,1.143,1.319,False\n",
+                encoding="utf-8",
+            )
+            matrix = entry / "data" / "matrix.json"
+            matrix.write_text('[["a","b"],["c","d"]]\n', encoding="utf-8")
+            add_input(entry, "advanced", source)
+            add_input(entry, "matrix", matrix)
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n<!-- eid:direct-table -->\n"
+                "Case | Value\n--- | ---\na | b\nc | d\n\n"
+                "<!-- eid:structured-table -->\n"
+                "Case | Error range\n--- | ---\n"
+                "case-15 | 1.14–1.32%\ncase-8 | 1.12–1.45%\n\n"
+                "<!-- eid:summary-table -->\n"
+                "Metric | Status | Bounds\n--- | --- | ---\n"
+                "Detector | Pass | 1.1 / 1.4%\n",
+                encoding="utf-8",
+            )
+
+            def field(field: int) -> dict[str, object]:
+                return {
+                    "parse": "decimal",
+                    "render": {"decimal_places": 2, "mode": "fixed"},
+                    "source": {"field": field, "input": 0},
+                }
+
+            definitions = {
+                "direct-table": {
+                    "sources": [
+                        {
+                            "source": "<matrix>",
+                            "locator": {
+                                "path": [],
+                                "expect": {
+                                    "items": 1,
+                                    "matches": 1,
+                                    "shape": [2],
+                                },
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "columns": [{"form": "text"}, {"form": "text"}],
+                        "form": "table",
+                        "headings": ["Case", "Value"],
+                        "mode": "direct",
+                    },
+                },
+                "structured-table": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["case"], ["lower"], ["upper"]],
+                                "identity": [["case"]],
+                                "expect": {
+                                    "identities": [["case-8"], ["case-15"]],
+                                    "items": 6,
+                                    "matches": 2,
+                                },
+                            },
+                        }
+                    ],
+                    "transformation": {
+                        "columns": [
+                            {
+                                "form": "text",
+                                "values": [
+                                    {"source": {"field": 0, "input": 0}}
+                                ],
+                            },
+                            {
+                                "form": "range",
+                                "unit": "%",
+                                "values": [field(1), field(2)],
+                            },
+                        ],
+                        "form": "table",
+                        "headings": ["Case", "Error range"],
+                        "mode": "structured",
+                        "rows": {
+                            "input": 0,
+                            "order": [["case-15"], ["case-8"]],
+                        },
+                    },
+                },
+                "summary-table": {
+                    "sources": [
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["flag"]],
+                                "where": [
+                                    {
+                                        "op": "eq",
+                                        "path": ["case"],
+                                        "value": "case-8",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "source": "<advanced>",
+                            "locator": {
+                                "select": [["lower"], ["upper"]],
+                                "where": [
+                                    {
+                                        "op": "eq",
+                                        "path": ["case"],
+                                        "value": "case-8",
+                                    }
+                                ],
+                            },
+                        },
+                    ],
+                    "transformation": {
+                        "form": "table",
+                        "headings": ["Metric", "Status", "Bounds"],
+                        "mode": "summary",
+                        "rows": [
+                            [
+                                {"form": "label", "text": "Detector"},
+                                {
+                                    "form": "boolean",
+                                    "style": "pass_fail",
+                                    "values": [
+                                        {
+                                            "parse": "boolean",
+                                            "source": {"input": 0, "item": 0},
+                                        }
+                                    ],
+                                },
+                                {
+                                    "form": "sequence",
+                                    "style": "slash",
+                                    "unit": "%",
+                                    "values": [
+                                        {
+                                            "parse": "decimal",
+                                            "render": {
+                                                "decimal_places": 1,
+                                                "mode": "fixed",
+                                            },
+                                            "source": {"input": 1, "item": item},
+                                        }
+                                        for item in range(2)
+                                    ],
+                                },
+                            ]
+                        ],
+                    },
+                },
+            }
+            common = ("--path", str(logical), "--entry", "e001")
+            transient = Path(definition_directory)
+            for record_id, definition in definitions.items():
+                with self.subTest(record_id=record_id):
+                    path = write_definition(transient, definition)
+                    before = (
+                        (entry / "evidence.json").read_bytes()
+                        if (entry / "evidence.json").exists()
+                        else None
+                    )
+                    dry_run = run(
+                        entry,
+                        "evidence",
+                        "add",
+                        *common,
+                        "--id",
+                        record_id,
+                        "--definition",
+                        str(path),
+                        "--dry-run",
+                    )
+                    self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+                    self.assertEqual(
+                        (entry / "evidence.json").read_bytes()
+                        if (entry / "evidence.json").exists()
+                        else None,
+                        before,
+                    )
+                    added = run(
+                        entry,
+                        "evidence",
+                        "add",
+                        *common,
+                        "--id",
+                        record_id,
+                        "--definition",
+                        str(path),
+                    )
+                    self.assertEqual(added.returncode, 0, added.stderr)
+
+    def test_definition_rejects_semantic_failures_without_changes(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            transient = Path(definition_directory)
+            common = (
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "success-rate",
+            )
+            failures = (
+                {"sources": [], "transformation": None},
+                {
+                    "sources": [
+                        {"source": "<missing>", "locator": {"path": []}}
+                    ],
+                    "transformation": None,
+                },
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"unknown": [["rate"]]},
+                        }
+                    ],
+                    "transformation": None,
+                },
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["rate"]]},
+                        }
+                    ],
+                    "transformation": {"form": "unknown"},
+                },
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["case"], ["rate"]]},
+                        }
+                    ],
+                    "transformation": {
+                        "form": "percentage",
+                        "source": {"input": 0, "item": 0},
+                    },
+                },
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["rate"]]},
+                        }
+                    ],
+                    "transformation": {
+                        "form": "scalar",
+                        "values": [
+                            {
+                                "parse": "decimal",
+                                "render": {
+                                    "decimal_places": 2,
+                                    "mode": "fixed",
+                                },
+                                "source": {"input": 0, "item": 0},
+                            }
+                        ],
+                    },
+                },
+            )
+            for index, definition in enumerate(failures):
+                with self.subTest(index=index):
+                    path = write_definition(transient, definition)
+                    result = run(entry, *common, "--definition", str(path))
+                    self.assertEqual(result.returncode, 2)
+                    self.assertFalse((entry / "evidence.json").exists())
+
+            source = entry / "data" / "results.csv"
+            source.write_text(
+                source.read_text(encoding="utf-8") + "other,0.1,value\n",
+                encoding="utf-8",
+            )
+            valid = {
+                "sources": [
+                    {
+                        "source": "<results>",
+                        "locator": {"select": [["rate"]]},
+                    }
+                ],
+                "transformation": {
+                    "form": "percentage",
+                    "source": {"input": 0, "item": 0},
+                },
+            }
+            path = write_definition(transient, valid)
+            stale = run(entry, *common, "--definition", str(path))
+            self.assertEqual(stale.returncode, 2)
+            self.assertIn("data.fingerprint.mismatch", stale.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+
+    def test_definition_rejects_marker_ambiguity_and_oversized_input(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            transient = Path(definition_directory)
+            definition = {
+                "sources": [
+                    {
+                        "source": "<results>",
+                        "locator": {"select": [["rate"]]},
+                    }
+                ],
+                "transformation": {
+                    "form": "percentage",
+                    "source": {"input": 0, "item": 0},
+                },
+            }
+            common = (
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "success-rate",
+                "--definition",
+            )
+            duplicate = entry / "duplicate.md"
+            duplicate.write_text(
+                "The duplicate was `67.6%`<!-- eid:success-rate -->.\n",
+                encoding="utf-8",
+            )
+            path = write_definition(transient, definition)
+            ambiguous = run(entry, *common, str(path))
+            self.assertEqual(ambiguous.returncode, 2)
+            self.assertIn("evidence.presentation.unresolved", ambiguous.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+
+            duplicate.unlink()
+            path.write_bytes(b" " * (8 * 1024 * 1024 + 1))
+            oversized = run(entry, *common, str(path))
+            self.assertEqual(oversized.returncode, 2)
+            self.assertEqual(
+                authoring_result(oversized)["code"], "evidence.definition.invalid"
+            )
+            self.assertFalse((entry / "evidence.json").exists())
+
+    def test_definition_publication_failure_preserves_existing_state(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as definition_directory,
+        ):
+            logical, entry = fixture(Path(directory))
+            definition = write_definition(
+                Path(definition_directory),
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["rate"]]},
+                        }
+                    ],
+                    "transformation": {
+                        "form": "percentage",
+                        "source": {"input": 0, "item": 0},
+                    },
+                },
+            )
+            added = run(
+                entry,
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "success-rate",
+                "--definition",
+                str(definition),
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            before = (entry / "evidence.json").read_bytes()
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8").replace("67.6%", "67.60%"),
+                encoding="utf-8",
+            )
+            write_definition(
+                Path(definition_directory),
+                {
+                    "sources": [
+                        {
+                            "source": "<results>",
+                            "locator": {"select": [["rate"]]},
+                        }
+                    ],
+                    "transformation": {
+                        "decimal_places": 2,
+                        "form": "percentage",
+                        "source": {"input": 0, "item": 0},
+                    },
+                },
+            )
+            script_root = str(LOG.parent)
+            sys.path.insert(0, script_root)
+            try:
+                from log_commands import evidence, evidence_definition
+                from log_commands.context import resolve_entry, resolve_log
+
+                context = resolve_entry(resolve_log(logical), "e001")
+                with (
+                    mock.patch.object(
+                        evidence,
+                        "remove_or_write",
+                        side_effect=OSError("injected publication failure"),
+                    ),
+                    self.assertRaisesRegex(OSError, "injected publication failure"),
+                ):
+                    evidence_definition.add_or_update(
+                        context,
+                        action="update",
+                        record_id="success-rate",
+                        definition=definition,
+                        dry_run=False,
+                    )
+            finally:
+                sys.path.remove(script_root)
+            self.assertEqual((entry / "evidence.json").read_bytes(), before)
 
 
 class LogRetentionTests(unittest.TestCase):

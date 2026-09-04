@@ -42,7 +42,7 @@ _NUMBER_PRESENTATION_RE = re.compile(
 def list_records(entry: EntryContext) -> ActionResult:
     """Return bounded semantic evidence records without registry details."""
 
-    current = _load(entry)
+    current = load_current(entry)
     records = () if current is None else current.records
     return ActionResult(
         "evidence.list",
@@ -70,37 +70,51 @@ def add_or_update_common(
     """Build and completely evaluate one common one-source evidence record."""
 
     with entry_lock(entry):
-        current = _load(entry)
+        current = load_current(entry)
         locator = _common_locator(entry, arguments)
         transformation = _common_transformation(entry, arguments, locator)
         evaluated = evaluate_candidate_record(
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=arguments.record_id,
-            raw_sources=(
+            raw_sources=[
                 {"source": _token(arguments.source), "locator": locator},
-            ),
+            ],
             transformation=transformation,
         )
-        candidate = evaluated.record
-        existing = {record.id: record for record in current.records} if current else {}
-        if action == "add" and arguments.record_id in existing:
-            if existing[arguments.record_id] == candidate:
-                return _result(action, "unchanged", False)
-            raise ActionError("evidence.record.conflict", arguments.record_id)
-        if action == "update" and arguments.record_id not in existing:
-            raise ActionError("evidence.record.missing", arguments.record_id)
-        if action == "update" and existing[arguments.record_id] == candidate:
-            return _result(action, "unchanged", False)
-        existing[arguments.record_id] = candidate
-        built = _build(entry, tuple(existing.values()))
-        if not arguments.dry_run:
-            remove_or_write(built.path, built.canonical_json())
-        return _result(
+        return apply_candidate_locked(
+            entry,
             action,
-            "dry-run" if arguments.dry_run else "changed",
-            True,
+            evaluated.record,
+            current=current,
+            dry_run=arguments.dry_run,
         )
+
+
+def apply_candidate_locked(
+    entry: EntryContext,
+    action: str,
+    candidate: EvidenceRecord,
+    *,
+    current: EvidenceFile | None,
+    dry_run: bool,
+) -> ActionResult:
+    """Apply one fully evaluated candidate while the entry lock is held."""
+
+    existing = {record.id: record for record in current.records} if current else {}
+    if action == "add" and candidate.id in existing:
+        if existing[candidate.id] == candidate:
+            return _result(action, "unchanged", False)
+        raise ActionError("evidence.record.conflict", candidate.id)
+    if action == "update" and candidate.id not in existing:
+        raise ActionError("evidence.record.missing", candidate.id)
+    if action == "update" and existing[candidate.id] == candidate:
+        return _result(action, "unchanged", False)
+    existing[candidate.id] = candidate
+    built = _build(entry, tuple(existing.values()))
+    if not dry_run:
+        remove_or_write(built.path, built.canonical_json())
+    return _result(action, "dry-run" if dry_run else "changed", True)
 
 
 def rename(
@@ -136,7 +150,7 @@ def rename(
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=new_id,
-            raw_sources=tuple(source.as_dict() for source in old.sources),
+            raw_sources=[source.as_dict() for source in old.sources],
             transformation=old.transformation,
         )
         if (
@@ -157,7 +171,7 @@ def remove(entry: EntryContext, record_id: str, *, dry_run: bool) -> ActionResul
     """Remove one record only after its marker and summary references are absent."""
 
     with entry_lock(entry):
-        current = _load(entry)
+        current = load_current(entry)
         if current is None or record_id not in {item.id for item in current.records}:
             return _result("remove", "absent", False)
         marker_ids = {
@@ -528,7 +542,9 @@ def _token(source: str) -> str:
     return source if source.startswith("<") else f"<{source}>"
 
 
-def _load(entry: EntryContext) -> EvidenceFile | None:
+def load_current(entry: EntryContext) -> EvidenceFile | None:
+    """Load the complete current evidence registry when present."""
+
     path = entry.root / "evidence.json"
     return (
         load_evidence_file(path, log_root=entry.log.root, entry_root=entry.root)
@@ -538,7 +554,7 @@ def _load(entry: EntryContext) -> EvidenceFile | None:
 
 
 def _required(entry: EntryContext) -> EvidenceFile:
-    current = _load(entry)
+    current = load_current(entry)
     if current is None:
         raise ActionError("evidence.record.missing", "evidence registry is absent")
     return current

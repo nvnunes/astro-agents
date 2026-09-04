@@ -364,6 +364,24 @@ def evidence_file_from_records(
     return EvidenceFile(expected, root, decoded)
 
 
+def evidence_record_from_fields(
+    *,
+    subject: str,
+    log_root: Path,
+    entry_root: Path,
+    fields: Mapping[str, Any],
+) -> EvidenceRecord:
+    """Decode one candidate record from raw authoring fields."""
+
+    root = entry_root.resolve()
+    return _decode_record(
+        fields,
+        subject=subject,
+        entry_relative=_relative(root, log_root.resolve(), "entry root"),
+        entry_root=root,
+    )
+
+
 def _read_evidence_json(path: Path) -> object:
     try:
         raw = bounded_file_bytes(path, maximum_bytes=MAX_EVIDENCE_FILE_BYTES)

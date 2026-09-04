@@ -114,6 +114,15 @@ The research-log test gate must verify:
   production decoders, atomic canonical publication, write-free dry runs, and
   bounded semantic result envelopes while leaving generated validation state
   byte-identical;
+- `log evidence add|update --definition` accepts only a bounded regular
+  non-symlink strict-JSON file beneath `/private/tmp`, routes every source,
+  locator, transformation, and presentation through the production contracts,
+  and supports every specification-approved form without exposing registry
+  fields or modifying the transient definition;
+- every one-way maintenance link beside an evidence grammar contract in
+  `docs/research-log-mechanical-validator-spec.md` resolves to its focused
+  advanced-definition reference, and each documented accepted or rejected
+  example has public-CLI conformance coverage;
 - malformed regular-file `pyrun-outputs.json` state is preserved at the first
   unused recognized adjacent backup, replaced with canonical empty current
   state, and reported as requiring Repair before the command can execute;

@@ -122,20 +122,36 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     listed = actions.add_parser("list")
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
-    from . import evidence
-
     entry = resolve_entry(resolve_log(args.path), args.entry)
     if args.action in {"add", "update"}:
         if args.definition is not None:
-            raise ActionError(
-                "evidence.definition.unavailable",
-                "full evidence definitions are added in the next implementation pass",
+            if (
+                args.select
+                or args.identity
+                or args.where
+                or args.as_percentage
+                or args.scale is not None
+            ):
+                raise ActionError(
+                    "evidence.definition.arguments_conflict",
+                    "--definition cannot be combined with common evidence arguments",
+                )
+            from . import evidence_definition
+
+            return evidence_definition.add_or_update(
+                entry,
+                action=args.action,
+                record_id=args.id,
+                definition=args.definition,
+                dry_run=args.dry_run,
             )
         if len(args.source) != 1:
             raise ActionError(
                 "evidence.common.unsupported",
                 "common evidence accepts exactly one source",
             )
+        from . import evidence
+
         return evidence.add_or_update_common(
             entry,
             action=args.action,
@@ -150,6 +166,8 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
                 dry_run=args.dry_run,
             ),
         )
+    from . import evidence
+
     if args.action == "rename":
         return evidence.rename(entry, args.old_id, args.new_id, dry_run=args.dry_run)
     if args.action == "remove":

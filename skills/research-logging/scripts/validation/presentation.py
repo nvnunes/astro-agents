@@ -4,16 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
 
 from research_log_data import load_data_file, resolve_input_token, verify_fingerprint
 
 from .errors import MechanicalContractError
 from .evidence import (
     EvidenceRecord,
-    EvidenceSource,
     PresentedItem,
-    evidence_file_from_records,
+    evidence_record_from_fields,
     index_entry_presentations,
 )
 from .locator import evaluate_locator
@@ -89,28 +87,24 @@ def evaluate_candidate_record(
     entry_root: Path,
     log_root: Path,
     record_id: str,
-    raw_sources: Sequence[Mapping[str, Any]],
-    transformation: Mapping[str, Any] | None,
+    raw_sources: object,
+    transformation: object,
 ) -> CandidateEvaluation:
     """Decode and completely compare one candidate evidence record."""
 
     presentation = find_entry_presentation(entry_root, log_root, record_id)
-    provisional = EvidenceRecord(
-        record_id,
-        presentation.document,
-        presentation.kind,
-        tuple(
-            EvidenceSource(str(source.get("source")), source.get("locator", {}))
-            for source in raw_sources
-        ),
-        transformation,
-    )
-    record = evidence_file_from_records(
-        entry_root / "evidence.json",
+    record = evidence_record_from_fields(
+        subject=f"evidence definition for {record_id!r}",
         log_root=log_root,
         entry_root=entry_root,
-        records=(provisional,),
-    ).records[0]
+        fields={
+            "document": presentation.document,
+            "id": record_id,
+            "kind": presentation.kind,
+            "sources": raw_sources,
+            "transformation": transformation,
+        },
+    )
     data = load_data_file(entry_root / "data.json", entry_root=entry_root)
     selections = []
     for source in record.sources:

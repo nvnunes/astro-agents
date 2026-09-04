@@ -41,7 +41,11 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Current Review-Surface Adequacy
 
-- for the current skills-first project, the shared review surface is strong: narrow review references are separated cleanly, profile-specific documentation review workflows are explicit, the full agent-surface review gives a combined pass, and static checks plus activation eval fixtures catch drift in the current shared validation surface
+- for the current skills-first project, the shared review surface is strong:
+  narrow review references are separated cleanly, profile-specific
+  documentation review workflows are explicit, the full agent-surface review
+  gives a combined pass, and static checks plus skill-selection eval fixtures
+  catch drift in the current shared validation surface
 - this review surface is adequate for maintaining prompt-writing quality, instruction-scope discipline, documentation structure, and validation-contract consistency in the project as it exists today
 - it is not adequate on its own for proving runtime behavior once the project starts making stronger claims about route contracts, route choice, carried-forward context, tool boundaries, or degraded execution paths
 
@@ -54,8 +58,12 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Scenario Representativeness
 
-- the project has deterministic static checks in `scripts/validate_agent_surface.py`, a Codex discovery smoke test, and activation eval cases in `tests/activation_cases.csv`
-- those checks cover skill package integrity, metadata alignment, stale path detection, Codex discovery, and explicit, implicit, and negative skill-activation prompts
+- the project has deterministic static checks in
+  `scripts/validate_agent_surface.py`, a Codex discovery smoke test, and
+  skill-selection eval cases in `tests/skill_selection_cases.csv`
+- those checks cover skill package integrity, metadata alignment, stale path
+  detection, Codex discovery, and explicit, implicit, and negative
+  skill-selection prompts
 - this baseline is still intentionally narrower than a full runtime scenario set: broader degraded cases such as rediscovery failure, longer threads, compaction-sensitive routes, and wider ambiguity handling remain future validation work
 
 #### Evidence And Inspectability
@@ -80,9 +88,14 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Regression Discipline
 
-- the project already has a useful regression structure for agent-surface maintenance: required review categories are explicit, regression priorities are named, starter prompts make the main reviews reusable, and static and activation-eval checks add repeatability for the current shared validation surface
+- the project already has a useful regression structure for agent-surface
+  maintenance: required review categories are explicit, regression priorities
+  are named, starter prompts make the main reviews reusable, and static and
+  skill-selection checks add repeatability for the current shared validation
+  surface
 - public-profile branching and narrow-review independence also reduce accidental broadening, which helps preserve regression meaning inside the current review skill surface
-- the activation eval fixture adds a small maintained regression map for skill-selection behavior
+- the skill-selection eval fixture adds a small maintained regression map for
+  skill-selection behavior
 - regression discipline is still weak for broader runtime behavior because there is no dataset, harness, or behavior-facing evidence surface to rerun against longer-thread, instruction-applicability, or degraded-case questions
 
 #### Failure And Edge-Case Coverage
@@ -93,7 +106,9 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 #### Method Proportionality
 
-- the current validation approach is well matched to the project’s present maturity: shared review skills plus lightweight static and activation-eval checks are manageable for ordinary context-engineering and doc work
+- the current validation approach is well matched to the project’s present
+  maturity: shared review skills plus lightweight static and skill-selection
+  checks are manageable for ordinary context-engineering and doc work
 - that proportionality is a real strength, especially for lower-budget runtime paths
 - it also means the current system is under-instrumented for behavior validation, so the next phase needs to add representative tests and measurements without losing the lightweight review workflow and narrow-review discipline that already work
 
@@ -101,10 +116,14 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 **TO BE REVIEWED**
 
-- the current baseline is a lightweight shared review skill surface, visible review-path summaries, static repository checks, and activation eval fixtures for the current validation surface
+- the current baseline is a lightweight shared review skill surface, visible
+  review-path summaries, static repository checks, and skill-selection eval
+  fixtures for the current validation surface
 - preserve the current shared review skill surface as the lightweight baseline for agent-surface maintenance rather than replacing it with a heavier runtime harness
 - define a first representative task set with clear success criteria, expected observable outcomes, and expected route contracts
-- build on the activation eval fixture and static checks, starting with common routes that already have meaningful outcomes, visible traces, or other high-signal feedback
+- build on the skill-selection eval fixture and static checks, starting with
+  common routes that already have meaningful outcomes, visible traces, or other
+  high-signal feedback
 - use traces and replayable runtime evidence as the first debugging surface before introducing broader graders or datasets
 - define behavior-facing checks for routing, tool use, approvals, and state transitions rather than relying only on design review and static file inspection
 - if the future governance model adopts stronger ownership or handoff semantics, define how validation should confirm the intended route contract and result ownership after the relevant `Route` or `Handoff`
@@ -139,7 +158,9 @@ This section describes the current runtime-validation state of `astro-agents`.
 
 - use the current assessment in this document together with the shared program frame in `docs/future/runtime-design.md` as the basis for scenario and method selection
 - define the first representative task set, expected outcomes, and validation target set for runtime behavior
-- extend the current activation eval fixture with route examples, starter prompts, known degraded cases, and any first tool-boundary or approval cases that matter to the future runtime design
+- extend the current skill-selection eval fixture with route examples, starter
+  prompts, known degraded cases, and any first tool-boundary or approval cases
+  that matter to the future runtime design
 - separate common-path scenarios from degraded or edge-case scenarios so later validation can stay proportional
 
 ### Stage 2 — Define Behavior Checks And Evidence Requirements

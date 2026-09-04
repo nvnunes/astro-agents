@@ -3,12 +3,16 @@
 ## Purpose
 Use this prompt when writing or revising a `SKILL.md` file for an agent skill. Inherit the common prompt-writing discipline from `skills/prompt-writing/references/prompt-base.md` and the writing-prompt discipline from `skills/prompt-writing/references/writing-prompt.md`.
 
-A `SKILL.md` file is agent-facing context for a reusable, on-demand capability. It should make the skill discoverable, explain the workflow the agent should follow after activation, and point to any scripts, references, or assets the skill needs.
+A `SKILL.md` file is agent-facing context for a reusable, on-demand capability.
+It should make the skill discoverable, explain the workflow the agent should
+follow after selection, and point to any scripts, references, or assets the
+skill needs.
 
 ## Success Criteria
 - Make the skill's job and trigger boundary clear from the frontmatter.
 - Keep the skill focused on one reusable capability, procedure, or workflow family.
-- Preserve progressive disclosure: metadata for discovery, `SKILL.md` for the activated workflow, and resource files for details loaded only when needed.
+- Preserve progressive disclosure: metadata for discovery, `SKILL.md` for the
+  selected workflow, and resource files for details loaded only when needed.
 - Define required inputs, workflow steps, expected outputs, validation checks, and important failure behavior.
 - Use scripts only when deterministic execution, external tooling, consistency, or repeated code would materially improve the skill.
 - Respect the target runtime's supported fields, discovery locations, invocation policy, and tool model.
@@ -17,10 +21,13 @@ A `SKILL.md` file is agent-facing context for a reusable, on-demand capability. 
 ## Frontmatter
 - Include required YAML frontmatter with `name` and `description`.
 - Use a short, lowercase, hyphenated `name` when creating a new skill, and keep it aligned with the skill folder name.
-- Write the `description` as the primary discovery surface for implicit skill activation.
+- Write the `description` as the primary discovery surface for implicit skill
+  selection.
 - Front-load the core use case, task nouns, file types, tools, or domain words that should trigger the skill.
-- State the skill's positive trigger boundary and important negative boundary in the `description` when misactivation is likely.
-- Do not rely on body sections such as "When to use this skill" to fix an unclear description; the body may not be loaded until after activation.
+- State the skill's positive trigger boundary and important negative boundary
+  in the `description` when incorrect selection is likely.
+- Do not rely on body sections such as "When to use this skill" to fix an
+  unclear description; the body may not be loaded until after selection.
 - Include optional frontmatter fields only when the target skill runtime supports them and they add operational value.
 
 ## Body
@@ -30,7 +37,8 @@ A `SKILL.md` file is agent-facing context for a reusable, on-demand capability. 
 - Define expected outputs, file artifacts, or response shape when the skill's result must be consistent.
 - Reference another skill explicitly when the workflow should pair with it, and avoid duplicating that other skill's full procedure.
 - Include validation or review steps for brittle, high-stakes, or multi-step work.
-- Include positive and negative trigger examples only when they clarify real activation ambiguity.
+- Include positive and negative trigger examples only when they clarify real
+  selection ambiguity.
 - Include current-doc or web checks only when the skill depends on fast-moving APIs, platform behavior, or runtime tool contracts; make the condition explicit instead of making browsing part of ordinary use.
 - Name common edge cases and failure modes only when they affect execution.
 - Keep examples short and targeted to real ambiguity.
@@ -70,7 +78,7 @@ When reviewing a `SKILL.md` file, check for:
 - scope creep across unrelated workflows
 - body content that should be in a reference file
 - missing input, output, or validation behavior
-- missing positive or negative trigger tests when activation is uncertain
+- missing positive or negative trigger tests when selection is uncertain
 - duplicated sibling-skill workflow where an explicit cross-skill reference would be clearer
 - unconditional external-doc or web-check instructions where a conditional current-doc check would be enough
 - unclear script execution instructions

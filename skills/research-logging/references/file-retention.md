@@ -10,7 +10,7 @@ optional concise reason that records the retention intent. Use either one
 nonempty directory or one or more regular files; do not mix the two forms or
 use symlinks, missing targets, overlapping records, or paths outside the entry.
 
-Resolve `<skill>/scripts/log` from this activated package, read only the
+Resolve `<skill>/scripts/log` from this skill package, read only the
 selected action's help, and invoke:
 
 ```text
@@ -31,5 +31,5 @@ Every mutation accepts `--dry-run`.
 Do not use retention to conceal missing metadata or Provenance. Remove a
 retention declaration when its target enters the evidence-rooted graph. If an
 action fails because existing research-owned state is malformed or legacy,
-report the exact failure and stop; do not activate Repair or edit around the
+report the exact failure and stop; do not start Repair or edit around the
 command without a separate correction request.

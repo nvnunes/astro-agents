@@ -196,7 +196,8 @@ The layered pattern is not a universal runtime specification.
 Important differences across tools include:
 
 - discovery: which files or rules are found automatically
-- activation: whether guidance is always loaded, path-scoped, relevance-selected, manually invoked, or delegated to a subagent
+- availability and selection: whether guidance is always loaded, path-scoped,
+  selected by relevance, explicitly invoked, or delegated to a subagent
 - priority: whether user, team, project, scoped, or agent-specific instructions have stronger influence
 - conflict behavior: whether later or nearer instructions replace earlier ones, are combined with them, or merely have more practical effect
 - state handling: whether history, memory, artifacts, compaction, and retrieved context are managed by the platform, SDK, application code, or the user

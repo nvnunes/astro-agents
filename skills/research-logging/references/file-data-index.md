@@ -27,7 +27,7 @@ an origin boundary.
 
 ## Register And Maintain Inputs
 
-Resolve `<skill>/scripts/log` from this activated package and read only the
+Resolve `<skill>/scripts/log` from this skill package and read only the
 selected action's help. `<log>` is the logical base whose summary is
 `<log>.md`; do not pass the summary file.
 

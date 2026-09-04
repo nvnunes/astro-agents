@@ -18,7 +18,7 @@ inside an entry.
   evidence, input, and retention bookkeeping to the owning `scripts/log`
   action. Do not open or edit a registry to perform or confirm ordinary Record.
 - Stop on a failed authoring action and report its exact diagnostic. Do not
-  activate Repair or Reorganize, edit around the precondition, or broaden the
+  start Repair or Reorganize, edit around the precondition, or broaden the
   Record task without a separate matching request. Invoke dependent actions
   separately and inspect each bounded result before starting the next one.
 - Never turn an entry into an agent diary or work log. Omit agent workflow,

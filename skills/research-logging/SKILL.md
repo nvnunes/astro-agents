@@ -35,7 +35,7 @@ Choose the core operation:
 - Explicit correction of a named research-owned finding, malformed or legacy
   state, transaction residue, or other identified log defect: read
   `references/operation-repair.md`. A failed authoring command or reported
-  finding does not activate Repair without a separate correction request.
+  finding does not start Repair without a separate correction request.
 - Researcher-requested reorganization, or a specific Reorganize recommendation
   that the researcher has approved: read
   `references/operation-reorganize.md`. Review may recommend Reorganize but
@@ -64,7 +64,7 @@ experimental work to leave the active log.
 
 Reorganize is separately authorized structural work. Review may recommend it
 but cannot authorize it. A failed command, validation finding, or malformed
-state does not activate Repair without an explicit correction request.
+state does not start Repair without an explicit correction request.
 
 ## Universal Boundaries
 

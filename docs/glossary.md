@@ -68,7 +68,9 @@ The user's shared working environment across projects. In `astro-agents`, worksp
 
 ## Terms To Avoid
 
-- `activate`, `activation`, `shared activation`: Avoid these as catch-all runtime terms. Prefer `Route`, loading `Instructions`, applicability, selection, `Handoff`, or scope change, depending on the actual mechanism.
+- `activate`, `activation`, `shared activation`: Avoid these terms. Name the
+  actual mechanism: skill selection, explicit invocation, loading
+  `Instructions`, applicability, `Route`, `Handoff`, or scope change.
 - `bundle`, `component`, `composite`: Avoid these as formal context-engineering categories. Prefer grouped prompts, internal prompt, internal workflow step, coordinating `Prompt`, or synthesized output.
 - `composition`: Avoid this as a standalone runtime term. Prefer overlapping `Instructions`, simultaneous applicability, reusable prompt combination, or multi-step `Workflow`.
 - `control flow`: Avoid this as a broad project-runtime label when `Route`, `Workflow`, `Handoff`, or `Orchestration` would be more exact.

@@ -122,7 +122,8 @@ For `astro-agents` now, the primary criteria are `Instruction And Trust Boundari
 #### Safety Validation Support
 
 - the current review skill surface is good at reviewing route structure, prompt-writing quality, documentation structure, and some bounded design failures that matter to safety indirectly
-- the project also has lightweight static validation and activation eval fixtures for the current shared review surface
+- the project also has lightweight static validation and skill-selection eval
+  fixtures for the current shared review surface
 - it still does not validate safety-relevant runtime behavior directly, such as wrong-route instruction applicability, stale carried-forward or active context, compaction-sensitive failures, or unsafe carry-forward
 - safety review therefore has a decent structural baseline but not yet a behavior-facing validation stage
 - current status: weakly covered

@@ -12,7 +12,7 @@ research log. Starting a log is the new-log path within Record.
    locations exist, ask before creating files.
 3. Choose the logical `<log>` base whose summary will be `<log>.md` and whose
    matching directory will be `<log>/`.
-4. Resolve `scripts/log` from this activated skill package and create the empty
+4. Resolve `scripts/log` from this skill package and create the empty
    log through its action-specific help and this command:
 
    ```text

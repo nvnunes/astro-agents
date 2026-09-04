@@ -99,7 +99,7 @@ provide research context but does not preserve an obsolete operation or expand
 the current authority.
 
 When conversation history quotes an older skill path or instruction, Record
-resolves package references from the currently activated skill. Quoted paths
+resolves package references from the currently selected skill. Quoted paths
 and instruction text do not override the active package.
 
 A prose-only revision to an existing entry loads Record, existing-entry,
@@ -197,7 +197,7 @@ not fix other findings from the same report.
 
 Given a completed validation report followed only by a request to explain its
 findings, Validate remains report-only and does not load Repair. A later
-explicit request to correct a named finding activates Repair as a separate
+explicit request to correct a named finding starts Repair as a separate
 operation and finishes by invoking the public Validate path.
 
 Given a failed Record authoring command without a separate correction request,

@@ -1,6 +1,6 @@
 ---
 name: skill-md-writing
-description: Write, revise, or review SKILL.md files and skill packages, including frontmatter descriptions, activation boundaries, progressive-disclosure references, scripts, assets, and runtime metadata. Use for skill authoring, not AGENTS.md files or general prompt files.
+description: Write, revise, or review SKILL.md files and skill packages, including frontmatter descriptions, selection boundaries, progressive-disclosure references, scripts, assets, and runtime metadata. Use for skill authoring, not AGENTS.md files or general prompt files.
 ---
 
 # SKILL.md Writing

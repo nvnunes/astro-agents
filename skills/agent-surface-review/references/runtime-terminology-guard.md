@@ -16,7 +16,9 @@ When reviewing `AGENTS.md`, `SKILL.md`, prompt files, or project-local validatio
 - avoids implying unsupported authority, permissions, approvals, or tool access
 - states whether a route, workflow, handoff, or delegation changes ownership of the next output
 - treats session history, compaction notes, retrieved context, and memory as different context sources when that distinction matters
-- uses terms such as `route`, `workflow`, `handoff`, `orchestration`, `activation`, `override`, `instructions`, and `context` precisely enough for an agent to act correctly
+- uses terms such as `route`, `workflow`, `handoff`, `orchestration`, skill
+  selection, `override`, `instructions`, and `context` precisely enough for an
+  agent to act correctly
 
 ## Finding Guidance
 

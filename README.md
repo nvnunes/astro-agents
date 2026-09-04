@@ -28,7 +28,10 @@
 
 The most complete documented path today is Codex skill discovery plus minimal `AGENTS.md` bootstrap or project context. The project also tracks broader agent-runtime vocabulary and design ideas so the library can stay portable, but those broader references do not currently imply equal adoption or validation support across runtimes.
 
-The current library shape is skills-first. Runtime skill discovery activates skill packages, and skill packages use `references/` and `scripts/` for progressive disclosure. `AGENTS.md` supplies project-local working context for this repository.
+The current library shape is skills-first. Runtime skill discovery exposes
+skill metadata, the model selects applicable skill packages, and those packages
+use `references/` and `scripts/` for progressive disclosure. `AGENTS.md`
+supplies project-local working context for this repository.
 
 ## Quickstart
 
@@ -51,7 +54,7 @@ The current library shape is skills-first. Runtime skill discovery activates ski
 ## Available Skills
 
 The current reusable skill packages are listed below. Each skill's `SKILL.md`
-frontmatter is the source of truth for exact activation wording.
+frontmatter is the source of truth for its exact selection boundary.
 
 - `$agent-surface-review`: review agent surfaces, instruction scope, workflow behavior, documentation integration, and validation expectations.
 - `$agents-md-writing`: write, revise, or review `AGENTS.md` project and subtree instruction files.

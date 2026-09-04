@@ -49,7 +49,9 @@ From the `astro-agents` checkout, verify user-global discovery with:
 ./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery
 ```
 
-This verifies that Codex includes the shared skills in the model-visible skill list. It does not prove that every natural-language prompt will activate the intended skill.
+This verifies that Codex includes the shared skills in the model-visible skill
+list. It does not prove that the model will select the intended skill for every
+natural-language prompt.
 
 ## Starter Prompts
 
@@ -65,8 +67,9 @@ Start with the skill name when you know the intended skill:
 - `$research-logging Record an entry in the telemetry research log.`
 - `$science-writing Revise manuscript.tex for scientific clarity and claim discipline.`
 
-Natural-language prompts can also activate skills, but explicit `$skill-name`
-prompts are clearer when the task could match more than one skill.
+Natural-language prompts can also lead the model to select skills, but explicit
+`$skill-name` invocation is clearer when the task could match more than one
+skill.
 
 ## Project Setup
 
@@ -117,7 +120,7 @@ A downstream project may add a short `## Research Logs` section to root
 `AGENTS.md` so agents can recognize which local files are research logs.
 
 List each research log file, its companion folder, and any short name or alias
-users are likely to mention. This helps activate `$research-logging` when the
+users are likely to mention. This helps the model select `$research-logging` when the
 user refers to the file or topic without saying `research log`.
 
 For example:
@@ -140,7 +143,7 @@ A downstream project that uses `pubify-pubs` or `pubify-ppt` may add a short
 publication and presentation subtrees without the user saying `pubify`.
 
 List the configured publications root and presentations root. Keep this as a
-minimal activation hint; the workflow details live in `$pubify-authoring` and the
+minimal applicability hint; the workflow details live in `$pubify-authoring` and the
 pubify package docs.
 
 For example:

@@ -40,7 +40,7 @@ This checks:
 - `SKILL.md` frontmatter integrity, name and directory alignment, nonempty descriptions, and duplicate names
 - `agents/openai.yaml` presence and basic metadata alignment for each user-facing skill
 - package-internal skill references and direct sibling-skill references
-- activation eval fixture shape in `tests/activation_cases.csv`
+- skill-selection fixture shape in `tests/skill_selection_cases.csv`
 - retired prompt-family paths, deleted skill names, deleted shared-reference paths, and deleted source-of-truth document paths
 
 Also run:
@@ -144,11 +144,16 @@ This expects the local user-level symlink:
 $HOME/.agents/skills/astro-agents -> <astro-agents-path>/skills
 ```
 
-The discovery check runs `codex debug prompt-input` and asserts that every current `astro-agents` skill appears in the model-visible skill list with the expected name and file path. Treat this as a hard local Codex discovery smoke test, not as proof that implicit activation will always choose the intended skill.
+The discovery check runs `codex debug prompt-input` and asserts that every
+current `astro-agents` skill appears in the model-visible skill list with the
+expected name and source path, either directly or through a declared skill-root
+alias. Treat this as a hard local Codex discovery smoke test, not as proof that
+the model will select the intended skill for every implicit prompt.
 
-## Activation Eval Cases
+## Skill-Selection Eval Cases
 
-Use `tests/activation_cases.csv` as the maintained activation eval fixture.
+Use `tests/skill_selection_cases.csv` as the maintained skill-selection eval
+fixture.
 
 The fixture includes:
 
@@ -158,25 +163,34 @@ The fixture includes:
 
 Every user-facing skill should have at least one explicit positive case, one implicit positive case, and one negative exclusion case. The deterministic harness enforces that coverage shape.
 
-Implicit activation is model-mediated. The fixture gives stable prompts and exact expected selected skills for repeated manual or scripted eval runs, but it is not a deterministic unit test of model choice.
+Implicit skill selection is model-mediated. The fixture gives stable prompts
+and exact expected selected skills for repeated manual or scripted eval runs,
+but it is not a deterministic unit test of model choice.
 
-Run the optional activation eval runner only when activation behavior might change:
+Run the optional skill-selection eval only when selection behavior might
+change:
 
 ```bash
-./.conda/bin/python scripts/validate_agent_surface.py --activation-eval
+./.conda/bin/python scripts/validate_agent_surface.py --skill-selection-eval
 ```
 
-This runs each fixture row through `codex exec` in ephemeral read-only mode and asks Codex for a compact JSON activation decision. Because it starts a model turn per fixture row, the full activation eval is comparatively expensive and should not be part of routine validation.
+This runs each fixture row through `codex exec` in ephemeral read-only mode and
+asks Codex for a compact JSON selection decision. Because it starts a model
+turn per fixture row, the full skill-selection eval is comparatively expensive
+and should not be part of routine validation.
 
 Run it for changes to:
 
 - `SKILL.md` names or descriptions
-- activation boundaries between neighboring skills
-- `tests/activation_cases.csv`
+- selection boundaries between neighboring skills
+- `tests/skill_selection_cases.csv`
 - user-level skill layout or Codex discovery assumptions
 - major `AGENTS.md` or runtime-context changes that could affect skill selection
 
-Do not run the full activation eval for routine documentation edits, reference-file cleanup, or stale-path-only changes unless those edits affect activation behavior. Treat failures as activation-regression signals that need human review, not as proof that the skill can never work.
+Do not run the full skill-selection eval for routine documentation edits,
+reference-file cleanup, or stale-path-only changes unless those edits affect
+selection behavior. Treat failures as selection-regression signals that need
+human review, not as proof that the skill can never work.
 
 ## Agent Behavior Evaluations
 
@@ -290,9 +304,9 @@ replicated comparisons.
 - Changes to `SKILL.md`, skill references, or skill scripts:
   - run `./.conda/bin/python scripts/validate_agent_surface.py`
   - run `./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery` when names, descriptions, metadata, or discovery layout change
-  - run `./.conda/bin/python scripts/validate_agent_surface.py --activation-eval` only when activation descriptions, skill names, discovery assumptions, or neighboring skill boundaries change
+  - run `./.conda/bin/python scripts/validate_agent_surface.py --skill-selection-eval` only when selection descriptions, skill names, discovery assumptions, or neighboring skill boundaries change
   - run `$agent-surface-review`
-  - include focused prompt-writing, scope, or activation-boundary checks when the changed skill affects those behaviors
+  - include focused prompt-writing, scope, or selection-boundary checks when the changed skill affects those behaviors
 
 - Changes to documentation-surface review behavior:
   - run `./.conda/bin/python scripts/validate_agent_surface.py`

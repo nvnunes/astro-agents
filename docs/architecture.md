@@ -62,7 +62,10 @@ the agent surface or validation tools.
 
 The root `AGENTS.md` is the operational working brief for this project. It provides project-local context, source-of-truth pointers, and validation expectations for work inside `astro-agents`.
 
-It is not the primary selector for the reusable skill library. Runtime skill discovery should activate `astro-agents` skills from their `SKILL.md` descriptions and metadata. The root `AGENTS.md` should not recreate that skill-selection table.
+It is not the primary selector for the reusable skill library. Runtime skill
+discovery exposes `astro-agents` skills through their `SKILL.md` descriptions
+and metadata, and the model selects applicable skills. The root `AGENTS.md`
+should not recreate that skill-selection table.
 
 In practice:
 
@@ -137,7 +140,7 @@ Within this project, use forms such as:
 - `skills/agent-surface-review/SKILL.md`
 - `skills/python-code-writing/SKILL.md`
 
-Use skill activation names when the instruction is telling a user or agent to
+Use skill invocation names when the instruction is telling a user or agent to
 invoke a skill:
 
 - `$skill-md-writing`
@@ -149,7 +152,7 @@ comparison standard, or an internal reference to inspect:
 - `skills/skill-md-writing/references/skill-md.md`
 - `skills/agent-surface-review/references/scope-and-workflow-review.md`
 
-Do not use a file path when the intended meaning is skill activation.
+Do not use a file path when the intended meaning is skill invocation.
 
 In the agent-facing files of other projects:
 

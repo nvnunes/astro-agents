@@ -67,8 +67,10 @@ Do not treat these terms as forbidden. Treat them as review triggers when they h
   - Prefer this as a role label for choosing from a bounded set.
 - `orchestrator`
   - Prefer this as a role label for an `Agent` or controller performing `Orchestration`.
-- `activation`
-  - Prefer explicit language such as skill selection, instruction loading, route choice, applicability, or handoff.
+- `skill selection`
+  - Use for the model-mediated choice of an applicable discovered skill. Use
+    explicit invocation when the user names a skill, and instruction loading
+    when the runtime or agent reads its contents.
 - `override`
   - Prefer higher-priority instructions, superseding file, replace, or supersede. Reserve `AGENTS.override.md` for the Codex filename.
 - `precedence`

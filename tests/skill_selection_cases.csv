@@ -1,4 +1,4 @@
-id,expected_skill,expected_selected_skill,should_trigger,kind,prompt
+id,expected_skill,expected_selected_skill,should_select,kind,prompt
 explicit-agent-surface,agent-surface-review,agent-surface-review,true,explicit,Use $agent-surface-review to review this project agent surface
 explicit-agents-md,agents-md-writing,agents-md-writing,true,explicit,Use $agents-md-writing to revise this root AGENTS.md
 explicit-code-quality,code-quality-review,code-quality-review,true,explicit,Use $code-quality-review to review this Python module's source-code quality

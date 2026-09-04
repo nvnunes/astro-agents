@@ -43,7 +43,7 @@ marker to it.
    `references/file-data-index.md` when it does not already have a local
    `<name>` token. Require that transaction to succeed before continuing.
 2. Author the complete presentation and marker first.
-3. Resolve `<skill>/scripts/log` from this activated package. Read only
+3. Resolve `<skill>/scripts/log` from this skill package. Read only
    `log evidence add --help` or `log evidence update --help`, then invoke the
    selected action with the logical log path, stable entry ID, evidence ID, and
    one source token:
@@ -80,7 +80,7 @@ raw path, URI, or cross-entry shorthand is not an evidence source.
 
 When the intended presentation clearly needs one of the forms below, or the
 common action reports `evidence.common.unsupported`, do not edit the registry
-or activate Repair. Read exactly one matching reference:
+or start Repair. Read exactly one matching reference:
 
 - complex source selection or multiple sources:
   `references/record-evidence-definition-sources.md`;
@@ -101,8 +101,8 @@ Write only that bounded definition under `/private/tmp`, run the documented
 case is still Record, not Repair.
 
 If current research-owned state is malformed or legacy and prevents the owning
-action from operating, stop and report the exact failure. Do not activate or
-perform Repair without a separate correction request.
+action from operating, stop and report the exact failure. Do not perform Repair
+without a separate correction request.
 
 ## Summary Evidence
 

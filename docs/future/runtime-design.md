@@ -26,7 +26,17 @@ Extend the current lightweight observability baseline. Today that baseline is st
 
 ### Validation
 
-Extend the current review-driven validation system beyond static review skills into behavior-focused testing. The current review structure, static validation harness, Codex discovery smoke test, and activation eval fixture are useful starting points, but the next layer should begin with representative tasks, expected observable outcomes, trace-backed debugging, and repeatable graders before expanding into broader routing, applicability, and longer-horizon checks. Routing also belongs partly here because once route contracts are defined they need to be tested to confirm that the intended branch, tool boundary, handoff, or approval behavior actually occurs. The goal is to move from validating the design of the agent surface to validating the behavior that the surface produces.
+Extend the current review-driven validation system beyond static review skills
+into behavior-focused testing. The current review structure, static validation
+harness, Codex discovery smoke test, and skill-selection eval fixture are useful
+starting points, but the next layer should begin with representative tasks,
+expected observable outcomes, trace-backed debugging, and repeatable graders
+before expanding into broader routing, applicability, and longer-horizon
+checks. Routing also belongs partly here because once route contracts are
+defined they need to be tested to confirm that the intended branch, tool
+boundary, handoff, or approval behavior actually occurs. The goal is to move
+from validating the design of the agent surface to validating the behavior that
+the surface produces.
 
 ### Safety
 
@@ -117,7 +127,11 @@ Settle cross-workstream dependencies, conflicts, and tradeoffs that cannot be se
 
 1. Keep the current project assessments and source-backed comparisons aligned across the four workstreams and `docs/future/agent-context-engineering-patterns.md`.
 2. Define a shared state taxonomy and a first route-contract bundle for one representative pilot path while keeping observability, validation, and safety dependencies explicit.
-3. Advance Runtime Observability And Provenance from the current static visibility plus `Review Path Summary` baseline, Runtime Validation from the current shared review skill surface plus static and activation-eval checks, and Runtime Safety from the current lightweight review-driven surface by building around that pilot route contract and its evidence surfaces.
+3. Advance Runtime Observability And Provenance from the current static
+   visibility plus `Review Path Summary` baseline, Runtime Validation from the
+   current shared review skill surface plus static and skill-selection checks,
+   and Runtime Safety from the current lightweight review-driven surface by
+   building around that pilot route contract and its evidence surfaces.
 4. Synthesize the workstream outputs here and settle the integrated design decisions, guardrails, and acceptance criteria.
 
 Avoid treating this as a strict waterfall. Governance decisions should remain provisional where they still depend on observability, validation, or safety work that has not yet matured enough to support them.
@@ -142,7 +156,9 @@ Use this rubric across governance, observability, validation, and safety. Differ
 - Which route pattern should be used for the first integrated pilot: direct route, handoff, or manager-calls-specialist?
 - How strong should the first integrated model be on session identity, checkpointing, and handoff artifacts for longer-running or resumed work?
 - Which state classes need to be distinguished in the first integrated model: stable policy, task-local state, retrieved context, compaction summaries, and longer-lived memory?
-- How should the validation workstream extend the static checks and activation eval fixture into a fuller eval program without making ordinary project work too heavy?
+- How should the validation workstream extend the static checks and
+  skill-selection eval fixture into a fuller eval program without making
+  ordinary project work too heavy?
 - How should observability extend beyond `Review Path Summary` and static skill/reference visibility without over-instrumenting ordinary project work?
 - Which containment boundaries must the first integrated safety model choose explicitly, even if richer controls remain deferred?
 

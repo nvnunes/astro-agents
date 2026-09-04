@@ -45,7 +45,9 @@ Observability, tracing, and eval design remain first-class concerns in the sourc
 
 - the project clearly distinguishes `AGENTS.md` as project-local working brief and deeper docs as source of truth, which helps separate discovery from detailed guidance
 - the live surface keeps this boundary lightweight: it separates instruction files from deeper supporting docs without trying to define a stronger project-local `Instructions` versus `Context` doctrine
-- root and subtree instruction files therefore still rely mostly on document-level authority and explicit skill activation rather than on an execution-time control model
+- root and subtree instruction files therefore still rely mostly on
+  document-level authority and explicit skill invocation rather than on an
+  execution-time control model
 - the live docs avoid stronger authority-heavy claims, but future runtime-governance questions remain open around untrusted context, carried-forward context, and multi-step review paths
 - no current rule says how carried-forward context, narrowed routes, and future lower-trust context should interact once the runtime model becomes more explicit
 - current status: partly covered
@@ -53,7 +55,8 @@ Observability, tracing, and eval design remain first-class concerns in the sourc
 #### Routing, Orchestration, And Delegation
 
 - runtime skill discovery provides a clear user-facing capability surface, including writing skills, review skills, research logging, and upgrade planning
-- writing skills and skill-local upgrade model work usually behave like direct skill activations that land quickly on one skill or source-of-truth document
+- writing skills and skill-local upgrade model work usually use direct skill
+  invocations that lead quickly to one skill or source-of-truth document
 - `agent-surface-review` behaves more like a multi-step `Workflow` with internal references, especially in documentation review and full agent-surface review
 - the current project is strongest when routing is treated as direct intent selection, and weakest where routing starts to act like implicit orchestration across multiple review passes
 - some narrow routes already use explicit review-surface defaults, such as unsupported-profile handling in `skills/documentation-surface-review/SKILL.md` and the review-led upgrade model's explicit default to `private-default` when no profile is declared, but these do not yet amount to a broader runtime orchestration or degradation model

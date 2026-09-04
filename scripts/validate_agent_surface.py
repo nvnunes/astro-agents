@@ -18,10 +18,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
-ACTIVATION_CASES = ROOT / "tests" / "activation_cases.csv"
+SKILL_SELECTION_CASES = ROOT / "tests" / "skill_selection_cases.csv"
 
 EXPECTED_OPENAI_KEYS = {
     "display_name",
@@ -30,6 +29,8 @@ EXPECTED_OPENAI_KEYS = {
 }
 
 STALE_TERMS = {
+    "activate": {"docs/glossary.md"},
+    "activation": {"docs/glossary.md"},
     "authoring/": {"docs/skills-upgrade-plan.md"},
     "skills/validation/": {"docs/skills-upgrade-plan.md"},
     "research-log/": {"docs/skills-upgrade-plan.md"},
@@ -66,7 +67,9 @@ class ValidationError(Exception):
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate astro-agents skills, fixtures, and optional Codex discovery.",
+        description=(
+            "Validate astro-agents skills, fixtures, and optional Codex discovery."
+        ),
     )
     parser.add_argument(
         "--codex-discovery",
@@ -74,21 +77,24 @@ def main() -> int:
         help="also run Codex runtime discovery checks using codex debug prompt-input",
     )
     parser.add_argument(
-        "--activation-eval",
+        "--skill-selection-eval",
         action="store_true",
-        help="run read-only Codex activation eval prompts from the activation cases fixture",
+        help=(
+            "run read-only Codex skill-selection prompts from the selection cases "
+            "fixture"
+        ),
     )
     parser.add_argument(
-        "--activation-eval-limit",
+        "--skill-selection-eval-limit",
         type=int,
         default=0,
-        help="maximum activation eval cases to run; 0 means all cases",
+        help="maximum skill-selection cases to run; 0 means all cases",
     )
     parser.add_argument(
-        "--activation-cases",
+        "--skill-selection-cases",
         type=Path,
-        default=ACTIVATION_CASES,
-        help="CSV fixture for activation eval cases",
+        default=SKILL_SELECTION_CASES,
+        help="CSV fixture for skill-selection cases",
     )
     args = parser.parse_args()
 
@@ -98,17 +104,23 @@ def main() -> int:
         ("skill frontmatter", lambda: check_skill_frontmatter()),
         ("OpenAI metadata", lambda: check_openai_metadata()),
         ("skill references", lambda: check_skill_references()),
-        ("activation fixtures", lambda: check_activation_cases(args.activation_cases)),
+        (
+            "skill-selection fixtures",
+            lambda: check_skill_selection_cases(args.skill_selection_cases),
+        ),
         ("stale paths", lambda: check_stale_terms()),
     ]
 
     if args.codex_discovery:
         checks.append(("Codex discovery", lambda: check_codex_discovery()))
-    if args.activation_eval:
+    if args.skill_selection_eval:
         checks.append(
             (
-                "activation eval",
-                lambda: check_activation_eval(args.activation_cases, args.activation_eval_limit),
+                "skill-selection eval",
+                lambda: check_skill_selection_eval(
+                    args.skill_selection_cases,
+                    args.skill_selection_eval_limit,
+                ),
             )
         )
 
@@ -139,9 +151,13 @@ def check_skill_frontmatter() -> list[Skill]:
         dirname = path.parent.name
 
         if name != dirname:
-            raise ValidationError(f"{path}: name {name!r} does not match directory {dirname!r}")
+            raise ValidationError(
+                f"{path}: name {name!r} does not match directory {dirname!r}"
+            )
         if name in names:
-            raise ValidationError(f"duplicate skill name {name!r}: {names[name]} and {path}")
+            raise ValidationError(
+                f"duplicate skill name {name!r}: {names[name]} and {path}"
+            )
 
         names[name] = path
         skills.append(Skill(name=name, path=path, description=description))
@@ -161,7 +177,9 @@ def check_openai_metadata() -> None:
         interface = parse_openai_interface(metadata)
         missing = EXPECTED_OPENAI_KEYS - set(interface)
         if missing:
-            raise ValidationError(f"{relative(metadata)}: missing interface keys {sorted(missing)}")
+            raise ValidationError(
+                f"{relative(metadata)}: missing interface keys {sorted(missing)}"
+            )
 
         for key in EXPECTED_OPENAI_KEYS:
             if not interface[key].strip():
@@ -190,11 +208,11 @@ def check_skill_references() -> None:
         raise ValidationError("; ".join(failures))
 
 
-def check_activation_cases(path: Path) -> None:
-    load_activation_cases(path)
+def check_skill_selection_cases(path: Path) -> None:
+    load_skill_selection_cases(path)
 
 
-def load_activation_cases(path: Path) -> list[dict[str, str]]:
+def load_skill_selection_cases(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         raise ValidationError(f"missing fixture {relative(path)}")
 
@@ -205,7 +223,7 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
         "id",
         "expected_skill",
         "expected_selected_skill",
-        "should_trigger",
+        "should_select",
         "kind",
         "prompt",
     }
@@ -216,7 +234,9 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
             raise ValidationError(f"{relative(path)}: missing header")
         missing = required - set(reader.fieldnames)
         if missing:
-            raise ValidationError(f"{relative(path)}: missing columns {sorted(missing)}")
+            raise ValidationError(
+                f"{relative(path)}: missing columns {sorted(missing)}"
+            )
 
         rows = list(reader)
 
@@ -229,7 +249,7 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
         case_id = row["id"].strip()
         expected_skill = row["expected_skill"].strip()
         expected_selected_skill = row["expected_selected_skill"].strip()
-        should_trigger = parse_bool(row["should_trigger"], path, case_id)
+        should_select = parse_bool(row["should_select"], path, case_id)
         kind = row["kind"].strip()
         prompt = row["prompt"].strip()
 
@@ -240,31 +260,42 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
         seen.add(case_id)
 
         if expected_skill not in skills:
-            raise ValidationError(f"{case_id}: unknown expected_skill {expected_skill!r}")
+            raise ValidationError(
+                f"{case_id}: unknown expected_skill {expected_skill!r}"
+            )
         if expected_selected_skill not in skills:
             raise ValidationError(
-                f"{case_id}: unknown expected_selected_skill {expected_selected_skill!r}"
+                f"{case_id}: unknown expected_selected_skill "
+                f"{expected_selected_skill!r}"
             )
         if kind not in kinds:
             raise ValidationError(f"{case_id}: invalid kind {kind!r}")
         if kind == "explicit" and f"${expected_skill}" not in prompt:
-            raise ValidationError(f"{case_id}: explicit prompt must mention ${expected_skill}")
-        if kind == "negative" and should_trigger:
-            raise ValidationError(f"{case_id}: negative cases must have should_trigger=false")
-        if should_trigger and expected_selected_skill != expected_skill:
             raise ValidationError(
-                f"{case_id}: triggering case must select expected_skill {expected_skill!r}"
+                f"{case_id}: explicit prompt must mention ${expected_skill}"
             )
-        if not should_trigger and expected_selected_skill == expected_skill:
+        if kind == "negative" and should_select:
             raise ValidationError(
-                f"{case_id}: negative case cannot select excluded skill {expected_skill!r}"
+                f"{case_id}: negative cases must have should_select=false"
+            )
+        if should_select and expected_selected_skill != expected_skill:
+            raise ValidationError(
+                f"{case_id}: positive case must select expected_skill "
+                f"{expected_skill!r}"
+            )
+        if not should_select and expected_selected_skill == expected_skill:
+            raise ValidationError(
+                f"{case_id}: negative case cannot select excluded skill "
+                f"{expected_skill!r}"
             )
         if not prompt:
             raise ValidationError(f"{case_id}: blank prompt")
 
-        fingerprint = (expected_skill, should_trigger, kind, prompt)
+        fingerprint = (expected_skill, should_select, kind, prompt)
         if fingerprint in seen_cases:
-            raise ValidationError(f"{relative(path)}: duplicate semantic case {case_id!r}")
+            raise ValidationError(
+                f"{relative(path)}: duplicate semantic case {case_id!r}"
+            )
         seen_cases.add(fingerprint)
 
         kinds[kind] += 1
@@ -278,19 +309,19 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
         explicit = any(
             row["expected_skill"].strip() == skill
             and row["kind"].strip() == "explicit"
-            and row["should_trigger"].strip().lower() == "true"
+            and row["should_select"].strip().lower() == "true"
             for row in rows
         )
         implicit = any(
             row["expected_skill"].strip() == skill
             and row["kind"].strip() == "implicit"
-            and row["should_trigger"].strip().lower() == "true"
+            and row["should_select"].strip().lower() == "true"
             for row in rows
         )
         negative = any(
             row["expected_skill"].strip() == skill
             and row["kind"].strip() == "negative"
-            and row["should_trigger"].strip().lower() == "false"
+            and row["should_select"].strip().lower() == "false"
             for row in rows
         )
         if not explicit:
@@ -301,15 +332,17 @@ def load_activation_cases(path: Path) -> list[dict[str, str]]:
             missing_coverage.append(f"{skill}: negative")
 
     if missing_coverage:
-        raise ValidationError("missing activation coverage " + ", ".join(missing_coverage))
+        raise ValidationError(
+            "missing skill-selection coverage " + ", ".join(missing_coverage)
+        )
 
     return rows
 
 
-def check_activation_eval(path: Path, limit: int) -> None:
-    cases = load_activation_cases(path)
+def check_skill_selection_eval(path: Path, limit: int) -> None:
+    cases = load_skill_selection_cases(path)
     if limit < 0:
-        raise ValidationError("--activation-eval-limit must be >= 0")
+        raise ValidationError("--skill-selection-eval-limit must be >= 0")
     if limit:
         cases = cases[:limit]
 
@@ -317,12 +350,12 @@ def check_activation_eval(path: Path, limit: int) -> None:
     results: list[dict[str, object]] = []
 
     for case in cases:
-        result = run_activation_case(case)
+        result = run_skill_selection_case(case)
         results.append(result)
         if not result["passed"]:
             failures.append(f"{case['id']}: {result['reason']}")
 
-    print(json.dumps({"activation_eval": results}, indent=2))
+    print(json.dumps({"skill_selection_eval": results}, indent=2))
 
     if failures:
         raise ValidationError("; ".join(failures))
@@ -349,7 +382,9 @@ def check_codex_discovery() -> None:
     if not link.is_symlink():
         raise ValidationError(f"{link} is not a symlink")
     if link.resolve() != expected_target:
-        raise ValidationError(f"{link} resolves to {link.resolve()}, expected {expected_target}")
+        raise ValidationError(
+            f"{link} resolves to {link.resolve()}, expected {expected_target}"
+        )
 
     command = ["codex", "debug", "prompt-input", "List available astro-agents skills."]
     try:
@@ -365,7 +400,9 @@ def check_codex_discovery() -> None:
         raise ValidationError("codex command not found") from exc
 
     if completed.returncode != 0:
-        raise ValidationError(completed.stderr.strip() or "codex debug prompt-input failed")
+        raise ValidationError(
+            completed.stderr.strip() or "codex debug prompt-input failed"
+        )
 
     try:
         prompt_input = json.loads(completed.stdout)
@@ -386,16 +423,28 @@ def skill_is_discovered(serialized: str, skill: Skill, link: Path) -> bool:
     """Return whether prompt input declares a skill through a valid local locator."""
     relative_path = skill.path.relative_to(SKILLS)
     valid_locators = (skill.path, link / relative_path)
-    return f"- {skill.name}:" in serialized and any(
-        str(locator) in serialized for locator in valid_locators
-    )
+    if f"- {skill.name}:" not in serialized:
+        return False
+    if any(str(locator) in serialized for locator in valid_locators):
+        return True
+
+    for alias, root in re.findall(r"- `(r\d+)` = `([^`]+)`", serialized):
+        root_path = Path(root)
+        for locator in valid_locators:
+            try:
+                relative_locator = locator.relative_to(root_path)
+            except ValueError:
+                continue
+            if f"(file: {alias}/{relative_locator})" in serialized:
+                return True
+
+    return False
 
 
-def run_activation_case(case: dict[str, str]) -> dict[str, object]:
+def run_skill_selection_case(case: dict[str, str]) -> dict[str, object]:
     case_id = case["id"].strip()
     expected_skill = case["expected_skill"].strip()
     expected_selected_skill = case["expected_selected_skill"].strip()
-    prompt = case["prompt"].strip()
 
     with tempfile.NamedTemporaryFile("w+", suffix=".json", encoding="utf-8") as output:
         command = [
@@ -406,7 +455,7 @@ def run_activation_case(case: dict[str, str]) -> dict[str, object]:
             "read-only",
             "--output-last-message",
             output.name,
-            build_activation_eval_prompt(case),
+            build_skill_selection_eval_prompt(case),
         ]
         completed = subprocess.run(
             command,
@@ -441,21 +490,23 @@ def run_activation_case(case: dict[str, str]) -> dict[str, object]:
         }
 
     selected_skill = str(report.get("selected_skill", "")).strip()
-    activated = report.get("activated")
-    if not isinstance(activated, bool):
+    selected = report.get("selected")
+    if not isinstance(selected, bool):
         return {
             "id": case_id,
             "expected_skill": expected_skill,
             "expected_selected_skill": expected_selected_skill,
             "passed": False,
-            "reason": "activation eval response field 'activated' was not boolean",
+            "reason": "skill-selection response field 'selected' was not boolean",
         }
 
-    passed = activated and selected_skill == expected_selected_skill
+    passed = selected and selected_skill == expected_selected_skill
     reason = (
         "ok"
         if passed
-        else f"expected selection of {expected_selected_skill!r}, got {selected_skill!r}"
+        else (
+            f"expected selection of {expected_selected_skill!r}, got {selected_skill!r}"
+        )
     )
 
     return {
@@ -463,25 +514,28 @@ def run_activation_case(case: dict[str, str]) -> dict[str, object]:
         "expected_skill": expected_skill,
         "expected_selected_skill": expected_selected_skill,
         "selected_skill": selected_skill,
-        "activated": activated,
+        "selected": selected,
         "passed": passed,
         "reason": reason,
         "model_reason": str(report.get("reason", "")).strip(),
     }
 
 
-def build_activation_eval_prompt(case: dict[str, str]) -> str:
+def build_skill_selection_eval_prompt(case: dict[str, str]) -> str:
     return "\n".join(
         [
-            "This is an astro-agents skill activation evaluation.",
+            "This is an astro-agents skill-selection evaluation.",
             "Do not edit files, run commands, or perform the requested task.",
-            "Decide which available skill, if any, should be active for the user request.",
+            (
+                "Decide which available skill, if any, should be selected for the "
+                "user request."
+            ),
             "Respond only as compact JSON with keys:",
-            '{"selected_skill": string, "activated": boolean, "reason": string}',
+            '{"selected_skill": string, "selected": boolean, "reason": string}',
             "",
             f"Expected skill under test: {case['expected_skill'].strip()}",
             f"Case kind: {case['kind'].strip()}",
-            f"Should trigger expected skill: {case['should_trigger'].strip()}",
+            f"Should select expected skill: {case['should_select'].strip()}",
             "",
             "User request:",
             case["prompt"].strip(),
@@ -495,14 +549,16 @@ def parse_json_object(raw: str) -> dict[str, object]:
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
         if not match:
-            raise ValidationError("activation eval response was not JSON")
+            raise ValidationError("skill-selection response was not JSON")
         try:
             parsed = json.loads(match.group(0))
         except json.JSONDecodeError as exc:
-            raise ValidationError(f"activation eval response JSON parse failed: {exc}") from exc
+            raise ValidationError(
+                f"skill-selection response JSON parse failed: {exc}"
+            ) from exc
 
     if not isinstance(parsed, dict):
-        raise ValidationError("activation eval response JSON was not an object")
+        raise ValidationError("skill-selection response JSON was not an object")
     return parsed
 
 
@@ -517,7 +573,9 @@ def parse_frontmatter(path: Path) -> dict[str, str]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if ":" not in line:
-            raise ValidationError(f"{relative(path)}: invalid frontmatter line {line!r}")
+            raise ValidationError(
+                f"{relative(path)}: invalid frontmatter line {line!r}"
+            )
         key, value = line.split(":", 1)
         values[key.strip()] = strip_quotes(value.strip())
     return values

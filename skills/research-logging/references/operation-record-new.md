@@ -13,7 +13,7 @@ the shared Record rules.
 2. Use today's local date unless the researcher indicates another start date.
    Choose a short, concrete, descriptive topic slug from the researcher's
    framing.
-3. Resolve `scripts/log` from this activated skill package, read only `log add
+3. Resolve `scripts/log` from this skill package, read only `log add
    --help`, and run:
 
    ```text

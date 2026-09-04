@@ -4,7 +4,11 @@ This document is the source of truth for runtime-related terminology, current-su
 
 Use this document to understand the runtime mechanics current agent systems actually provide, the vocabulary `astro-agents` uses to describe them, and which parts of that model the project currently supports directly.
 
-For review-time checks of runtime, skill activation, instruction, context, routing, and control-flow terminology, keep `skills/documentation-surface-review/references/runtime-terminology-review.md` and `skills/agent-surface-review/references/runtime-terminology-guard.md` aligned with this document.
+For review-time checks of runtime, skill selection, instruction, context,
+routing, and control-flow terminology, keep
+`skills/documentation-surface-review/references/runtime-terminology-review.md`
+and `skills/agent-surface-review/references/runtime-terminology-guard.md`
+aligned with this document.
 
 ## Scope And Current Support
 
@@ -117,7 +121,12 @@ Codex also injects each discovered instruction file near the top of the conversa
 
 For overall guidance, the standard Codex location is still Codex home, where Codex checks `AGENTS.override.md` before `AGENTS.md`. If you want that guidance to live somewhere else, the documented Codex mechanism is to set `CODEX_HOME` before launch so Codex uses a different home directory. [\[1\]](#ref-1)[\[2\]](#ref-2) If changing `CODEX_HOME` is inconvenient, a practical local workaround is to keep Codex on the default `~/.codex` path and symlink `~/.codex/AGENTS.md` to the real file you want to maintain elsewhere. That symlink approach is a filesystem convenience, not a Codex-specific feature.
 
-In practical `astro-agents` usage, that means the canonical global bootstrap location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`). Project-specific adoption, or project-specific exceptions to a global default, belong in the project root `AGENTS.md`. Runtime-discovered skills, not `AGENTS.md` routing tables, are the documented activation path for reusable `astro-agents` capabilities.
+In practical `astro-agents` usage, that means the canonical global bootstrap
+location is `$CODEX_HOME/AGENTS.md` (commonly `~/.codex/AGENTS.md`).
+Project-specific adoption, or project-specific exceptions to a global default,
+belong in the project root `AGENTS.md`. Runtime-discovered skills, not
+`AGENTS.md` routing tables, are the documented selection surface for reusable
+`astro-agents` capabilities.
 
 Example hierarchy:
 
@@ -153,7 +162,7 @@ The external context engineering layers in `docs/future/agent-context-engineerin
 | Scoped Instructions | Project | Subtree `AGENTS.md` or `AGENTS.override.md` files loaded by Codex according to the current working directory. |
 | Reusable Workflows | astro-agents | Runtime-discovered `astro-agents` skills and their references. |
 | Runtime Controls | Runtime | Codex, the app, tool integrations, sandbox behavior, approvals, and available runtime evidence. |
-| Task Prompt And Session Context | Session | The active chat, loaded instruction messages, tool outputs, and any compaction or handoff summaries. User-facing guidance such as `docs/usage.md` helps users provide task prompts that activate the intended project instructions and reusable workflows. |
+| Task Prompt And Session Context | Session | The active chat, loaded instruction messages, tool outputs, and any compaction or handoff summaries. User-facing guidance such as `docs/usage.md` helps users explicitly invoke intended reusable workflows within the loaded project instructions. |
 
 `astro-agents` can document desired runtime-control behavior, but enforcement belongs to the runtime or to future implementation work.
 
@@ -172,7 +181,17 @@ The practical implication for this project is an inference from those sources: C
 
 ## Project Control-Flow Example
 
-For a full review requested in a downstream project, the Codex part is instruction discovery, skill discovery, and merge behavior: Codex loads the applicable `AGENTS.md` files from the project root down to the current directory according to its normal search rules, and it exposes discovered skills for model-mediated activation. From there, the remaining behavior comes from how the downstream project and shared skills are written: the task prompt may activate `$agent-surface-review`, the project may declare a documentation surface profile, and local validation expectations may be named in `docs/testing.md`. Those later steps are project conventions expressed through skills and instruction files, not built-in Codex behavior. [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
+For a full review requested in a downstream project, the Codex part is
+instruction discovery, skill discovery, and merge behavior: Codex loads the
+applicable `AGENTS.md` files from the project root down to the current directory
+according to its normal search rules, and it exposes discovered skills for
+model-mediated selection. From there, the remaining behavior comes from how the
+downstream project and shared skills are written: the task prompt may cause the
+model to select `$agent-surface-review`, the project may declare a documentation
+surface profile, and local validation expectations may be named in
+`docs/testing.md`. Those later steps are project conventions expressed through
+skills and instruction files, not built-in Codex behavior.
+[\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)
 
 ## References
 

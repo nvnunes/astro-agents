@@ -48,7 +48,9 @@ This section describes the current runtime observability and provenance state of
 
 #### Route-Decision Visibility
 
-- skill descriptions and skill references describe intended activation boundaries clearly, and `skills/documentation-surface-review/SKILL.md` makes documentation-profile selection explicit
+- skill descriptions and skill references describe intended selection
+  boundaries clearly, and `skills/documentation-surface-review/SKILL.md` makes
+  documentation-profile selection explicit
 - combined-review outputs expose the active review path through a `Review Path Summary`, but they do not record why one skill or internal workflow branch was chosen, what competing branches were considered, or whether the workflow narrowed, broadened, or delegated work internally
 - the generic skill-invocation wording recommended in `docs/usage.md` improves portability, but it also reduces visibility into the exact shared workflow a downstream project expects to use
 - current status: partly covered

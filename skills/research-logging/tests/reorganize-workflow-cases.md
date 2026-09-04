@@ -1,6 +1,6 @@
 # Reorganize Workflow Behavior Cases
 
-These cases exercise the activated CLI-driven Reorganize references.
+These cases exercise the selected CLI-driven Reorganize references.
 
 - A date, slug, or title change edits the heading and summary first, then uses
   `update-entry`; a title-only change expects no filesystem mutation.

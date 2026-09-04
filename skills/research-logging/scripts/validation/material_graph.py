@@ -19,6 +19,7 @@ from .entry_materials import (
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
+from .pyrun_outputs import PYRUN_OUTPUTS_BACKUP_RE
 from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
 
 MAX_GRAPH_NODES = 1_000_000
@@ -493,6 +494,10 @@ def _excluded(relative: Path) -> bool:
     return (
         (len(relative.parts) == 1 and relative.suffix.lower() == ".md")
         or relative.name in IGNORED_FILE_NAMES
+        or (
+            len(relative.parts) == 1
+            and PYRUN_OUTPUTS_BACKUP_RE.fullmatch(relative.name) is not None
+        )
         or (bool(relative.parts) and relative.parts[0] == "tmp")
         or any(part in RUNTIME_CACHE_DIRECTORY_NAMES for part in relative.parts)
     )

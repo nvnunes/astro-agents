@@ -464,6 +464,51 @@ class PyrunAuthoringTests(unittest.TestCase):
 
 
 class PyrunOutputSupportTests(unittest.TestCase):
+    def test_execution_and_output_publication_hold_the_stable_entry_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/check_lock.py").write_text(
+                """import argparse
+import fcntl
+from pathlib import Path
+
+p = argparse.ArgumentParser()
+p.add_argument('--results')
+a = p.parse_args()
+lock = Path.cwd().parents[1] / '.cache/research-log-operations/entry-e001.lock'
+with lock.open('a+b') as handle:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        state = 'locked'
+    else:
+        state = 'unlocked'
+Path(a.results).write_text(state, encoding='utf-8')
+""",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "results",
+                    "--",
+                    "scripts/check_lock.py",
+                    "--results",
+                    "data/lock-state.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (entry / "data/lock-state.txt").read_text(encoding="utf-8"),
+                "locked",
+            )
+
     def test_other_roles_publish_support_without_entering_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

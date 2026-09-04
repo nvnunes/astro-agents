@@ -21,6 +21,7 @@ ENGINE = importlib.import_module("validation.engine")
 FILESYSTEM = importlib.import_module("validation.filesystem")
 FINGERPRINT_CACHE = importlib.import_module("validation.fingerprint_cache")
 LOCATOR = importlib.import_module("validation.locator")
+OPERATION_STATE = importlib.import_module("validation.operation_state")
 RECORDS = importlib.import_module("validation.records")
 REPORT = importlib.import_module("validation.report")
 RESULTS = importlib.import_module("validation.mechanical_results")
@@ -1280,6 +1281,58 @@ class MechanicalControllerTests(unittest.TestCase):
                     CONTROLLER.validate(request)
 
             self.assertTrue(unsupported.is_file())
+            self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+
+    def test_active_research_mutation_prevents_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            CONTROLLER.validate(request)
+            log_root = summary.with_suffix("")
+            tracked = (
+                log_root / "validation/mechanical.json",
+                log_root / "validation.md",
+            )
+            before = {path: path.read_bytes() for path in tracked}
+
+            with OPERATION_STATE.operation_lock(log_root, "entry-e001.lock"):
+                with self.assertRaisesRegex(
+                    CONTROLLER.ValidationControllerError,
+                    "mutation is active",
+                ):
+                    CONTROLLER.validate(request)
+
+            self.assertEqual({path: path.read_bytes() for path in tracked}, before)
+
+    def test_changed_research_snapshot_prevents_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            CONTROLLER.validate(request)
+            log_root = summary.with_suffix("")
+            tracked = (
+                log_root / "validation/mechanical.json",
+                log_root / "validation.md",
+            )
+            before = {path: path.read_bytes() for path in tracked}
+            original = CONTROLLER.evaluate_mechanical
+
+            def change_after_evaluation(*args: object, **kwargs: object):
+                result = original(*args, **kwargs)
+                write(entry.parent / "data/concurrent.txt", "changed\n")
+                return result
+
+            with mock.patch.object(
+                CONTROLLER,
+                "evaluate_mechanical",
+                side_effect=change_after_evaluation,
+            ):
+                with self.assertRaisesRegex(
+                    CONTROLLER.ValidationControllerError,
+                    "research-owned state changed",
+                ):
+                    CONTROLLER.validate(request)
+
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
 

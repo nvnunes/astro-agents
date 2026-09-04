@@ -39,7 +39,8 @@ or evolution requires it.
 | Selection-cache serialization | `research-log-selection-result/1` |
 | Mechanical rules | `research-log-mechanical/end-to-end-provenance-1` |
 | Mechanical record | `research-log-mechanical/1` |
-| Validation results | `research-log-validation-result/1` and `research-log-validation-cli-result/1` |
+| Authoring results | `research-log-authoring-result/1` |
+| Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
@@ -2664,6 +2665,16 @@ it. One invocation that produces several outputs writes one record per output,
 deliberately duplicating the invocation support so later command splitting,
 merging, deletion, or output renaming can be reconciled by output identity.
 
+Before running a research command, `pyrun` holds the stable entry-operation
+lock and strictly loads any existing output-support file. If a regular file is
+malformed, `pyrun` moves it without rewriting to the first unused adjacent
+`pyrun-outputs.json.bak`, `pyrun-outputs.json.2.bak`, and so on; writes one
+canonical empty current file; reports `pyrun.outputs.quarantined` with both
+paths and `repair_required:true`; and exits before command execution. It never
+overwrites a backup or infers a merge. These recognized backups are generated
+recovery state and are excluded from the artifact universe. A symlink or
+non-file at the current path is invalid and is not quarantined.
+
 ```json
 {
   "schema": "research-log-pyrun-outputs/v1",
@@ -3124,14 +3135,21 @@ entry prose, orphan findings, other logs, and Git state do not change an
 outcome. Whole-file hashes may trigger parsing, but unchanged-result comparison
 uses the narrower projections.
 
-### Public Operation And Generated State
+### Public Management And Validation Operations
 
-The public operation is:
+The public entrypoint is the extensionless `scripts/log` resolved from the
+active research-logging skill package. Direct path-qualified invocation is
+canonical. `pyrun` remains the separate recorded execution wrapper.
+
+The validation and discovery operations are:
 
 ```text
-research_log_validation.py discover --root PATH
+<skill>/scripts/log discover --root PROJECT
 
-research_log_validation.py validate --summary PATH
+<skill>/scripts/log validate --path LOG
+  [--date YYYY-MM-DD] [--recompute] [--dry-run]
+
+<skill>/scripts/log validate --root PROJECT
   [--date YYYY-MM-DD] [--recompute] [--dry-run]
 ```
 
@@ -3141,12 +3159,16 @@ H1-adjacent stable `Validation: [latest completed report](<log>/validation.md)`
 navigation line and regular sibling log root. It does not include or exclude a
 candidate based on the candidate's basename. It emits the discovery-result
 schema listed in `Current Versions`, with the resolved `root` and a sorted
-`summaries` array. This is the canonical starting point for repo-wide or
-multi-log validation.
+`summaries` array.
 
-`--summary` names one regular non-symlink maintained summary whose sibling log
-root is a regular directory. `--date` defaults to the local calendar date and,
-when present, must be one exact ISO date.
+`--path` names the logical `LOG` base whose `LOG.md` summary and `LOG/` root are
+both present. It does not accept either physical path as an alternative
+spelling. Omission is allowed only when the working directory resolves exactly
+one maintained log. `validate --root` validates every summary returned by the
+same bounded discovery contract and emits the batch-result schema. It is the
+only all-log validation spelling; an omitted `--path` never means all logs.
+`--date` defaults to the local calendar date and, when present, must be one
+exact ISO date.
 The nearest enclosing non-symlink `.git` file or directory defines the project
 root for project-relative identities and the shared fingerprint cache. Missing
 Git worktree metadata is an operational error; directory names do not determine
@@ -3161,6 +3183,43 @@ per-log disposable cache with the newly computed checks and artifact
 identities. These are the only
 public standard-validation inputs; there is no mode, decisions, review,
 semantic, or reproduction input.
+
+During the management-entrypoint migration,
+`research_log_validation.py discover --root` and
+`research_log_validation.py validate --summary` are compatibility spellings
+over the same discovery and one-log validation implementations. They add no
+behavior and are retired after maintained callers move to `scripts/log`.
+
+Entry-scoped `log evidence` and `log retention` actions read and validate the
+complete current registry, build candidate state through the production
+decoder, and atomically publish canonical state while holding the stable entry
+lock. Their add, update, rename, remove, and list actions return only bounded
+semantic results. Mutations support write-free `--dry-run`; exact add or update
+results are unchanged, conflicting state fails, and an absent removal is
+reported distinctly. Evidence actions require the agent-authored marker and
+summary-reference change first and never edit Markdown. Retention actions
+accept either one nonempty directory or one or more regular files and never
+expose registry schemas through ordinary results. Every authoring action leaves
+generated validation state unchanged.
+
+Each authoring invocation emits exactly one
+`research-log-authoring-result/1` object to standard output. Its stable fields
+are `schema`, selected `task`, `status`, Boolean `changed`, diagnostic `code`,
+and bounded `paths`; semantic list operations additionally return bounded
+`records`. Explanatory diagnostics go to standard error. Changed, exact no-op,
+write-free dry-run, and absent-removal results exit zero. Conflicts, failed
+preconditions, and incomplete mutations exit 2 and still emit the bounded
+failed result. Validation and discovery retain their own result schemas and
+exit-status contracts.
+
+Research mutations coordinate through generated locks beneath
+`<log>/.cache/research-log-operations/`. Entry locks are keyed by stable entry
+ID, not folder name. `pyrun`, Evidence, and Retention hold the same entry lock;
+future structural operations take the log lock before affected entry locks in
+sorted ID order. Validate takes no research-mutation lock. Before publishing,
+it rejects an active mutation or any change to the research-owned snapshot it
+evaluated, and rolls back a bundle when the guard fails after installation has
+begun.
 
 The CLI writes one bounded JSON result envelope to standard output when
 evaluation or the unsupported-metadata preflight completes. A completed

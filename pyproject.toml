@@ -11,10 +11,13 @@ ignore_missing_imports = true
 check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+scripts_are_modules = true
 
 files = [
   "scripts/agent_behavior_eval.py",
   "scripts/check_research_logging_complexity.py",
+  "skills/research-logging/scripts/log",
+  "skills/research-logging/scripts/log_commands",
   "skills/research-logging/scripts/pyrun",
   "skills/research-logging/scripts/research_log_data.py",
   "skills/research-logging/scripts/research_log_validation.py",

@@ -47,15 +47,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_validate(args: argparse.Namespace) -> int:
+    return run_validate(
+        args.summary,
+        result_date=args.date,
+        dry_run=args.dry_run,
+        recompute=args.recompute,
+    )
+
+
+def evaluate_validation(
+    summary: Path,
+    *,
+    result_date: str | None = None,
+    dry_run: bool = False,
+    recompute: bool = False,
+) -> dict[str, object]:
+    """Return the public result for one validation request."""
+
     result = validate(
         ValidationRequest(
-            args.summary,
-            result_date=args.date,
-            publish=not args.dry_run,
-            recompute=args.recompute,
+            summary,
+            result_date=result_date,
+            publish=not dry_run,
+            recompute=recompute,
         )
     )
-    print(json.dumps(_cli_result(result), ensure_ascii=False, sort_keys=True))
+    return _cli_result(result)
+
+
+def run_validate(
+    summary: Path,
+    *,
+    result_date: str | None = None,
+    dry_run: bool = False,
+    recompute: bool = False,
+) -> int:
+    """Print and classify one public validation result."""
+
+    result = evaluate_validation(
+        summary,
+        result_date=result_date,
+        dry_run=dry_run,
+        recompute=recompute,
+    )
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["status"] in COMPLETED_STATUSES else 3
 
 
@@ -84,7 +119,13 @@ def _cli_result(result: dict[str, object]) -> dict[str, object]:
 
 
 def _run_discover(args: argparse.Namespace) -> int:
-    print(json.dumps(discover_summaries(args.root), ensure_ascii=False, sort_keys=True))
+    return run_discover(args.root)
+
+
+def run_discover(root: Path) -> int:
+    """Print the public bounded maintained-summary inventory."""
+
+    print(json.dumps(discover_summaries(root), ensure_ascii=False, sort_keys=True))
     return 0
 
 

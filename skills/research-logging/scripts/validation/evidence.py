@@ -330,6 +330,40 @@ def load_evidence_file(
     return EvidenceFile(path=path, entry_root=entry_root, records=records)
 
 
+def evidence_file_from_records(
+    path: Path,
+    *,
+    log_root: Path,
+    entry_root: Path,
+    records: tuple[EvidenceRecord, ...],
+) -> EvidenceFile:
+    """Build one canonical evidence file through the production decoder."""
+
+    root = entry_root.resolve()
+    expected = root / "evidence.json"
+    if path.is_symlink() or path.resolve() != expected:
+        _fail(
+            "evidence.file.location_invalid",
+            str(path),
+            {"expected": str(expected)},
+            "Evidence Files And Unsupported Metadata",
+        )
+    entry_relative = _relative(root, log_root.resolve(), "entry root")
+    decoded = tuple(
+        _decode_record(
+            record.as_dict(),
+            subject=f"{path}:records[{index}]",
+            entry_relative=entry_relative,
+            entry_root=root,
+        )
+        for index, record in enumerate(records)
+    )
+    ids = [record.id for record in decoded]
+    if not decoded or len(ids) != len(set(ids)):
+        _invalid(str(path), {"records": len(decoded), "ids": ids})
+    return EvidenceFile(expected, root, decoded)
+
+
 def _read_evidence_json(path: Path) -> object:
     try:
         raw = bounded_file_bytes(path, maximum_bytes=MAX_EVIDENCE_FILE_BYTES)

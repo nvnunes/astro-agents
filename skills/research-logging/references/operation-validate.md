@@ -36,23 +36,25 @@ the required artifact readers.
 
 ## Run
 
-Resolve `scripts/research_log_validation.py` from this skill package and run:
+Resolve the extensionless `scripts/log` entrypoint from this skill package and
+run one-log validation against the logical log path:
 
 ```bash
-<project-python> <validation-tool> validate \
-  --summary <log-summary>
+<skill>/scripts/log validate --path <log>
 ```
 
-For repo-wide or multi-log validation, first run canonical discovery:
+For repo-wide or multi-log validation, run the bounded all-log operation:
 
 ```bash
-<project-python> <validation-tool> discover --root <project-root>
+<skill>/scripts/log validate --root <project-root>
 ```
 
-Validate every path in the returned `summaries` array. Do not build that set
-with filename globs, and do not exclude a candidate because its basename is
-`validation.md`; discovery recognizes maintained summaries by their stable
-navigation line and sibling log root, so generated reports are not candidates.
+It uses the same canonical discovery contract as
+`<skill>/scripts/log discover --root <project-root>` and returns one bounded
+batch result. Do not build the set with filename globs, and do not exclude a
+candidate because its basename is `validation.md`; discovery recognizes
+maintained summaries by their stable navigation line and sibling log root, so
+generated reports are not candidates.
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use `--recompute` when

@@ -9,7 +9,7 @@ import os
 import re
 import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, NoReturn, cast
@@ -22,12 +22,14 @@ from .json_codec import V2JsonError, decode_json
 
 PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
 PYRUN_OUTPUTS_FILENAME = "pyrun-outputs.json"
+PYRUN_OUTPUTS_BACKUP_RE = re.compile(r"pyrun-outputs\.json(?:\.[2-9][0-9]*)?\.bak\Z")
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUTS = 10_000
 MAX_INPUTS = 128
 MAX_PARAMETERS = 4_096
 MAX_STRING_BYTES = 8 * 1024
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+
 class PyrunOutputsError(MechanicalContractError):
     """One exact output-support contract failure."""
 
@@ -162,6 +164,23 @@ def update_pyrun_outputs(
 ) -> PyrunOutputsFile:
     """Atomically replace support for only the supplied output identities."""
 
+    return _update_pyrun_outputs(entry_root, updates, lock_held=False)
+
+
+def update_pyrun_outputs_locked(
+    entry_root: Path, updates: Mapping[str, OutputSupport]
+) -> PyrunOutputsFile:
+    """Update output support while the shared stable entry lock is held."""
+
+    return _update_pyrun_outputs(entry_root, updates, lock_held=True)
+
+
+def _update_pyrun_outputs(
+    entry_root: Path,
+    updates: Mapping[str, OutputSupport],
+    *,
+    lock_held: bool,
+) -> PyrunOutputsFile:
     root = entry_root.resolve()
     path = root / PYRUN_OUTPUTS_FILENAME
     normalized = {
@@ -171,7 +190,7 @@ def update_pyrun_outputs(
     if len(normalized) != len(updates):
         _invalid(path, {"reason": "duplicate_output"})
     try:
-        with _outputs_lock(path):
+        with nullcontext() if lock_held else _outputs_lock(path):
             current = (
                 load_pyrun_outputs(path, entry_root=root)
                 if path.exists()
@@ -190,6 +209,56 @@ def update_pyrun_outputs(
             {"error": str(error)},
             "Pyrun Output Support Records",
         ) from error
+
+
+def quarantine_invalid_pyrun_outputs(entry_root: Path) -> None:
+    """Preserve malformed support, replace it empty, and require Repair."""
+
+    root = entry_root.resolve()
+    path = root / PYRUN_OUTPUTS_FILENAME
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_file():
+        load_pyrun_outputs(path, entry_root=root)
+        return
+    try:
+        load_pyrun_outputs(path, entry_root=root)
+        return
+    except PyrunOutputsError:
+        pass
+    backup = root / f"{PYRUN_OUTPUTS_FILENAME}.bak"
+    number = 2
+    while backup.exists() or backup.is_symlink():
+        backup = root / f"{PYRUN_OUTPUTS_FILENAME}.{number}.bak"
+        number += 1
+    try:
+        os.replace(path, backup)
+        _atomic_write(path, empty_pyrun_outputs(root).serialized())
+    except OSError as error:
+        rollback_error: OSError | None = None
+        if not path.exists() and not path.is_symlink() and backup.exists():
+            try:
+                os.replace(backup, path)
+            except OSError as rollback:
+                rollback_error = rollback
+        raise PyrunOutputsError(
+            "pyrun.outputs.quarantine_failed",
+            str(path),
+            {
+                "backup": str(backup),
+                "error": str(error),
+                "rollback_error": (
+                    str(rollback_error) if rollback_error is not None else None
+                ),
+            },
+            "Pyrun Output Support Records",
+        ) from error
+    raise PyrunOutputsError(
+        "pyrun.outputs.quarantined",
+        str(path),
+        {"backup": str(backup), "current": str(path), "repair_required": True},
+        "Pyrun Output Support Records",
+    )
 
 
 def _validated_serialization(value: PyrunOutputsFile) -> str:

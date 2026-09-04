@@ -260,6 +260,30 @@ class MaterialGraphTests(unittest.TestCase):
             for path in ignored:
                 self.assertNotIn(path.resolve().as_posix(), result.orphan.inventory)
 
+    def test_recognized_pyrun_output_backups_are_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            ignored = (
+                entry_root / "pyrun-outputs.json.bak",
+                entry_root / "pyrun-outputs.json.2.bak",
+                entry_root / "pyrun-outputs.json.25.bak",
+            )
+            for path in ignored:
+                write(path, "malformed recovery bytes\n")
+            ordinary = entry_root / "pyrun-outputs.json.1.bak"
+            write(ordinary, "ordinary material\n")
+            nested = entry_root / "data/pyrun-outputs.json.bak"
+            write(nested, "ordinary nested material\n")
+
+            result = GRAPH.compose_material_graph(
+                _request(entry_root, data_file, invocations)
+            )
+
+            for path in ignored:
+                self.assertNotIn(path.resolve().as_posix(), result.orphan.inventory)
+            self.assertIn(ordinary.resolve().as_posix(), result.orphan.inventory)
+            self.assertIn(nested.resolve().as_posix(), result.orphan.inventory)
+
     def test_nested_research_material_is_not_excluded_by_name_or_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))

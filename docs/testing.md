@@ -68,9 +68,11 @@ For any research-logging tool change, run the complete tool gate rather than
 linting only the main validator:
 
 ```bash
-./.conda/bin/python -m py_compile skills/research-logging/scripts/pyrun \
+./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
+  skills/research-logging/scripts/pyrun \
   skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/research_log_validation.py \
+  skills/research-logging/scripts/log_commands/*.py \
   skills/research-logging/scripts/validation/*.py
 ./.conda/bin/ruff check skills/research-logging/scripts \
   skills/research-logging/tests
@@ -100,8 +102,21 @@ operations must leave every existing generated validation file byte-identical.
 
 The research-log test gate must verify:
 
-- the public CLI exposes only `discover --root` and `validate` with
-  `--summary`, `--date`, `--recompute`, and `--dry-run`;
+- the public `scripts/log` dispatcher progressively exposes only its active
+  task families, family actions, and action arguments; unrelated family
+  modules and optional readers remain unloaded at shallower help depths;
+- `log discover --root`, one-log `log validate --path`, and all-log
+  `log validate --root` preserve the validation engine's bounded output and
+  status contracts; omitted `--path` resolves only one unambiguous maintained
+  log, while the temporary `research_log_validation.py` compatibility launcher
+  retains `discover --root` and one-log `validate --summary`;
+- `log evidence` and `log retention` mutations use stable entry locks,
+  production decoders, atomic canonical publication, write-free dry runs, and
+  bounded semantic result envelopes while leaving generated validation state
+  byte-identical;
+- malformed regular-file `pyrun-outputs.json` state is preserved at the first
+  unused recognized adjacent backup, replaced with canonical empty current
+  state, and reported as requiring Repair before the command can execute;
 - a published validation prints a bounded result with generated-report paths
   instead of duplicating the complete mechanical record on standard output,
   while an unpublished dry run retains its complete record;

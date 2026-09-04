@@ -13,6 +13,7 @@ from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
+from .operation_state import mutation_active, research_snapshot
 from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
@@ -117,6 +118,7 @@ def _run_validation(
 ) -> dict[str, Any]:
     """Evaluate under the caller-owned publication lifecycle."""
 
+    starting_snapshot = research_snapshot(summary) if request.publish else None
     with FingerprintCache(
         project_root(summary),
         writable=request.publish,
@@ -168,6 +170,7 @@ def _run_validation(
                 validate_current=lambda: _require_publication_state(
                     summary,
                     fingerprint_cache,
+                    starting_snapshot=starting_snapshot,
                     unchanged_report_sha256=(
                         None if mechanical_changed else mechanical_digest
                     ),
@@ -285,9 +288,21 @@ def _require_publication_state(
     summary: Path,
     fingerprint_cache: FingerprintCache,
     *,
+    starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None,
     unchanged_report_sha256: str | None,
 ) -> None:
     _require_unsupported_metadata_clear(summary)
+    if mutation_active(summary.with_suffix("")):
+        raise ValidationControllerError(
+            "research-log mutation is active during validation publication"
+        )
+    if (
+        starting_snapshot is not None
+        and research_snapshot(summary) != starting_snapshot
+    ):
+        raise ValidationControllerError(
+            "research-owned state changed during validation"
+        )
     if unchanged_report_sha256 is None:
         return
     observed = _current_report_identity(summary.with_suffix(""), fingerprint_cache)

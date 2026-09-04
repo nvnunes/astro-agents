@@ -116,6 +116,34 @@ def load_retention_file(path: Path, *, entry_root: Path) -> RetentionFile:
     return RetentionFile(path=expected, entry_root=entry_root, records=records)
 
 
+def retention_file_from_records(
+    path: Path,
+    *,
+    entry_root: Path,
+    records: tuple[RetentionRecord, ...],
+) -> RetentionFile:
+    """Build one canonical retention file through the production decoder."""
+
+    root = entry_root.resolve()
+    expected = root / "retention.json"
+    if path.is_symlink() or path.resolve() != expected:
+        _fail(
+            "retention.file.location_invalid",
+            str(path),
+            {"expected": str(expected)},
+            "research-log-retention/v1",
+        )
+    decoded = tuple(
+        _decode_record(record.as_dict(), f"{path}:records[{index}]", root)
+        for index, record in enumerate(records)
+    )
+    ids = [record.id for record in decoded]
+    if not decoded or len(ids) != len(set(ids)):
+        _invalid(path, {"records": len(decoded), "ids": ids})
+    _validate_overlaps(decoded, path)
+    return RetentionFile(expected, root, decoded)
+
+
 def _decode_record(value: object, subject: str, entry_root: Path) -> RetentionRecord:
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})

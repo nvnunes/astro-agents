@@ -802,12 +802,15 @@ do not erase valid results in another.
 
 ### Running validation
 
-Use the research project's validation command:
+Resolve `scripts/log` from the active research-logging skill package and name
+the logical log path:
 
 ```bash
-<project-python> <validation-tool> validate \
-  --summary <log-summary>
+<skill>/scripts/log validate --path <log>
 ```
+
+Use `<skill>/scripts/log validate --root <project-root>` for every maintained
+log returned by canonical bounded discovery beneath one project.
 
 A mechanical evaluation reports either that no findings were found or that one
 or more findings need attention. A preliminary validator-state check may

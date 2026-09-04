@@ -1,5 +1,6 @@
 """Research-log validation implementation package.
 
-The supported executable remains ``research_log_validation.py``. Modules in
-this package own the validator's internal contracts and lifecycle stages.
+The public route is ``scripts/log validate``; ``research_log_validation.py``
+is a temporary compatibility launcher. This package owns the validator's
+internal contracts and lifecycle stages.
 """

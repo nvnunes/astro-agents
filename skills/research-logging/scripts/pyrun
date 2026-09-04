@@ -45,8 +45,12 @@ from validation.pyrun_outputs import (
     PyrunOutputsError,
     ScriptSupport,
     portable_output_path,
-    update_pyrun_outputs,
+    quarantine_invalid_pyrun_outputs,
+    update_pyrun_outputs_locked,
 )
+
+from log_commands.context import EntryContext, LogContext
+from log_commands.storage import entry_lock
 
 RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 CAPTURE_POLL_SECONDS = 0.05
@@ -760,13 +764,27 @@ def main(argv: list[str]) -> int:
         return _data_operation(argv, require_entry_root(cwd, log))
 
     entry = require_entry_root(cwd, log)
-    data = _load_data(entry)
-    script_argument, script_args, parameters, captures, roles = _execution_layout(argv)
-    _require_declared_input_tokens(script_args, roles, data)
-    verified: set[str] = set()
-    observed_inputs: dict[str, Fingerprint] = {}
+    entry_ids = [
+        part for part in entry.name.split("-") if re.fullmatch(r"e[0-9]{3,}", part)
+    ]
+    if len(entry_ids) != 1:
+        raise SystemExit("pyrun: could not resolve stable entry ID")
+    operation_entry = EntryContext(
+        LogContext(log.parent / f"{log.name}.md", log), entry_ids[0], entry
+    )
     try:
-        with FingerprintCache(root, writable=True) as fingerprint_cache:
+        with (
+            entry_lock(operation_entry),
+            FingerprintCache(root, writable=True) as fingerprint_cache,
+        ):
+            quarantine_invalid_pyrun_outputs(entry)
+            data = _load_data(entry)
+            script_argument, script_args, parameters, captures, roles = (
+                _execution_layout(argv)
+            )
+            _require_declared_input_tokens(script_args, roles, data)
+            verified: set[str] = set()
+            observed_inputs: dict[str, Fingerprint] = {}
             resolved_script = _reserved_tokens(script_argument, root, log)
             script_path = (
                 Path(resolved_script)
@@ -838,10 +856,12 @@ def main(argv: list[str]) -> int:
                     tuple(sorted(observed_inputs.items())),
                 )
             if records:
-                update_pyrun_outputs(entry, records)
+                update_pyrun_outputs_locked(entry, records)
             return returncode
     except PyrunOutputsError as error:
         raise SystemExit(f"pyrun: {error}") from error
+    except OSError as error:
+        raise SystemExit(f"pyrun: operation state unavailable: {error}") from error
 
 
 if __name__ == "__main__":

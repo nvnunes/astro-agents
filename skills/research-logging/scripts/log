@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Public research-log management and validation entrypoint."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _selector_anchor(arguments: list[str]) -> Path:
+    """Return the explicit project/log anchor or the current directory."""
+
+    for option in ("--path", "--root"):
+        assigned = next(
+            (
+                value.split("=", 1)[1]
+                for value in arguments
+                if value.startswith(option + "=")
+            ),
+            None,
+        )
+        try:
+            raw = assigned or arguments[arguments.index(option) + 1]
+        except (ValueError, IndexError):
+            continue
+        lexical = Path(raw) if Path(raw).is_absolute() else Path.cwd() / raw
+        return lexical if lexical.is_dir() else lexical.parent
+    return Path.cwd()
+
+
+def _project_root(anchor: Path) -> Path | None:
+    try:
+        output = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=anchor,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return Path(output.strip()).resolve()
+
+
+def _use_project_python() -> None:
+    if os.environ.get("RESEARCH_LOG_PYTHON_REEXEC") == "1":
+        return
+    root = _project_root(_selector_anchor(sys.argv[1:]))
+    candidate = root / ".conda" / "bin" / "python" if root is not None else None
+    if candidate is None or not candidate.is_file():
+        return
+    if candidate.resolve() == Path(sys.executable).resolve():
+        return
+    environment = dict(os.environ)
+    environment["RESEARCH_LOG_PYTHON_REEXEC"] = "1"
+    os.execve(candidate, [str(candidate), __file__, *sys.argv[1:]], environment)
+
+
+_use_project_python()
+
+from log_commands.dispatcher import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

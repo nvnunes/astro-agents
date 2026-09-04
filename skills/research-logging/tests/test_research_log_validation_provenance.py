@@ -8,7 +8,7 @@ from research_log_data import (  # noqa: E402
     build_local_input,
     data_file_from_inputs,
 )
-from research_log_validation_test_support import unittest, write
+from research_log_validation_test_support import mock, unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
 PROVENANCE = importlib.import_module("validation.provenance")
@@ -36,7 +36,149 @@ def _context(root: Path, inputs: tuple[object, ...] = ()) -> object:
     )
 
 
+def _invocation(
+    identity: str,
+    sequence: int,
+    *,
+    outputs: tuple[str, ...] = (),
+    directories: tuple[str, ...] = (),
+) -> object:
+    return COMMAND.Invocation(
+        identity=identity,
+        document="entry.md",
+        entry="e001",
+        fence=1,
+        ordinal=sequence + 1,
+        sequence=sequence,
+        tokens=("./pyrun", "scripts/run.py"),
+        executable="./pyrun",
+        via_pyrun=True,
+        script_argument="scripts/run.py",
+        parameters=(),
+        script="scripts/run.py",
+        script_identity="fixture",
+        inputs=(),
+        outputs=tuple(
+            COMMAND.MaterialRelationship(path, "output", "option")
+            for path in outputs
+        ),
+        collections=tuple(
+            COMMAND.MaterialCollection("output", "directory", "output", (), path)
+            for path in directories
+        ),
+        candidates=(),
+        material_owner="entry",
+    )
+
+
 class ProvenanceLineageTests(unittest.TestCase):
+    def test_directory_producer_index_preserves_overlap_and_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            origin_root = root / "origin"
+            origin_root.mkdir()
+            member = (origin_root / "member.csv").as_posix()
+            nested = (origin_root / "nested").as_posix()
+            parent = root.as_posix()
+            unrelated = (root / "unrelated").as_posix()
+            invocations = (
+                _invocation("member", 0, outputs=(member,)),
+                _invocation("exact", 1, directories=(origin_root.as_posix(),)),
+                _invocation("nested", 2, directories=(nested,)),
+                _invocation("parent", 3, directories=(parent,)),
+                _invocation("unrelated", 4, directories=(unrelated,)),
+            )
+            index = PROVENANCE.build_directory_producer_index(invocations)
+
+            matches = index.lookup(origin_root.as_posix())
+            self.assertEqual(
+                [match.producer.identity for match in matches],
+                ["member", "exact", "nested", "parent"],
+            )
+            by_identity = {match.producer.identity: match for match in matches}
+            self.assertTrue(by_identity["member"].member_output)
+            self.assertTrue(by_identity["exact"].exact_directory)
+            self.assertTrue(by_identity["nested"].overlapping_directory)
+            self.assertTrue(by_identity["parent"].overlapping_directory)
+            self.assertEqual(
+                by_identity["member"].confirmation_targets,
+                (member,),
+            )
+            self.assertEqual(
+                by_identity["exact"].confirmation_targets,
+                (origin_root.as_posix(),),
+            )
+            self.assertEqual(by_identity["nested"].confirmation_targets, (nested,))
+            self.assertEqual(by_identity["parent"].confirmation_targets, (parent,))
+            self.assertEqual(
+                [
+                    match.producer.identity
+                    for match in index.lookup(
+                        origin_root.as_posix(), before_sequence=2
+                    )
+                ],
+                ["member", "exact"],
+            )
+
+    def test_repeated_indexed_origin_queries_do_not_resolve_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "entry"
+            origin_root = entry_root / "data" / "origin"
+            write(origin_root / "member.csv", "value\n1\n")
+            resource = build_local_input(
+                "origin",
+                "directory",
+                "data/origin",
+                entry_root=entry_root,
+                origin=True,
+            )
+            invocation = _invocation(
+                "member",
+                0,
+                outputs=(
+                    (Path(resource.canonical_target) / "member.csv").as_posix(),
+                ),
+            )
+            second = _invocation(
+                "second",
+                1,
+                outputs=(
+                    (Path(resource.canonical_target) / "second.csv").as_posix(),
+                ),
+            )
+            invocations = (invocation, second)
+            index = PROVENANCE.build_directory_producer_index(invocations)
+
+            with mock.patch.object(
+                PROVENANCE.Path,
+                "resolve",
+                side_effect=AssertionError("indexed query resolved a path"),
+            ):
+                for _ in range(8):
+                    PROVENANCE.require_origin_boundary(
+                        origin_root,
+                        resource,
+                        invocations,
+                        confirmed_record=lambda *_: False,
+                        directory_producers=index,
+                    )
+                    with self.assertRaisesRegex(
+                        PROVENANCE.ProvenanceV2Error,
+                        "directory.origin.conflict",
+                    ) as caught:
+                        PROVENANCE.require_origin_boundary(
+                            origin_root,
+                            resource,
+                            invocations,
+                            confirmed_record=lambda *_: True,
+                            directory_producers=index,
+                        )
+                    self.assertEqual(
+                        caught.exception.observed["producers"],
+                        ["member", "second"],
+                    )
+
     def test_inputless_producer_is_a_successful_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))

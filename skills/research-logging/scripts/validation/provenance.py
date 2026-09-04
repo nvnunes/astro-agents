@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, NoReturn, Sequence
 
 from research_log_data import InputResource
@@ -30,10 +30,143 @@ class ProvenanceResult:
     dependency_projection: str
 
 
+@dataclass(frozen=True)
+class DirectoryProducerMatch:
+    """One producer's complete relationship to a canonical directory root."""
+
+    producer: Invocation
+    confirmation_targets: tuple[str, ...]
+    exact_directory: bool
+    member_output: bool
+    overlapping_directory: bool
+
+
+@dataclass(frozen=True)
+class _IndexedOutput:
+    producer: Invocation
+    path: str
+
+
+@dataclass
+class _DirectoryMatchBuilder:
+    producer: Invocation
+    confirmation_targets: set[str]
+    exact_directory: bool = False
+    member_output: bool = False
+    overlapping_directory: bool = False
+
+
+@dataclass(frozen=True)
+class DirectoryProducerIndex:
+    """Validation-scoped lookup over already canonical invocation outputs."""
+
+    order_by_identity: Mapping[str, int]
+    scalar_by_ancestor: Mapping[str, tuple[_IndexedOutput, ...]]
+    directory_by_ancestor: Mapping[str, tuple[_IndexedOutput, ...]]
+    directory_by_root: Mapping[str, tuple[_IndexedOutput, ...]]
+
+    def lookup(
+        self, root: str, *, before_sequence: int | None = None
+    ) -> tuple[DirectoryProducerMatch, ...]:
+        """Return producers touching ``root`` without filesystem access."""
+
+        builders: dict[str, _DirectoryMatchBuilder] = {}
+        _collect_scalar_matches(
+            self.scalar_by_ancestor.get(root, ()), builders, before_sequence
+        )
+        _collect_contained_directory_matches(
+            root,
+            self.directory_by_ancestor.get(root, ()),
+            builders,
+            before_sequence,
+        )
+        _collect_containing_directory_matches(
+            root,
+            self.directory_by_root,
+            builders,
+            before_sequence,
+        )
+
+        return tuple(
+            DirectoryProducerMatch(
+                matched.producer,
+                tuple(sorted(matched.confirmation_targets)),
+                matched.exact_directory,
+                matched.member_output,
+                matched.overlapping_directory,
+            )
+            for matched in sorted(
+                builders.values(),
+                key=lambda value: self.order_by_identity[value.producer.identity],
+            )
+        )
+
+
+def _collect_scalar_matches(
+    outputs: Sequence[_IndexedOutput],
+    builders: dict[str, _DirectoryMatchBuilder],
+    before_sequence: int | None,
+) -> None:
+    for output in outputs:
+        matched = _match_builder(output, builders, before_sequence)
+        if matched is None:
+            continue
+        matched.confirmation_targets.add(output.path)
+        matched.member_output = True
+
+
+def _collect_contained_directory_matches(
+    root: str,
+    outputs: Sequence[_IndexedOutput],
+    builders: dict[str, _DirectoryMatchBuilder],
+    before_sequence: int | None,
+) -> None:
+    for output in outputs:
+        matched = _match_builder(output, builders, before_sequence)
+        if matched is None:
+            continue
+        matched.confirmation_targets.add(output.path)
+        if output.path == root:
+            matched.exact_directory = True
+        else:
+            matched.overlapping_directory = True
+
+
+def _collect_containing_directory_matches(
+    root: str,
+    outputs_by_root: Mapping[str, tuple[_IndexedOutput, ...]],
+    builders: dict[str, _DirectoryMatchBuilder],
+    before_sequence: int | None,
+) -> None:
+    for ancestor in _path_and_parents(root):
+        for output in outputs_by_root.get(ancestor, ()):
+            if output.path == root:
+                continue
+            matched = _match_builder(output, builders, before_sequence)
+            if matched is None:
+                continue
+            matched.confirmation_targets.add(output.path)
+            matched.overlapping_directory = True
+
+
+def _match_builder(
+    output: _IndexedOutput,
+    builders: dict[str, _DirectoryMatchBuilder],
+    before_sequence: int | None,
+) -> _DirectoryMatchBuilder | None:
+    if before_sequence is not None and output.producer.sequence >= before_sequence:
+        return None
+    return builders.setdefault(
+        output.producer.identity,
+        _DirectoryMatchBuilder(output.producer, set()),
+    )
+
+
 @dataclass
 class _WalkState:
     outputs: Mapping[str, tuple[Invocation, ...]]
     invocations: Sequence[Invocation]
+    directory_producers: DirectoryProducerIndex
     producers: list[str]
     producer_seen: set[str]
     lineage: list[tuple[str, str]]
@@ -50,14 +183,19 @@ def evaluate_provenance(
     *,
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None = None,
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
+    directory_producers: DirectoryProducerIndex | None = None,
 ) -> ProvenanceResult:
     """Require one producer and trace only its mechanically proved inputs."""
 
     canonical = Path(material).resolve().as_posix()
     outputs = _output_index(invocations)
+    directory_producers = directory_producers or build_directory_producer_index(
+        invocations
+    )
     state = _WalkState(
         outputs,
         invocations,
+        directory_producers,
         [],
         set(),
         [],
@@ -94,7 +232,50 @@ def evaluate_many(
 ) -> tuple[ProvenanceResult, ...]:
     """Evaluate independent evidence starting points without shared conclusions."""
 
-    return tuple(evaluate_provenance(material, invocations) for material in materials)
+    directory_producers = build_directory_producer_index(invocations)
+    return tuple(
+        evaluate_provenance(
+            material,
+            invocations,
+            directory_producers=directory_producers,
+        )
+        for material in materials
+    )
+
+
+def build_directory_producer_index(
+    invocations: Sequence[Invocation],
+) -> DirectoryProducerIndex:
+    """Index canonical scalar outputs and output-directory roots once."""
+
+    scalar_by_ancestor: dict[str, list[_IndexedOutput]] = {}
+    directory_by_ancestor: dict[str, list[_IndexedOutput]] = {}
+    directory_by_root: dict[str, list[_IndexedOutput]] = {}
+    for invocation in invocations:
+        for output in invocation.outputs:
+            indexed = _IndexedOutput(invocation, output.path)
+            for parent in PurePosixPath(output.path).parents:
+                scalar_by_ancestor.setdefault(parent.as_posix(), []).append(indexed)
+        for collection in invocation.collections:
+            if (
+                collection.direction != "output"
+                or collection.mechanism != "directory"
+            ):
+                continue
+            root = _collection_root(invocation, collection).as_posix()
+            indexed = _IndexedOutput(invocation, root)
+            directory_by_root.setdefault(root, []).append(indexed)
+            for directory_ancestor in _path_and_parents(root):
+                directory_by_ancestor.setdefault(directory_ancestor, []).append(indexed)
+    return DirectoryProducerIndex(
+        {
+            invocation.identity: order
+            for order, invocation in enumerate(invocations)
+        },
+        _frozen_output_index(scalar_by_ancestor),
+        _frozen_output_index(directory_by_ancestor),
+        _frozen_output_index(directory_by_root),
+    )
 
 
 def require_origin_boundary(
@@ -103,6 +284,7 @@ def require_origin_boundary(
     invocations: Sequence[Invocation],
     *,
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
+    directory_producers: DirectoryProducerIndex | None = None,
 ) -> None:
     """Reject an origin only when it hides confirmed ``pyrun`` production."""
 
@@ -111,19 +293,16 @@ def require_origin_boundary(
     if resource.kind == "git-repository":
         return
     if resource.kind == "directory":
-        directory_producers = _directory_producers(
-            Path(resource.canonical_target), invocations
-        )
+        index = directory_producers or build_directory_producer_index(invocations)
+        matches = index.lookup(resource.canonical_target)
         confirmed = [
-            producer
-            for producer in directory_producers
-            if producer.via_pyrun
+            match.producer
+            for match in matches
+            if match.producer.via_pyrun
             and confirmed_record is not None
             and any(
-                confirmed_record(producer, output)
-                for output in _producer_outputs_within(
-                    producer, Path(resource.canonical_target)
-                )
+                confirmed_record(match.producer, output)
+                for output in match.confirmation_targets
             )
         ]
         if confirmed:
@@ -154,54 +333,6 @@ def require_origin_boundary(
             canonical,
             {"producers": [producer.identity for producer in confirmed]},
         )
-
-
-def _directory_producers(
-    root: Path, invocations: Sequence[Invocation]
-) -> tuple[Invocation, ...]:
-    """Return commands producing a directory root, member, or overlapping tree."""
-
-    root = root.resolve()
-    identities = {
-        invocation.identity
-        for invocation in invocations
-        if any(
-            _within(Path(output.path).resolve(), root)
-            for output in invocation.outputs
-        )
-    }
-    identities.update(
-        invocation.identity
-        for invocation in invocations
-        for collection in invocation.collections
-        if collection.direction == "output"
-        and collection.mechanism == "directory"
-        and collection.root is not None
-        and (
-            _within(Path(collection.root).resolve(), root)
-            or _within(root, Path(collection.root).resolve())
-        )
-    )
-    return tuple(
-        invocation for invocation in invocations if invocation.identity in identities
-    )
-
-
-def _producer_outputs_within(invocation: Invocation, root: Path) -> tuple[str, ...]:
-    root = root.resolve()
-    outputs = {
-        output.path
-        for output in invocation.outputs
-        if _within(Path(output.path), root)
-    }
-    outputs.update(
-        collection.root
-        for collection in invocation.collections
-        if collection.direction == "output"
-        and collection.root is not None
-        and _within(Path(collection.root), root)
-    )
-    return tuple(sorted(outputs))
 
 
 def _walk_material(
@@ -261,38 +392,16 @@ def _starting_directory_producer(
 ) -> Invocation:
     """Require one exact output-directory producer for a starting root."""
 
-    root = Path(material).resolve()
-    exact = tuple(
-        invocation
-        for invocation in state.invocations
-        if any(
-            collection.direction == "output"
-            and collection.mechanism == "directory"
-            and collection.root is not None
-            and Path(collection.root).resolve() == root
-            for collection in invocation.collections
-        )
-    )
+    matches = state.directory_producers.lookup(material)
+    exact = tuple(match.producer for match in matches if match.exact_directory)
     if not exact:
         _fail("producer.missing", material, {"consumer": None})
     exact_ids = {invocation.identity for invocation in exact}
     producers_within = {
-        invocation.identity
-        for invocation in state.invocations
-        if any(_within(Path(output.path), root) for output in invocation.outputs)
+        match.producer.identity for match in matches if match.member_output
     }
     overlapping = {
-        invocation.identity
-        for invocation in state.invocations
-        for collection in invocation.collections
-        if collection.direction == "output"
-        and collection.mechanism == "directory"
-        and collection.root is not None
-        and Path(collection.root).resolve() != root
-        and (
-            _within(Path(collection.root).resolve(), root)
-            or _within(root, Path(collection.root).resolve())
-        )
+        match.producer.identity for match in matches if match.overlapping_directory
     }
     conflicts = (producers_within - exact_ids) | overlapping
     if len(exact) != 1 or conflicts:
@@ -325,7 +434,7 @@ def _require_producer_ready(
             producer.identity,
             {"script": producer.script},
         )
-    _validate_output_directories(producer, state.invocations)
+    _validate_output_directories(producer, state.directory_producers)
     if state.producer_validator is not None:
         state.support.append(state.producer_validator(producer, material))
 
@@ -353,6 +462,7 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
                 relationship.input_resource,
                 state.invocations,
                 confirmed_record=state.confirmed_record,
+                directory_producers=state.directory_producers,
             )
             continue
         if (
@@ -384,42 +494,20 @@ def _walk_directory_input(
             resource,
             state.invocations,
             confirmed_record=state.confirmed_record,
+            directory_producers=state.directory_producers,
         )
         return
-    root = Path(resource.canonical_target)
-    earlier = tuple(
-        invocation
-        for invocation in state.invocations
-        if invocation.sequence < consumer.sequence
+    matches = state.directory_producers.lookup(
+        resource.canonical_target,
+        before_sequence=consumer.sequence,
     )
-    exact = tuple(
-        invocation
-        for invocation in earlier
-        if any(
-            collection.direction == "output"
-            and collection.mechanism == "directory"
-            and collection.root is not None
-            and Path(collection.root).resolve() == root.resolve()
-            for collection in invocation.collections
-        )
-    )
+    exact = tuple(match.producer for match in matches if match.exact_directory)
     producers_within = {
-        invocation.identity
-        for invocation in earlier
-        if any(_within(Path(output.path), root) for output in invocation.outputs)
+        match.producer.identity for match in matches if match.member_output
     }
     exact_ids = {invocation.identity for invocation in exact}
     overlapping = {
-        invocation.identity
-        for invocation in earlier
-        for collection in invocation.collections
-        if collection.direction == "output"
-        and collection.mechanism == "directory"
-        and collection.root is not None
-        and Path(collection.root).resolve() != root.resolve()
-        and (
-            _within(Path(collection.root), root) or _within(root, Path(collection.root))
-        )
+        match.producer.identity for match in matches if match.overlapping_directory
     }
     conflicts = (producers_within - exact_ids) | overlapping
     if len(exact) != 1 or conflicts:
@@ -514,7 +602,7 @@ def _fail_shared_output_directory(
 
 
 def _validate_output_directories(
-    producer: Invocation, invocations: Sequence[Invocation]
+    producer: Invocation, directory_producers: DirectoryProducerIndex
 ) -> None:
     directories = [
         collection
@@ -524,10 +612,9 @@ def _validate_output_directories(
     for collection in directories:
         root = _collection_root(producer, collection)
         conflicts = [
-            other.identity
-            for other in invocations
-            if other.identity != producer.identity
-            and any(_within(Path(output.path), root) for output in other.outputs)
+            match.producer.identity
+            for match in directory_producers.lookup(root.as_posix())
+            if match.producer.identity != producer.identity and match.member_output
         ]
         if conflicts:
             _fail(
@@ -565,6 +652,17 @@ def _within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _path_and_parents(value: str) -> tuple[str, ...]:
+    path = PurePosixPath(value)
+    return (path.as_posix(), *(parent.as_posix() for parent in path.parents))
+
+
+def _frozen_output_index(
+    values: Mapping[str, list[_IndexedOutput]],
+) -> Mapping[str, tuple[_IndexedOutput, ...]]:
+    return {key: tuple(items) for key, items in values.items()}
 
 
 def _fail(code: str, subject: str, observed: object) -> NoReturn:

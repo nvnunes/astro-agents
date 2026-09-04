@@ -98,7 +98,12 @@ from .output_support import (
     require_current_output_support,
     resolve_output_support,
 )
-from .provenance import evaluate_provenance, require_origin_boundary
+from .provenance import (
+    DirectoryProducerIndex,
+    build_directory_producer_index,
+    evaluate_provenance,
+    require_origin_boundary,
+)
 from .pyrun_outputs import (
     OutputSupport,
     PyrunOutputsFile,
@@ -189,6 +194,7 @@ class _ScanState:
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
+    directory_producers: DirectoryProducerIndex | None = None
     command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
     command_blocker_candidates: (
         tuple[tuple[Path, bool, tuple[str, ...]], ...] | None
@@ -292,6 +298,7 @@ def _scan(
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
+        state.directory_producers = build_directory_producer_index(state.invocations)
         _load_output_support(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
@@ -1410,6 +1417,7 @@ def _record_provenance(
                     confirmed_record=lambda invocation, output: (
                         _has_confirmed_output_record(invocation, output, state)
                     ),
+                    directory_producers=state.directory_producers,
                 )
                 dependencies.append(
                     {"kind": "origin", "material": material.path.as_posix()}
@@ -1424,6 +1432,7 @@ def _record_provenance(
                 confirmed_record=lambda invocation, output: (
                     _has_confirmed_output_record(invocation, output, state)
                 ),
+                directory_producers=state.directory_producers,
             )
             dependencies.append(
                 {
@@ -1509,6 +1518,7 @@ def _evaluate_direct_artifacts(
                     confirmed_record=lambda invocation, output: (
                         _has_confirmed_output_record(invocation, output, state)
                     ),
+                    directory_producers=state.directory_producers,
                 )
                 state.checks.append(
                     _pass_check(
@@ -1533,6 +1543,7 @@ def _evaluate_direct_artifacts(
                 confirmed_record=lambda invocation, output: (
                     _has_confirmed_output_record(invocation, output, state)
                 ),
+                directory_producers=state.directory_producers,
             )
             state.checks.append(
                 _pass_check(

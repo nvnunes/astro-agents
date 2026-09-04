@@ -202,6 +202,20 @@ def _origin_data_json(entry_root: Path) -> str:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_validation_builds_one_directory_producer_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            builder = ENGINE.build_directory_producer_index
+
+            with mock.patch.object(
+                ENGINE,
+                "build_directory_producer_index",
+                wraps=builder,
+            ) as indexed:
+                _evaluate(summary)
+
+            self.assertEqual(indexed.call_count, 1)
+
     def test_output_support_parameter_change_breaks_provenance_until_replaced(
         self,
     ) -> None:

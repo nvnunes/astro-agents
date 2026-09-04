@@ -5,10 +5,12 @@ description: Perform and record investigations in project-native research logs b
 
 # Research Logging
 
-Use this skill for Record, Replace, Update Summary, Repair, Review, and Validate.
+Use this skill for Record, Replace, Update Summary, Repair, Reorganize, Review,
+and Validate.
 Record performs and documents an investigation as one workflow; its production
-checks do not establish validation. Record also starts and reorganizes logs.
-Replace is separately authorized and may remove superseded work.
+checks do not establish validation. Record also starts logs. Reorganize is a
+separately authorized structural operation. Replace is separately authorized
+and may remove superseded work.
 
 Research outside the log is adjacent work, not another operation. A log's
 presence does not authorize Record. Leave it unchanged for exploratory work
@@ -66,9 +68,8 @@ search result.
 Choose the core operation:
 
 - Starting a new log; investigating, implementing, running, analyzing, or
-  recording research; continuing work; reorganizing the log; or
-  working with support material, scripts, generated results, data organization,
-  or command output: read
+  recording research; continuing work; or working with support material,
+  scripts, generated results, data organization, or command output: read
   `references/operation-record.md`.
 - Explicitly replacing or removing a named experimental section and its owned
   material: read `references/operation-replace.md`.
@@ -83,6 +84,10 @@ Choose the core operation:
   state, transaction residue, or other identified log defect: read
   `references/operation-repair.md`. A failed authoring command or reported
   finding does not activate Repair without a separate correction request.
+- Researcher-requested reorganization, or a specific Reorganize recommendation
+  that the researcher has approved: read
+  `references/operation-reorganize.md`. Review may recommend Reorganize but
+  cannot authorize it.
 
 For standalone reference lookup, viewing, or candidate management, read
 `references/operation-reference.md`. During Record, route citation and BibTeX

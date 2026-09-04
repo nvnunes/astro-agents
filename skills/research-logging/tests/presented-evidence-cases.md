@@ -1,7 +1,8 @@
 # Presented Evidence Cases
 
 Use these cases for focused review of research-logging Record, Replace, Update
-Summary, Repair, Review, and Validate behavior. They are not research evidence.
+Summary, Repair, Reorganize, Review, and Validate behavior. They are not
+research evidence.
 
 ## Integrated Record Workflow
 
@@ -126,9 +127,34 @@ destination.
 
 Given a Review finding that names a discoverability or ownership problem,
 Review may recommend a specific Reorganize action but does not apply it. An
-explicit Reorganize request or approval loads naming and entry-structure
-guidance and still requires approval before changing document boundaries or
-deleting files.
+explicit Reorganize request or approval loads only the Reorganize operation.
+The operation then loads naming or entry-structure guidance only when the
+requested change needs it and requires approval before adding an unrequested
+document boundary or deleting a file.
+
+Given an explicit request to rename a document or entry folder, Reorganize
+preserves the stable entry ID and research meaning and updates affected summary
+links, local links, anchors, recorded commands, and evidence `document` paths.
+It leaves unrelated registry fields and generated validation state unchanged.
+
+Given an approved move of a section between documents in the same entry,
+Reorganize moves the complete Markdown section and updates only the links,
+anchors, marker associations, and evidence `document` paths affected by that
+move. It does not move entry-root support material without a stated need.
+
+Given an approved split of one entry document, Reorganize keeps the same entry
+folder and entry ID, creates the approved suffixed documents, distributes
+complete sections, keeps shared support material at the entry root, and updates
+affected summary and local links and evidence document paths.
+
+Given an approved merge of same-entry documents, Reorganize moves complete
+sections into the chosen surviving document, updates affected links and
+evidence document paths, and deletes the empty source document last. It does
+not rewrite the moved research content.
+
+Given a requested structural change that would remove active experimental work
+or its owned material as superseded, Reorganize stops before editing and asks
+for explicit Replace authorization. It does not load or apply Replace itself.
 
 ## Repair Boundary
 

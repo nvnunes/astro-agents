@@ -34,6 +34,11 @@ implicit-research-log-investigate,research-logging,research-logging,true,implici
 implicit-research-log-incorporate,research-logging,research-logging,true,implicit,Add the exploratory detector plot and its actual script and output to e004 as research-log evidence
 implicit-research-log-start,research-logging,research-logging,true,implicit,Start a research log for this calibration study
 implicit-research-log-reorganize,research-logging,research-logging,true,implicit,Reorganize these research log entries without changing their entry IDs
+implicit-research-log-reorganize-approved-review,research-logging,research-logging,true,implicit,I approve the research log review recommendation to split e004 into two documents
+implicit-research-log-continue-no-reorganize,research-logging,research-logging,true,implicit,Continue recording the detector calibration investigation in e004 without reorganizing it
+implicit-research-log-record-no-reorganize,research-logging,research-logging,true,implicit,Record the new detector drift result in e004 and leave the research log structure unchanged
+implicit-research-log-reorganize-boundary,research-logging,research-logging,true,implicit,Reorganize e004 by moving the named section into a new same-entry document after confirming the document boundary
+implicit-research-log-reorganize-replace-boundary,research-logging,research-logging,true,implicit,Reorganize e004 but stop before removing any superseded experimental work unless I separately authorize Replace
 implicit-research-log-replace,research-logging,research-logging,true,implicit,Replace the superseded calibration experiment in e003 and keep a durable backup of the old work
 implicit-research-log-update-summary,research-logging,research-logging,true,implicit,Update the current summary for this adaptive optics research log
 implicit-research-log-review,research-logging,research-logging,true,implicit,Review this adaptive optics research log for structure synthesis and writing issues

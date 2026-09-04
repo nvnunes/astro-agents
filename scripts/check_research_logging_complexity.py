@@ -83,6 +83,11 @@ def _ratchet_issues(
             issues.append(f"new complexity finding: {key} ({score})")
         elif score > expected[key]:
             issues.append(f"complexity finding grew: {key} ({score} > {expected[key]})")
+    for key, score in sorted(expected.items()):
+        if key not in current:
+            issues.append(
+                f"retired complexity finding remains in baseline: {key} ({score})"
+            )
     return issues, current
 
 

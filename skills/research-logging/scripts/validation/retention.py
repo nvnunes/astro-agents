@@ -94,7 +94,7 @@ def load_retention_file(path: Path, *, entry_root: Path) -> RetentionFile:
             "retention.file.location_invalid",
             str(path),
             {"expected": str(expected)},
-            "research-log-retention/v1",
+            RETENTION_SCHEMA,
         )
     value = _read_json(path)
     if not isinstance(value, Mapping) or set(value) != {"schema", "records"}:
@@ -131,7 +131,7 @@ def retention_file_from_records(
             "retention.file.location_invalid",
             str(path),
             {"expected": str(expected)},
-            "research-log-retention/v1",
+            RETENTION_SCHEMA,
         )
     decoded = tuple(
         _decode_record(record.as_dict(), f"{path}:records[{index}]", root)
@@ -196,7 +196,7 @@ def _retention_file(value: object, subject: str, entry_root: Path) -> str:
             "retention.target.missing",
             subject,
             {"path": path},
-            "research-log-retention/v1",
+            RETENTION_SCHEMA,
         )
     return path
 
@@ -210,7 +210,7 @@ def _retention_directory(value: object, subject: str, entry_root: Path) -> str:
             "retention.target.missing",
             subject,
             {"directory": path},
-            "research-log-retention/v1",
+            RETENTION_SCHEMA,
         )
     try:
         descendants = bounded_descendants(
@@ -322,7 +322,7 @@ def _invalid(subject: object, observed: object) -> NoReturn:
         "retention.declaration.invalid",
         str(subject),
         observed,
-        "research-log-retention/v1",
+        RETENTION_SCHEMA,
     )
 
 

@@ -37,7 +37,9 @@ definition mode, not Repair.
   code, field, or contract and read only the applicable section. Load a
   detailed bundled file contract only when that section or the affected
   material requires it; do not open the complete specification or every
-  registry reference up front.
+  registry reference up front. This focused lookup is Repair's sole
+  repository-level instruction dependency; do not load the specification
+  during another operation.
 - Preserve all fields, records, prose, and material outside the requested
   correction. Keep the stable evidence ID unless the identified defect is the
   ID itself and the intended replacement is explicit.

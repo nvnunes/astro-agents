@@ -81,7 +81,7 @@ frontmatter is the source of truth for its exact selection boundary.
 
 Research logging has three distinct surfaces with separate authority:
 
-- [`skills/research-logging/`](skills/research-logging/) is the self-contained runtime surface containing
+- [`skills/research-logging/`](skills/research-logging/) is the runtime surface containing
   the operational and authoring instructions used by agents. It is
   self-documenting and owns agent behavior.
 - [`docs/research-log-mechanical-validator-spec.md`](docs/research-log-mechanical-validator-spec.md) is the normative

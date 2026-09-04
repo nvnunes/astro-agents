@@ -13,9 +13,11 @@ Hygiene, and generated-state contracts that validator code implements.
 
 This specification does not define agent behavior or teach researchers how to
 use the research-logging workflow. `skills/research-logging/` is the
-self-contained and self-documenting agent surface. `docs/research-logging.md`
-is human-facing researcher documentation concerned only with how that skill is
-used and what researchers should expect from it.
+self-documenting agent surface. Repair is its sole explicit repository-level
+consumer of this specification and reads only a relevant section when
+malformed or legacy state prevents the owning CLI action from operating.
+`docs/research-logging.md` is human-facing researcher documentation concerned
+only with how that skill is used and what researchers should expect from it.
 
 ## Contract Map
 
@@ -72,10 +74,9 @@ or evolution requires it.
 
 The specification includes `evidence.json`, presentation-marker, locator,
 transformation, and command-discovery syntax because these are inputs to the
-validator. The self-contained research-logging skill carries the bounded
-authoring and operational rules agents need to produce compatible research
-logs; ordinary research-agent work does not load this implementation
-specification.
+validator. The research-logging skill carries the bounded authoring and
+operational rules agents need to produce compatible research logs; ordinary
+research-agent work does not load this implementation specification.
 
 Provenance lineage and execution-support validation is rooted in evidence and
 direct artifact presentations. Commands outside that closure do not require

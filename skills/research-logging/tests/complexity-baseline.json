@@ -1,5 +1,3 @@
 {
-  "findings": {
-    "skills/research-logging/scripts/validation/graph.py:GraphBuilder.add_edge:PLR0913": 6
-  }
+  "findings": {}
 }

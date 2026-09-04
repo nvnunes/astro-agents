@@ -48,8 +48,26 @@ class ComplexityRatchetTests(unittest.TestCase):
             self.assertEqual(current, {"module.py:replacement:PLR0913": 6})
             self.assertEqual(
                 issues,
-                ["new complexity finding: module.py:replacement:PLR0913 (6)"],
+                [
+                    "new complexity finding: module.py:replacement:PLR0913 (6)",
+                    "retired complexity finding remains in baseline: "
+                    "module.py:retained:PLR0913 (6)",
+                ],
             )
+
+    def test_retired_finding_must_be_removed_from_baseline(self) -> None:
+        issues, current = COMPLEXITY._ratchet_issues(
+            [], {"removed.py:legacy:PLR0913": 6}, Path.cwd()
+        )
+
+        self.assertEqual(current, {})
+        self.assertEqual(
+            issues,
+            [
+                "retired complexity finding remains in baseline: "
+                "removed.py:legacy:PLR0913 (6)"
+            ],
+        )
 
     def test_existing_finding_cannot_increase(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

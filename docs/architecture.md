@@ -44,7 +44,7 @@ future design notes.
 
 Research logging has three distinct surfaces with separate authority:
 
-- `skills/research-logging/` is the self-contained runtime surface containing
+- `skills/research-logging/` is the runtime surface containing
   the operational and authoring instructions used by agents. It is
   self-documenting and owns agent behavior.
 - `docs/research-log-mechanical-validator-spec.md` is the normative
@@ -57,6 +57,12 @@ Research logging has three distinct surfaces with separate authority:
 The three surfaces must remain conceptually compatible, but they are not
 mirrors. The human guide is not a specification or completeness checklist for
 the agent surface or validation tools.
+
+Repair has the sole explicit repository-level dependency in the agent surface:
+when malformed or legacy research-owned state prevents the owning CLI action
+from operating, its focused prompt may progressively consult only the relevant
+section of the mechanical-validator specification. Ordinary operations use
+only bundled skill guidance and do not load that specification.
 
 ## AGENTS.md As Project Brief
 

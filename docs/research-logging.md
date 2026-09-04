@@ -7,12 +7,14 @@ research decisions remain theirs.
 
 This document is not a specification for agent behavior, metadata grammar, or
 validator implementation. Do not use it as a completeness checklist or proxy
-for the `research-logging` skill. The skill is a separate, self-contained and
-self-documenting agent surface; it does not depend on this guide. The
-mechanical-validation CLI and its supporting tools must instead adhere to
-`docs/research-log-mechanical-validator-spec.md`. These three surfaces must be
-conceptually compatible, but they have separate authority and do not repeat the
-same detail.
+for the `research-logging` skill. The skill is a separate, self-documenting
+agent surface and does not depend on this guide. Repair alone may progressively
+consult the relevant section of
+`docs/research-log-mechanical-validator-spec.md` when malformed or legacy state
+prevents an owning CLI action from operating. The mechanical-validation CLI
+and its supporting tools must also adhere to that specification. These three
+surfaces must be conceptually compatible, but they have separate authority and
+do not repeat the same detail.
 
 ## Workflow at a glance
 
@@ -36,9 +38,10 @@ A research log uses seven core operations:
 
 Reference management supports these operations when needed; it is not an
 additional stage. Repair and Reorganize require explicit requests or approval;
-neither is implied by Record, Review, or Validate. Reorganize normally preserves
-entry IDs and evidence associations, except for an explicitly requested
-simultaneous entry reorder or coordinated transfer between entries.
+neither is implied by Record, Review, or Validate. Reorganize preserves entry
+IDs except during an explicitly requested simultaneous reorder. It preserves
+evidence associations except for records explicitly selected for coordinated
+transfer between documents or entries.
 
 You own the scientific methods, interpretations, accepted findings, decisions,
 and next steps. Agents may organize material, implement and run code, check

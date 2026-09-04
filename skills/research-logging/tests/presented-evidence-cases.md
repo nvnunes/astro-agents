@@ -1,7 +1,7 @@
 # Presented Evidence Cases
 
 Use these cases for focused review of research-logging Record, Replace, Update
-Summary, and review behavior. They are not research evidence.
+Summary, Repair, Review, and Validate behavior. They are not research evidence.
 
 ## Integrated Record Workflow
 
@@ -130,6 +130,41 @@ explicit Reorganize request or approval loads naming and entry-structure
 guidance and still requires approval before changing document boundaries or
 deleting files.
 
+## Repair Boundary
+
+Given an explicit request to repair one named research-owned validation
+finding, the agent enters Repair, reads that check and the affected files, and
+loads only the contract needed to establish the intended valid state. It does
+not fix other findings from the same report.
+
+Given a completed validation report followed only by a request to explain its
+findings, Validate remains report-only and does not load Repair. A later
+explicit request to correct a named finding activates Repair as a separate
+operation and finishes by invoking the public Validate path.
+
+Given a failed Record authoring command without a separate correction request,
+Record reports the precise failure and stops. It does not load Repair, inspect
+the complete mechanical specification, edit a registry around the failed
+precondition, or rerun validation.
+
+Given an ambiguous Review follow-up such as "fix it" when several findings or
+corrected states are plausible, the agent asks which target and intended state
+the researcher authorizes. It does not infer Repair scope from proximity or
+conversation history.
+
+Given a parseable record with an intended correction expressible by an owning
+`log` action, Repair uses that action rather than editing the registry. Given a
+malformed research-owned registry that the action cannot parse, Repair reads
+only the applicable mechanical contract, directly corrects the named defect,
+and leaves unrelated records unchanged. A Markdown-only defect is corrected in
+the affected document without opening registry schemas that are not involved.
+
+Given recognized residue from an interrupted research-owned transaction,
+Repair follows its exact diagnostic and owning implementation contract. It
+does not treat unknown files as residue. Repair never edits generated
+validation state or `pyrun-outputs.json`; the final Validate invocation alone
+may replace generated reports.
+
 ## Replace Boundary
 
 Given an ordinary revision, rerun, correction, Continue, Review, or Reorganize
@@ -178,7 +213,8 @@ no block labels and is also skipped.
 A section with `Findings:` plus `Steps:` or `Results:`, only one of `Steps:`
 and `Results:`, or another unsupported label combination is invalid. Review
 reports the structural problem. Validation skips the content, reports the entry
-and heading, and retains a failed structural target until review repairs it.
+and heading, and retains a failed structural target until a separate Repair
+operation corrects it.
 
 ## Recorded Command Output
 
@@ -285,9 +321,10 @@ records, markers, and references. It checks ID uniqueness, kind values, source
 cardinality, and syntax but does not decide whether the evidence scientifically
 supports the prose. Validation resolves the source, locator, transformation,
 presentation, and provenance. Neither Review nor Validate edits an evidence
-record; a requested repair routes to Record or Replace for entry evidence and
-Update Summary for a summary reference. An ambiguous association is reported
-rather than guessed.
+record; an explicit correction of an identified defect routes to Repair.
+Removing superseded experimental work still requires Replace, and revising
+current synthesis still requires Update Summary. An ambiguous association is
+reported rather than guessed.
 
 ## Validation Publication Boundary
 
@@ -335,7 +372,7 @@ choose a plausible alternative.
 Given a mechanical finding, the validation agent reports the exact code,
 subject, observed state, violated rule, and dependency cause from the generated
 record. The validation agent does not override the result or edit research
-material. A later, separately authorized Record operation resolves the issue
+material. A later, separately authorized Repair operation resolves the issue
 before Validate is rerun.
 
 Given complete findings, the CLI exits zero and publishes

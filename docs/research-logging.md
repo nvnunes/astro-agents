@@ -238,7 +238,8 @@ either with the review or after reading its findings. Review checks whether the
 record is complete and internally consistent. It may report an apparent
 quality problem or a missing research-relevant method, but it does not require
 routine successful checks to be narrated, run research commands, or perform
-those checks. It does not decide whether the science is correct.
+those checks. It does not decide whether the science is correct. A separately
+authorized correction of an identified defect is a Repair operation.
 
 ### Validate
 
@@ -247,6 +248,8 @@ its declared sources, its visible command relationships, and unused retained
 material. It does not run research commands, judge scientific meaning, or
 perform reproduction. Semantic review and reproduction are separate workflows.
 Validation reports precise problems but does not repair research content.
+A later correction of a named research-owned finding is a separately
+authorized Repair operation.
 
 ## Entries and section types
 
@@ -727,13 +730,13 @@ failure count, artifact-currentness claim, or rules version. Do not add a `## Va
 section or a Validation item to `## Contents`. Before the first validation, the
 link may point to a report that does not yet exist.
 
-Record, Replace, Reorganize, and Update Summary preserve this link exactly and
-never edit generated validation files. Validate reads the maintained summary
-but never changes it. The generated `<log>/validation.md` report contains an
-independent Mechanical Validation section with its date, scope/status counts,
-and non-passing checks, plus a separate Reproduction section. Until the
-reproduction workflow is implemented and run, that section states
-`not_yet_run`. The report has no combined conclusion.
+Record, Replace, Reorganize, Repair, and Update Summary preserve this link
+exactly and never edit generated validation files. Validate reads the
+maintained summary but never changes it. The generated `<log>/validation.md`
+report contains an independent Mechanical Validation section with its date,
+scope/status counts, and non-passing checks, plus a separate Reproduction
+section. Until the reproduction workflow is implemented and run, that section
+states `not_yet_run`. The report has no combined conclusion.
 
 ## Reviewing a research log
 
@@ -838,12 +841,12 @@ research record but changes only its own generated output.
 ### Resolving findings
 
 Validation identifies problems; it does not repair the research record. A
-separate research operation reviews the report, corrects the relevant evidence,
-command, source, or retained-material relationship, and then requests another
-validation run. When incompatible generated metadata stops evaluation before a
-report is published, use the paths identified by the validation command for a
-separately authorized archival or removal action; a research operation must not
-modify them.
+separately authorized Repair operation reviews the named finding, corrects the
+relevant evidence, command, source, or retained-material relationship, and then
+runs validation again. When incompatible generated metadata stops evaluation
+before a report is published, use the paths identified by the validation
+command for a separately authorized archival or removal action; a research
+operation must not modify them.
 
 Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed

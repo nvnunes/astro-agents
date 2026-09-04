@@ -4,9 +4,10 @@ Use this file when the user asks to review a research log's structure,
 consistency, synthesis, or writing.
 
 `Review` is report-first and does not own log edits. Complete findings before
-any separately authorized fix. Route entry changes through Record or Replace,
-summary changes through Update Summary, and a persistent review record through
-Record.
+any separately authorized correction. Route an explicit correction of a named
+defect through Repair, removal of superseded experimental work through Replace,
+summary synthesis through Update Summary, and a persistent review record
+through Record.
 
 ## Scope
 

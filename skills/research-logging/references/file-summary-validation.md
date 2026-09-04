@@ -15,10 +15,10 @@ or rules version. It is the summary's complete validation surface and has no
 matching item in `## Contents`.
 
 The link is research-document scaffolding. Record initialization installs it.
-Record, Replace, Update Summary, and Reorganize preserve it exactly and do not
-open, repair, delete, or normalize generated validation files. Validate reads
-the summary but never changes it. Before the first validation, the link may
-resolve to a report that does not yet exist.
+Record, Replace, Update Summary, Repair, and Reorganize preserve it exactly and
+do not open, repair, delete, or normalize generated validation files. Validate
+reads the summary but never changes it. Before the first validation, the link
+may resolve to a report that does not yet exist.
 
 `<log>/validation.md` is the shared human projection. Its Mechanical Validation
 section shows the latest completed mechanical date, scope/status counts, and

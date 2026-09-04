@@ -5,7 +5,7 @@ description: Perform and record investigations in project-native research logs b
 
 # Research Logging
 
-Use this skill for Record, Replace, Update Summary, Review, and Validate.
+Use this skill for Record, Replace, Update Summary, Repair, Review, and Validate.
 Record performs and documents an investigation as one workflow; its production
 checks do not establish validation. Record also starts and reorganizes logs.
 Replace is separately authorized and may remove superseded work.
@@ -79,6 +79,10 @@ Choose the core operation:
 - Independent mechanical validation: read
   `references/operation-validate.md`. Validate is code-only and never becomes
   semantic review or reproduction. Those remain separate workflows.
+- Explicit correction of a named research-owned finding, malformed or legacy
+  state, transaction residue, or other identified log defect: read
+  `references/operation-repair.md`. A failed authoring command or reported
+  finding does not activate Repair without a separate correction request.
 
 For standalone reference lookup, viewing, or candidate management, read
 `references/operation-reference.md`. During Record, route citation and BibTeX
@@ -88,7 +92,8 @@ If the user's wording is ambiguous between recording and updating the summary,
 prefer recording unless the user clearly asks to change the summary. If both
 are requested, complete Record before Update Summary. If it is ambiguous
 between review and editing, report findings first and ask before applying fixes
-unless the requested fix is explicit.
+unless the requested correction is explicit; route an explicit correction of
+an identified defect through Repair.
 
 Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded

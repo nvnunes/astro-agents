@@ -10,6 +10,9 @@ REPOSITORY_PATH = re.compile(
 )
 PACKAGE_REFERENCE_PATH = re.compile(r"`(references/[^`\n]+)`")
 BUNDLED_SCRIPT_PATH = re.compile(r"`(scripts/(?:pyrun|research_log_validation\.py))`")
+REPAIR_SPEC_PATH = re.compile(
+    r"`((?:\.\./)+docs/research-log-mechanical-validator-spec\.md)`"
+)
 
 
 class ResearchLogSkillPackageTests(unittest.TestCase):
@@ -29,6 +32,13 @@ class ResearchLogSkillPackageTests(unittest.TestCase):
 
                 for raw in BUNDLED_SCRIPT_PATH.findall(text):
                     self.assertTrue((SKILL_ROOT / raw).exists(), raw)
+
+                repair_specs = REPAIR_SPEC_PATH.findall(text)
+                self.assertEqual(
+                    len(repair_specs), 1 if path.name == "operation-repair.md" else 0
+                )
+                for raw in repair_specs:
+                    self.assertTrue((path.parent / raw).resolve().is_file(), raw)
 
 
 if __name__ == "__main__":

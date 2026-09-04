@@ -276,8 +276,9 @@ asymptotic regression.
 
 Use
 `skills/research-logging/tests/presented-evidence-cases.md` as the focused
-manual behavior cases for Record, Replace, Update Summary, Review, and Validate
-changes.
+manual behavior cases for Record, Replace, Update Summary, Repair, Review, and
+Validate changes.
+
 ## Codex Runtime Discovery
 
 Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:

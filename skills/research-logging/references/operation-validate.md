@@ -6,7 +6,7 @@ It is read-only for research-owned material but normally writes generated
 validation state; use `--dry-run` for an entirely non-writing evaluation. The
 same agent may invoke it, but while validating it must not edit or repair
 research-owned material. A research-owned finding requires a later, separately
-authorized Record operation. `unsupported_metadata` is instead a
+authorized Repair operation. `unsupported_metadata` is instead a
 validation-state blocker: report its paths and stop. Before rerunning, ask the
 user to authorize a separate action that archives the reported generated paths
 outside the active log or removes them. Do not route that status to Record or
@@ -168,9 +168,9 @@ Use this shape:
 | Hygiene evaluation not run | 1 | 1/1 |  |  | [Human](...) · [JSON](...) |
 ```
 
-Do not invent item-specific repair guidance. A separately authorized Record
-operation resolves a reported research-owned condition from the applicable
-bundled research-logging instructions.
+Do not invent item-specific repair guidance. A separately authorized Repair
+operation resolves a reported research-owned condition from its exact target
+and progressively loads only the applicable contract.
 
 Mechanical validation does not continue into semantic review or reproduction.
 Those are separate workflows with separate ownership and are not implemented

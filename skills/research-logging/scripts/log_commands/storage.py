@@ -10,7 +10,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping
 
-from validation.operation_state import operation_lock
+from validation.operation_state import operation_lock, require_mutation_ready
 
 from .context import EntryContext, LogContext, LogCreationContext
 
@@ -61,6 +61,7 @@ def log_and_entry_locks(
 @contextmanager
 def _lock(log: LogContext, name: str) -> Iterator[None]:
     with operation_lock(log.root, name):
+        require_mutation_ready(log.root)
         yield
 
 
@@ -88,21 +89,24 @@ def atomic_write_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def atomic_write_texts(updates: Mapping[Path, str]) -> None:
-    """Publish a small text-file transaction or restore every prior byte."""
+def atomic_write_texts(updates: Mapping[Path, str | None]) -> None:
+    """Publish text replacements/removals or restore every prior byte."""
 
     ordered = tuple(sorted(updates.items(), key=lambda item: item[0].as_posix()))
-    before = {path: path.read_text(encoding="utf-8") for path, _ in ordered}
+    before = {
+        path: path.read_text(encoding="utf-8") if path.exists() else None
+        for path, _ in ordered
+    }
     written: list[Path] = []
     try:
         for path, value in ordered:
-            atomic_write_text(path, value)
+            remove_or_write(path, value)
             written.append(path)
     except (OSError, UnicodeError) as error:
         rollback: list[str] = []
         for path in reversed(written):
             try:
-                atomic_write_text(path, before[path])
+                remove_or_write(path, before[path])
             except OSError as restore_error:
                 rollback.append(f"{path}: {restore_error}")
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""

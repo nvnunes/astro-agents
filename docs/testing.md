@@ -125,6 +125,20 @@ The research-log test gate must verify:
   interruption residue fail closed, while ordinary injected failures roll back
   every newly published scaffold path and leave existing summary and generated
   validation bytes unchanged;
+- `log reorganize` exposes only its five explicit actions; verifies the
+  agent-authored Markdown state before changing closed identities or authored
+  registries; operates within one log; and never edits Markdown or moves
+  agent-owned support material;
+- entry updates, simultaneous reorderings, complete-log relocation, selected
+  registry transfers, and empty-scaffold removal are write-free on dry run,
+  atomic on ordinary failure, guarded by stable log/entry locks, and leave
+  recognized hard-crash residue that blocks later mutation and validation
+  publication until Repair;
+- registry transfer uses a bounded selected-record decoder only for stale
+  source associations, then passes the complete source and destination
+  candidates through production data, evidence, retention, provenance, and
+  presentation checks; any output-support retirement is exact, private to the
+  transfer, and returned only as a bounded destination-rerun list;
 - `log evidence add|update --definition` accepts only a bounded regular
   non-symlink strict-JSON file beneath `/private/tmp`, routes every source,
   locator, transformation, and presentation through the production contracts,

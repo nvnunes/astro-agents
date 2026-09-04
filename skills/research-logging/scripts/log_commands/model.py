@@ -72,6 +72,34 @@ class DataUpdateArguments:
 
 
 @dataclass(frozen=True)
+class EntryUpdateArguments:
+    """Typed arguments for one closed entry-identity update."""
+
+    date: str | None
+    slug: str | None
+    title: str | None
+    dry_run: bool
+
+
+@dataclass(frozen=True)
+class TransferArguments:
+    """Typed selectors and mappings for one coordinated registry transfer."""
+
+    source_entry: str
+    destination_entry: str
+    evidence: tuple[str, ...]
+    data: tuple[str, ...]
+    retention: tuple[str, ...]
+    select_all: bool
+    document_maps: tuple[tuple[str, str], ...]
+    path_maps: tuple[tuple[str, str], ...]
+    data_maps: tuple[tuple[str, str], ...]
+    evidence_maps: tuple[tuple[str, str], ...]
+    retention_maps: tuple[tuple[str, str], ...]
+    dry_run: bool
+
+
+@dataclass(frozen=True)
 class ActionResult:
     """One bounded semantic outcome returned by an authoring action."""
 

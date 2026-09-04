@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterator
 
 MAX_SNAPSHOT_FILES = 1_000_000
+REORGANIZE_RESIDUE = "reorganize-residue"
 
 
 def operation_directory(log_root: Path) -> Path:
@@ -51,6 +52,39 @@ def operation_lock(log_root: Path, name: str) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def require_mutation_ready(log_root: Path) -> None:
+    """Refuse mutation while recognized hard-crash residue remains."""
+
+    path = operation_directory(log_root) / REORGANIZE_RESIDUE
+    if path.exists() or path.is_symlink():
+        raise OSError(f"research-log reorganization requires Repair: {path}")
+
+
+def begin_reorganization(log_root: Path) -> Path:
+    """Publish the one recognized hard-crash marker for Reorganize."""
+
+    directory = _prepare_operation_directory(log_root)
+    path = directory / REORGANIZE_RESIDUE
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o644,
+    )
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(b"explicit Repair required after interrupted Reorganize\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    _sync_directory(directory)
+    return path
+
+
+def finish_reorganization(path: Path) -> None:
+    """Remove a completed or fully rolled-back Reorganize marker."""
+
+    path.unlink()
+    _sync_directory(path.parent)
+
+
 def mutation_active(log_root: Path) -> bool:
     """Return whether any existing operation lock is currently held."""
 
@@ -61,6 +95,9 @@ def mutation_active(log_root: Path) -> bool:
         return False
     if not directory.is_dir():
         raise OSError(f"operation state must be a regular directory: {directory}")
+    residue = directory / REORGANIZE_RESIDUE
+    if residue.exists() or residue.is_symlink():
+        return True
     for path in sorted(directory.glob("*.lock")):
         if path.is_symlink() or not path.is_file():
             raise OSError(f"operation lock must be a regular file: {path}")
@@ -75,6 +112,14 @@ def mutation_active(log_root: Path) -> bool:
                 if acquired:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     return False
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def research_snapshot(summary: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:

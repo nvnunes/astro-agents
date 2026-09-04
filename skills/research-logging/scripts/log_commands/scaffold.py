@@ -69,6 +69,17 @@ class EntryObservation:
 
 
 @dataclass(frozen=True)
+class SummaryEntryObservation:
+    """One summary-declared entry identity without filesystem resolution."""
+
+    id: str
+    date: str
+    title: str
+    slug: str
+    documents: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class SummarySection:
     """The exact byte-preserving insertion boundary for ``## Entries``."""
 
@@ -154,6 +165,48 @@ def observe_entries(log: LogContext) -> tuple[EntryObservation, ...]:
     """Return the summary-consistent stable entry inventory."""
 
     return _inventory(log)[1]
+
+
+def observe_physical_entries(log: LogContext) -> tuple[EntryObservation, ...]:
+    """Return canonical physical entries while the summary is pre-edited."""
+
+    observed = _entry_directories(log)
+    return tuple(
+        EntryObservation(
+            item.id,
+            item.date,
+            item.slug,
+            item.root,
+            tuple(sorted(_entry_documents(log, item.root, item.id))),
+        )
+        for item in sorted(observed.values(), key=lambda value: _entry_number(value.id))
+    )
+
+
+def observe_summary_entries(log: LogContext) -> tuple[SummaryEntryObservation, ...]:
+    """Return the agent-authored summary projection before identity publication."""
+
+    text = _read_summary(log.summary)
+    section = _summary_section(log, text)
+    return _listed_summary_entries(log, section)
+
+
+def validate_entry_date(value: str) -> str:
+    """Return one canonical entry date or raise the public contract error."""
+
+    return _date(value)
+
+
+def validate_entry_slug(value: str) -> str:
+    """Return one canonical entry slug or raise the public contract error."""
+
+    return _slug(value)
+
+
+def validate_entry_title(value: str) -> str:
+    """Return one bounded entry title or raise the public contract error."""
+
+    return _title(value, "entry.title.invalid")
 
 
 def _require_new_log_target(log: LogCreationContext) -> None:
@@ -300,6 +353,88 @@ def _listed_documents(
     if parent_date is not None and not parent_has_child:
         raise ActionError("entry.identity.invalid", "split entry has no documents")
     return {key: (value[0], tuple(value[1])) for key, value in result.items()}
+
+
+def _listed_summary_entries(
+    log: LogContext, section: SummarySection
+) -> tuple[SummaryEntryObservation, ...]:
+    body = section.text[section.body_start : section.body_end]
+    rows: dict[str, tuple[str, str, str, list[Path]]] = {}
+    parent_date: str | None = None
+    parent_title: str | None = None
+    parent_has_child = False
+    for raw in body.splitlines():
+        if not raw:
+            continue
+        single = SINGLE_ENTRY_RE.fullmatch(raw)
+        parent = SPLIT_PARENT_RE.fullmatch(raw)
+        child = SPLIT_CHILD_RE.fullmatch(raw)
+        if single is not None:
+            _require_completed_parent(parent_date, parent_has_child)
+            parent_date = parent_title = None
+            parent_has_child = False
+            _add_summary_row(
+                log,
+                rows,
+                single.group("date"),
+                single.group("title"),
+                single.group("target"),
+            )
+        elif parent is not None:
+            _require_completed_parent(parent_date, parent_has_child)
+            parent_date = _date(parent.group("date"))
+            parent_title = parent.group("title")
+            parent_has_child = False
+        elif child is not None and parent_date is not None and parent_title is not None:
+            _add_summary_row(
+                log, rows, parent_date, parent_title, child.group("target")
+            )
+            parent_has_child = True
+        else:
+            raise ActionError("entry.identity.invalid", f"invalid Entries item: {raw}")
+    _require_completed_parent(parent_date, parent_has_child)
+    values = tuple(
+        SummaryEntryObservation(key, date, title, slug, tuple(documents))
+        for key, (date, title, slug, documents) in rows.items()
+    )
+    if tuple(item.id for item in values) != tuple(
+        sorted((item.id for item in values), key=_entry_number)
+    ):
+        raise ActionError(
+            "entry.identity.inconsistent", "summary entries are not in numeric order"
+        )
+    return values
+
+
+def _require_completed_parent(date: str | None, has_child: bool) -> None:
+    if date is not None and not has_child:
+        raise ActionError("entry.identity.invalid", "split entry has no documents")
+
+
+def _add_summary_row(
+    log: LogContext,
+    rows: dict[str, tuple[str, str, str, list[Path]]],
+    date: str,
+    title: str,
+    raw_target: str,
+) -> None:
+    listed: dict[str, tuple[str, list[Path]]] = {}
+    _add_listed_document(log, listed, date, raw_target)
+    entry_id, (normalized_date, documents) = next(iter(listed.items()))
+    folder = ENTRY_DIRECTORY_RE.fullmatch(documents[0].parent.name)
+    assert folder is not None
+    current = rows.setdefault(
+        entry_id, (normalized_date, title, folder.group("slug"), [])
+    )
+    if current[:3] != (normalized_date, title, folder.group("slug")):
+        raise ActionError(
+            "entry.identity.inconsistent", f"summary identity disagrees for {entry_id}"
+        )
+    if documents[0] in current[3]:
+        raise ActionError(
+            "entry.identity.inconsistent", f"duplicate entry target: {raw_target}"
+        )
+    current[3].append(documents[0])
 
 
 def _add_listed_document(

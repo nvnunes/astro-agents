@@ -3308,6 +3308,50 @@ never modifies, retains, copies, or removes the definition. `--dry-run`
 performs the complete source observation, evaluation, presentation comparison,
 candidate build, and mutation preflight without writing the registry.
 
+The explicit single-log Reorganize operations are:
+
+```text
+<skill>/scripts/log reorganize update-entry --path LOG --entry ENTRY
+  [--date YYYY-MM-DD] [--slug SLUG] [--title TITLE] [--dry-run]
+<skill>/scripts/log reorganize reorder --path LOG --entries ENTRY[,ENTRY...]
+  [--dry-run]
+<skill>/scripts/log reorganize relocate-log --path LOG --to DESTINATION
+  [--dry-run]
+<skill>/scripts/log reorganize transfer --path LOG
+  --from-entry ENTRY --to-entry ENTRY
+  (--all | [--evidence IDS] [--data NAMES] [--retention IDS])
+  [--document-map SOURCE DESTINATION]... [--path-map SOURCE DESTINATION]...
+  [--data-map SOURCE DESTINATION]... [--evidence-map SOURCE DESTINATION]...
+  [--retention-map SOURCE DESTINATION]... [--dry-run]
+<skill>/scripts/log reorganize remove-empty-entry --path LOG --entry ENTRY
+  [--dry-run]
+```
+
+The agent completes every semantic choice, Markdown edit, selected support-file
+move, and registry-record selection first. These commands verify that state and
+then own only closed entry/log identity changes or coordinated authored-JSON
+updates. They neither rewrite Markdown nor infer selections or destinations.
+`reorder` receives every current entry ID once and applies the new sequential
+IDs simultaneously. `relocate-log` moves the maintained summary/root pair only
+within one filesystem. `remove-empty-entry` requires the summary item to be
+absent and the remaining scaffold to be mechanically empty.
+
+`transfer` permits its bounded decoder to delay current source document and
+path checks only for explicitly selected records. It then applies every mapping
+and validates the complete source and destination candidates through the
+production registry, material, evidence-transformation, presentation, and
+same-log consistency contracts before publication. Empty authored registries
+are removed. `pyrun-outputs.json` is never relocated or rewritten to describe a
+new execution. The `pyrun`-owned service may retire only exact source support
+made stale by the selected transfer, and the result reports the destination
+reruns needed to create new support.
+
+All Reorganize mutations take the log lock before affected entry locks, publish
+authored registry changes atomically, and leave generated validation artifacts
+unchanged. A recognized interrupted-Reorganize marker beneath the operation
+cache blocks later research mutation and validation publication until explicit
+Repair; ordinary failures roll back and remove that marker.
+
 Each authoring invocation emits exactly one
 `research-log-authoring-result/1` object to standard output. Its stable fields
 are `schema`, selected `task`, `status`, Boolean `changed`, diagnostic `code`,
@@ -3321,12 +3365,12 @@ exit-status contracts.
 Research mutations coordinate through generated locks beneath
 `<log>/.cache/research-log-operations/`. Entry locks are keyed by stable entry
 ID, not folder name. `pyrun`, Evidence, and Retention hold the same entry lock;
-entry creation and future structural operations take the log lock before
+entry creation and Reorganize take the log lock before
 affected entry locks in sorted ID order. Initial log creation instead uses a
 lock beneath the owning project's `.cache/research-log-operations/`, keyed by
 the intended canonical log path. Validate takes no research-mutation lock.
-Before publishing,
-it rejects an active mutation or any change to the research-owned snapshot it
+Before publishing, it rejects an active mutation, recognized interrupted
+Reorganize residue, or any change to the research-owned snapshot it
 evaluated, and rolls back a bundle when the guard fails after installation has
 begun.
 

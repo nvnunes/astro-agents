@@ -124,6 +124,33 @@ def empty_pyrun_outputs(entry_root: Path) -> PyrunOutputsFile:
     return PyrunOutputsFile(root / PYRUN_OUTPUTS_FILENAME, root, {})
 
 
+def without_output_support(
+    entry_root: Path, outputs: tuple[str, ...]
+) -> PyrunOutputsFile:
+    """Build validated support with exact selected output records retired."""
+
+    root = entry_root.resolve()
+    path = root / PYRUN_OUTPUTS_FILENAME
+    current = (
+        load_pyrun_outputs(path, entry_root=root)
+        if path.exists() or path.is_symlink()
+        else empty_pyrun_outputs(root)
+    )
+    selected = tuple(portable_output_path(item, entry_root=root) for item in outputs)
+    if len(selected) != len(set(selected)):
+        _invalid(path, {"reason": "duplicate_output_retirement"})
+    missing = sorted(set(selected) - set(current.outputs))
+    if missing:
+        _invalid(path, {"reason": "output_support_missing", "outputs": missing})
+    result = PyrunOutputsFile(
+        path,
+        root,
+        {key: value for key, value in current.outputs.items() if key not in selected},
+    )
+    _validated_serialization(result)
+    return result
+
+
 def portable_output_path(value: str | Path, *, entry_root: Path) -> str:
     """Return the exact entry-relative identity of one output artifact."""
 

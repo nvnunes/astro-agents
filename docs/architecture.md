@@ -236,7 +236,13 @@ Future validation changes must preserve these invariants:
 - **Output-owned execution state:** `pyrun-outputs.json` is keyed by output so
   command splitting, merging, and renaming reconcile through current graph
   membership rather than command identity. Validation reads this state but
-  does not write it.
+  does not write it. The explicit Reorganize transfer coordinator may ask the
+  `pyrun`-owned service to retire only output support made mechanically stale
+  by that exact transfer; it never rewrites or relocates execution signatures.
+- **Split Reorganize ownership:** agents own semantic partitioning, Markdown,
+  links, record selection, and support-file movement. The `log reorganize`
+  family owns only verified closed identity changes and coordinated authored
+  registry updates within one maintained log.
 - **Separate write ownership:** Validation agents manage validation artifacts
   and do not modify research-log entries, scripts, or artifacts. Research
   agents manage research material and do not modify validation artifacts.

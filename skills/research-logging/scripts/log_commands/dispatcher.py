@@ -15,13 +15,26 @@ from .model import (
     AddArguments,
     DataAddArguments,
     DataUpdateArguments,
+    EntryUpdateArguments,
     EvidenceCommonArguments,
     InitArguments,
     RetentionArguments,
+    TransferArguments,
 )
 
-FAMILIES = ("add", "data", "discover", "evidence", "init", "retention", "validate")
-AUTHORING_FAMILIES = frozenset({"add", "data", "evidence", "init", "retention"})
+FAMILIES = (
+    "add",
+    "data",
+    "discover",
+    "evidence",
+    "init",
+    "reorganize",
+    "retention",
+    "validate",
+)
+AUTHORING_FAMILIES = frozenset(
+    {"add", "data", "evidence", "init", "reorganize", "retention"}
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _top_parser().error(f"unknown task family: {family}")
     selected_task = (
         f"{family}.{arguments[0]}"
-        if family in {"data", "evidence", "retention"} and arguments
+        if family in {"data", "evidence", "reorganize", "retention"} and arguments
         else family
     )
     try:
@@ -49,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "data": _dispatch_data,
             "evidence": _dispatch_evidence,
             "init": _dispatch_init,
+            "reorganize": _dispatch_reorganize,
             "retention": _dispatch_retention,
         }
         result = dispatch[family](arguments)
@@ -429,6 +443,102 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
     if args.action == "remove":
         return retention.remove(entry, args.id, dry_run=args.dry_run)
     return retention.list_records(entry)
+
+
+def _dispatch_reorganize(arguments: Sequence[str]) -> ActionResult:
+    parser = argparse.ArgumentParser(prog="log reorganize")
+    actions = parser.add_subparsers(dest="action", required=True)
+
+    update = actions.add_parser("update-entry", help="Apply one edited entry identity")
+    _entry_arguments(update)
+    _mutation_argument(update)
+    update.add_argument("--date")
+    update.add_argument("--slug")
+    update.add_argument("--title")
+
+    reorder = actions.add_parser("reorder", help="Apply one complete edited ID order")
+    reorder.add_argument("--path", required=True, type=Path)
+    _mutation_argument(reorder)
+    reorder.add_argument("--entries", required=True)
+
+    relocate = actions.add_parser("relocate-log", help="Relocate one complete log pair")
+    relocate.add_argument("--path", required=True, type=Path)
+    relocate.add_argument("--to", required=True, type=Path)
+    _mutation_argument(relocate)
+
+    transfer = actions.add_parser(
+        "transfer", help="Coordinate selected authored registry changes"
+    )
+    transfer.add_argument("--path", required=True, type=Path)
+    _mutation_argument(transfer)
+    transfer.add_argument("--from-entry", required=True)
+    transfer.add_argument("--to-entry", required=True)
+    transfer.add_argument("--all", action="store_true")
+    transfer.add_argument("--evidence")
+    transfer.add_argument("--data")
+    transfer.add_argument("--retention")
+    for name in ("document", "path", "data", "evidence", "retention"):
+        transfer.add_argument(
+            f"--{name}-map",
+            nargs=2,
+            action="append",
+            default=[],
+            metavar=("SOURCE", "DESTINATION"),
+        )
+
+    remove = actions.add_parser(
+        "remove-empty-entry", help="Remove one already unlisted empty scaffold"
+    )
+    _entry_arguments(remove)
+    _mutation_argument(remove)
+
+    args = parser.parse_args(arguments)
+    from . import reorganize
+
+    log = resolve_log(args.path)
+    if args.action == "update-entry":
+        return reorganize.update_entry(
+            resolve_entry(log, args.entry),
+            EntryUpdateArguments(args.date, args.slug, args.title, args.dry_run),
+        )
+    if args.action == "reorder":
+        return reorganize.reorder(log, _csv(args.entries), dry_run=args.dry_run)
+    if args.action == "relocate-log":
+        return reorganize.relocate_log(log, args.to, dry_run=args.dry_run)
+    if args.action == "remove-empty-entry":
+        return reorganize.remove_empty_entry(
+            resolve_entry(log, args.entry), dry_run=args.dry_run
+        )
+    return reorganize.transfer(
+        log,
+        TransferArguments(
+            source_entry=args.from_entry,
+            destination_entry=args.to_entry,
+            evidence=_csv(args.evidence),
+            data=_csv(args.data),
+            retention=_csv(args.retention),
+            select_all=args.all,
+            document_maps=tuple(map(tuple, args.document_map)),
+            path_maps=tuple(map(tuple, args.path_map)),
+            data_maps=tuple(map(tuple, args.data_map)),
+            evidence_maps=tuple(map(tuple, args.evidence_map)),
+            retention_maps=tuple(map(tuple, args.retention_map)),
+            dry_run=args.dry_run,
+        ),
+    )
+
+
+def _csv(value: str | None) -> tuple[str, ...]:
+    """Decode one nonempty comma-separated selector list."""
+
+    if value is None:
+        return ()
+    items = tuple(value.split(","))
+    if not items or any(not item or item != item.strip() for item in items):
+        raise ActionError("reorganize.selector.invalid", str(value))
+    if len(items) != len(set(items)):
+        raise ActionError("reorganize.selector.duplicate", str(value))
+    return items
 
 
 def _dispatch_discover(arguments: Sequence[str]) -> int:

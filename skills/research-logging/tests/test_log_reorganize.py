@@ -82,6 +82,34 @@ class ReorganizeHelpTests(unittest.TestCase):
         self.assertNotIn("retire", transfer.stdout)
         self.assertNotIn("pyrun", transfer.stdout)
 
+    def test_help_does_not_import_reorganize_implementations(self) -> None:
+        code = f"""
+import json
+import sys
+sys.path.insert(0, {str(SCRIPT_ROOT)!r})
+from log_commands.dispatcher import main
+for arguments in (["reorganize", "--help"], ["reorganize", "transfer", "--help"]):
+    try:
+        main(arguments)
+    except SystemExit as error:
+        assert error.code == 0
+print(json.dumps({{
+    "identity": "log_commands.reorganize" in sys.modules,
+    "transfer": "log_commands.reorganize_transfer" in sys.modules,
+}}))
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout.splitlines()[-1]),
+            {"identity": False, "transfer": False},
+        )
+
 
 class ReorganizeIdentityTests(unittest.TestCase):
     def test_update_entry_verifies_markdown_then_renames_the_folder(self) -> None:

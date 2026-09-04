@@ -144,29 +144,36 @@ destination.
 Given a Review finding that names a discoverability or ownership problem,
 Review may recommend a specific Reorganize action but does not apply it. An
 explicit Reorganize request or approval loads only the Reorganize operation.
-The operation then loads naming or entry-structure guidance only when the
-requested change needs it and requires approval before adding an unrequested
-document boundary or deleting a file.
+The operation then loads exactly one focused identity, same-entry document, or
+cross-entry transfer workflow unless the authorized change spans families.
 
-Given an explicit request to rename a document or entry folder, Reorganize
-preserves the stable entry ID and research meaning and updates affected summary
-links, local links, anchors, recorded commands, and evidence `document` paths.
-It leaves unrelated registry fields and generated validation state unchanged.
+Given an explicit request to change an entry date, slug, or title, Reorganize
+edits the heading, summary, and affected links first, then uses `update-entry`
+to verify the Markdown and apply only the closed identity consequences. A
+reorder is the explicit exception that assigns new sequential entry IDs and
+uses the complete old-ID order in one simultaneous operation.
 
 Given an approved move of a section between documents in the same entry,
 Reorganize moves the complete Markdown section and updates only the links,
-anchors, marker associations, and evidence `document` paths affected by that
-move. It does not move entry-root support material without a stated need.
+anchors, and marker associations affected by that move, then uses one
+same-entry transfer for the selected evidence associations. It does not move
+entry-root support material without a stated need.
 
 Given an approved split of one entry document, Reorganize keeps the same entry
 folder and entry ID, creates the approved suffixed documents, distributes
 complete sections, keeps shared support material at the entry root, and updates
-affected summary and local links and evidence document paths.
+affected summary and local links before one selected same-entry transfer.
 
 Given an approved merge of same-entry documents, Reorganize moves complete
 sections into the chosen surviving document, updates affected links and
-evidence document paths, and deletes the empty source document last. It does
-not rewrite the moved research content.
+markers, invokes one selected same-entry transfer, and deletes the empty source
+document last. It does not rewrite the moved research content.
+
+Given an approved move between stable entries, Reorganize moves the Markdown
+and selected support files first, then supplies every affected record and
+mapping to one cross-entry transfer and completes its reported destination
+reruns. A stable-entry merge removes the emptied source summary item and uses a
+separate `remove-empty-entry`; transfer never hides that deletion.
 
 Given a requested structural change that would remove active experimental work
 or its owned material as superseded, Reorganize stops before editing and asks
@@ -354,9 +361,10 @@ identity. A document move updates `document`; a source or presentation change
 updates only the affected record fields.
 
 Given an approved Reorganize move, Reorganize preserves stable evidence IDs and
-repairs document paths or summary entry references that became stale. It does
-not change the statistic, transformation, summary wording, or set of summary
-references without separate authority.
+edits marker locations and summary entry references first. The selected CLI
+transfer then updates the closed document association. It does not change the
+statistic, transformation, summary wording, or set of summary references
+without separate authority.
 
 Review reports missing, duplicate, extra, malformed, or structurally stale
 records, markers, and references. It checks ID uniqueness, kind values, source

@@ -5,31 +5,27 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
 REFERENCES = SKILL / "references"
-CASES = SKILL / "tests" / "reorganize-candidate-cases.md"
+CASES = SKILL / "tests" / "reorganize-workflow-cases.md"
 
-CANDIDATES = {
+ROUTES = {
     "identity": "operation-reorganize-identity.md",
     "documents": "operation-reorganize-documents.md",
     "transfer": "operation-reorganize-transfer.md",
 }
 
 
-class ReorganizeCandidateSurfaceTests(unittest.TestCase):
-    def test_candidate_references_remain_unlinked_before_activation(self) -> None:
-        active = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (SKILL / "SKILL.md", *REFERENCES.glob("*.md"))
-            if path.name not in CANDIDATES.values()
-        )
-        for name in CANDIDATES.values():
-            self.assertNotIn(name, active)
+class ReorganizeSurfaceTests(unittest.TestCase):
+    def test_compact_router_links_each_focused_reference_once(self) -> None:
+        router = (REFERENCES / "operation-reorganize.md").read_text(encoding="utf-8")
+        for name in ROUTES.values():
+            self.assertEqual(router.count(f"references/{name}"), 1)
+        self.assertIn("read exactly one focused reference", router)
+        self.assertNotIn("Reorganize has no CLI operation", router)
 
-    def test_each_candidate_owns_only_its_workflow_family(self) -> None:
-        identity = (REFERENCES / CANDIDATES["identity"]).read_text(encoding="utf-8")
-        documents = (REFERENCES / CANDIDATES["documents"]).read_text(
-            encoding="utf-8"
-        )
-        transfer = (REFERENCES / CANDIDATES["transfer"]).read_text(encoding="utf-8")
+    def test_each_reference_owns_only_its_workflow_family(self) -> None:
+        identity = (REFERENCES / ROUTES["identity"]).read_text(encoding="utf-8")
+        documents = (REFERENCES / ROUTES["documents"]).read_text(encoding="utf-8")
+        transfer = (REFERENCES / ROUTES["transfer"]).read_text(encoding="utf-8")
 
         self.assertIn("log reorganize update-entry --help", identity)
         self.assertIn("log reorganize reorder --help", identity)
@@ -50,8 +46,7 @@ class ReorganizeCandidateSurfaceTests(unittest.TestCase):
 
     def test_every_workflow_has_order_and_stop_conditions(self) -> None:
         combined = "\n".join(
-            (REFERENCES / name).read_text(encoding="utf-8")
-            for name in CANDIDATES.values()
+            (REFERENCES / name).read_text(encoding="utf-8") for name in ROUTES.values()
         )
         for phrase in (
             "Markdown",
@@ -70,7 +65,7 @@ class ReorganizeCandidateSurfaceTests(unittest.TestCase):
         ):
             self.assertNotIn(schema, combined)
 
-    def test_candidate_behavior_corpus_covers_distinct_compositions(self) -> None:
+    def test_behavior_corpus_covers_distinct_compositions(self) -> None:
         cases = CASES.read_text(encoding="utf-8")
         for phrase in (
             "title-only",

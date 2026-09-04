@@ -192,15 +192,19 @@ authorize moving earlier material.
 Reorganize a log only when you request it or approve a recommendation from
 Review. A recommendation does not change the log by itself. Rename, split,
 merge, move, or remove material without changing stable entry IDs or research
-meaning. Update all affected links when an entry folder, document title, or
-section heading changes. Split an entry only when distinct topics impair
-retrieval; length alone is not a reason. Split documents stay in the same entry
-folder and use suffixes such as `e002a.md` and `e002b.md`.
+meaning, except that an explicitly requested reorder assigns new sequential
+entry IDs. The agent makes the semantic and Markdown changes; the tested
+`log reorganize` commands apply only closed identity and coordinated registry
+changes after verifying that work. Split an entry only when distinct topics
+impair retrieval; length alone is not a reason. Split documents stay in the
+same entry folder and use suffixes such as `e002a.md` and `e002b.md`.
 
 Approve renames, splits, and merges before they change document boundaries.
 Keep shared entry material in the parent entry folder and update affected
 summary links, citations, commands, evidence records, and presentation markers
-together.
+together. Cross-entry moves name every affected record explicitly and report
+any destination producer reruns that must finish before the reorganization is
+complete. The tools do not edit Markdown or infer what should move.
 
 If removal would replace experimental content, request Replace explicitly
 instead.

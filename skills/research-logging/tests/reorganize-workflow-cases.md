@@ -1,7 +1,6 @@
-# Reorganize Candidate Behavior Cases
+# Reorganize Workflow Behavior Cases
 
-These cases exercise the unlinked Phase 3 candidate references only. They do
-not activate CLI-driven Reorganize.
+These cases exercise the activated CLI-driven Reorganize references.
 
 - A date, slug, or title change edits the heading and summary first, then uses
   `update-entry`; a title-only change expects no filesystem mutation.
@@ -25,4 +24,3 @@ not activate CLI-driven Reorganize.
 - Ambiguous selection, unresolved dependencies, stale source use, and failed
   transfer stop without direct registry edits.
 - A nonempty source after merge stops before empty-entry removal.
-

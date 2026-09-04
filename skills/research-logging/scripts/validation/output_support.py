@@ -32,12 +32,17 @@ def resolve_output_support(
     material: str,
     *,
     entry_root: Path,
+    project_root: Path,
     support: PyrunOutputsFile,
 ) -> ResolvedOutputSupport:
     """Resolve exact support, including an owning output-directory record."""
 
     material_path = Path(material).resolve()
-    key = portable_output_path(material_path, entry_root=entry_root)
+    key = portable_output_path(
+        material_path,
+        entry_root=entry_root,
+        project_root=project_root,
+    )
     record = support.outputs.get(key)
     if record is not None:
         return ResolvedOutputSupport(material, key, material_path, record)
@@ -57,7 +62,11 @@ def resolve_output_support(
         )
     if covering:
         path = next(iter(covering))
-        key = portable_output_path(path, entry_root=entry_root)
+        key = portable_output_path(
+            path,
+            entry_root=entry_root,
+            project_root=project_root,
+        )
         return ResolvedOutputSupport(material, key, path, support.outputs.get(key))
     return ResolvedOutputSupport(material, key, material_path, None)
 
@@ -67,12 +76,17 @@ def confirmed_output_record(
     material: str,
     *,
     entry_root: Path,
+    project_root: Path,
     support: PyrunOutputsFile,
 ) -> bool:
     """Return whether one exact producer output has a confirmed record."""
 
     resolved = resolve_output_support(
-        invocation, material, entry_root=entry_root, support=support
+        invocation,
+        material,
+        entry_root=entry_root,
+        project_root=project_root,
+        support=support,
     )
     return resolved.record is not None and resolved.record.confirmed
 

@@ -34,6 +34,7 @@ from .pyrun_contract import (
     parse_pyrun_arguments,
     split_argument_values,
 )
+from .pyrun_outputs import portable_output_path
 from .static_shell import (
     StaticCommand,
     StaticFailure,
@@ -246,6 +247,7 @@ class _RoleState:
     context: CommandContext
     relationships: list[MaterialRelationship]
     collections: list[MaterialCollection]
+    via_pyrun: bool
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,7 @@ class _RelationshipRequest:
     proof: str
     target: str | None
     expanded: bool = False
+    portable_output: bool = False
 
 
 def discover_commands(
@@ -978,11 +981,11 @@ def _relationships(
 ]:
     relationships: list[MaterialRelationship] = []
     collections: list[MaterialCollection] = []
-    state = _RoleState(context, relationships, collections)
     candidates: list[str] = []
     annotated = annotation.roles if annotation else {}
     runner_roles = command.runner_roles
     via_pyrun = Path(command.tokens[command.executable_index]).name == "pyrun"
+    state = _RoleState(context, relationships, collections, via_pyrun)
     options = {occurrence.name for occurrence in command.options}
     positionals = {f"@{index}" for index in range(1, len(command.positionals) + 1)}
     missing = set(annotated) - options - positionals
@@ -1004,7 +1007,13 @@ def _relationships(
     for target, value in command.capture_outputs:
         relationships.append(
             _relationship(
-                _RelationshipRequest(value, "output", "pyrun-capture", target),
+                _RelationshipRequest(
+                    value,
+                    "output",
+                    "pyrun-capture",
+                    target,
+                    portable_output=True,
+                ),
                 context,
             )
         )
@@ -1149,7 +1158,13 @@ def _apply_role(
             state.relationships.extend(relationships)
             return
         state.collections.append(
-            _directory_collection(value, direction, target, context)
+            _directory_collection(
+                value,
+                direction,
+                target,
+                context,
+                portable_output=state.via_pyrun,
+            )
         )
         state.relationships.extend(
             _relationship(
@@ -1167,7 +1182,14 @@ def _apply_role(
     state.relationships.append(
         named
         or _relationship(
-            _RelationshipRequest(value, direction, "option", target), context
+            _RelationshipRequest(
+                value,
+                direction,
+                "option",
+                target,
+                portable_output=state.via_pyrun and direction == "output",
+            ),
+            context,
         )
     )
 
@@ -1204,6 +1226,8 @@ def _relationship(
         if named is not None:
             return named
         _reject_raw_input(request.value, context)
+    if request.portable_output:
+        _require_portable_output(request.value, context)
     path = (
         Path(request.value)
         if request.expanded
@@ -1352,12 +1376,19 @@ def _named_directory_collection(
 
 
 def _directory_collection(
-    value: str, direction: str, target: str, context: CommandContext
+    value: str,
+    direction: str,
+    target: str,
+    context: CommandContext,
+    *,
+    portable_output: bool = False,
 ) -> MaterialCollection:
     root = _expand_path(value, context)
     if root is None or not root.is_dir():
         _fail("collection.membership.invalid", context.document, {"directory": value})
-    if not _command_path_in_scope(root, context, entry_only=True):
+    if portable_output:
+        _require_portable_output(value, context)
+    elif not _command_path_in_scope(root, context, entry_only=True):
         _fail("collection.membership.invalid", context.document, {"directory": value})
     try:
         descendants = bounded_descendants(root, maximum_entries=MAX_COLLECTION_MEMBERS)
@@ -1383,6 +1414,24 @@ def _directory_collection(
     return MaterialCollection(
         direction, "directory", target, members, root.resolve().as_posix()
     )
+
+
+def _require_portable_output(value: str, context: CommandContext) -> None:
+    """Require one authored output to use the shared portable path contract."""
+
+    try:
+        portable_output_path(
+            value,
+            entry_root=context.entry_root,
+            project_root=context.project_root,
+            authored=True,
+        )
+    except MechanicalContractError as error:
+        _fail(
+            "pyrun.output.identity_invalid",
+            context.document,
+            error.observed,
+        )
 
 
 def _validate_members(members: Sequence[str], subject: str) -> None:

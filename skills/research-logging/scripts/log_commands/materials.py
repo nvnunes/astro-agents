@@ -59,6 +59,7 @@ class LogMaterials:
             invocation,
             material,
             entry_root=root,
+            project_root=self.project_root,
             support=self._output_support(invocation.material_owner, root),
         )
 
@@ -80,6 +81,7 @@ class LogMaterials:
                         invocation,
                         material,
                         entry_root=root,
+                        project_root=self.project_root,
                         support=support,
                     )
                     canonical = resolved.path.resolve().as_posix()
@@ -139,6 +141,7 @@ class LogMaterials:
                         invocation,
                         output.path,
                         entry_root=entry_root,
+                        project_root=self.project_root,
                         support=support,
                     )
                 except ValueError:
@@ -172,7 +175,11 @@ class LogMaterials:
             return support
         path = root / "pyrun-outputs.json"
         support = (
-            load_pyrun_outputs(path, entry_root=root)
+            load_pyrun_outputs(
+                path,
+                entry_root=root,
+                project_root=self.project_root,
+            )
             if path.exists() or path.is_symlink()
             else empty_pyrun_outputs(root)
         )

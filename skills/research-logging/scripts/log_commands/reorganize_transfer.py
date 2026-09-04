@@ -49,7 +49,7 @@ from validation.retention import (
 )
 from validation.transformation import compare_presentation, evaluate_transformation
 
-from .context import EntryContext
+from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult, TransferArguments
 from .scaffold import observe_physical_entries
 from .storage import PublicationError, atomic_write_texts
@@ -500,7 +500,12 @@ def _retired_support(
     path = source.root / "pyrun-outputs.json"
     if not path.exists() and not path.is_symlink():
         return None, ()
-    support = load_pyrun_outputs(path, entry_root=source.root)
+    project_root = resolve_project_root(source.log.root)
+    support = load_pyrun_outputs(
+        path,
+        entry_root=source.root,
+        project_root=project_root,
+    )
     selected_paths = set(plan.maps["path"])
     selected_paths.update(
         item.location
@@ -534,7 +539,11 @@ def _retired_support(
             raise ActionError("reorganize.transfer.support_still_current", output)
     if not retire:
         return None, ()
-    result = without_output_support(source.root, retire)
+    result = without_output_support(
+        source.root,
+        retire,
+        project_root=project_root,
+    )
     reruns: tuple[dict[str, object], ...] = tuple(
         {
             "entry": destination.id,

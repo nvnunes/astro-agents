@@ -431,6 +431,60 @@ tool --output-data {external}
                 external.resolve().as_posix(),
             )
 
+    def test_pyrun_accepts_project_file_and_directory_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            write(context.entry_root / "scripts/run.py", "# fixture\n")
+            write(root / "artifacts/trials/member.csv", "value\n1\n")
+            text = """```bash
+./pyrun scripts/run.py \\
+  --output-file "<project>/artifacts/result.csv" \\
+  --output-dir "<project>/artifacts/trials"
+```
+"""
+
+            result = COMMAND.discover_commands(text, context)
+
+            self.assertFalse(result.failures)
+            invocation = result.invocations[0]
+            self.assertEqual(
+                {item.path for item in invocation.outputs},
+                {
+                    (root / "artifacts/result.csv").resolve().as_posix(),
+                    (root / "artifacts/trials/member.csv").resolve().as_posix(),
+                },
+            )
+            self.assertEqual(
+                invocation.collections[0].root,
+                (root / "artifacts/trials").resolve().as_posix(),
+            )
+
+    def test_pyrun_rejects_nonportable_project_output_spellings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            write(context.entry_root / "scripts/run.py", "# fixture\n")
+            outside = root.parent / f"{root.name}-outside.csv"
+            values = (
+                (root / "absolute.csv").as_posix(),
+                outside.as_posix(),
+                "../../outside.csv",
+                "<project>",
+                "<project>/../outside.csv",
+            )
+
+            for value in values:
+                with self.subTest(value=value):
+                    result = COMMAND.discover_commands(
+                        "```bash\n"
+                        f'./pyrun scripts/run.py --output-file "{value}"\n'
+                        "```\n",
+                        context,
+                    )
+                    self.assertFalse(result.invocations)
+                    self.assertEqual(len(result.failures), 1)
+
     def test_script_filenames_have_no_provenance_classification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

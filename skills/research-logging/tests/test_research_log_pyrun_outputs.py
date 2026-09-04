@@ -13,6 +13,8 @@ from validation.pyrun_outputs import (
     PyrunOutputsError,
     ScriptSupport,
     load_pyrun_outputs,
+    output_target_path,
+    portable_output_path,
     update_pyrun_outputs,
 )
 
@@ -22,6 +24,65 @@ def digest(value: bytes) -> str:
 
 
 class PyrunOutputsContractTests(unittest.TestCase):
+    def test_project_output_key_is_portable_and_resolves_to_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            entry = project / "docs/log/entries/entry"
+            entry.mkdir(parents=True)
+            target = project / "artifacts/result.csv"
+
+            key = portable_output_path(
+                "<project>/artifacts/result.csv",
+                entry_root=entry,
+                project_root=project,
+                authored=True,
+            )
+
+            self.assertEqual(key, "<project>/artifacts/result.csv")
+            self.assertEqual(
+                portable_output_path(
+                    target,
+                    entry_root=entry,
+                    project_root=project,
+                ),
+                key,
+            )
+            self.assertEqual(
+                output_target_path(
+                    key,
+                    entry_root=entry,
+                    project_root=project,
+                    authored=True,
+                ),
+                target.resolve(),
+            )
+
+    def test_project_spelling_of_entry_material_has_one_canonical_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            entry = project / "docs/log/entries/entry"
+            entry.mkdir(parents=True)
+            target = entry / "data/result.csv"
+            project_key = "<project>/docs/log/entries/entry/data/result.csv"
+
+            self.assertEqual(
+                portable_output_path(
+                    project_key,
+                    entry_root=entry,
+                    project_root=project,
+                    authored=True,
+                ),
+                "data/result.csv",
+            )
+            self.assertEqual(
+                portable_output_path(
+                    target,
+                    entry_root=entry,
+                    project_root=project,
+                ),
+                "data/result.csv",
+            )
+
     def test_output_key_is_unique_portable_identity_and_not_repeated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "entry"

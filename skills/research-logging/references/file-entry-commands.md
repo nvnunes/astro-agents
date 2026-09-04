@@ -74,7 +74,9 @@ options would be unwieldy, retain a manifest of resolved settings and expose
 its path in the command.
 
 Expose every retained entry-local output through a stable relative path value
-in the command. A collection may use a directory path value. A retained
+in the command. When a command deliberately writes elsewhere in the current
+Git project, spell the target as `<project>/...`; raw absolute paths and parent
+traversal are invalid. A collection may use a directory path value. A retained
 command log may instead use an explicit shell capture target. A retained
 manifest is an ordinary named file input and never expands other relationships.
 

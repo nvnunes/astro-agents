@@ -38,6 +38,7 @@ from validation.pyrun_outputs import (
     OutputSupport,
     PyrunOutputsError,
     ScriptSupport,
+    output_target_path,
     portable_output_path,
     quarantine_invalid_pyrun_outputs,
     update_pyrun_outputs_locked,
@@ -264,9 +265,15 @@ def _declared_outputs(
             outputs.append((value, None))
     result: dict[str, tuple[Path, str | None]] = {}
     for raw, kind in outputs:
-        expanded = _reserved_tokens(raw, root, log)
-        path = Path(expanded) if Path(expanded).is_absolute() else entry / expanded
-        key = portable_output_path(path, entry_root=entry)
+        key = portable_output_path(
+            raw,
+            entry_root=entry,
+            project_root=root,
+            authored=True,
+        )
+        path = output_target_path(
+            key, entry_root=entry, project_root=root, authored=True
+        )
         if key in result:
             raise SystemExit(f"pyrun: duplicate output target: {key}")
         result[key] = (path, kind)
@@ -278,9 +285,12 @@ def _capture_paths(
 ) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for option, raw in captures.items():
-        expanded = _reserved_tokens(raw, root, log)
-        path = Path(expanded) if Path(expanded).is_absolute() else entry / expanded
-        portable_output_path(path, entry_root=entry)
+        path = output_target_path(
+            raw,
+            entry_root=entry,
+            project_root=root,
+            authored=True,
+        )
         result[option] = path
     return result
 
@@ -482,7 +492,7 @@ def main(argv: list[str]) -> int:
             entry_lock(operation_entry),
             FingerprintCache(root, writable=True) as fingerprint_cache,
         ):
-            quarantine_invalid_pyrun_outputs(entry)
+            quarantine_invalid_pyrun_outputs(entry, project_root=root)
             data = _load_data(entry)
             script_argument, script_args, parameters, captures, roles = (
                 _execution_layout(argv)
@@ -565,7 +575,7 @@ def main(argv: list[str]) -> int:
                     tuple(sorted(observed_inputs.items())),
                 )
             if records:
-                update_pyrun_outputs_locked(entry, records)
+                update_pyrun_outputs_locked(entry, records, project_root=root)
             return returncode
     except PyrunOutputsError as error:
         raise SystemExit(f"pyrun: {error}") from error

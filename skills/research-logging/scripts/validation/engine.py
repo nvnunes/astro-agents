@@ -105,10 +105,12 @@ from .provenance import (
     require_origin_boundary,
 )
 from .pyrun_outputs import (
+    PROJECT_OUTPUT_PREFIX,
     OutputSupport,
     PyrunOutputsFile,
     empty_pyrun_outputs,
     load_pyrun_outputs,
+    output_target_path,
     portable_output_path,
 )
 from .retention import RetentionFile, load_retention_file
@@ -900,7 +902,11 @@ def _load_output_support(state: _ScanState) -> None:
                     {"reason": "missing_digest"},
                 )
             state.output_file_observations[path.resolve().as_posix()] = digest
-            state.output_files[owner] = load_pyrun_outputs(path, entry_root=root)
+            state.output_files[owner] = load_pyrun_outputs(
+                path,
+                entry_root=root,
+                project_root=state.project_root,
+            )
         except MechanicalContractError as error:
             state.output_record_errors[owner] = error
             state.checks.append(
@@ -924,7 +930,11 @@ def _output_record(
 ) -> tuple[str, OutputSupport | None]:
     root = _entry_root_for_owner(invocation.material_owner, state)
     try:
-        key = portable_output_path(material, entry_root=root)
+        key = portable_output_path(
+            material,
+            entry_root=root,
+            project_root=state.project_root,
+        )
     except MechanicalContractError:
         _fail(
             "pyrun.output.identity_invalid",
@@ -947,6 +957,7 @@ def _has_confirmed_output_record(
             invocation,
             material,
             entry_root=root,
+            project_root=state.project_root,
             support=support,
         )
     except MechanicalContractError:
@@ -976,6 +987,7 @@ def _validate_output_support(
         invocation,
         material,
         entry_root=root,
+        project_root=state.project_root,
         support=support,
     )
     current_output = _observe_provenance_path(resolved.path, state)
@@ -1689,7 +1701,11 @@ def _record_missing_outputs(state: _ScanState) -> None:
             path = Path(canonical)
             if path.is_file() or path.is_dir():
                 continue
-            key = portable_output_path(canonical, entry_root=root)
+            key = portable_output_path(
+                canonical,
+                entry_root=root,
+                project_root=state.project_root,
+            )
             producers.setdefault(canonical, []).append((invocation, key))
     for canonical, declarations in sorted(producers.items()):
         invocation, key = declarations[0]
@@ -1753,7 +1769,14 @@ def _record_unmatched_outputs(state: _ScanState) -> set[str]:
     for owner, output_file in sorted(state.output_files.items()):
         root = _entry_root_for_owner(owner, state)
         for key in sorted(output_file.outputs):
-            canonical = (root / key).resolve().as_posix()
+            if key.startswith(PROJECT_OUTPUT_PREFIX):
+                continue
+            canonical = output_target_path(
+                key,
+                entry_root=root,
+                project_root=state.project_root,
+                authored=True,
+            ).resolve().as_posix()
             if canonical in graph_outputs:
                 continue
             unmatched.add(canonical)

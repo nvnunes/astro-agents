@@ -23,6 +23,7 @@ from .json_codec import V2JsonError, decode_json
 PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
 PYRUN_OUTPUTS_FILENAME = "pyrun-outputs.json"
 PYRUN_OUTPUTS_BACKUP_RE = re.compile(r"pyrun-outputs\.json(?:\.[2-9][0-9]*)?\.bak\Z")
+PROJECT_OUTPUT_PREFIX = "<project>/"
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUTS = 10_000
 MAX_INPUTS = 128
@@ -87,7 +88,9 @@ class PyrunOutputsFile:
         ) + "\n"
 
 
-def load_pyrun_outputs(path: Path, *, entry_root: Path) -> PyrunOutputsFile:
+def load_pyrun_outputs(
+    path: Path, *, entry_root: Path, project_root: Path | None = None
+) -> PyrunOutputsFile:
     """Read one strict entry-root output-support file."""
 
     expected = entry_root.resolve() / PYRUN_OUTPUTS_FILENAME
@@ -110,7 +113,12 @@ def load_pyrun_outputs(path: Path, *, entry_root: Path) -> PyrunOutputsFile:
         _invalid(path, {"outputs": len(raw_outputs), "limit": MAX_OUTPUTS})
     outputs: dict[str, OutputSupport] = {}
     for key, raw_record in raw_outputs.items():
-        output = portable_output_path(key, entry_root=entry_root)
+        output = portable_output_path(
+            key,
+            entry_root=entry_root,
+            project_root=project_root,
+            authored=True,
+        )
         if output != key:
             _invalid(path, {"output": key, "canonical": output})
         outputs[key] = _decode_record(raw_record, f"{path}:outputs[{key!r}]")
@@ -125,18 +133,29 @@ def empty_pyrun_outputs(entry_root: Path) -> PyrunOutputsFile:
 
 
 def without_output_support(
-    entry_root: Path, outputs: tuple[str, ...]
+    entry_root: Path,
+    outputs: tuple[str, ...],
+    *,
+    project_root: Path | None = None,
 ) -> PyrunOutputsFile:
     """Build validated support with exact selected output records retired."""
 
     root = entry_root.resolve()
     path = root / PYRUN_OUTPUTS_FILENAME
     current = (
-        load_pyrun_outputs(path, entry_root=root)
+        load_pyrun_outputs(path, entry_root=root, project_root=project_root)
         if path.exists() or path.is_symlink()
         else empty_pyrun_outputs(root)
     )
-    selected = tuple(portable_output_path(item, entry_root=root) for item in outputs)
+    selected = tuple(
+        portable_output_path(
+            item,
+            entry_root=root,
+            project_root=project_root,
+            authored=True,
+        )
+        for item in outputs
+    )
     if len(selected) != len(set(selected)):
         _invalid(path, {"reason": "duplicate_output_retirement"})
     missing = sorted(set(selected) - set(current.outputs))
@@ -147,35 +166,71 @@ def without_output_support(
         root,
         {key: value for key, value in current.outputs.items() if key not in selected},
     )
-    _validated_serialization(result)
+    _validated_serialization(result, project_root=project_root)
     return result
 
 
-def portable_output_path(value: str | Path, *, entry_root: Path) -> str:
-    """Return the exact entry-relative identity of one output artifact."""
+def portable_output_path(
+    value: str | Path,
+    *,
+    entry_root: Path,
+    project_root: Path | None = None,
+    authored: bool = False,
+) -> str:
+    """Return one canonical entry- or project-relative output identity."""
 
     raw = value.as_posix() if isinstance(value, Path) else value
     if not isinstance(raw, str) or not raw or len(raw.encode()) > MAX_STRING_BYTES:
         _invalid("output", {"path": raw})
     root = entry_root.resolve()
-    lexical = Path(raw) if Path(raw).is_absolute() else root / raw
-    relative: Path | None = None
-    try:
-        relative = lexical.absolute().relative_to(root)
-    except ValueError:
-        canonical = lexical.resolve()
-        for name in ("data", "images"):
-            material_root = root / name
-            if not material_root.is_symlink():
-                continue
-            try:
-                member = canonical.relative_to(material_root.resolve())
-            except ValueError:
-                continue
-            relative = Path(name) / member
-            break
+    project = (project_root or root).resolve()
+    lexical, project_declared = _output_lexical_path(
+        raw, root=root, project=project, authored=authored
+    )
+    entry_key = _entry_output_key(raw, lexical=lexical, root=root)
+    if entry_key is not None:
+        return entry_key
+    return _project_output_key(
+        raw,
+        lexical=lexical,
+        project=project,
+        project_declared=project_declared,
+        authored=authored,
+    )
+
+
+def _output_lexical_path(
+    raw: str, *, root: Path, project: Path, authored: bool
+) -> tuple[Path, bool]:
+    """Resolve syntax without accepting an implicit project-level output."""
+
+    project_declared = raw.startswith(PROJECT_OUTPUT_PREFIX)
+    if raw == "<project>" or raw.startswith("<project>") and not project_declared:
+        _invalid("output", {"path": raw, "reason": "project_path_invalid"})
+    if project_declared:
+        suffix = raw.removeprefix(PROJECT_OUTPUT_PREFIX)
+        segments = suffix.split("/")
+        if (
+            not suffix
+            or suffix.startswith("/")
+            or "\\" in suffix
+            or any(character in suffix for character in "<>")
+            or any(part in {"", ".", ".."} for part in segments)
+        ):
+            _invalid("output", {"path": raw, "reason": "project_path_invalid"})
+        return project.joinpath(*segments), True
+    path = Path(raw)
+    if authored and path.is_absolute():
+        _invalid("output", {"path": raw, "reason": "absolute_path"})
+    return (path if path.is_absolute() else root / path), False
+
+
+def _entry_output_key(raw: str, *, lexical: Path, root: Path) -> str | None:
+    """Return the canonical entry-material key when the target belongs to it."""
+
+    relative = _entry_output_relative(lexical, root)
     if relative is None:
-        _invalid("output", {"path": raw, "reason": "outside_entry"})
+        return None
     portable = PurePosixPath(*relative.parts).as_posix()
     if (
         portable in {"", "."}
@@ -186,32 +241,128 @@ def portable_output_path(value: str | Path, *, entry_root: Path) -> str:
     return portable
 
 
+def _entry_output_relative(lexical: Path, root: Path) -> Path | None:
+    """Map lexical, platform-aliased, and supported material-root paths."""
+
+    try:
+        return lexical.absolute().relative_to(root)
+    except ValueError:
+        pass
+    canonical = lexical.resolve()
+    try:
+        return canonical.relative_to(root)
+    except ValueError:
+        return _symlinked_material_relative(canonical, root)
+
+
+def _symlinked_material_relative(canonical: Path, root: Path) -> Path | None:
+    """Map a target beneath one supported entry material-root symlink."""
+
+    for name in ("data", "images"):
+        material_root = root / name
+        if not material_root.is_symlink():
+            continue
+        try:
+            member = canonical.relative_to(material_root.resolve())
+        except ValueError:
+            continue
+        return Path(name) / member
+    return None
+
+
+def _project_output_key(
+    raw: str,
+    *,
+    lexical: Path,
+    project: Path,
+    project_declared: bool,
+    authored: bool,
+) -> str:
+    """Return a portable project key after enforcing both project boundaries."""
+
+    if authored and not project_declared:
+        _invalid("output", {"path": raw, "reason": "outside_entry"})
+    canonical = lexical.resolve()
+    try:
+        canonical_relative = canonical.relative_to(project)
+    except ValueError:
+        _invalid("output", {"path": raw, "reason": "outside_project"})
+    if project_declared:
+        project_relative = lexical.absolute().relative_to(project)
+        if project_relative != canonical_relative:
+            _invalid("output", {"path": raw, "reason": "project_path_alias"})
+    else:
+        project_relative = canonical_relative
+    if not project_relative.parts:
+        _invalid("output", {"path": raw, "reason": "project_root"})
+    return PROJECT_OUTPUT_PREFIX + PurePosixPath(*project_relative.parts).as_posix()
+
+
+def output_target_path(
+    value: str | Path,
+    *,
+    entry_root: Path,
+    project_root: Path | None = None,
+    authored: bool = False,
+) -> Path:
+    """Resolve one canonical portable output identity to its lexical target."""
+
+    root = entry_root.resolve()
+    project = (project_root or root).resolve()
+    key = portable_output_path(
+        value,
+        entry_root=root,
+        project_root=project,
+        authored=authored,
+    )
+    if key.startswith(PROJECT_OUTPUT_PREFIX):
+        suffix = key.removeprefix(PROJECT_OUTPUT_PREFIX)
+        return project.joinpath(*PurePosixPath(suffix).parts)
+    return root.joinpath(*PurePosixPath(key).parts)
+
+
 def update_pyrun_outputs(
-    entry_root: Path, updates: Mapping[str, OutputSupport]
+    entry_root: Path,
+    updates: Mapping[str, OutputSupport],
+    *,
+    project_root: Path | None = None,
 ) -> PyrunOutputsFile:
     """Atomically replace support for only the supplied output identities."""
 
-    return _update_pyrun_outputs(entry_root, updates, lock_held=False)
+    return _update_pyrun_outputs(
+        entry_root, updates, project_root=project_root, lock_held=False
+    )
 
 
 def update_pyrun_outputs_locked(
-    entry_root: Path, updates: Mapping[str, OutputSupport]
+    entry_root: Path,
+    updates: Mapping[str, OutputSupport],
+    *,
+    project_root: Path | None = None,
 ) -> PyrunOutputsFile:
     """Update output support while the shared stable entry lock is held."""
 
-    return _update_pyrun_outputs(entry_root, updates, lock_held=True)
+    return _update_pyrun_outputs(
+        entry_root, updates, project_root=project_root, lock_held=True
+    )
 
 
 def _update_pyrun_outputs(
     entry_root: Path,
     updates: Mapping[str, OutputSupport],
     *,
+    project_root: Path | None,
     lock_held: bool,
 ) -> PyrunOutputsFile:
     root = entry_root.resolve()
     path = root / PYRUN_OUTPUTS_FILENAME
     normalized = {
-        portable_output_path(key, entry_root=root): value
+        portable_output_path(
+            key,
+            entry_root=root,
+            project_root=project_root,
+            authored=True,
+        ): value
         for key, value in updates.items()
     }
     if len(normalized) != len(updates):
@@ -219,14 +370,18 @@ def _update_pyrun_outputs(
     try:
         with nullcontext() if lock_held else _outputs_lock(path):
             current = (
-                load_pyrun_outputs(path, entry_root=root)
+                load_pyrun_outputs(
+                    path, entry_root=root, project_root=project_root
+                )
                 if path.exists()
                 else empty_pyrun_outputs(root)
             )
             outputs = dict(current.outputs)
             outputs.update(normalized)
             result = PyrunOutputsFile(path, root, outputs)
-            serialized = _validated_serialization(result)
+            serialized = _validated_serialization(
+                result, project_root=project_root
+            )
             _atomic_write(path, serialized)
             return result
     except OSError as error:
@@ -238,7 +393,9 @@ def _update_pyrun_outputs(
         ) from error
 
 
-def quarantine_invalid_pyrun_outputs(entry_root: Path) -> None:
+def quarantine_invalid_pyrun_outputs(
+    entry_root: Path, *, project_root: Path | None = None
+) -> None:
     """Preserve malformed support, replace it empty, and require Repair."""
 
     root = entry_root.resolve()
@@ -246,10 +403,10 @@ def quarantine_invalid_pyrun_outputs(entry_root: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
     if path.is_symlink() or not path.is_file():
-        load_pyrun_outputs(path, entry_root=root)
+        load_pyrun_outputs(path, entry_root=root, project_root=project_root)
         return
     try:
-        load_pyrun_outputs(path, entry_root=root)
+        load_pyrun_outputs(path, entry_root=root, project_root=project_root)
         return
     except PyrunOutputsError:
         pass
@@ -288,13 +445,20 @@ def quarantine_invalid_pyrun_outputs(entry_root: Path) -> None:
     )
 
 
-def _validated_serialization(value: PyrunOutputsFile) -> str:
+def _validated_serialization(
+    value: PyrunOutputsFile, *, project_root: Path | None = None
+) -> str:
     """Return serialized state only when the writer and reader contracts agree."""
 
     if len(value.outputs) > MAX_OUTPUTS:
         _invalid(value.path, {"outputs": len(value.outputs), "limit": MAX_OUTPUTS})
     for key, record in value.outputs.items():
-        canonical = portable_output_path(key, entry_root=value.entry_root)
+        canonical = portable_output_path(
+            key,
+            entry_root=value.entry_root,
+            project_root=project_root,
+            authored=True,
+        )
         if canonical != key or not isinstance(record, OutputSupport):
             _invalid(value.path, {"output": key})
         _decode_record(record.as_dict(), f"{value.path}:outputs[{key!r}]")

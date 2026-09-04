@@ -670,6 +670,110 @@ target.mkdir()
             )
             self.assertEqual(record["parameters"], command[3:])
 
+    def test_success_records_portable_project_file_and_directory_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build_project.py").write_text(
+                """import argparse
+from pathlib import Path
+
+p = argparse.ArgumentParser()
+p.add_argument('--output-file')
+p.add_argument('--output-dir')
+a = p.parse_args()
+file = Path(a.output_file)
+file.parent.mkdir(parents=True, exist_ok=True)
+file.write_text('value\\n1\\n', encoding='utf-8')
+target = Path(a.output_dir)
+target.mkdir(parents=True)
+(target / 'member.csv').write_text('value\\n2\\n', encoding='utf-8')
+""",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PYRUN),
+                "scripts/build_project.py",
+                "--output-file",
+                "<project>/artifacts/result.csv",
+                "--output-dir",
+                "<project>/artifacts/trials",
+            ]
+
+            result = run(command, cwd=entry)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads((entry / "pyrun-outputs.json").read_text())
+            file_record = payload["outputs"]["<project>/artifacts/result.csv"]
+            directory_record = payload["outputs"]["<project>/artifacts/trials"]
+            self.assertEqual(file_record["fingerprint"]["algorithm"], "sha256")
+            self.assertEqual(
+                directory_record["fingerprint"]["algorithm"],
+                "directory-sha256-v1",
+            )
+            self.assertEqual(file_record["parameters"], command[3:])
+
+    def test_project_outputs_reject_nonportable_and_escaping_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            root = make_repo(root)
+            entry = make_entry(root)
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (root / "escaped").symlink_to(outside, target_is_directory=True)
+            (root / "aliased").symlink_to(root / "artifacts", target_is_directory=True)
+            invalid = (
+                str(root / "absolute.csv"),
+                str(outside / "outside.csv"),
+                "../../outside.csv",
+                "<project>",
+                "<project>/../outside.csv",
+                "<project>//outside.csv",
+                "<project>/escaped/outside.csv",
+                "<project>/aliased/outside.csv",
+            )
+
+            for target in invalid:
+                with self.subTest(target=target):
+                    result = run(
+                        [
+                            sys.executable,
+                            str(PYRUN),
+                            "scripts/print_args.py",
+                            "--output-data",
+                            target,
+                        ],
+                        cwd=entry,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_duplicate_entry_and_project_spellings_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            project_spelling = (
+                "<project>/" + (entry / "data/output.csv").relative_to(root).as_posix()
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/print_args.py",
+                    "--output-data",
+                    "data/output.csv",
+                    "--output-data",
+                    project_spelling,
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("duplicate output target", result.stderr)
+
     def test_input_change_during_execution_publishes_no_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

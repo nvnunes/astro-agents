@@ -2745,6 +2745,13 @@ projection is one Git repository input. Output kind comes from the stable
 target after successful execution. Captures remain file-only. The exact entry
 `data` and `images` roots remain invalid material targets.
 
+An output outside the owning entry must be authored as `<project>/...`. Its
+lexical and resolved target must be a non-root descendant of the current Git
+project. Raw absolute paths, parent traversal, malformed project paths, and
+symlink escapes are invalid. Entry-local `data/` and `images/` outputs retain
+their normalized entry-relative form. Static discovery and `pyrun` resolve the
+same canonical target and portable key.
+
 Role declarations are classification metadata. They are excluded from the
 persisted `parameters` vector and do not change output support when reordered
 without changing the resolved relationships. Capture options retain their
@@ -2811,8 +2818,11 @@ non-file at the current path is invalid and is not quarantined.
 }
 ```
 
-The top-level keys are exactly `schema` and `outputs`. Output keys are unique,
-normalized entry-relative paths beneath `data/` or `images/`. Each record has
+The top-level keys are exactly `schema` and `outputs`. Output keys are unique
+canonical identities: normalized entry-relative paths beneath `data/` or
+`images/`, or normalized `<project>/...` paths for outputs elsewhere beneath
+the current Git project. Two spellings that resolve to the same entry-local
+target have the entry-relative key. Each record has
 exactly `confirmed`, `fingerprint`, `script`, `parameters`, and `inputs`.
 `script.path` is the script argument passed to `pyrun`, not an inferred command
 or command ID. `parameters` is the exact ordered argument tail after the script,
@@ -3003,6 +3013,11 @@ including first-class `data` and `images`, and excluding entry Markdown,
 `pyrun-outputs.json`, validator output, research-log temporary paths, and
 runtime-cache descendants.
 
+A `<project>/...` output outside an entry participates in Provenance and may be
+registered as a generated input, but its location alone does not add it to the
+entry Hygiene or Retention universe. Validation does not scan project-wide
+outputs for orphans or retention.
+
 Connectivity starts only at evidence sources and direct presentations and
 traces backward through unique producers and declared inputs. A command outside
 this closure connects none of its scripts, inputs, outputs, or directory
@@ -3098,7 +3113,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | `directory.origin.conflict` | provenance | An origin directory root or member has a confirmed `pyrun` producer. |
 | `pyrun.outputs.invalid` | provenance | `pyrun-outputs.json` or one record violates its closed schema. |
 | `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
-| `pyrun.output.identity_invalid` | provenance | A reached graph output cannot map to one permitted entry-relative record key. |
+| `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
 | `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
 | `provenance.output.unconfirmed` | provenance | A reached generated output has only an unconfirmed baseline. |
 | `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, or direct inputs differ from the confirmed record. |

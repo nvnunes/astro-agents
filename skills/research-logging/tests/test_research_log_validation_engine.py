@@ -202,6 +202,80 @@ def _origin_data_json(entry_root: Path) -> str:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_project_output_supports_generated_input_without_entering_hygiene(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            entry_root = entry.parent
+            project_output = root / "artifacts/results.csv"
+            project_output.parent.mkdir()
+            (entry_root / "data/results.csv").replace(project_output)
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text())
+            results = next(
+                item for item in data["inputs"] if item["name"] == "results"
+            )
+            results["location"] = os.path.relpath(project_output, entry_root)
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text().replace(
+                    "data/results.csv", "'<project>/artifacts/results.csv'"
+                ),
+            )
+            support_path = entry_root / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            record = support["outputs"].pop("data/results.csv")
+            record["parameters"][-1] = "<project>/artifacts/results.csv"
+            support["outputs"]["<project>/artifacts/results.csv"] = record
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            complete = _evaluate(summary).result
+
+            self.assertEqual(
+                complete.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+            self.assertFalse(
+                any(
+                    check.subject == project_output.as_posix()
+                    for check in complete.checks
+                )
+            )
+
+            support["outputs"]["<project>/artifacts/stale.csv"] = record
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            self.assertEqual(
+                _evaluate(summary).result.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+
+            record["parameters"].append("changed")
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            drift = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in drift.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code,
+                "provenance.output.signature_mismatch",
+            )
+
+            record["parameters"].pop()
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            project_output.unlink()
+            missing = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in missing.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.failure.code, "provenance.output.missing")
+
     def test_validation_builds_one_directory_producer_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

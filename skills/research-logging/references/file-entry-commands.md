@@ -201,13 +201,14 @@ Never create the retained log later from output held only in agent context. Do
 not create a CSV merely to transfer formatted text into an entry; retain
 structured data when it supports analysis, reuse, or provenance.
 
-Every material command input must already have one matching item in the owning
-entry-root `data.json`. When adding a producerless input, ask whether it should
-be copied into the entry or referenced at its current local location. Add the
-item with `./pyrun data add <name> <file|directory> <location>` and record the
-command with its token instead of the raw path. A generated output enters
-`data.json` only when a later recorded command consumes it; set its origin to
-false with `./pyrun data origin <name> false`.
+Every material command input must already have one matching named declaration
+in the owning entry. When adding a producerless input, ask whether it should be
+copied into the entry or referenced at its current local location, then use
+`<skill>/scripts/log data add-origin --path <log> --entry <entry-id> <name>
+<target>`. Record the command with `<name>` instead of the raw path. When a
+confirmed output becomes an input to a later recorded command, use
+`<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
+<target>` after its producer succeeds.
 
 Never add output-only results, scripts, command logs, or images to `data.json`
 unless an exact directly presented non-`pyrun` artifact needs an explicit
@@ -229,9 +230,9 @@ Repair. If symlinks are unavailable, report that and get researcher approval
 before invoking the installed script directly; record the approved exception
 beside the command.
 
-After creating or changing an entry Python script, `data.json`, `pyrun` symlink,
-or recorded command, run the command from the entry root and confirm its saved
-outputs can be read before presenting them. `pyrun` updates the entry-root
+After creating or changing an entry Python script, input declaration, `pyrun`
+symlink, or recorded command, run the command from the entry root and confirm
+its saved outputs can be read before presenting them. `pyrun` updates the entry-root
 `pyrun-outputs.json` only after successful execution and complete output
 observation, provided the script and direct input bytes also remained stable
 across execution; do not edit that file by hand.

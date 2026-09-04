@@ -150,6 +150,12 @@ def add_entry(log: LogContext, arguments: AddArguments) -> ActionResult:
     return _result("add", "changed", True, paths)
 
 
+def observe_entries(log: LogContext) -> tuple[EntryObservation, ...]:
+    """Return the summary-consistent stable entry inventory."""
+
+    return _inventory(log)[1]
+
+
 def _require_new_log_target(log: LogCreationContext) -> None:
     summary_exists = os.path.lexists(log.summary)
     root_exists = os.path.lexists(log.root)

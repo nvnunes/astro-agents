@@ -6,7 +6,6 @@ import importlib.util
 import io
 import json
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from pathlib import Path
 
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
 sys.path.insert(0, str(PYRUN.parent))
+DATA = importlib.import_module("research_log_data")
 LOADER = importlib.machinery.SourceFileLoader("research_logging_pyrun", str(PYRUN))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None
@@ -34,10 +34,6 @@ def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         env=environment,
         check=False,
     )
-
-
-def run_data(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return run([sys.executable, str(PYRUN), "data", *arguments], cwd=cwd)
 
 
 def make_repo(path: Path) -> Path:
@@ -88,8 +84,19 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
     return entry
 
 
-def inputs(entry: Path) -> list[dict[str, object]]:
-    return json.loads((entry / "data.json").read_text(encoding="utf-8"))["inputs"]
+def add_directory_input(entry: Path, name: str, directory: Path) -> None:
+    resource = DATA.build_local_input(
+        name,
+        "directory",
+        directory.relative_to(entry).as_posix(),
+        entry_root=entry,
+        origin=True,
+    )
+    payload = json.loads((entry / "data.json").read_text(encoding="utf-8"))
+    payload["inputs"].append(resource.as_dict())
+    (entry / "data.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 class PyrunResolutionTests(unittest.TestCase):
@@ -173,8 +180,7 @@ class PyrunResolutionTests(unittest.TestCase):
             collection = entry / "data" / "collection"
             collection.mkdir()
             (collection / "member.npz").write_bytes(b"member")
-            added = run_data(entry, "add", "collection", "directory", "data/collection")
-            self.assertEqual(added.returncode, 0, added.stderr)
+            add_directory_input(entry, "collection", collection)
 
             result = run(
                 [
@@ -209,12 +215,7 @@ class PyrunResolutionTests(unittest.TestCase):
             collection = entry / "data" / "collection"
             collection.mkdir()
             (collection / "member.npz").write_bytes(b"member")
-            self.assertEqual(
-                run_data(
-                    entry, "add", "collection", "directory", "data/collection"
-                ).returncode,
-                0,
-            )
+            add_directory_input(entry, "collection", collection)
             commands = (
                 "label=<input_csv>",
                 "<missing>",
@@ -233,22 +234,6 @@ class PyrunResolutionTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0, argument)
                 self.assertNotIn("Traceback", result.stderr)
-
-    def test_remote_data_authoring_is_not_supported(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            added = run_data(
-                entry,
-                "add-remote",
-                "catalog",
-                "s3://archive/catalog.csv?versionId=v2",
-                "Archive",
-                "catalog/v2",
-                "versionId=v2",
-            )
-            self.assertNotEqual(added.returncode, 0)
-            self.assertFalse((entry / "data.json").exists())
 
     def test_fingerprint_drift_blocks_execution_without_rewriting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -284,183 +269,6 @@ class PyrunResolutionTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("Traceback", result.stderr)
                 path.unlink()
-
-
-class PyrunAuthoringTests(unittest.TestCase):
-    def test_add_writes_fingerprint_and_preserves_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            result = run_data(entry, "add", "input_csv", "file", "data/input.csv")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            item = inputs(entry)[0]
-            self.assertEqual(item["name"], "input_csv")
-            self.assertEqual(
-                item["fingerprint"]["digest"], digest(entry / "data/input.csv")
-            )
-            self.assertEqual(stat.S_IMODE((entry / "data.json").stat().st_mode), 0o644)
-
-            (entry / "data.json").chmod(0o640)
-            (entry / "data" / "second.csv").write_text("value\n2\n", encoding="utf-8")
-            result = run_data(entry, "add", "second", "file", "data/second.csv")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(stat.S_IMODE((entry / "data.json").stat().st_mode), 0o640)
-            self.assertEqual(
-                [item["name"] for item in inputs(entry)], ["input_csv", "second"]
-            )
-
-    def test_duplicate_name_target_reserved_name_and_bad_kind_fail(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            before = (entry / "data.json").read_bytes()
-            commands = (
-                ("add", "input_csv", "file", "data/input.csv"),
-                ("add", "alias", "file", "data/input.csv"),
-                ("add", "project", "file", "data/input.csv"),
-                ("add", "bad.name", "file", "data/input.csv"),
-                ("add", "bad_kind", "CSV", "data/input.csv"),
-            )
-            for command in commands:
-                result = run_data(entry, *command)
-                self.assertNotEqual(result.returncode, 0, command)
-                self.assertEqual((entry / "data.json").read_bytes(), before)
-                self.assertNotIn("Traceback", result.stderr)
-
-    def test_update_origin_refresh_and_remove_are_explicit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            source = entry / "data" / "input.csv"
-            source.write_text("value\n2\n", encoding="utf-8")
-            refreshed = run_data(entry, "fingerprint", "input_csv")
-            self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
-            self.assertEqual(inputs(entry)[0]["fingerprint"]["digest"], digest(source))
-
-            generated = run_data(entry, "origin", "input_csv", "false")
-            self.assertEqual(generated.returncode, 0, generated.stderr)
-            self.assertIs(inputs(entry)[0]["origin"], False)
-
-            origin = run_data(entry, "origin", "input_csv", "true")
-            self.assertEqual(origin.returncode, 0, origin.stderr)
-            self.assertIs(inputs(entry)[0]["origin"], True)
-
-            (entry / "data" / "replacement.csv").write_text(
-                "value\n3\n", encoding="utf-8"
-            )
-            updated = run_data(
-                entry, "update", "input_csv", "file", "data/replacement.csv"
-            )
-            self.assertEqual(updated.returncode, 0, updated.stderr)
-            self.assertEqual(inputs(entry)[0]["location"], "data/replacement.csv")
-
-            removed = run_data(entry, "remove", "input_csv")
-            self.assertEqual(removed.returncode, 0, removed.stderr)
-            self.assertFalse((entry / "data.json").exists())
-
-    def test_add_and_update_identity_directory_are_explicit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            build = entry / "build"
-            build.mkdir()
-            (build / "build.h5").write_text("state", encoding="utf-8")
-            (build / "build.yaml").write_text("mode: test\n", encoding="utf-8")
-            (build / "validation-run.json").write_text("{}\n", encoding="utf-8")
-
-            added = run_data(
-                entry,
-                "add-identity-directory",
-                "build",
-                "build",
-                "build.h5",
-            )
-            self.assertEqual(added.returncode, 0, added.stderr)
-            fingerprint = inputs(entry)[0]["fingerprint"]
-            self.assertEqual(fingerprint["algorithm"], "identity-files-sha256-v1")
-            self.assertEqual(fingerprint["files"], ["build.h5"])
-
-            updated = run_data(
-                entry,
-                "update-identity-directory",
-                "build",
-                "build",
-                "validation-run.json",
-                "build.h5",
-            )
-            self.assertEqual(updated.returncode, 0, updated.stderr)
-            self.assertEqual(
-                inputs(entry)[0]["fingerprint"]["files"],
-                ["build.h5", "validation-run.json"],
-            )
-
-    def test_add_and_update_identity_pattern_directory_are_explicit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            build = entry / "build"
-            build.mkdir()
-            (build / "build.h5").write_text("state", encoding="utf-8")
-            (build / "build.log").write_text("completed\n", encoding="utf-8")
-            (build / "build.yaml").write_text("mode: test\n", encoding="utf-8")
-            (build / "maps-hpx6.h5").write_text("map 6", encoding="utf-8")
-
-            added = run_data(
-                entry,
-                "add-identity-pattern-directory",
-                "build",
-                "build",
-                "build.h5",
-                "build.log",
-                "build.yaml",
-                "maps-*.h5",
-            )
-            self.assertEqual(added.returncode, 0, added.stderr)
-            fingerprint = inputs(entry)[0]["fingerprint"]
-            self.assertEqual(fingerprint["algorithm"], "identity-patterns-sha256-v1")
-            self.assertEqual(
-                fingerprint["patterns"],
-                ["build.h5", "build.log", "build.yaml", "maps-*.h5"],
-            )
-
-            (build / "maps-hpx6.h5").unlink()
-            updated_without_maps = run_data(
-                entry,
-                "update-identity-pattern-directory",
-                "build",
-                "build",
-                "build.h5",
-                "build.log",
-                "build.yaml",
-                "maps-*.h5",
-            )
-            self.assertEqual(
-                updated_without_maps.returncode, 0, updated_without_maps.stderr
-            )
-
-            (build / "maps-hpx9.h5").write_text("map 9", encoding="utf-8")
-            updated = run_data(
-                entry,
-                "update-identity-pattern-directory",
-                "build",
-                "build",
-                "build.h5",
-                "build.log",
-                "build.yaml",
-                "maps-*.h5",
-            )
-            self.assertEqual(updated.returncode, 0, updated.stderr)
-            self.assertNotEqual(
-                inputs(entry)[0]["fingerprint"]["digest"],
-                fingerprint["digest"],
-            )
-
-    def test_origin_operation_requires_a_boolean(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            rejected = run_data(entry, "origin", "input_csv", "maybe")
-            self.assertNotEqual(rejected.returncode, 0)
 
 
 class PyrunOutputSupportTests(unittest.TestCase):
@@ -950,57 +758,19 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
         self.assertEqual(source.tell(), len(content))
         self.assertEqual(str(errors[0]), "capture unavailable")
 
-    def test_malformed_json_and_wrong_working_directory_do_not_mutate(self) -> None:
+    def test_malformed_json_blocks_execution_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
             path = entry / "data.json"
             path.write_text('{"schema":"x","schema":"y"}', encoding="utf-8")
             before = path.read_bytes()
-            result = run_data(entry, "add", "new", "file", "data/input.csv")
+            result = run(
+                [sys.executable, str(PYRUN), "scripts/print_args.py", "plain"],
+                cwd=entry,
+            )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(path.read_bytes(), before)
-
-            result = run_data(entry / "data", "remove", "input_csv")
-            self.assertNotEqual(result.returncode, 0)
-
-    def test_concurrent_add_preserves_both_inputs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root, with_data=False)
-            for name in ("one", "two"):
-                (entry / "data" / f"{name}.csv").write_text(
-                    f"value\n{name}\n", encoding="utf-8"
-                )
-            environment = os.environ.copy()
-            commands = [
-                [
-                    sys.executable,
-                    str(PYRUN),
-                    "data",
-                    "add",
-                    name,
-                    "file",
-                    f"data/{name}.csv",
-                ]
-                for name in ("one", "two")
-            ]
-            processes = [
-                subprocess.Popen(
-                    command,
-                    cwd=entry,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=environment,
-                )
-                for command in commands
-            ]
-            results = [process.communicate(timeout=10) for process in processes]
-            self.assertEqual(
-                [process.returncode for process in processes], [0, 0], results
-            )
-            self.assertEqual([item["name"] for item in inputs(entry)], ["one", "two"])
 
 
 class PyrunRuntimeTests(unittest.TestCase):

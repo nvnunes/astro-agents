@@ -8,7 +8,7 @@ import stat
 import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Mapping
 
 from validation.operation_state import operation_lock
 
@@ -86,6 +86,27 @@ def atomic_write_text(path: Path, text: str) -> None:
             os.close(descriptor)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def atomic_write_texts(updates: Mapping[Path, str]) -> None:
+    """Publish a small text-file transaction or restore every prior byte."""
+
+    ordered = tuple(sorted(updates.items(), key=lambda item: item[0].as_posix()))
+    before = {path: path.read_text(encoding="utf-8") for path, _ in ordered}
+    written: list[Path] = []
+    try:
+        for path, value in ordered:
+            atomic_write_text(path, value)
+            written.append(path)
+    except (OSError, UnicodeError) as error:
+        rollback: list[str] = []
+        for path in reversed(written):
+            try:
+                atomic_write_text(path, before[path])
+            except OSError as restore_error:
+                rollback.append(f"{path}: {restore_error}")
+        detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
+        raise OSError(f"transaction publication failed: {error}{detail}") from error
 
 
 def atomic_create_text(path: Path, text: str) -> None:

@@ -534,22 +534,26 @@ Boolean `origin`. An origin stops the Provenance chain at that artifact;
 generated material continues to its unique earlier producer regardless of
 where the file is stored.
 
-Add an accessible local input from the entry folder with:
+Register an accessible producerless input through the active skill's management
+CLI:
 
 ```bash
-./pyrun data add development_set file /data/project/development.csv
+<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
+  development_set /data/project/development.csv
 ```
 
-`pyrun` fingerprints local content and resolves the item through
-`"<development_set>"` and marks a newly added input as an origin. Raw
-command-input and evidence-source paths and URIs
-are invalid. Evidence sources use one complete `<name>` or
+The CLI infers file versus directory, normalizes the target, fingerprints its
+current content, and records the explicit origin boundary. Raw command-input
+and evidence-source paths and URIs are invalid. Evidence sources use one
+complete `<name>` or
 `<directory-name>/member` token and must resolve to one local regular file. A
 generated output enters `data.json` when a later recorded command or evidence
-record consumes it; set `origin: false` with
-`./pyrun data origin <name> false` so it traces to its earlier producer. Omit
-`data.json` when the entry has no command or evidence inputs and no direct
-artifact origin.
+record consumes it. After its producer succeeds, register it with
+`<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
+<target>` so it traces to that current confirmed producer. `log data` is the
+sole ordinary author of `data.json`; do not edit the registry directly. Omit
+the file when the entry has no command or evidence inputs and no direct artifact
+origin.
 
 Use `retention.json` only for intentionally retained material outside the
 evidence-rooted graph. Retention affects orphan classification and cannot

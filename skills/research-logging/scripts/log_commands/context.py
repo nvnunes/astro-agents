@@ -131,6 +131,12 @@ def resolve_entry(log: LogContext, entry_id: str) -> EntryContext:
     return EntryContext(log, entry_id, matches[0].resolve())
 
 
+def resolve_project_root(path: Path) -> Path:
+    """Return the Git project that owns one log path."""
+
+    return _project_root(path.resolve())
+
+
 def _project_root(path: Path) -> Path:
     for candidate in (path, *path.parents):
         marker = candidate / ".git"

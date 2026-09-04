@@ -231,6 +231,8 @@ def _unique_producer(
     *,
     starting: bool,
 ) -> Invocation:
+    if starting and Path(material).is_dir():
+        return _starting_directory_producer(material, state)
     candidates = [
         invocation
         for invocation in state.outputs.get(material, ())
@@ -250,6 +252,57 @@ def _unique_producer(
             {"producers": [item.identity for item in candidates]},
         )
     return candidates[0]
+
+
+def _starting_directory_producer(
+    material: str, state: _WalkState
+) -> Invocation:
+    """Require one exact output-directory producer for a starting root."""
+
+    root = Path(material).resolve()
+    exact = tuple(
+        invocation
+        for invocation in state.invocations
+        if any(
+            collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+            and Path(collection.root).resolve() == root
+            for collection in invocation.collections
+        )
+    )
+    if not exact:
+        _fail("producer.missing", material, {"consumer": None})
+    exact_ids = {invocation.identity for invocation in exact}
+    producers_within = {
+        invocation.identity
+        for invocation in state.invocations
+        if any(_within(Path(output.path), root) for output in invocation.outputs)
+    }
+    overlapping = {
+        invocation.identity
+        for invocation in state.invocations
+        for collection in invocation.collections
+        if collection.direction == "output"
+        and collection.mechanism == "directory"
+        and collection.root is not None
+        and Path(collection.root).resolve() != root
+        and (
+            _within(Path(collection.root).resolve(), root)
+            or _within(root, Path(collection.root).resolve())
+        )
+    }
+    conflicts = (producers_within - exact_ids) | overlapping
+    if len(exact) != 1 or conflicts:
+        _fail(
+            "producer.ambiguous",
+            material,
+            {
+                "producers": [item.identity for item in exact],
+                "conflicts": sorted(conflicts),
+            },
+        )
+    return exact[0]
 
 
 def _require_producer_ready(

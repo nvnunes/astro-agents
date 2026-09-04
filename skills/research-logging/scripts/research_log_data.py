@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import re
 import stat
 import unicodedata
@@ -296,6 +297,72 @@ def build_local_input(
     )
     observation = observe_fingerprint(provisional)
     return replace(provisional, fingerprint=observation.fingerprint)
+
+
+def normalize_input_location(value: str, *, entry_root: Path) -> str:
+    """Return one canonical authored location for an existing local target.
+
+    Relative inputs remain relative to the entry. Absolute paths beneath the
+    entry, including its first-class ``data`` and ``images`` links, become
+    entry-relative. Other absolute inputs use their safely resolved path.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > MAX_LOCATION_BYTES
+        or "\\" in value
+        or "://" in value
+        or "<" in value
+        or ">" in value
+    ):
+        _invalid("input location", {"location": value})
+    normalized = posixpath.normpath(value)
+    if normalized in {"", "."}:
+        _invalid("input location", {"location": value})
+    root = entry_root.resolve()
+    if not normalized.startswith("/"):
+        _location(normalized, "input location", root)
+        return normalized
+    lexical = Path(normalized)
+    relative = _entry_relative_location(lexical.absolute(), root)
+    if relative is not None:
+        return relative
+    canonical = lexical.resolve()
+    relative = _entry_relative_location(canonical, root)
+    if relative is not None:
+        return relative
+    linked = _linked_material_location(canonical, root)
+    if linked is not None:
+        return linked
+    result = canonical.as_posix()
+    _location(result, "input location", root)
+    return result
+
+
+def _entry_relative_location(path: Path, root: Path) -> str | None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    result = PurePosixPath(*relative.parts).as_posix()
+    _location(result, "input location", root)
+    return result
+
+
+def _linked_material_location(canonical: Path, root: Path) -> str | None:
+    for name in ("data", "images"):
+        material_root = root / name
+        if not material_root.is_symlink():
+            continue
+        try:
+            member = canonical.relative_to(material_root.resolve())
+        except ValueError:
+            continue
+        result = (PurePosixPath(name) / PurePosixPath(*member.parts)).as_posix()
+        _location(result, "input location", root)
+        return result
+    return None
 
 
 def build_identity_directory(

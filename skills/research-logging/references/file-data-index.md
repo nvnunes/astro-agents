@@ -1,7 +1,9 @@
 # Input Registry Instructions
 
-Use this file when creating or revising an entry-root `data.json`, using a
-`<name>` input token, or declaring where a Provenance chain stops.
+Use this file when registering or changing a material input, using a `<name>`
+input token, or declaring where a Provenance chain stops. Use the public
+`<skill>/scripts/log data` actions for ordinary authoring. Never create or edit
+`data.json` directly outside an explicitly authorized Repair.
 
 `data.json` is the complete material-input registry. It contains all and only
 file and directory resources consumed by recorded commands or mechanical
@@ -41,12 +43,18 @@ one local regular file, so use `<name>` for a file or
 `<directory-name>/member` for one exact directory member; a bare directory
 token is not evidence.
 
-Add declarations from the entry root through `pyrun`:
+Register a producerless local file or directory as an explicit origin:
 
 ```bash
-./pyrun data add development_set file /data/project/development.csv
-./pyrun data add reference_cases directory data/reference-cases
+<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
+  development_set /data/project/development.csv
+<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
+  reference_cases data/reference-cases
 ```
+
+The CLI infers file versus directory, normalizes the target, records its
+current fingerprint, and asserts that no confirmed producer in the same log is
+hidden by the origin boundary.
 
 For a large managed directory, declare the bounded files that authoritatively
 identify the logical resource. Do not use this form merely to avoid hashing;
@@ -54,8 +62,9 @@ the named files must change whenever the scientifically relevant resource
 identity changes:
 
 ```bash
-./pyrun data add-identity-directory build_root /data/builds/v3 \
-  build.h5 build.yaml
+<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
+  build_root /data/builds/v3 \
+  --identity build.h5 --identity build.yaml
 ```
 
 `identity-files-sha256-v1` accepts 1–64 exact normalized relative file paths.
@@ -71,8 +80,10 @@ When a managed producer owns a small variable family of root files, use bounded
 identity patterns:
 
 ```bash
-./pyrun data add-identity-pattern-directory build_root /data/builds/v3 \
-  build.h5 build.yaml build.log "maps-*.h5"
+<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
+  build_root /data/builds/v3 \
+  --identity build.h5 --identity build.yaml --identity build.log \
+  --identity "maps-*.h5"
 ```
 
 `identity-patterns-sha256-v1` accepts 1–64 normalized selectors and resolves at
@@ -87,28 +98,35 @@ fingerprint covers the selectors, sorted matched paths, and each file's SHA-256.
 It scans each distinct wildcard parent once, examines at most 100,000 immediate
 entries in that parent, and never traverses undeclared descendants.
 
-`data add` fingerprints accessible local content and initially marks it as an
-origin. Change that boundary explicitly when the item is a generated input:
+Register generated material only after its producing `pyrun` command succeeds:
 
 ```bash
-./pyrun data origin generated_samples false
-./pyrun data origin development_set true
+<skill>/scripts/log data add-generated --path <log> --entry <entry-id> \
+  generated_samples data/generated-samples.csv
 ```
+
+The action requires one current confirmed producer in the same maintained log
+and an exact match to the target's current bytes. Production in another log is
+an origin boundary rather than same-log generated lineage.
 
 Fingerprint drift is a validation failure and never updates the registry as a
 side effect of command execution. After intentionally changing or replacing an
 input, refresh it explicitly:
 
 ```bash
-./pyrun data fingerprint development_set
+<skill>/scripts/log data refresh --path <log> --entry <entry-id> \
+  development_set
 ```
 
-Use `data update` to change a local resource declaration and `data remove` to
-remove an unused item. Removing the final item removes `data.json`.
-Use `data update-identity-directory` to revise a managed directory's location
-or identity-file set. `data fingerprint` preserves the selected algorithm and
-identity-file list or identity-pattern set while refreshing its digest. Use
-`data update-identity-pattern-directory` to revise a pattern-managed directory.
+Use `log data update` to change a target, explicitly change its origin or
+generated classification, replace an origin directory's repeated `--identity`
+selectors, or select `--byte-complete`. Omitted properties remain unchanged.
+Use `log data rename` after updating every recorded-command token; it renames
+same-entry evidence source tokens atomically and reports producer commands that
+must be rerun. Use `log data remove` only after removing command and evidence
+use. Removing the final item removes `data.json`. Use `log data list` for a
+bounded semantic inventory; it does not expose fingerprints or registry
+structure. Every mutation accepts `--dry-run`.
 
 A generated output belongs in `data.json` when a later recorded command or an
 evidence record consumes it. Set `origin: false` so it must trace to its unique

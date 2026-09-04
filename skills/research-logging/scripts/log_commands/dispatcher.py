@@ -13,13 +13,15 @@ from .model import (
     ActionError,
     ActionResult,
     AddArguments,
+    DataAddArguments,
+    DataUpdateArguments,
     EvidenceCommonArguments,
     InitArguments,
     RetentionArguments,
 )
 
-FAMILIES = ("add", "discover", "evidence", "init", "retention", "validate")
-AUTHORING_FAMILIES = frozenset({"add", "evidence", "init", "retention"})
+FAMILIES = ("add", "data", "discover", "evidence", "init", "retention", "validate")
+AUTHORING_FAMILIES = frozenset({"add", "data", "evidence", "init", "retention"})
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -34,7 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _top_parser().error(f"unknown task family: {family}")
     selected_task = (
         f"{family}.{arguments[0]}"
-        if family in {"evidence", "retention"} and arguments
+        if family in {"data", "evidence", "retention"} and arguments
         else family
     )
     try:
@@ -44,6 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _dispatch_validate(arguments)
         dispatch = {
             "add": _dispatch_add,
+            "data": _dispatch_data,
             "evidence": _dispatch_evidence,
             "init": _dispatch_init,
             "retention": _dispatch_retention,
@@ -213,6 +216,88 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     if args.action == "remove":
         return evidence.remove(entry, args.id, dry_run=args.dry_run)
     return evidence.list_records(entry)
+
+
+def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
+    parser = argparse.ArgumentParser(prog="log data")
+    actions = parser.add_subparsers(dest="action", required=True)
+    for name in ("add-origin", "add-generated"):
+        action = actions.add_parser(name)
+        _entry_arguments(action)
+        _mutation_argument(action)
+        action.add_argument("name")
+        action.add_argument("target")
+        if name == "add-origin":
+            action.add_argument("--identity", action="append")
+    update = actions.add_parser("update")
+    _entry_arguments(update)
+    _mutation_argument(update)
+    update.add_argument("name")
+    update.add_argument("--target")
+    classification = update.add_mutually_exclusive_group()
+    classification.add_argument("--origin", action="store_true")
+    classification.add_argument("--generated", action="store_true")
+    identity = update.add_mutually_exclusive_group()
+    identity.add_argument("--identity", action="append")
+    identity.add_argument("--byte-complete", action="store_true")
+    rename = actions.add_parser("rename")
+    _entry_arguments(rename)
+    _mutation_argument(rename)
+    rename.add_argument("old_name")
+    rename.add_argument("new_name")
+    refresh = actions.add_parser("refresh")
+    _entry_arguments(refresh)
+    _mutation_argument(refresh)
+    refresh.add_argument("name")
+    remove = actions.add_parser("remove")
+    _entry_arguments(remove)
+    _mutation_argument(remove)
+    remove.add_argument("name")
+    listed = actions.add_parser("list")
+    _entry_arguments(listed)
+    args = parser.parse_args(arguments)
+    from . import data
+
+    entry = resolve_entry(resolve_log(args.path), args.entry)
+    if args.action in {"add-origin", "add-generated"}:
+        return data.add(
+            entry,
+            generated=args.action == "add-generated",
+            arguments=DataAddArguments(
+                name=args.name,
+                target=args.target,
+                identity=(
+                    tuple(args.identity)
+                    if getattr(args, "identity", None) is not None
+                    else None
+                ),
+                dry_run=args.dry_run,
+            ),
+        )
+    if args.action == "update":
+        classification_value = (
+            "origin" if args.origin else "generated" if args.generated else None
+        )
+        return data.update(
+            entry,
+            DataUpdateArguments(
+                name=args.name,
+                target=args.target,
+                classification=classification_value,
+                identity=(tuple(args.identity) if args.identity is not None else None),
+                byte_complete=args.byte_complete,
+                dry_run=args.dry_run,
+            ),
+        )
+    if args.action == "rename":
+        return data.rename(
+            entry, args.old_name, args.new_name, dry_run=args.dry_run
+        )
+    if args.action == "refresh":
+        return data.refresh(entry, args.name, dry_run=args.dry_run)
+    if args.action == "remove":
+        return data.remove(entry, args.name, dry_run=args.dry_run)
+    return data.list_inputs(entry)
 
 
 def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:

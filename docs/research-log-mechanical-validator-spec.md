@@ -2421,6 +2421,11 @@ used as material inputs by recorded commands or evidence records owned by one
 entry root, plus an exact directly presented artifact only when its explicit
 `origin: true` declaration is needed to stop Provenance.
 
+The public `log data` actions are the sole ordinary authoring interface for
+this file. They infer representation fields, validate the asserted Provenance
+boundary, and publish canonical entry-scoped state. Direct edits are reserved
+for explicitly authorized Repair.
+
 - Every proven command input and every evidence source has exactly one data
   item in the consuming entry.
 - Every input-bearing command argument and evidence source uses the item's
@@ -3250,6 +3255,37 @@ new summary item. The summary commits last. Ordinary publication failures roll
 back, while recognizable interruption residue fails closed for explicit
 Repair. Neither operation changes summary interpretation, follow-ups, optional
 support material, or generated validation state.
+
+The input-registry operations are:
+
+```text
+<skill>/scripts/log data add-origin --path LOG --entry ENTRY NAME TARGET
+  [--identity SELECTOR]... [--dry-run]
+<skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
+  [--dry-run]
+<skill>/scripts/log data update --path LOG --entry ENTRY NAME
+  [--target TARGET] [--origin | --generated]
+  [--identity SELECTOR]... [--byte-complete] [--dry-run]
+<skill>/scripts/log data rename --path LOG --entry ENTRY OLD-NAME NEW-NAME
+  [--dry-run]
+<skill>/scripts/log data refresh --path LOG --entry ENTRY NAME [--dry-run]
+<skill>/scripts/log data remove --path LOG --entry ENTRY NAME [--dry-run]
+<skill>/scripts/log data list --path LOG --entry ENTRY
+```
+
+These actions infer kind and canonical location and use the production
+fingerprint and data-file contracts. `add-origin` rejects a confirmed producer
+in the same log. `add-generated` requires one current confirmed same-log
+producer whose recorded output and current target bytes agree. `update` applies
+only explicit changes and rechecks the resulting boundary. Managed identity is
+available only for origin directories. `refresh` preserves the target,
+classification, and identity mode. `remove` requires prior removal of command
+and evidence use and removes an empty registry. `rename` requires prior command
+token edits, atomically updates same-entry evidence source tokens, and reports
+producer commands whose support must be replaced by successful reruns. Every
+mutation uses only the selected entry lock and leaves generated validation
+state unchanged; cross-entry declaration disagreement remains a validation
+finding.
 
 Entry-scoped `log evidence` and `log retention` actions read and validate the
 complete current registry, build candidate state through the production

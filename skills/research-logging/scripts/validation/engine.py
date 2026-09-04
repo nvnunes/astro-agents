@@ -93,6 +93,11 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .mechanical_values import SelectionResult
+from .output_support import (
+    confirmed_output_record,
+    require_current_output_support,
+    resolve_output_support,
+)
 from .provenance import evaluate_provenance, require_origin_boundary
 from .pyrun_outputs import (
     OutputSupport,
@@ -927,10 +932,18 @@ def _has_confirmed_output_record(
     invocation: Invocation, material: str, state: _ScanState
 ) -> bool:
     try:
-        _, record = _output_record(invocation, material, state)
+        root = _entry_root_for_owner(invocation.material_owner, state)
+        support = state.output_files.get(invocation.material_owner)
+        if support is None:
+            return False
+        return confirmed_output_record(
+            invocation,
+            material,
+            entry_root=root,
+            support=support,
+        )
     except MechanicalContractError:
         return False
-    return record is not None and record.confirmed
 
 
 def _validate_output_support(
@@ -938,7 +951,7 @@ def _validate_output_support(
 ) -> Mapping[str, object]:
     """Require one exact confirmed observation for a reached graph output."""
 
-    key, record = _output_record(invocation, material, state)
+    key, _ = _output_record(invocation, material, state)
     path = Path(material)
     if not path.is_file() and not path.is_dir():
         state.missing_output_paths.add(path.resolve().as_posix())
@@ -947,23 +960,24 @@ def _validate_output_support(
             material,
             {"output": key, "producer": invocation.identity},
         )
-    record = _required_output_record(invocation, material, key, record, state)
-    current_output = _observe_provenance_path(path, state)
-    expected_inputs = _output_signature_inputs(invocation, material)
-    mismatches = _output_signature_mismatches(
-        invocation, record, current_output, expected_inputs
+    error = state.output_record_errors.get(invocation.material_owner)
+    if error is not None:
+        raise error
+    root = _entry_root_for_owner(invocation.material_owner, state)
+    support = state.output_files[invocation.material_owner]
+    resolved = resolve_output_support(
+        invocation,
+        material,
+        entry_root=root,
+        support=support,
     )
-    if mismatches:
-        _fail(
-            "provenance.output.signature_mismatch",
-            material,
-            {
-                "fields": mismatches,
-                "output": key,
-                "producer": invocation.identity,
-            },
-        )
-    support_file = state.output_files[invocation.material_owner]
+    current_output = _observe_provenance_path(resolved.path, state)
+    record = require_current_output_support(
+        invocation,
+        resolved,
+        current_output=current_output,
+    )
+    support_file = support
     return {
         "output": key,
         "record": record.as_dict(),
@@ -972,84 +986,6 @@ def _validate_output_support(
             support_file.path.resolve().as_posix()
         ),
     }
-
-
-def _required_output_record(
-    invocation: Invocation,
-    material: str,
-    key: str,
-    record: OutputSupport | None,
-    state: _ScanState,
-) -> OutputSupport:
-    error = state.output_record_errors.get(invocation.material_owner)
-    if error is not None:
-        raise error
-    if record is None:
-        _fail(
-            "provenance.output.unrecorded",
-            material,
-            {"output": key, "producer": invocation.identity},
-        )
-    if not record.confirmed:
-        _fail(
-            "provenance.output.unconfirmed",
-            material,
-            {"output": key, "producer": invocation.identity},
-        )
-    if not invocation.via_pyrun:
-        _fail(
-            "provenance.output.signature_mismatch",
-            material,
-            {"output": key, "reason": "producer_not_pyrun"},
-        )
-    return record
-
-
-def _output_signature_inputs(
-    invocation: Invocation, material: str
-) -> dict[str, Fingerprint]:
-    expected_inputs: dict[str, Fingerprint] = {}
-    for relationship in invocation.inputs:
-        resource = relationship.input_resource
-        if resource is None:
-            _fail(
-                "provenance.output.signature_unsupported",
-                material,
-                {"input": relationship.path, "producer": invocation.identity},
-            )
-        prior = expected_inputs.setdefault(resource.name, resource.fingerprint)
-        if prior != resource.fingerprint:
-            _fail(
-                "provenance.output.signature_unsupported",
-                material,
-                {"input": resource.name, "reason": "conflicting_identity"},
-            )
-    return expected_inputs
-
-
-def _output_signature_mismatches(
-    invocation: Invocation,
-    record: OutputSupport,
-    current_output: Fingerprint,
-    expected_inputs: Mapping[str, Fingerprint],
-) -> list[str]:
-    current_script = (
-        Fingerprint("sha256", digest=invocation.script_identity)
-        if invocation.script_identity is not None
-        else None
-    )
-    mismatches: list[str] = []
-    if record.fingerprint != current_output:
-        mismatches.append("output_fingerprint")
-    if record.script.path != invocation.script_argument:
-        mismatches.append("script")
-    if current_script is None or record.script.fingerprint != current_script:
-        mismatches.append("script_fingerprint")
-    if record.parameters != invocation.parameters:
-        mismatches.append("parameters")
-    if dict(record.inputs) != expected_inputs:
-        mismatches.append("inputs")
-    return mismatches
 
 
 def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
@@ -1796,6 +1732,12 @@ def _record_unmatched_outputs(state: _ScanState) -> set[str]:
         for invocation in state.invocations
         for relationship in invocation.outputs
     }
+    graph_outputs.update(
+        collection.root
+        for invocation in state.invocations
+        for collection in invocation.collections
+        if collection.direction == "output" and collection.root is not None
+    )
     unmatched: set[str] = set()
     for owner, output_file in sorted(state.output_files.items()):
         root = _entry_root_for_owner(owner, state)

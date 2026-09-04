@@ -114,6 +114,11 @@ The research-log test gate must verify:
   production decoders, atomic canonical publication, write-free dry runs, and
   bounded semantic result envelopes while leaving generated validation state
   byte-identical;
+- `log data` is the sole ordinary `data.json` author, infers representation
+  fields, enforces intent-specific origin and generated boundaries, verifies
+  current producer support, serializes same-entry mutations, atomically renames
+  dependent evidence tokens, and leaves cross-entry disagreement to
+  validation;
 - `log init` creates only the canonical empty summary and entries directory
   under a project-scoped creation lock, while `log add` allocates IDs from
   consistent observed identity state, creates the minimal entry and runner

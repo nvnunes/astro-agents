@@ -50,6 +50,28 @@ class RetentionArguments:
 
 
 @dataclass(frozen=True)
+class DataAddArguments:
+    """Typed arguments for one intent-specific input registration."""
+
+    name: str
+    target: str
+    identity: tuple[str, ...] | None
+    dry_run: bool
+
+
+@dataclass(frozen=True)
+class DataUpdateArguments:
+    """Typed arguments for one explicit input declaration update."""
+
+    name: str
+    target: str | None
+    classification: str | None
+    identity: tuple[str, ...] | None
+    byte_complete: bool
+    dry_run: bool
+
+
+@dataclass(frozen=True)
 class ActionResult:
     """One bounded semantic outcome returned by an authoring action."""
 

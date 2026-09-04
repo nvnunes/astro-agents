@@ -13,6 +13,7 @@ from research_log_data import (
     DataFile,
     FingerprintObservation,
     InputResource,
+    input_token_parts,
     resolve_input_token,
     verify_fingerprint,
 )
@@ -356,6 +357,26 @@ def order_invocations(
         replace(invocation, sequence=sequence)
         for sequence, invocation in enumerate(ordered)
     )
+
+
+def command_input_names(
+    text: str, *, require_experimental_context: bool = True
+) -> frozenset[str]:
+    """Return data-token names present in statically parsed command arguments."""
+
+    names: set[str] = set()
+    for body, _ in _command_fences(text, require_experimental_context):
+        parsed, _ = _parse_fence(body)
+        for command in parsed:
+            if command is None:
+                continue
+            values = [item.value for item in command.options]
+            values.extend(command.positionals)
+            for value in values:
+                parts = input_token_parts(value)
+                if parts is not None:
+                    names.add(parts[0])
+    return frozenset(names)
 
 
 def _command_fences(
@@ -959,6 +980,7 @@ def _relationships(
     candidates: list[str] = []
     annotated = annotation.roles if annotation else {}
     runner_roles = command.runner_roles
+    via_pyrun = Path(command.tokens[command.executable_index]).name == "pyrun"
     options = {occurrence.name for occurrence in command.options}
     positionals = {f"@{index}" for index in range(1, len(command.positionals) + 1)}
     missing = set(annotated) - options - positionals
@@ -989,13 +1011,13 @@ def _relationships(
             occurrence.name,
             annotated.get(occurrence.name, automatic_option_role(occurrence.name)),
         )
-        if occurrence.name in runner_roles:
+        if via_pyrun and role in {"input", "output"}:
             role = _inferred_runner_role(occurrence.value, role, context)
         _collect_argument(occurrence.value, occurrence.name, role, state, candidates)
     for index, value in enumerate(command.positionals, 1):
         target = f"@{index}"
         role = runner_roles.get(target, annotated.get(target))
-        if target in runner_roles:
+        if via_pyrun and role in {"input", "output"}:
             role = _inferred_runner_role(value, role, context)
         _collect_argument(value, target, role, state, candidates)
     collections.extend(_repeated_collections(relationships, context.document))

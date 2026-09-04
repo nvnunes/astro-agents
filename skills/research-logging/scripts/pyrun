@@ -1,36 +1,23 @@
 #!/usr/bin/env python3
-"""Run entry-local Python commands and maintain ``data.json`` inputs."""
+"""Run entry-local Python commands and publish current output support."""
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
-import json
 import os
 import re
-import stat
 import subprocess
 import sys
-import tempfile
 import threading
-from contextlib import ExitStack, contextmanager
-from dataclasses import replace
+from contextlib import ExitStack
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterable, Iterator
+from typing import BinaryIO, Iterable
 
 from research_log_data import (
-    DATA_SCHEMA,
     DataContractError,
     DataFile,
     Fingerprint,
-    InputResource,
-    build_identity_directory,
-    build_identity_pattern_directory,
-    build_local_input,
-    data_file_from_inputs,
     input_token_candidate,
     load_data_file,
-    observe_fingerprint,
     resolve_input_token,
 )
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
@@ -64,20 +51,7 @@ def usage() -> int:
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
-        "       pyrun --capture-stdout-stderr <path> -- <script> [args...]\n"
-        "       pyrun data add <name> <file|directory> <location>\n"
-        "       pyrun data add-identity-directory <name> <location> "
-        "<identity-file>...\n"
-        "       pyrun data add-identity-pattern-directory <name> <location> "
-        "<identity-pattern>...\n"
-        "       pyrun data update <name> <file|directory> <location>\n"
-        "       pyrun data update-identity-directory <name> <location> "
-        "<identity-file>...\n"
-        "       pyrun data update-identity-pattern-directory <name> <location> "
-        "<identity-pattern>...\n"
-        "       pyrun data origin <name> <true|false>\n"
-        "       pyrun data fingerprint <name>\n"
-        "       pyrun data remove <name>",
+        "       pyrun --capture-stdout-stderr <path> -- <script> [args...]",
         file=sys.stderr,
     )
     return 2
@@ -137,33 +111,16 @@ def require_entry_root(cwd: Path, log: Path) -> Path:
     return entry
 
 
-def _data_lock_path(path: Path) -> Path:
-    identity = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
-    return Path(tempfile.gettempdir()) / f"pyrun-data-{identity}.lock"
+def _load_data(entry: Path) -> DataFile | None:
+    """Load the execution-time registry without owning its authoring lifecycle."""
 
-
-@contextmanager
-def data_lock(path: Path) -> Iterator[None]:
-    """Serialize updates without adding entry-local lock files."""
-
-    with _data_lock_path(path).open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _load_data(entry: Path | None) -> DataFile | None:
-    if entry is None:
-        return None
     path = entry / "data.json"
     legacy = entry / "data.csv"
     unsupported = [
         candidate
         for root in (entry.parent, entry.parent.parent)
         for candidate in (root / "data.json", root / "data.csv")
-        if candidate.exists()
+        if candidate.exists() or candidate.is_symlink()
     ]
     if unsupported:
         raise SystemExit(
@@ -172,265 +129,14 @@ def _load_data(entry: Path | None) -> DataFile | None:
         )
     if path.exists() and legacy.exists():
         raise SystemExit(f"pyrun: conflicting data.json and data.csv: {entry}")
-    if legacy.exists():
+    if legacy.exists() or legacy.is_symlink():
         raise SystemExit(f"pyrun: legacy data.csv is unsupported: {legacy}")
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return None
     try:
         return load_data_file(path, entry_root=entry)
     except DataContractError as error:
         raise SystemExit(f"pyrun: {error}") from error
-
-
-def _serialized_data(data: DataFile) -> str:
-    value = {
-        "inputs": [
-            item.as_dict() for item in sorted(data.inputs, key=lambda row: row.name)
-        ],
-        "schema": DATA_SCHEMA,
-    }
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-
-
-def _write_data(path: Path, entry: Path, inputs: tuple[InputResource, ...]) -> None:
-    if not inputs:
-        if path.exists():
-            path.unlink()
-            _sync_directory(path.parent)
-        return
-    try:
-        data = data_file_from_inputs(path, entry_root=entry, inputs=inputs)
-    except DataContractError as error:
-        raise SystemExit(f"pyrun: {error}") from error
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(_serialized_data(data))
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _update_data(
-    entry: Path,
-    operation: Callable[[DataFile | None], tuple[InputResource, ...]],
-) -> None:
-    path = entry / "data.json"
-    try:
-        with data_lock(path):
-            current = _load_data(entry)
-            _write_data(path, entry, operation(current))
-    except OSError as error:
-        raise SystemExit(
-            f"pyrun: could not update data file: {path}: {error}"
-        ) from error
-
-
-def _items(data: DataFile | None) -> tuple[InputResource, ...]:
-    return data.inputs if data is not None else ()
-
-
-def _named(data: DataFile | None, name: str) -> InputResource:
-    item = data.by_name.get(name) if data is not None else None
-    if item is None:
-        raise SystemExit(f"pyrun: unknown data input {name!r}")
-    return item
-
-
-def _replace_item(
-    data: DataFile | None, name: str, replacement: InputResource | None
-) -> tuple[InputResource, ...]:
-    current = _named(data, name)
-    return tuple(
-        replacement if item is current and replacement is not None else item
-        for item in _items(data)
-        if item is not current or replacement is not None
-    )
-
-
-def add_local(
-    entry: Path,
-    name: str,
-    kind: str,
-    location: str,
-    *,
-    identity_files: tuple[str, ...] = (),
-    identity_patterns: tuple[str, ...] = (),
-) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        if data is not None and name in data.by_name:
-            raise SystemExit(f"pyrun: duplicate data input {name!r}")
-        try:
-            if identity_files:
-                item = build_identity_directory(
-                    name,
-                    location,
-                    identity_files,
-                    entry_root=entry,
-                    origin=True,
-                )
-            elif identity_patterns:
-                item = build_identity_pattern_directory(
-                    name,
-                    location,
-                    identity_patterns,
-                    entry_root=entry,
-                    origin=True,
-                )
-            else:
-                item = build_local_input(
-                    name, kind, location, entry_root=entry, origin=True
-                )
-        except DataContractError as error:
-            raise SystemExit(f"pyrun: {error}") from error
-        return (*_items(data), item)
-
-    _update_data(entry, operation)
-    print(f"pyrun: added {name!r} to {entry / 'data.json'}")
-
-
-def update_local(
-    entry: Path,
-    name: str,
-    kind: str,
-    location: str,
-    *,
-    identity_files: tuple[str, ...] = (),
-    identity_patterns: tuple[str, ...] = (),
-) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        current = _named(data, name)
-        try:
-            if identity_files:
-                item = build_identity_directory(
-                    name,
-                    location,
-                    identity_files,
-                    entry_root=entry,
-                    origin=current.origin,
-                )
-            elif identity_patterns:
-                item = build_identity_pattern_directory(
-                    name,
-                    location,
-                    identity_patterns,
-                    entry_root=entry,
-                    origin=current.origin,
-                )
-            else:
-                item = build_local_input(
-                    name,
-                    kind,
-                    location,
-                    entry_root=entry,
-                    origin=current.origin,
-                )
-        except DataContractError as error:
-            raise SystemExit(f"pyrun: {error}") from error
-        return _replace_item(data, name, item)
-
-    _update_data(entry, operation)
-    print(f"pyrun: updated {name!r} in {entry / 'data.json'}")
-
-
-def set_origin(entry: Path, name: str, origin: bool) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        current = _named(data, name)
-        return _replace_item(data, name, replace(current, origin=origin))
-
-    _update_data(entry, operation)
-    print(f"pyrun: set origin={str(origin).lower()} for {name!r}")
-
-
-def refresh_fingerprint(entry: Path, name: str) -> None:
-    def operation(data: DataFile | None) -> tuple[InputResource, ...]:
-        current = _named(data, name)
-        try:
-            observed = observe_fingerprint(current)
-        except DataContractError as error:
-            raise SystemExit(f"pyrun: {error}") from error
-        return _replace_item(
-            data, name, replace(current, fingerprint=observed.fingerprint)
-        )
-
-    _update_data(entry, operation)
-    print(f"pyrun: refreshed fingerprint for {name!r}")
-
-
-def remove_input(entry: Path, name: str) -> None:
-    _update_data(entry, lambda data: _replace_item(data, name, None))
-    print(f"pyrun: removed {name!r} from {entry / 'data.json'}")
-
-
-def _data_operation(argv: list[str], entry: Path) -> int:
-    operation = argv[2] if len(argv) > 2 else ""
-    if operation == "add" and len(argv) == 6:
-        add_local(entry, argv[3], argv[4], argv[5])
-        return 0
-    if operation == "add-identity-directory" and len(argv) >= 6:
-        add_local(
-            entry,
-            argv[3],
-            "directory",
-            argv[4],
-            identity_files=tuple(argv[5:]),
-        )
-        return 0
-    if operation == "add-identity-pattern-directory" and len(argv) >= 6:
-        add_local(
-            entry,
-            argv[3],
-            "directory",
-            argv[4],
-            identity_patterns=tuple(argv[5:]),
-        )
-        return 0
-    if operation == "update" and len(argv) == 6:
-        update_local(entry, argv[3], argv[4], argv[5])
-        return 0
-    if operation == "update-identity-directory" and len(argv) >= 6:
-        update_local(
-            entry,
-            argv[3],
-            "directory",
-            argv[4],
-            identity_files=tuple(argv[5:]),
-        )
-        return 0
-    if operation == "update-identity-pattern-directory" and len(argv) >= 6:
-        update_local(
-            entry,
-            argv[3],
-            "directory",
-            argv[4],
-            identity_patterns=tuple(argv[5:]),
-        )
-        return 0
-    if operation == "origin" and len(argv) == 5 and argv[4] in {"true", "false"}:
-        set_origin(entry, argv[3], argv[4] == "true")
-        return 0
-    if operation == "fingerprint" and len(argv) == 4:
-        refresh_fingerprint(entry, argv[3])
-        return 0
-    if operation == "remove" and len(argv) == 4:
-        remove_input(entry, argv[3])
-        return 0
-    return usage()
 
 
 def _reserved_tokens(arg: str, root: Path, log: Path) -> str:
@@ -759,9 +465,6 @@ def main(argv: list[str]) -> int:
     cwd = Path.cwd()
     root = project_root(cwd)
     log = log_root(cwd)
-
-    if argv[1] == "data":
-        return _data_operation(argv, require_entry_root(cwd, log))
 
     entry = require_entry_root(cwd, log)
     entry_ids = [

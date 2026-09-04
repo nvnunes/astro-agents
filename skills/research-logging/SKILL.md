@@ -54,8 +54,8 @@ Use this Record routing map:
   and `references/file-evidence-tables.md`. A numerical result in experimental
   prose is separate evidence even when the same value appears in a Results
   table.
-- `data.json`, a `<name>` token, or an explicit origin boundary: always read
-  `references/file-data-index.md` when introduced.
+- A material command or evidence input, a `<name>` token, or an explicit
+  origin boundary: read `references/file-data-index.md` when introduced.
 - `retention.json` or intentional disconnected retention: always read
   `references/file-retention.md` when introduced.
 - Citations or `refs.bib`: read `references/file-references.md`; also read

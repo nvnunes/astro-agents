@@ -8,22 +8,33 @@ Never inspect or edit those registries directly.
 
 ## Prepare One Transfer
 
-1. Resolve the source and destination entries, complete Markdown section, and
-   exact evidence IDs, data names, and retention IDs that move. Do not infer a
-   record set from proximity or file contents.
-2. Decide every changed document, support path, data name, evidence ID, or
+1. Resolve the source and destination entries and the complete Markdown
+   section that moves.
+2. Obtain the source entry's bounded semantic inventories before selecting
+   records. Invoke these read-only actions directly; do not open the JSON files:
+
+   ```text
+   <skill>/scripts/log evidence list --path <log> --entry <source-entry-id>
+   <skill>/scripts/log data list --path <log> --entry <source-entry-id>
+   <skill>/scripts/log retention list --path <log> --entry <source-entry-id>
+   ```
+
+   Use their returned IDs, source names, targets, and coverage to identify the
+   records owned by the authorized section. Do not infer a record set from
+   proximity or raw registry contents.
+3. Decide every changed document, support path, data name, evidence ID, or
    retention ID before editing. Preserve identifiers unless the authorized move
    requires an explicit mapping.
-3. Move the Markdown and selected support files, then update markers, summary
+4. Move the Markdown and selected support files, then update markers, summary
    references, recorded-command tokens, and local links. The old associations
    must be absent and destination files and markers present.
-4. Read only `log reorganize transfer --help`. Supply the three selector lists
+5. Read only `log reorganize transfer --help`. Supply the three selector lists
    and only their required mapping pairs. Use `--all` only when every authored
    registry record moves to another stable entry. Dry-run, then apply once.
-5. Stop on an unresolved dependency, shared output support, stale source use,
+6. Stop on an unresolved dependency, shared output support, stale source use,
    missing destination, collision, or candidate validation failure. Do not fix
    it by editing JSON.
-6. Run every destination command in the returned rerun list through that
+7. Run every destination command in the returned rerun list through that
    entry's `pyrun`. The workflow is incomplete until those reruns succeed.
 
 ## Move A Section Between Stable Entries
@@ -55,4 +66,3 @@ Use one coordinated transfer for the complete selected set.
 
 Movement between logs, inferred cleanup, archival, and removal of active
 research are outside these workflows.
-

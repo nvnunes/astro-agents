@@ -15,6 +15,25 @@ from validation.operation_state import operation_lock, require_mutation_ready
 from .context import EntryContext, LogContext, LogCreationContext
 
 
+class PublicationError(OSError):
+    """A text transaction failed, with explicit rollback completion state."""
+
+    def __init__(self, error: BaseException, rollback_errors: tuple[str, ...]):
+        self.rollback_errors = rollback_errors
+        detail = (
+            f"; rollback failed: {'; '.join(rollback_errors)}"
+            if rollback_errors
+            else ""
+        )
+        super().__init__(f"transaction publication failed: {error}{detail}")
+
+    @property
+    def rollback_complete(self) -> bool:
+        """Return whether every attempted destination was restored."""
+
+        return not self.rollback_errors
+
+
 @contextmanager
 def entry_lock(entry: EntryContext) -> Iterator[None]:
     """Hold the stable entry lock without first acquiring the log lock."""
@@ -100,17 +119,16 @@ def atomic_write_texts(updates: Mapping[Path, str | None]) -> None:
     written: list[Path] = []
     try:
         for path, value in ordered:
-            remove_or_write(path, value)
             written.append(path)
+            remove_or_write(path, value)
     except (OSError, UnicodeError) as error:
         rollback: list[str] = []
         for path in reversed(written):
             try:
                 remove_or_write(path, before[path])
-            except OSError as restore_error:
+            except (OSError, UnicodeError) as restore_error:
                 rollback.append(f"{path}: {restore_error}")
-        detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
-        raise OSError(f"transaction publication failed: {error}{detail}") from error
+        raise PublicationError(error, tuple(rollback)) from error
 
 
 def atomic_create_text(path: Path, text: str) -> None:

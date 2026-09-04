@@ -56,6 +56,10 @@ candidate because its basename is `validation.md`; discovery recognizes
 maintained summaries by their stable navigation line and sibling log root, so
 generated reports are not candidates.
 
+When reporting several completed logs, read
+`references/operation-validate-multilog-report.md`. Do not load that reporting
+contract for one-log validation.
+
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use `--recompute` when
 a cache-independent validation is required: it ignores both the per-log
@@ -105,68 +109,6 @@ Report according to the returned status:
   fingerprint observations and independently completed bounded selections;
   neither becomes a new comparison baseline. For a tool failure, report the
   precise operational error from standard error.
-
-When summarizing several completed logs in a Markdown table:
-
-- Use separate `Research log`, `Structure Failures`, `Evidence Failures`,
-  `Provenance`, `Hygiene Issues`, and `Reports` columns with a valid
-  Markdown header row.
-- Treat Structure as the human-facing projection of machine scope
-  `conformance`; do not rename the machine scope in generated JSON.
-- Introduce the table with: `Structure Failures and Evidence Failures report
-  failing mechanical checks. Provenance reports failed and unconfirmed unique
-  starting artifacts. Hygiene Issues is the total number of orphan artifacts,
-  unmatched outputs, and unused input declarations.`
-- Render Structure Failures as `None` when the scope has applicable checks and
-  none fail; otherwise render the integer failure count. Do not use a ratio:
-  the Structure pass check is a clear-log sentinel rather than a coverage
-  denominator.
-- Render Evidence Failures as `None` when one or more applicable checks exist
-  and none fail. When a check fails, render `failed/applicable`, where
-  `applicable = pass + fail`.
-- Render Provenance from the unique-artifact row in `validation.md`, not from
-  the number of provenance checks. Render nonzero artifact states as
-  `N failed` and `N unconfirmed`, joined by ` · ` when both occur. Use the
-  human row's unavailable count for `unconfirmed`; do not call it unavailable
-  or describe the remedy in the summary. Never render a zero-valued component,
-  including `0 failed` or `0 unconfirmed`: omit it and show only the nonzero
-  component. Render `None` when neither state occurs. Do not use a ratio.
-- An artifact whose `not_applicable` machine check depends transitively on an
-  actual failed Provenance prerequisite is already projected as failed in the
-  human artifact row. Preserve the authoritative machine check as
-  `not_applicable`; do not count unconfirmed-output checks as actual failures
-  when propagating this artifact outcome.
-- Do not show other `not_applicable` checks in the multi-log summary. They
-  remain explicit in `validation.md` and `mechanical.json`. Do not abbreviate
-  `not_applicable` as N/A.
-- If the Provenance scope fails without a failed counted artifact, append
-  `scope findings` as another nonzero state so command-level findings remain
-  visible.
-- Render Hygiene Issues as the integer from its single finding-count row in
-  `validation.md`. Do not reconstruct or deduplicate that number from
-  individual machine checks. Render `0` when Hygiene evaluation ran without a
-  finding.
-- Leave the scope cell blank when its total check count is zero. Do not render
-  an empty scope as `None`, `0/0`, `NA`, `N/A`, or `not applicable`.
-- Keep `not_applicable` checks separate from failures in detailed and
-  machine-readable results; exclude them from multi-log summary cells and
-  aggregate finding totals.
-- Describe the failure total as `failing checks` or `findings`, not
-  `non-passing checks`, when `not_applicable` checks are excluded.
-
-Use this shape:
-
-```md
-| Research log | Structure Failures | Evidence Failures | Provenance | Hygiene Issues | Reports |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Example findings | 2 | 2/5 | 1 failed · 2 unconfirmed | 7 | [Human](...) · [JSON](...) |
-| Passing scopes | None | None | None | 0 | [Human](...) · [JSON](...) |
-| Awaiting confirmed runs | None | None | 2 unconfirmed | 0 | [Human](...) · [JSON](...) |
-| Only unconfirmed provenance | None | None | 6 unconfirmed | 0 | [Human](...) · [JSON](...) |
-| Scope-only provenance findings | None | None | scope findings | 0 | [Human](...) · [JSON](...) |
-| No evidence checks | None |  |  | 0 | [Human](...) · [JSON](...) |
-| Hygiene evaluation not run | 1 | 1/1 |  |  | [Human](...) · [JSON](...) |
-```
 
 Do not invent item-specific repair guidance. A separately authorized Repair
 operation resolves a reported research-owned condition from its exact target

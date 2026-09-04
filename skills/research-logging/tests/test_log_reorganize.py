@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -14,12 +15,15 @@ LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 SCRIPT_ROOT = LOG.parent
 sys.path.insert(0, str(SCRIPT_ROOT))
 
-from log_commands import reorganize  # noqa: E402
-from log_commands.context import resolve_entry, resolve_log  # noqa: E402
+from log_commands import reorganize, storage  # noqa: E402
+from log_commands.context import LogContext, resolve_entry, resolve_log  # noqa: E402
 from log_commands.model import EntryUpdateArguments  # noqa: E402
+from log_commands.storage import PublicationError  # noqa: E402
 from validation.operation_state import (  # noqa: E402
+    REORGANIZE_RESIDUE,
     begin_reorganization,
-    finish_reorganization,
+    finish_guarded_publication,
+    operation_directory,
 )
 
 
@@ -116,6 +120,37 @@ print(json.dumps({{
         )
 
 
+class StorageTransactionTests(unittest.TestCase):
+    def test_post_replace_failure_restores_the_current_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text("before\n", encoding="utf-8")
+            real_open = os.open
+            failed = False
+
+            def fail_first_directory_open(
+                target: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+                flags: int,
+                mode: int = 0o777,
+            ) -> int:
+                nonlocal failed
+                if not failed and Path(target) == path.parent and flags == os.O_RDONLY:
+                    failed = True
+                    raise OSError("injected directory sync failure")
+                return real_open(target, flags, mode)
+
+            with (
+                mock.patch.object(
+                    storage.os, "open", side_effect=fail_first_directory_open
+                ),
+                self.assertRaises(PublicationError) as caught,
+            ):
+                storage.atomic_write_texts({path: "after\n"})
+
+            self.assertTrue(caught.exception.rollback_complete)
+            self.assertEqual(path.read_text(encoding="utf-8"), "before\n")
+
+
 class ReorganizeIdentityTests(unittest.TestCase):
     def test_update_entry_verifies_markdown_then_renames_the_folder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -126,13 +161,36 @@ class ReorganizeIdentityTests(unittest.TestCase):
             summary.write_text(
                 summary.read_text(encoding="utf-8")
                 .replace("2026-09-01", "2026-10-01")
-                .replace("trial-1", "calibrated"),
+                .replace("trial-1", "calibrated")
+                + "\n[Stale](study/entries/2026-09-01-e001-trial-1/e001.md)\n",
                 encoding="utf-8",
             )
             document = entry / "e001.md"
             document.write_text(
                 document.read_text(encoding="utf-8").replace(
                     "# 2026-09-01:", "# 2026-10-01:"
+                ),
+                encoding="utf-8",
+            )
+            blocked = run(
+                root,
+                "reorganize",
+                "update-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--date",
+                "2026-10-01",
+                "--slug",
+                "calibrated",
+                "--dry-run",
+            )
+            self.assertEqual(blocked.returncode, 2)
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace(
+                    "2026-09-01-e001-trial-1/e001.md",
+                    "2026-10-01-e001-calibrated/e001.md",
                 ),
                 encoding="utf-8",
             )
@@ -177,6 +235,35 @@ class ReorganizeIdentityTests(unittest.TestCase):
                     )
             self.assertTrue(entry.is_dir())
             self.assertFalse(entry.with_name("2026-09-01-e001-changed").exists())
+
+    def test_update_entry_keeps_residue_after_incomplete_registry_rollback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 1)
+            entry = entries[0]
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("trial-1", "changed"),
+                encoding="utf-8",
+            )
+            context = resolve_entry(resolve_log(logical), "e001")
+            publication_error = PublicationError(
+                OSError("injected registry failure"), ("restore failed",)
+            )
+            with mock.patch.object(
+                reorganize, "atomic_write_texts", side_effect=publication_error
+            ):
+                with self.assertRaisesRegex(Exception, "rollback failed"):
+                    reorganize.update_entry(
+                        context,
+                        EntryUpdateArguments(None, "changed", None, False),
+                    )
+            self.assertTrue(entry.is_dir())
+            self.assertTrue(
+                (operation_directory(logical) / REORGANIZE_RESIDUE).is_file()
+            )
 
     def test_update_entry_preserves_cross_entry_relative_data_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -296,6 +383,11 @@ class ReorganizeIdentityTests(unittest.TestCase):
 
             summary = logical.with_suffix(".md")
             text = summary.read_text(encoding="utf-8")
+            text = text.replace(
+                "## Summary\n\n",
+                "## Summary\n\n"
+                "Result `complete`<!-- ref entry = e002; eid = run-result -->.\n\n",
+            )
             lines = [line for line in text.splitlines() if line.startswith("- `")]
             swapped = [
                 lines[1].replace("e002", "e001"),
@@ -305,6 +397,24 @@ class ReorganizeIdentityTests(unittest.TestCase):
             end = text.index(lines[-1]) + len(lines[-1])
             summary.write_text(
                 text[:start] + "\n".join(swapped) + text[end:], encoding="utf-8"
+            )
+            blocked = run(
+                root,
+                "reorganize",
+                "reorder",
+                "--path",
+                str(logical),
+                "--entries",
+                "e002,e001",
+                "--dry-run",
+            )
+            self.assertEqual(blocked.returncode, 2)
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace(
+                    "ref entry = e002; eid = run-result",
+                    "ref entry = e001; eid = run-result",
+                ),
+                encoding="utf-8",
             )
             changed = run(
                 root,
@@ -347,6 +457,39 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertTrue(destination.with_suffix(".md").is_file())
             self.assertFalse(logical.exists())
             self.assertFalse(summary.exists())
+
+    def test_relocate_holds_every_entry_lock_during_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, _ = create_log(root, 2)
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("study/", "renamed/"),
+                encoding="utf-8",
+            )
+            destination = logical.with_name("renamed")
+            original = reorganize._publish_relocation
+
+            def require_entry_locks(
+                log: LogContext, target_summary: Path, target_root: Path
+            ) -> None:
+                for entry_id in ("e001", "e002"):
+                    lock = operation_directory(logical) / f"entry-{entry_id}.lock"
+                    with lock.open("r+b") as handle:
+                        with self.assertRaises(BlockingIOError):
+                            fcntl.flock(
+                                handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                            )
+                original(log, target_summary, target_root)
+
+            with mock.patch.object(
+                reorganize, "_publish_relocation", side_effect=require_entry_locks
+            ):
+                changed = reorganize.relocate_log(
+                    resolve_log(logical), destination, dry_run=False
+                )
+
+            self.assertTrue(changed.changed)
 
     def test_relocate_preserves_an_external_relative_data_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -392,7 +535,21 @@ class ReorganizeIdentityTests(unittest.TestCase):
     def test_remove_empty_entry_requires_the_summary_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            logical, entries = create_log(root, 1)
+            logical, entries = create_log(root, 2)
+            target = entries[0] / "e001.md"
+            location = os.path.relpath(target, start=entries[1]).replace(os.sep, "/")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "old-entry",
+                location,
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
             blocked = run(
                 root,
                 "reorganize",
@@ -405,11 +562,37 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertEqual(blocked.returncode, 2)
             summary = logical.with_suffix(".md")
             text = summary.read_text(encoding="utf-8")
-            summary.write_text(
+            without_first = (
                 "\n".join(line for line in text.splitlines() if "e001.md" not in line)
-                + "\n",
+                + "\n"
+            )
+            summary.write_text(
+                without_first,
                 encoding="utf-8",
             )
+            referenced = run(
+                root,
+                "reorganize",
+                "remove-empty-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+            )
+            self.assertEqual(referenced.returncode, 2)
+            summary.write_text(text, encoding="utf-8")
+            unregistered = run(
+                root,
+                "data",
+                "remove",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "old-entry",
+            )
+            self.assertEqual(unregistered.returncode, 0, unregistered.stderr)
+            summary.write_text(without_first, encoding="utf-8")
             removed = run(
                 root,
                 "reorganize",
@@ -443,7 +626,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
                 self.assertEqual(blocked.returncode, 2)
                 self.assertIn("requires Repair", blocked.stderr)
             finally:
-                finish_reorganization(marker)
+                finish_guarded_publication(marker)
 
 
 class ReorganizeTransferTests(unittest.TestCase):

@@ -10,6 +10,8 @@ from typing import Iterator
 
 MAX_SNAPSHOT_FILES = 1_000_000
 REORGANIZE_RESIDUE = "reorganize-residue"
+REGISTRY_RESIDUE = "registry-residue"
+REPAIR_RESIDUES = (REORGANIZE_RESIDUE, REGISTRY_RESIDUE)
 
 
 def operation_directory(log_root: Path) -> Path:
@@ -55,31 +57,51 @@ def operation_lock(log_root: Path, name: str) -> Iterator[None]:
 def require_mutation_ready(log_root: Path) -> None:
     """Refuse mutation while recognized hard-crash residue remains."""
 
-    path = operation_directory(log_root) / REORGANIZE_RESIDUE
-    if path.exists() or path.is_symlink():
-        raise OSError(f"research-log reorganization requires Repair: {path}")
+    directory = operation_directory(log_root)
+    for name in REPAIR_RESIDUES:
+        path = directory / name
+        if path.exists() or path.is_symlink():
+            raise OSError(f"research-log mutation requires Repair: {path}")
 
 
 def begin_reorganization(log_root: Path) -> Path:
     """Publish the one recognized hard-crash marker for Reorganize."""
 
+    return _begin_residue(
+        log_root,
+        REORGANIZE_RESIDUE,
+        "explicit Repair required after interrupted Reorganize\n",
+    )
+
+
+def begin_registry_transaction(log_root: Path) -> Path:
+    """Guard one multi-file authored-registry publication until completion."""
+
+    return _begin_residue(
+        log_root,
+        REGISTRY_RESIDUE,
+        "explicit Repair required after interrupted registry publication\n",
+    )
+
+
+def _begin_residue(log_root: Path, name: str, message: str) -> Path:
     directory = _prepare_operation_directory(log_root)
-    path = directory / REORGANIZE_RESIDUE
+    path = directory / name
     descriptor = os.open(
         path,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
         0o644,
     )
     with os.fdopen(descriptor, "wb") as handle:
-        handle.write(b"explicit Repair required after interrupted Reorganize\n")
+        handle.write(message.encode("utf-8"))
         handle.flush()
         os.fsync(handle.fileno())
     _sync_directory(directory)
     return path
 
 
-def finish_reorganization(path: Path) -> None:
-    """Remove a completed or fully rolled-back Reorganize marker."""
+def finish_guarded_publication(path: Path) -> None:
+    """Remove a completed or fully rolled-back publication marker."""
 
     path.unlink()
     _sync_directory(path.parent)
@@ -95,9 +117,10 @@ def mutation_active(log_root: Path) -> bool:
         return False
     if not directory.is_dir():
         raise OSError(f"operation state must be a regular directory: {directory}")
-    residue = directory / REORGANIZE_RESIDUE
-    if residue.exists() or residue.is_symlink():
-        return True
+    for name in REPAIR_RESIDUES:
+        residue = directory / name
+        if residue.exists() or residue.is_symlink():
+            return True
     for path in sorted(directory.glob("*.lock")):
         if path.is_symlink() or not path.is_file():
             raise OSError(f"operation lock must be a regular file: {path}")

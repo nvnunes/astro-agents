@@ -148,6 +148,16 @@ class LogHelpAndContextTests(unittest.TestCase):
         self.assertIn("disconnected-retention decision", retention.stdout)
         self.assertIn("one directory or one or more", retention.stdout)
 
+    def test_invalid_authoring_arguments_emit_a_structured_failure(self) -> None:
+        failed = run(Path.cwd(), "evidence", "add")
+
+        self.assertEqual(failed.returncode, 2)
+        payload = authoring_result(failed)
+        self.assertEqual(payload["task"], "evidence.add")
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["code"], "cli.arguments.invalid")
+        self.assertIn("cli.arguments.invalid", failed.stderr)
+
     def test_help_and_selected_family_imports_are_lazy(self) -> None:
         script_root = LOG.parent
         code = f"""
@@ -195,6 +205,36 @@ print(json.dumps({{
                     "e001",
                 )
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_entry_resolution_uses_only_the_canonical_identity_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = fixture(Path(directory))
+            malformed = entry.with_name("2026-09-03-e001-e002-study")
+            entry.rename(malformed)
+
+            canonical = run(
+                malformed,
+                "retention",
+                "list",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+            )
+            alias = run(
+                malformed,
+                "retention",
+                "list",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+            )
+            self.assertEqual(canonical.returncode, 0, canonical.stderr)
+            self.assertEqual(alias.returncode, 2)
+            self.assertEqual(
+                authoring_result(alias)["code"], "entry.identity.unresolved"
+            )
 
     def test_context_inference_requires_exactly_one_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

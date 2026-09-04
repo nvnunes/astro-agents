@@ -17,6 +17,31 @@ self-contained and self-documenting agent surface. `docs/research-logging.md`
 is human-facing researcher documentation concerned only with how that skill is
 used and what researchers should expect from it.
 
+## Contract Map
+
+- Evidence and selection: [Evidence-Record Role And Scope](#evidence-record-role-and-scope),
+  [Locator Language](#locator-language), [Evidence Source Objects](#evidence-source-objects),
+  [Common Evaluation Contract](#common-evaluation-contract), [Common Selection
+  Result](#common-selection-result), [Mechanical Locator
+  Language](#mechanical-locator-language), [Source Profiles](#source-profiles),
+  and [Canonical Locator Serialization](#canonical-locator-serialization).
+- Presentation: [Presentation Transformation
+  Subcontract](#presentation-transformation-subcontract), [Closed Presentation
+  Recipes](#closed-presentation-recipes), [Resource And Safety
+  Bounds](#resource-and-safety-bounds), [Dependency Projection And
+  Currentness](#dependency-projection-and-currentness), and [Failure And
+  Limitation Codes](#failure-and-limitation-codes).
+- Association and provenance: [Evidence File And Presentation
+  Association](#evidence-file-and-presentation-association) and [Input Registry
+  And Artifact Graph Contract](#input-registry-and-artifact-graph-contract).
+- Validation: [Mechanical Validation Evaluation And
+  Outcomes](#mechanical-validation-evaluation-and-outcomes) and [Current
+  Implementation Boundary](#current-implementation-boundary).
+- Extension and examples: [Future Command-Discovery Expansion If
+  Warranted](#future-command-discovery-expansion-if-warranted), [Conformance
+  Examples](#conformance-examples), and [Compatibility And
+  Evolution](#compatibility-and-evolution).
+
 ## Current Versions
 
 The specification describes the current contract. This table centralizes its
@@ -3281,8 +3306,9 @@ and evidence use and removes an empty registry. `rename` requires prior command
 token edits, atomically updates same-entry evidence source tokens, and reports
 producer commands whose support must be replaced by successful reruns. Every
 mutation uses only the selected entry lock and leaves generated validation
-state unchanged; cross-entry declaration disagreement remains a validation
-finding.
+state unchanged; a multi-file rename uses recognized transaction residue until
+publication or complete rollback, and cross-entry declaration disagreement
+remains a validation finding.
 
 Entry-scoped `log evidence` and `log retention` actions read and validate the
 complete current registry, build candidate state through the production
@@ -3368,9 +3394,11 @@ ID, not folder name. `pyrun`, Evidence, and Retention hold the same entry lock;
 entry creation and Reorganize take the log lock before
 affected entry locks in sorted ID order. Initial log creation instead uses a
 lock beneath the owning project's `.cache/research-log-operations/`, keyed by
-the intended canonical log path. Validate takes no research-mutation lock.
-Before publishing, it rejects an active mutation, recognized interrupted
-Reorganize residue, or any change to the research-owned snapshot it
+the intended canonical log path. Recognized Reorganize and authored-registry
+transaction residue both require explicit Repair and block later mutation or
+validation publication. Validate takes no research-mutation lock. Before
+publishing, it rejects an active mutation, recognized transaction residue, or
+any change to the research-owned snapshot it
 evaluated, and rolls back a bundle when the guard fails after installation has
 begun.
 

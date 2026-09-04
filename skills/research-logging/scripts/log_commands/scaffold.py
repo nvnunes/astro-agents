@@ -9,7 +9,14 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .context import EntryContext, LogContext, LogCreationContext
+from .context import (
+    EntryContext,
+    LogContext,
+    LogCreationContext,
+    entry_number,
+    parse_entry_directory_name,
+    parse_entry_document_name,
+)
 from .model import ActionError, ActionResult, AddArguments, InitArguments
 from .storage import (
     atomic_create_text,
@@ -25,12 +32,6 @@ MAX_SUMMARY_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 10_000
 MAX_TITLE_BYTES = 512
 MAX_SLUG_BYTES = 96
-ENTRY_ID_RE = re.compile(r"e(?P<number>[0-9]{3,})\Z")
-ENTRY_DOCUMENT_RE = re.compile(r"(?P<id>e[0-9]{3,})(?:[a-z])?\.md\Z")
-ENTRY_DIRECTORY_RE = re.compile(
-    r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})-"
-    r"(?P<id>e[0-9]{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\Z"
-)
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 LINK_TARGET = r"(?P<target><[^<>\r\n]+>|[^()\s\r\n]+)"
 SINGLE_ENTRY_RE = re.compile(
@@ -421,12 +422,12 @@ def _add_summary_row(
     listed: dict[str, tuple[str, list[Path]]] = {}
     _add_listed_document(log, listed, date, raw_target)
     entry_id, (normalized_date, documents) = next(iter(listed.items()))
-    folder = ENTRY_DIRECTORY_RE.fullmatch(documents[0].parent.name)
+    folder = parse_entry_directory_name(documents[0].parent.name)
     assert folder is not None
     current = rows.setdefault(
-        entry_id, (normalized_date, title, folder.group("slug"), [])
+        entry_id, (normalized_date, title, folder.slug, [])
     )
-    if current[:3] != (normalized_date, title, folder.group("slug")):
+    if current[:3] != (normalized_date, title, folder.slug):
         raise ActionError(
             "entry.identity.inconsistent", f"summary identity disagrees for {entry_id}"
         )
@@ -451,12 +452,12 @@ def _add_listed_document(
         raise ActionError("entry.identity.invalid", f"invalid entry target: {target}")
     if pure.parts[:2] != (log.root.name, "entries"):
         raise ActionError("entry.identity.invalid", f"invalid entry target: {target}")
-    folder = ENTRY_DIRECTORY_RE.fullmatch(pure.parts[2])
-    document = ENTRY_DOCUMENT_RE.fullmatch(pure.parts[3])
-    if folder is None or document is None or folder.group("id") != document.group("id"):
+    folder = parse_entry_directory_name(pure.parts[2])
+    document = parse_entry_document_name(pure.parts[3])
+    if folder is None or document is None or folder.id != document.id:
         raise ActionError("entry.identity.invalid", f"invalid entry target: {target}")
-    entry_id = folder.group("id")
-    if folder.group("date") != date:
+    entry_id = folder.id
+    if folder.date != date:
         raise ActionError(
             "entry.identity.inconsistent", f"entry date disagrees for {entry_id}"
         )
@@ -477,19 +478,19 @@ def _entry_directories(log: LogContext) -> dict[str, EntryObservation]:
     for path in sorted(entries_root.iterdir()):
         if not path.is_symlink() and not path.is_dir():
             continue
-        match = ENTRY_DIRECTORY_RE.fullmatch(path.name)
-        if match is None or path.is_symlink() or not path.is_dir():
+        identity = parse_entry_directory_name(path.name)
+        if identity is None or path.is_symlink() or not path.is_dir():
             raise ActionError(
                 "entry.identity.invalid", f"invalid entry directory: {path}"
             )
-        date = _date(match.group("date"))
-        entry_id = match.group("id")
+        entry_date = _date(identity.date)
+        entry_id = identity.id
         if entry_id in result:
             raise ActionError(
                 "entry.identity.inconsistent", f"duplicate entry ID: {entry_id}"
             )
         result[entry_id] = EntryObservation(
-            entry_id, date, match.group("slug"), path, ()
+            entry_id, entry_date, identity.slug, path, ()
         )
     return result
 
@@ -497,10 +498,10 @@ def _entry_directories(log: LogContext) -> dict[str, EntryObservation]:
 def _entry_documents(log: LogContext, root: Path, entry_id: str) -> list[Path]:
     documents: list[Path] = []
     for path in sorted(root.glob("*.md")):
-        match = ENTRY_DOCUMENT_RE.fullmatch(path.name)
+        identity = parse_entry_document_name(path.name)
         if (
-            match is None
-            or match.group("id") != entry_id
+            identity is None
+            or identity.id != entry_id
             or path.is_symlink()
             or not path.is_file()
         ):
@@ -588,11 +589,8 @@ def _next_entry_id(entries: tuple[EntryObservation, ...]) -> str:
 
 
 def _entry_number(entry_id: str) -> int:
-    match = ENTRY_ID_RE.fullmatch(entry_id)
-    if match is None:
-        raise ActionError("entry.identity.invalid", f"invalid entry ID: {entry_id}")
-    number = int(match.group("number"))
-    if number == 0:
+    number = entry_number(entry_id)
+    if number is None:
         raise ActionError("entry.identity.invalid", f"invalid entry ID: {entry_id}")
     return number
 

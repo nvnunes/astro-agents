@@ -16,9 +16,13 @@ Examples:
 - `entries/2026-05-03-e002-residual-pattern-validation/`
 - `entries/2026-05-04-e003-method-choice-for-background-model/`
 
-An `entry ID` is a stable log-local identifier for an entry. It identifies the entry across folder renames, summary links, and related-entry references.
+An `entry ID` is a stable log-local identifier for an entry. It identifies the
+entry across folder renames, summary links, and related-entry references.
 
-Entry IDs use `e###` form, such as `e001`, `e002`, and `e003`. The `e` prefix means entry. The number increments within a single log and should not be reused after an entry is created.
+Entry IDs use `e###` form, such as `e001`, `e002`, and `e003`. The `e` prefix
+means entry. The number increments within a single log and should not be reused
+after an entry is created. An explicitly authorized simultaneous Reorganize
+reorder is the only operation that reassigns existing entry IDs.
 
 When an entry is split across multiple documents, append lowercase letters to the entry ID for document names:
 

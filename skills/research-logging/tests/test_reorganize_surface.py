@@ -43,6 +43,12 @@ class ReorganizeSurfaceTests(unittest.TestCase):
         self.assertIn("## Merge Two Stable Entries", transfer)
         self.assertIn("transfer --all", transfer)
         self.assertIn("reported rerun", transfer)
+        for family in ("evidence", "data", "retention"):
+            self.assertIn(f"log {family} list", transfer)
+        self.assertLess(
+            transfer.index("log evidence list"), transfer.index("Move the Markdown")
+        )
+        self.assertIn("bounded semantic inventories", transfer)
 
     def test_every_workflow_has_order_and_stop_conditions(self) -> None:
         combined = "\n".join(
@@ -74,6 +80,7 @@ class ReorganizeSurfaceTests(unittest.TestCase):
             "between documents",
             "stable-entry split",
             "stable-entry merge",
+            "bounded evidence, data",
             "unresolved dependencies",
             "nonempty source",
         ):

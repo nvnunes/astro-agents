@@ -29,7 +29,7 @@ from validation.evidence import (
 )
 from validation.json_codec import decode_json
 from validation.locator import evaluate_locator
-from validation.operation_state import begin_reorganization, finish_reorganization
+from validation.operation_state import begin_reorganization, finish_guarded_publication
 from validation.presentation import (
     find_entry_presentation,
     index_entry_presentations_all,
@@ -52,7 +52,7 @@ from validation.transformation import compare_presentation, evaluate_transformat
 from .context import EntryContext
 from .model import ActionError, ActionResult, TransferArguments
 from .scaffold import observe_physical_entries
-from .storage import atomic_write_texts
+from .storage import PublicationError, atomic_write_texts
 
 
 @dataclass(frozen=True)
@@ -116,10 +116,11 @@ def transfer_registries(
     residue = begin_reorganization(source.log.root)
     try:
         atomic_write_texts(updates)
-    except (OSError, UnicodeError) as error:
-        finish_reorganization(residue)
+    except PublicationError as error:
+        if error.rollback_complete:
+            finish_guarded_publication(residue)
         raise ActionError("reorganize.transfer.failed", str(error)) from error
-    finish_reorganization(residue)
+    finish_guarded_publication(residue)
     return _result("changed", True, tuple(updates), reruns)
 
 

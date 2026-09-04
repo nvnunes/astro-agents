@@ -91,212 +91,36 @@ higher complexity score, or growth in the total advisory finding count.
 
 ### Research-Log Mechanical Validation Boundary
 
-Treat maintained summaries, entries, `data.json`, `retention.json`, evidence
-records, commands, scripts, retained evidence, scientific artifacts, and
-authored prose as research-owned. `pyrun` alone owns entry-root
-`pyrun-outputs.json`; validation reads but never writes it. Mechanical
-validation may write only the generated artifacts defined in
-`skills/research-logging/references/file-validation-records.md`. Research
-operations must leave every existing generated validation file byte-identical.
+The normative behavior exercised by this gate is owned by
+[`docs/research-log-mechanical-validator-spec.md`](research-log-mechanical-validator-spec.md).
+Keep field grammars, schema versions, lifecycle rules, limits, and diagnostic
+semantics there rather than restating them in this testing guide. When a
+contract changes, update the specification and its tests; update this section
+only when the gate or its coverage boundaries change.
 
-The research-log test gate must verify:
+The complete research-logging tool gate must cover:
 
-- the public `scripts/log` dispatcher progressively exposes only its active
-  task families, family actions, and action arguments; unrelated family
-  modules and optional readers remain unloaded at shallower help depths;
-- `log discover --root`, one-log `log validate --path`, and all-log
-  `log validate --root` preserve the validation engine's bounded output and
-  status contracts; omitted `--path` resolves only one unambiguous maintained
-  log, and `--summary` is not a public compatibility spelling;
-- `log evidence` and `log retention` mutations use stable entry locks,
-  production decoders, atomic canonical publication, write-free dry runs, and
-  bounded semantic result envelopes while leaving generated validation state
-  byte-identical;
-- `log data` is the sole ordinary `data.json` author, infers representation
-  fields, enforces intent-specific origin and generated boundaries, verifies
-  current producer support, serializes same-entry mutations, atomically renames
-  dependent evidence tokens, and leaves cross-entry disagreement to
-  validation;
-- `log init` creates only the canonical empty summary and entries directory
-  under a project-scoped creation lock, while `log add` allocates IDs from
-  consistent observed identity state, creates the minimal entry and runner
-  under log-then-entry locks, and commits the appended summary item last;
-- scaffolding conflicts, malformed identities, logical duplicates, and hard
-  interruption residue fail closed, while ordinary injected failures roll back
-  every newly published scaffold path and leave existing summary and generated
-  validation bytes unchanged;
-- `log reorganize` exposes only its five explicit actions; verifies the
-  agent-authored Markdown state before changing closed identities or authored
-  registries; operates within one log; and never edits Markdown or moves
-  agent-owned support material;
-- entry updates, simultaneous reorderings, complete-log relocation, selected
-  registry transfers, and empty-scaffold removal are write-free on dry run,
-  atomic on ordinary failure, guarded by stable log/entry locks, and leave
-  recognized hard-crash residue that blocks later mutation and validation
-  publication until Repair;
-- registry transfer uses a bounded selected-record decoder only for stale
-  source associations, then passes the complete source and destination
-  candidates through production data, evidence, retention, provenance, and
-  presentation checks; any output-support retirement is exact, private to the
-  transfer, and returned only as a bounded destination-rerun list;
-- `log evidence add|update --definition` accepts only a bounded regular
-  non-symlink strict-JSON file beneath `/private/tmp`, routes every source,
-  locator, transformation, and presentation through the production contracts,
-  and supports every specification-approved form without exposing registry
-  fields or modifying the transient definition;
-- every one-way maintenance link beside an evidence grammar contract in
-  `docs/research-log-mechanical-validator-spec.md` resolves to its focused
-  advanced-definition reference, and each documented accepted or rejected
-  example has public-CLI conformance coverage;
-- ordinary Record routes evidence, input, and retention mutations through the
-  owning `log` action without opening registry schemas; an unsupported common
-  presentation loads exactly one focused definition reference, while a failed
-  authoring action neither activates Repair nor Reorganize;
-- Replace removes superseded Markdown and uses first, then invokes only the
-  required evidence, data, and retention removals, and leaves old artifacts
-  available until every selected transaction succeeds;
-- malformed regular-file `pyrun-outputs.json` state is preserved at the first
-  unused recognized adjacent backup, replaced with canonical empty current
-  state, and reported as requiring Repair before the command can execute;
-- a published validation prints a bounded result with generated-report paths
-  instead of duplicating the complete mechanical record on standard output,
-  while an unpublished dry run retains its complete record;
-- complete-clear, complete-findings, and unsupported-metadata results exit zero,
-  while incomplete evaluation and tool failure exit nonzero;
-- recognized unsupported generated state produces one precise
-  `validation.unsupported_metadata` result, reports every detected path, and
-  writes nothing;
-- the active standard route imports no semantic review, decision,
-  continuation, reproduction, or unsupported evidence runtime;
-- `validation/mechanical.json` uses schema
-  `research-log-mechanical/1`, while the disposable per-log SQLite cache uses
-  database schema version 1 with independently versioned check-comparison and
-  evidence-selection components;
-- the per-log cache and writer lock live beneath `<log>/.cache/`, are excluded
-  from discovery and source control, and the lock is held from writable cache
-  open through evaluation, publication, baseline promotion, and selection
-  cleanup;
-- the project-level fingerprint cache uses SQLite schema version 1 at
-  `<project>/.cache/research-log-fingerprints.sqlite3`, remains independent of
-  mechanical rules and report schemas, and is excluded from source control;
-- the nearest enclosing non-symlink Git worktree marker owns the project cache,
-  including when the maintained log is outside `docs/` or the project itself is
-  named `docs`;
-- per-log cache absence, corruption, unsupported state, rejected rows, or I/O
-  failure causes bounded recomputation without changing conclusions, while an
-  unsupported future database or component version is preserved and bypassed;
-- evaluated checks count as unchanged only when the current authoritative
-  report digest, rules version, dependency projection, and strict check content
-  all match;
-- a rules-version change makes cached checks ineligible for unchanged
-  comparison while preserving eligible evidence selections and Phase 10
-  identities;
-- successful selections round-trip every canonical type and are keyed by
-  strong source identity, source profile, canonical locator identity, and
-  evaluator version;
-- evidence v3 accepts only complete input-registry tokens, rejects direct and
-  cross-entry paths, rejects bare directory tokens, and accepts one verified
-  regular-file directory member;
-- evidence-only registry declarations count as used, and token renames or
-  expected-fingerprint edits preserve selection-cache eligibility when the
-  resolved content identity, source profile, locator, and evaluator are
-  unchanged;
-- input verification and evidence selection share one strong source identity;
-  output, script, input, and `pyrun-outputs.json` observations reuse the same
-  fingerprint cache rather than introducing another hash implementation;
-- warm CSV, TSV, JSON, text, NPZ, and HDF5 selection hits perform no full
-  payload read, source parse, archive open, or dataset materialization, while
-  still checking reader availability and final source stability;
-- malformed and failed selections are never reused, 256 KiB per-result and
-  16 MiB per-log limits omit cache state only, and obsolete rows are removed
-  only after a completed published run;
-- newly hashed scripts and locator sources publish digest and filesystem
-  metadata from one unchanged before-and-after observation, and a concurrent
-  change is unavailable rather than cacheable;
-- project-cache file observations avoid rehashing local files, including paths
-  outside the entry, only when canonical path, kind, size, modification time,
-  and change time still match; metadata drift causes recomputation, while
-  matching recomputed bytes remain unchanged for Provenance;
-- project-cache directory observations retain deterministic membership and
-  member-file identities, reuse unchanged members after a partial change, and
-  hash only new or changed files before reconstructing the aggregate
-  fingerprint;
-- identity-file managed-directory observations hash only their 1–64 exact
-  declared files, never traverse undeclared descendants, reuse unchanged files
-  across logs, and create one logical aggregate command relationship rather
-  than false descendant membership;
-- identity-pattern managed-directory observations allow 1–64 final-component
-  selectors and 1–64 unique matches, scan each wildcard parent once, stop after
-  100,000 immediate candidates, and never traverse undeclared descendants;
-- repeated declarations, overlapping directories, and different logs in one
-  project share one content observation by canonical path;
-- retired JSON per-log cache state is never read or migrated; a successful
-  writable cutover removes only the known old cache and lock while preserving
-  unknown legacy-directory contents;
-- completed file observations survive interruption, concurrent validators do
-  not hash the same uncached file twice, and a corrupt generated project cache
-  is rebuilt without changing validation semantics;
-- dry-run treats unusable cache state as absent, opens compatible cache state
-  read-only, and creates, updates, and garbage-collects nothing;
-- incomplete or interrupted writable runs may retain completed fingerprints
-  and selections but never replace comparison rows or remove prior selections;
-- `--recompute` bypasses check, selection, and fingerprint-cache reuse,
-  repopulates disposable state after a completed published run, and opens no
-  cache or other generated path when combined with `--dry-run`;
-- `validation.md` contains separate Mechanical Validation and Reproduction
-  sections, shows reproduction as `not_yet_run`, and has no combined
-  conclusion;
-- the mechanical report shows completion and date, check counts for
-  Structure and Evidence, unique starting-artifact counts for Provenance, one
-  Hygiene finding count, and every non-Hygiene non-passing check grouped by
-  entry without rendering individual passing checks; Structure projects
-  machine scope `conformance`, while `mechanical.json` keeps orphan artifacts,
-  unmatched outputs, and unused declarations distinct;
-- the human Provenance artifact count treats
-  `provenance.output.unconfirmed` as unavailable rather than failed, gives an
-  actual failure precedence when failed and unconfirmed states coexist,
-  projects downstream artifacts blocked by an actual Provenance failure as
-  failed without changing their authoritative `not_applicable` checks, and
-  supports multi-log summaries that render unavailable artifacts as
-  `N unconfirmed`;
-- canonical discovery finds maintained summaries from their stable navigation
-  contract without filename-based exclusions;
-- dry-run writes nothing, incomplete evaluation publishes no per-log bundle,
-  completed fingerprint observations and bounded selections may persist from
-  a writable incomplete run, and an ordinary publication failure restores the
-  prior per-log bundle;
-- validation leaves all research-owned bytes unchanged and preserves the
-  maintained summary's exact stable report link;
-- evidence comparison, Provenance, summary forwarding, and Hygiene evaluation
-  remain independent code-only scopes with precise failure payloads;
-- cross-log origin evidence is observed as a dependency of the current log without
-  reading another log's validation state;
-- every reached generated artifact requires one output-keyed confirmed record
-  whose current output fingerprint, script path and fingerprint, exact ordered
-  parameters, and direct input fingerprint mapping match the current graph;
-- changing a recorded parameter without rerunning, changing script or input
-  bytes, changing output bytes, deleting an expected output, or retaining only
-  an unconfirmed baseline fails Provenance;
-- output records absent from the complete current graph are unmatched Hygiene
-  findings and take precedence over orphan reporting for the same existing
-  file, while graph outputs outside the evidence closure remain ordinary
-  orphans unless retained;
-- `pyrun` capture options record stdout, stderr, or their merged stream without
-  relying on shell redirection, publish no records on failed execution or
-  incomplete observation, and update each output key independently;
-- unchanged dependency projections produce matching passing checks, while
-  changed dependencies alter only affected checks;
-- source observations, locator evaluations, script hashes, and command
-  discovery stay bounded and shared within one invocation, including both
-  per-member and aggregate binary-materialization limits;
-- local source and input paths reject lexical symlink aliases outside the
-  exact entry `data` and `images` roots or a platform alias shared by the entry
-  and target;
-- material-graph depth overflow fails explicitly rather than silently
-  truncating producer lineage; and
-- active implementation, test, fixture, command, and source-of-truth filenames
-  use stable version-neutral names. Version labels remain only in data formats,
-  schema identifiers, and unsupported-metadata observations.
+- public CLI discovery, dispatch, authoring, reorganization, and validation
+  operations defined by [Public Management And Validation
+  Operations](research-log-mechanical-validator-spec.md#public-management-and-validation-operations);
+- evidence sources, locators, transformations, presentations, and summary
+  associations defined by [Evidence-Record Role And
+  Scope](research-log-mechanical-validator-spec.md#evidence-record-role-and-scope)
+  and [Evidence File And Presentation
+  Association](research-log-mechanical-validator-spec.md#evidence-file-and-presentation-association);
+- input, retention, command, output-support, provenance, lineage, and Hygiene
+  behavior defined by [Input Registry And Artifact Graph
+  Contract](research-log-mechanical-validator-spec.md#input-registry-and-artifact-graph-contract);
+- evaluation, publication, generated-state, locking, dry-run, failure, and
+  currentness behavior defined by [Mechanical Validation Evaluation And
+  Outcomes](research-log-mechanical-validator-spec.md#mechanical-validation-evaluation-and-outcomes);
+- cache, observation, and materialization behavior under the specification's
+  [Resource And Safety Bounds](research-log-mechanical-validator-spec.md#resource-and-safety-bounds)
+  and [Dependency Projection And
+  Currentness](research-log-mechanical-validator-spec.md#dependency-projection-and-currentness);
+- focused Record, Replace, Update Summary, Repair, Reorganize, Review, and
+  Validate behavior cases in
+  [`skills/research-logging/tests/presented-evidence-cases.md`](../skills/research-logging/tests/presented-evidence-cases.md).
 
 Run the complete research-logging tool gate after any validator change. Use the
 focused controller, engine, evidence, command, locator, transformation,
@@ -305,11 +129,6 @@ provenance, material-graph, and publication tests during iteration.
 Wall time is diagnostic rather than an objective gate. Require bounded
 complexity, no avoidable repeated reads or hashes, correct cache reuse, and no
 asymptotic regression.
-
-Use
-`skills/research-logging/tests/presented-evidence-cases.md` as the focused
-manual behavior cases for Record, Replace, Update Summary, Repair, Reorganize,
-Review, and Validate changes.
 
 ## Codex Runtime Discovery
 

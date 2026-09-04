@@ -15,7 +15,8 @@ These cases exercise the activated CLI-driven Reorganize references.
   transfer with explicit document mappings.
 - A same-entry document split and document merge remain document operations;
   they neither add nor remove a stable entry.
-- A cross-entry section move names every selected record and mapping, moves
+- A cross-entry section move obtains the source entry's bounded evidence, data,
+  and retention inventories, names every selected record and mapping, moves
   Markdown and support files first, and uses one transfer.
 - A stable-entry split creates the destination with `log add`, then transfers
   the selected records and completes required reruns.

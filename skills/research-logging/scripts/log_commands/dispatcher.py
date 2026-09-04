@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 from .context import resolve_entry, resolve_log, resolve_log_creation
 from .model import (
@@ -35,6 +35,13 @@ FAMILIES = (
 AUTHORING_FAMILIES = frozenset(
     {"add", "data", "evidence", "init", "reorganize", "retention"}
 )
+
+
+class _AuthoringParser(argparse.ArgumentParser):
+    """An authoring parser that preserves the structured failure contract."""
+
+    def error(self, message: str) -> NoReturn:
+        raise ActionError("cli.arguments.invalid", message)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -118,7 +125,7 @@ def _mutation_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def _dispatch_init(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log init")
+    parser = _AuthoringParser(prog="log init")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--title", required=True)
     _mutation_argument(parser)
@@ -132,7 +139,7 @@ def _dispatch_init(arguments: Sequence[str]) -> ActionResult:
 
 
 def _dispatch_add(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log add")
+    parser = _AuthoringParser(prog="log add")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--date", required=True)
     parser.add_argument("--title", required=True)
@@ -153,7 +160,7 @@ def _dispatch_add(arguments: Sequence[str]) -> ActionResult:
 
 
 def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log evidence")
+    parser = _AuthoringParser(prog="log evidence")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
         verb = "Add" if name == "add" else "Replace"
@@ -278,7 +285,7 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
 
 
 def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log data")
+    parser = _AuthoringParser(prog="log data")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add-origin", "add-generated"):
         description = (
@@ -394,7 +401,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
 
 
 def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log retention")
+    parser = _AuthoringParser(prog="log retention")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
         verb = "Add" if name == "add" else "Replace"
@@ -446,7 +453,7 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
 
 
 def _dispatch_reorganize(arguments: Sequence[str]) -> ActionResult:
-    parser = argparse.ArgumentParser(prog="log reorganize")
+    parser = _AuthoringParser(prog="log reorganize")
     actions = parser.add_subparsers(dest="action", required=True)
 
     update = actions.add_parser("update-entry", help="Apply one edited entry identity")

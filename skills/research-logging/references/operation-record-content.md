@@ -43,6 +43,8 @@ inside an entry.
 Before finishing, inspect only the files and material changed or consumed by
 this Record operation. Confirm that the requested research is recorded, every
 required authoring action succeeded, referenced outputs exist, and any material
-defect affecting the evidence is documented. Do not run Validate, reopen
-registries, inspect unrelated entries, or recheck invariants guaranteed by a
-successful authoring transaction.
+defect affecting the evidence is documented. Do not run Validate within Record,
+reopen registries, inspect unrelated entries, or recheck invariants guaranteed
+by a successful authoring transaction. If the request separately authorizes
+Validate, finish Record before returning to the core operation selector and
+starting Validate.

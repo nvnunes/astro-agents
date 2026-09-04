@@ -6,6 +6,8 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
 REFERENCES = SKILL / "references"
+PROJECT = SKILL.parents[1]
+CASES = SKILL / "tests" / "presented-evidence-cases.md"
 REFERENCE_PATTERN = re.compile(r"references/([A-Za-z0-9_.-]+\.md)")
 
 
@@ -155,6 +157,51 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertRegex(text.lower(), r"fail(?:ed|s|ure)")
             self.assertNotIn("references/operation-repair.md", text)
             self.assertNotIn("references/operation-reorganize.md", text)
+
+    def test_record_sequences_separately_requested_validation(self) -> None:
+        content = reference("operation-record-content.md")
+        cases = CASES.read_text(encoding="utf-8")
+        self.assertIn("Do not run Validate within Record", content)
+        self.assertIn("returning to the core operation selector", content)
+        self.assertIn("record an investigation and then validate it", cases)
+
+    def test_existing_record_resolves_a_split_entry_document(self) -> None:
+        existing = reference("operation-record-existing.md")
+        cases = CASES.read_text(encoding="utf-8")
+        self.assertIn("Resolve the target document or section", existing)
+        self.assertIn("split-entry documents plausibly match", existing)
+        self.assertIn("split across several documents", cases)
+
+    def test_multilog_reporting_is_loaded_only_from_validate(self) -> None:
+        validate = reference("operation-validate.md")
+        report = reference("operation-validate-multilog-report.md")
+        records = reference("file-validation-records.md")
+        self.assertEqual(
+            validate.count("references/operation-validate-multilog-report.md"), 1
+        )
+        self.assertIn("Do not load that reporting\ncontract for one-log", validate)
+        self.assertNotIn("When summarizing several", validate)
+        self.assertIn("| Research log | Structure Failures", report)
+        for implementation_detail in (
+            "check_comparison",
+            "SelectionResult",
+            "256 KiB",
+            "100,000-candidate",
+        ):
+            self.assertNotIn(implementation_detail, records)
+
+    def test_human_operation_model_matches_the_skill(self) -> None:
+        guide = (PROJECT / "docs" / "research-logging.md").read_text(
+            encoding="utf-8"
+        )
+        naming = reference("file-entry-naming.md")
+        self.assertIn("seven core operations", guide)
+        self.assertIn("**Repair**", guide)
+        self.assertIn("**Reorganize**", guide)
+        self.assertIn("### Repair", guide)
+        self.assertIn("### Reorganize", guide)
+        self.assertNotIn("Reorganizing the log is part of Record", guide)
+        self.assertIn("simultaneous Reorganize\nreorder", naming)
 
     def test_replace_removes_registries_before_old_artifacts(self) -> None:
         replace = reference("operation-replace.md")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping
@@ -20,12 +21,19 @@ from validation.evidence import (
     EvidenceFile,
     EvidenceRecord,
     evidence_file_from_records,
+    index_summary_references,
     load_evidence_file,
 )
-from validation.operation_state import begin_reorganization, finish_reorganization
+from validation.operation_state import begin_reorganization, finish_guarded_publication
 from validation.retention import load_retention_file
 
-from .context import EntryContext, LogContext, LogCreationContext, resolve_entry
+from .context import (
+    EntryContext,
+    LogContext,
+    LogCreationContext,
+    parse_entry_document_name,
+    resolve_entry,
+)
 from .model import ActionError, ActionResult, EntryUpdateArguments, TransferArguments
 from .scaffold import (
     EntryObservation,
@@ -38,14 +46,15 @@ from .scaffold import (
     validate_entry_title,
 )
 from .storage import (
+    PublicationError,
     atomic_write_texts,
     log_and_entry_locks,
     log_creation_lock,
-    log_lock,
 )
 
-_DOCUMENT_RE = re.compile(r"(?P<id>e[0-9]{3,})(?P<suffix>[a-z]?)\.md\Z")
-
+_MARKDOWN_LINK_RE = re.compile(
+    r"\]\((?P<target><[^<>\r\n]+>|[^()\s\r\n]+)\)"
+)
 
 @dataclass(frozen=True)
 class _EntryUpdate:
@@ -81,6 +90,8 @@ def update_entry(entry: EntryContext, arguments: EntryUpdateArguments) -> Action
         _require_summary_identity(summary, plan)
         if arguments.date is not None or arguments.title is not None:
             _require_headings(current.documents, date, title)
+        if destination != entry.root:
+            _require_no_stale_identity_links(entry.log, {entry.root: destination})
         changed = destination != entry.root
         if not changed:
             return _result("update-entry", "unchanged", False, (entry.log.summary,))
@@ -122,6 +133,8 @@ def reorder(
         documents = _document_moves(physical, roots, id_map)
         plan = _ReorderPlan(desired, by_id, roots, documents, id_map)
         _require_reorder_summary(log, plan)
+        _require_reorder_references(log, plan)
+        _require_no_stale_identity_links(log, roots)
         changed = any(source != destination for source, destination in roots.items())
         paths = tuple(path for pair in roots.items() for path in pair)
         if not changed:
@@ -154,7 +167,14 @@ def relocate_log(log: LogContext, destination: Path, *, dry_run: bool) -> Action
         target,
         resolve_project_root(target.parent),
     )
-    with log_creation_lock(creation), log_lock(log):
+    inventory = observe_physical_entries(log)
+    entries = tuple(EntryContext(log, item.id, item.root) for item in inventory)
+    with log_creation_lock(creation), log_and_entry_locks(log, entries):
+        if observe_physical_entries(log) != inventory:
+            raise ActionError(
+                "reorganize.relocate.changed",
+                "entry inventory changed while acquiring locks",
+            )
         _require_relocation_target(log, target, target_summary)
         _require_relocation_markdown(log, target.name)
         _publish_relocation(log, target_summary, target)
@@ -219,13 +239,16 @@ def _publish_identity(
         atomic_write_texts(updates)
     except (OSError, UnicodeError, ValueError) as error:
         rollback = _rollback_renames(completed)
-        if not rollback:
-            finish_reorganization(_moved_residue(residue, roots))
+        publication_rollback_complete = not isinstance(
+            error, PublicationError
+        ) or error.rollback_complete
+        if not rollback and publication_rollback_complete:
+            finish_guarded_publication(_moved_residue(residue, roots))
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
         raise ActionError(
             "reorganize.publication.failed", f"{error}{detail}"
         ) from error
-    finish_reorganization(_moved_residue(residue, roots))
+    finish_guarded_publication(_moved_residue(residue, roots))
 
 
 def _publish_relocation(log: LogContext, summary: Path, root: Path) -> None:
@@ -243,11 +266,14 @@ def _publish_relocation(log: LogContext, summary: Path, root: Path) -> None:
         atomic_write_texts(updates)
     except (OSError, UnicodeError, ValueError) as error:
         rollback = _rollback_renames(completed)
-        if not rollback:
-            finish_reorganization(root / residue.relative_to(log.root))
+        publication_rollback_complete = not isinstance(
+            error, PublicationError
+        ) or error.rollback_complete
+        if not rollback and publication_rollback_complete:
+            finish_guarded_publication(root / residue.relative_to(log.root))
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
         raise ActionError("reorganize.relocate.failed", f"{error}{detail}") from error
-    finish_reorganization(root / residue.relative_to(log.root))
+    finish_guarded_publication(root / residue.relative_to(log.root))
 
 
 def _load_identity_registries(
@@ -495,10 +521,10 @@ def _document_moves(
     result: dict[Path, Path] = {}
     for entry in entries:
         for document in entry.documents:
-            match = _DOCUMENT_RE.fullmatch(document.name)
-            assert match is not None
+            identity = parse_entry_document_name(document.name)
+            assert identity is not None
             result[document] = roots[entry.root] / (
-                ids[entry.id] + match.group("suffix") + ".md"
+                ids[entry.id] + identity.suffix + ".md"
             )
     return result
 
@@ -526,6 +552,69 @@ def _require_reorder_summary(log: LogContext, plan: _ReorderPlan) -> None:
             )
 
 
+def _require_reorder_references(log: LogContext, plan: _ReorderPlan) -> None:
+    """Require summary evidence references to use their post-reorder owners."""
+
+    ownership: dict[str, list[tuple[str, str]]] = {}
+    for entry in plan.entries.values():
+        path = entry.root / "evidence.json"
+        if not path.exists() and not path.is_symlink():
+            continue
+        current = load_evidence_file(path, log_root=log.root, entry_root=entry.root)
+        for record in current.records:
+            source = log.root / PurePosixPath(record.document)
+            destination = plan.documents[source]
+            ownership.setdefault(record.id, []).append(
+                (source.stem, destination.stem)
+            )
+    references = index_summary_references(log.summary.read_text(encoding="utf-8"))
+    for reference in references:
+        candidates = ownership.get(reference.evidence_id, [])
+        stale = [
+            pair
+            for pair in candidates
+            if pair[0] == reference.entry and pair[0] != pair[1]
+        ]
+        matches = [pair for pair in candidates if pair[1] == reference.entry]
+        if stale or len(matches) != 1:
+            raise ActionError(
+                "reorganize.markdown.incomplete",
+                "update every summary evidence reference before reorder",
+            )
+
+
+def _require_no_stale_identity_links(
+    log: LogContext, roots: Mapping[Path, Path]
+) -> None:
+    """Reject Markdown links that retain a changed entry-folder identity."""
+
+    stale_names = {
+        source.name for source, destination in roots.items() if source != destination
+    }
+    if not stale_names:
+        return
+    documents = [log.summary]
+    documents.extend(
+        document
+        for entry in observe_physical_entries(log)
+        for document in entry.documents
+    )
+    for document in documents:
+        text = document.read_text(encoding="utf-8")
+        for match in _MARKDOWN_LINK_RE.finditer(text):
+            raw = match.group("target")
+            target = raw[1:-1] if raw.startswith("<") else raw
+            parsed = urllib.parse.urlsplit(target)
+            if parsed.scheme or parsed.netloc:
+                continue
+            parts = PurePosixPath(urllib.parse.unquote(parsed.path)).parts
+            if stale_names & set(parts):
+                raise ActionError(
+                    "reorganize.markdown.incomplete",
+                    f"stale entry link remains in {document}",
+                )
+
+
 def _require_relocation_markdown(log: LogContext, root_name: str) -> None:
     text = log.summary.read_text(encoding="utf-8")
     expected = f"{root_name}/validation.md"
@@ -551,13 +640,29 @@ def _require_relocation_target(log: LogContext, target: Path, summary: Path) -> 
 
 
 def _require_no_entry_reference(log: LogContext, entry: EntryContext) -> None:
-    needles = (entry.root.name, f"entry = {entry.id}")
+    summary = log.summary.read_text(encoding="utf-8")
+    references = index_summary_references(summary)
+    if entry.root.name in summary or any(
+        (identity := parse_entry_document_name(f"{reference.entry}.md")) is not None
+        and identity.id == entry.id
+        for reference in references
+    ):
+        raise ActionError("reorganize.remove.referenced", str(log.summary))
     for item in observe_physical_entries(log):
         if item.id == entry.id:
             continue
+        data_path = item.root / "data.json"
+        if data_path.exists() or data_path.is_symlink():
+            data = load_data_file(data_path, entry_root=item.root)
+            for resource in data.inputs:
+                try:
+                    Path(resource.canonical_target).relative_to(entry.root)
+                except ValueError:
+                    continue
+                raise ActionError("reorganize.remove.referenced", str(data_path))
         for document in item.documents:
             text = document.read_text(encoding="utf-8")
-            if any(needle in text for needle in needles):
+            if entry.root.name in text:
                 raise ActionError("reorganize.remove.referenced", str(document))
 
 
@@ -579,10 +684,10 @@ def _remove_scaffold(entry: EntryContext, document: Path, runner: Path) -> None:
         except OSError as restore_error:
             rollback.append(str(restore_error))
         if not rollback:
-            finish_reorganization(residue)
+            finish_guarded_publication(residue)
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
         raise ActionError("reorganize.remove.failed", f"{error}{detail}") from error
-    finish_reorganization(residue)
+    finish_guarded_publication(residue)
 
 
 def _result(

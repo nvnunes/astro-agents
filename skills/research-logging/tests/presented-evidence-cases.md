@@ -56,9 +56,18 @@ Given an explicit request to record an investigation and update the summary,
 the agent completes Record first and then runs Update Summary as a separately
 authorized operation.
 
+Given an explicit request to record an investigation and then validate it, the
+agent completes Record without invoking validation, returns to the core
+operation selector, and runs Validate as the separately authorized next
+operation.
+
 Given a new-entry Record, the agent adds the completed entry to the maintained
 summary's `## Entries` inventory without changing current understanding or
 log-level follow-ups.
+
+Given a Continue request for a stable entry split across several documents,
+Record resolves the target document or section after resolving the entry. If
+more than one split document plausibly fits, it asks before editing.
 
 ## Work Outside The Log Boundary
 

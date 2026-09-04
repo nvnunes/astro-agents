@@ -12,6 +12,12 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import BinaryIO, Iterable
 
+from log_commands.context import (
+    EntryContext,
+    LogContext,
+    parse_entry_directory_name,
+)
+from log_commands.storage import entry_lock
 from research_log_data import (
     DataContractError,
     DataFile,
@@ -35,9 +41,6 @@ from validation.pyrun_outputs import (
     quarantine_invalid_pyrun_outputs,
     update_pyrun_outputs_locked,
 )
-
-from log_commands.context import EntryContext, LogContext
-from log_commands.storage import entry_lock
 
 RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 CAPTURE_POLL_SECONDS = 0.05
@@ -467,13 +470,11 @@ def main(argv: list[str]) -> int:
     log = log_root(cwd)
 
     entry = require_entry_root(cwd, log)
-    entry_ids = [
-        part for part in entry.name.split("-") if re.fullmatch(r"e[0-9]{3,}", part)
-    ]
-    if len(entry_ids) != 1:
+    entry_identity = parse_entry_directory_name(entry.name)
+    if entry_identity is None:
         raise SystemExit("pyrun: could not resolve stable entry ID")
     operation_entry = EntryContext(
-        LogContext(log.parent / f"{log.name}.md", log), entry_ids[0], entry
+        LogContext(log.parent / f"{log.name}.md", log), entry_identity.id, entry
     )
     try:
         with (

@@ -33,9 +33,9 @@ The current library shape is skills-first. Runtime skill discovery activates ski
 ## Quickstart
 
 1. Make a checkout of `astro-agents` available in the workspace where you want to use it.
-2. Use `docs/usage.md` to choose a bootstrap path and adopt the parts of `astro-agents` that fit your project.
+2. Use the [usage guide](docs/usage.md) to choose a bootstrap path and adopt the parts of `astro-agents` that fit your project.
 
-`docs/usage.md` owns the exact project-local and global bootstrap snippets, the recommended project surface, and the optional shared-validation path.
+[`docs/usage.md`](docs/usage.md) owns the exact project-local and global bootstrap snippets, the recommended project surface, and the optional shared-validation path.
 
 ## Project Layout
 
@@ -78,13 +78,13 @@ frontmatter is the source of truth for exact activation wording.
 
 Research logging has three distinct surfaces with separate authority:
 
-- `skills/research-logging/` is the self-contained runtime surface containing
+- [`skills/research-logging/`](skills/research-logging/) is the self-contained runtime surface containing
   the operational and authoring instructions used by agents. It is
   self-documenting and owns agent behavior.
-- `docs/research-log-mechanical-validator-spec.md` is the normative
+- [`docs/research-log-mechanical-validator-spec.md`](docs/research-log-mechanical-validator-spec.md) is the normative
   implementation contract that the mechanical-validation CLI and its
   supporting tools must follow.
-- `docs/research-logging.md` is human-facing researcher documentation. It
+- [`docs/research-logging.md`](docs/research-logging.md) is human-facing researcher documentation. It
   explains how researchers use the skill, what they should expect from it, and
   which research decisions remain theirs.
 
@@ -95,21 +95,21 @@ mirrors and should not be expected to repeat the same detail.
 
 ### Other starting points
 
-- `docs/usage.md`
+- [`docs/usage.md`](docs/usage.md)
   - concrete adoption path for downstream projects and user-global bootstrap
-- `docs/architecture.md`
+- [`docs/architecture.md`](docs/architecture.md)
   - skills-first structure, scope ownership, validation model, and maintenance expectations for this project
-- `skills/`
+- [`skills/`](skills/)
   - reusable skill packages listed above
-- `examples/downstream-testing.md`
+- [`examples/downstream-testing.md`](examples/downstream-testing.md)
   - example downstream `docs/testing.md`
-- `docs/runtime-model.md`
+- [`docs/runtime-model.md`](docs/runtime-model.md)
   - runtime vocabulary, current support boundary, and concrete Codex behavior
-- `docs/testing.md`
+- [`docs/testing.md`](docs/testing.md)
   - validation requirements for changes inside `astro-agents`
 
 ## Project Status
 
-- Use `CHANGELOG.md` for the public change history.
+- Use [`CHANGELOG.md`](CHANGELOG.md) for the public change history.
 - This project is public and pre-1.0.
 - The public surface is still settling.

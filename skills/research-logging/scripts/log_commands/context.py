@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .model import ActionError
 
-ENTRY_ID_RE = re.compile(r"e[0-9]{3,}\Z")
+ENTRY_ID_RE = re.compile(r"e(?P<number>[0-9]{3,})\Z")
+ENTRY_DOCUMENT_RE = re.compile(r"(?P<id>e[0-9]{3,})(?P<suffix>[a-z]?)\.md\Z")
+ENTRY_DIRECTORY_RE = re.compile(
+    r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})-"
+    r"(?P<id>e[0-9]{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +41,59 @@ class EntryContext:
     log: LogContext
     id: str
     root: Path
+
+
+@dataclass(frozen=True)
+class EntryDirectoryIdentity:
+    """One canonical entry directory identity parsed from its basename."""
+
+    date: str
+    id: str
+    slug: str
+
+
+@dataclass(frozen=True)
+class EntryDocumentIdentity:
+    """One canonical entry document identity parsed from its basename."""
+
+    id: str
+    suffix: str
+
+
+def entry_number(value: str) -> int | None:
+    """Return the positive numeric component of one canonical entry ID."""
+
+    match = ENTRY_ID_RE.fullmatch(value)
+    if match is None:
+        return None
+    number = int(match.group("number"))
+    return number if number > 0 else None
+
+
+def parse_entry_directory_name(value: str) -> EntryDirectoryIdentity | None:
+    """Return one fully canonical date-ID-slug directory identity."""
+
+    match = ENTRY_DIRECTORY_RE.fullmatch(value)
+    if match is None or entry_number(match.group("id")) is None:
+        return None
+    try:
+        parsed_date = date.fromisoformat(match.group("date"))
+    except ValueError:
+        return None
+    if parsed_date.isoformat() != match.group("date"):
+        return None
+    return EntryDirectoryIdentity(
+        match.group("date"), match.group("id"), match.group("slug")
+    )
+
+
+def parse_entry_document_name(value: str) -> EntryDocumentIdentity | None:
+    """Return one canonical stable-ID and optional sub-entry suffix."""
+
+    match = ENTRY_DOCUMENT_RE.fullmatch(value)
+    if match is None or entry_number(match.group("id")) is None:
+        return None
+    return EntryDocumentIdentity(match.group("id"), match.group("suffix"))
 
 
 def resolve_log_creation(
@@ -111,7 +170,7 @@ def resolve_log(value: Path | None, *, cwd: Path | None = None) -> LogContext:
 def resolve_entry(log: LogContext, entry_id: str) -> EntryContext:
     """Resolve one stable entry ID to exactly one canonical entry directory."""
 
-    if ENTRY_ID_RE.fullmatch(entry_id) is None:
+    if entry_number(entry_id) is None:
         raise ActionError("entry.id.invalid", f"invalid entry ID: {entry_id}")
     entries = log.root / "entries"
     if entries.is_symlink() or not entries.is_dir():
@@ -121,7 +180,10 @@ def resolve_entry(log: LogContext, entry_id: str) -> EntryContext:
     matches = sorted(
         path
         for path in entries.iterdir()
-        if path.is_dir() and not path.is_symlink() and entry_id in path.name.split("-")
+        if path.is_dir()
+        and not path.is_symlink()
+        and (identity := parse_entry_directory_name(path.name)) is not None
+        and identity.id == entry_id
     )
     if len(matches) != 1:
         raise ActionError(

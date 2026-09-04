@@ -25,6 +25,10 @@ from validation.evidence import (
     evidence_file_from_records,
     load_evidence_file,
 )
+from validation.operation_state import (
+    begin_registry_transaction,
+    finish_guarded_publication,
+)
 from validation.provenance import require_origin_boundary
 
 from .context import EntryContext
@@ -35,7 +39,7 @@ from .model import (
     DataAddArguments,
     DataUpdateArguments,
 )
-from .storage import atomic_write_texts, entry_lock, remove_or_write
+from .storage import PublicationError, atomic_write_texts, entry_lock, remove_or_write
 
 
 def list_inputs(entry: EntryContext) -> ActionResult:
@@ -216,7 +220,15 @@ def rename(
             updates = {candidate.path: candidate.canonical_json()}
             if evidence is not None:
                 updates[evidence.path] = evidence.canonical_json()
-            atomic_write_texts(updates)
+            residue = begin_registry_transaction(entry.log.root)
+            try:
+                atomic_write_texts(updates)
+            except PublicationError as error:
+                if error.rollback_complete:
+                    finish_guarded_publication(residue)
+                    raise
+                raise ActionError("data.rename.failed", str(error)) from error
+            finish_guarded_publication(residue)
         return ActionResult(
             "data.rename",
             "dry-run" if dry_run else "changed",

@@ -1027,6 +1027,62 @@ print(json.dumps({{
             self.assertEqual((entry / "data.json").read_bytes(), before_data)
             self.assertEqual(evidence_path.read_bytes(), before_evidence)
 
+    def test_rename_keeps_repair_residue_after_incomplete_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = scaffold(Path(directory))
+            source = entry / "data" / "source.csv"
+            source.write_text("value\n1\n", encoding="utf-8")
+            common = ("--path", str(logical), "--entry", "e001")
+            self.assertEqual(
+                run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    *common,
+                    "source",
+                    "data/source.csv",
+                ).returncode,
+                0,
+            )
+
+            script_root = str(LOG.parent)
+            sys.path.insert(0, script_root)
+            try:
+                from log_commands import data as data_actions
+                from log_commands.context import resolve_entry, resolve_log
+                from log_commands.storage import PublicationError
+                from validation.operation_state import (
+                    REGISTRY_RESIDUE,
+                    operation_directory,
+                )
+
+                context = resolve_entry(resolve_log(logical), "e001")
+                publication_error = PublicationError(
+                    OSError("injected publication failure"), ("restore failed",)
+                )
+                with (
+                    mock.patch.object(
+                        data_actions,
+                        "atomic_write_texts",
+                        side_effect=publication_error,
+                    ),
+                    self.assertRaisesRegex(Exception, "rollback failed"),
+                ):
+                    data_actions.rename(
+                        context,
+                        "source",
+                        "renamed",
+                        dry_run=False,
+                    )
+                self.assertTrue(
+                    (operation_directory(logical) / REGISTRY_RESIDUE).is_file()
+                )
+                blocked = run(entry, "data", "refresh", *common, "source")
+                self.assertEqual(blocked.returncode, 2)
+                self.assertIn("requires Repair", blocked.stderr)
+            finally:
+                sys.path.remove(script_root)
+
     def test_remove_requires_no_command_or_evidence_use_and_removes_empty_file(
         self,
     ) -> None:

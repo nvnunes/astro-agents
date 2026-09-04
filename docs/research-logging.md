@@ -16,7 +16,7 @@ same detail.
 
 ## Workflow at a glance
 
-A research log uses five core operations:
+A research log uses seven core operations:
 
 1. **Record** research activity in a new or existing log, using numbered, dated
    entries with their supporting material.
@@ -29,11 +29,16 @@ A research log uses five core operations:
 5. **Validate** mechanically that presented computational results match their
    declared sources, have visible provenance, and leave no unexplained retained
    material.
+6. **Repair** a named malformed, legacy, or invalid research-owned condition
+   without broadening into unrelated corrections.
+7. **Reorganize** explicitly selected structure without changing research
+   meaning.
 
 Reference management supports these operations when needed; it is not an
-additional stage. Reorganizing the log is part of Record because it revises
-existing material without changing entry IDs, research meaning, or links
-between results and their sources.
+additional stage. Repair and Reorganize require explicit requests or approval;
+neither is implied by Record, Review, or Validate. Reorganize normally preserves
+entry IDs and evidence associations, except for an explicitly requested
+simultaneous entry reorder or coordinated transfer between entries.
 
 You own the scientific methods, interpretations, accepted findings, decisions,
 and next steps. Agents may organize material, implement and run code, check
@@ -187,7 +192,7 @@ If the work clearly belongs in a different entry, choose its destination before
 recording it. Choosing another existing entry or starting a new one does not
 authorize moving earlier material.
 
-#### Reorganize the log
+### Reorganize
 
 Reorganize a log only when you request it or approve a recommendation from
 Review. A recommendation does not change the log by itself. Rename, split,
@@ -273,6 +278,16 @@ perform reproduction. Semantic review and reproduction are separate workflows.
 Validation reports precise problems but does not repair research content.
 A later correction of a named research-owned finding is a separately
 authorized Repair operation.
+
+### Repair
+
+Use Repair only when you explicitly ask to correct a named research-owned
+finding, malformed or legacy state, or recognized interrupted-transaction
+residue. Repair examines only enough of the affected log contract to establish
+the intended correction. It does not choose new scientific meaning, fix nearby
+findings, reorganize material, or remove superseded experiments without the
+corresponding authorization. After the correction, it runs mechanical
+validation again to determine whether the named condition cleared.
 
 ## Entries and section types
 

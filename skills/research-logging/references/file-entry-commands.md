@@ -41,8 +41,7 @@ globs, command or process substitution, arithmetic, dynamic value lists or case
 selection, or nested control flow to make evidence relationships visible. The
 validator does not execute shell. An unsupported or unbound construct is
 fail-closed and establishes no relationship; its body is not mined for likely
-commands. Command annotations count the concrete invocation order after a
-supported expansion.
+commands.
 
 For Python commands, use `./pyrun` to simplify recorded syntax. Verify any
 project-declared environment is available before running it. `pyrun` uses
@@ -104,32 +103,10 @@ output. Captures remain file-only. Use these declarations only when natural
 names do not expose the correct role; an explicit declaration overrides a
 misleading automatic role.
 
-For a non-`pyrun` command, put one hidden annotation immediately after its
-command fence when natural naming is unavailable:
-
-```html
-<!-- command catalog = input; results = output -->
-```
-
-For a fence containing several independent non-`pyrun` commands, add the
-one-based command number only where an annotation is needed:
-
-```html
-<!-- command-1 results = output -->
-<!-- command-3 summary-csv = input; @2 = output -->
-```
-
-Annotation option targets omit leading hyphens. Positional targets use `@N`, counting
-positional arguments after the executable or script token. Supported roles are
-`input`, `output`, `input-directory`, and `output-directory`. Use directory
-roles only when the entire non-empty directory has one direction and an output
-directory belongs exclusively to one producer. The exact entry `data` and
-`images` roots are shared artifact containers and cannot receive any material
-role; expose exact descendants or an exclusively owned subdirectory instead.
-
-A whole-directory role counts as one authored command relationship even though
-the validator records every bounded regular-file descendant as an artifact
-relationship.
+Do not add hidden command metadata. Preserve existing non-`pyrun` command
+history faithfully; when it cannot expose a required material relationship
+through natural role-bearing option names and named input tokens, report the
+provenance limit instead of rewriting it solely for validation.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
@@ -137,12 +114,11 @@ relationship after its confirmed output support is validated. An explicitly
 registered origin terminates lineage. A generated input traces to its unique
 earlier producer regardless of storage location.
 
-Runner declarations and annotations classify material already visible in the
-selected command. They do not bind a producer by name, extract a path from an
+Runner declarations classify material already visible in the selected
+`pyrun` command. They do not bind a producer by name, extract a path from an
 opaque `label=path` value, or excuse a missing command relationship. Prefer the
 option-name convention when it keeps the real command interface natural; use a
-runner declaration as the `pyrun` fallback and an annotation for another
-command.
+runner declaration as the `pyrun` fallback.
 
 Unclassified values are material candidates only when they have positive path
 evidence: an existing filesystem target, an explicit path or URI prefix, an

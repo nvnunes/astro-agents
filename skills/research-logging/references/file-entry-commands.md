@@ -55,8 +55,8 @@ with full paths and recognizes:
 - `<project>/...` resolves to a path under the project root.
 - `<log>` resolves to the research-log folder.
 - `<log>/...` resolves to a path under the research-log folder.
-- `<name>` resolves to one exact file or directory input in the owning
-  entry-root `data.json`.
+- `<name>` resolves to one exact named file or directory input owned by the
+  current entry.
 - `<directory-name>/member` resolves one exact regular-file member of a
   declared directory input.
 
@@ -133,10 +133,9 @@ relationship.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
-relationship after its confirmed output support is validated. A declared input
-terminates lineage only when `data.json` sets `origin: true`. A generated input
-normally uses `origin: false` and traces to its unique earlier producer
-regardless of storage location.
+relationship after its confirmed output support is validated. An explicitly
+registered origin terminates lineage. A generated input traces to its unique
+earlier producer regardless of storage location.
 
 Runner declarations and annotations classify material already visible in the
 selected command. They do not bind a producer by name, extract a path from an
@@ -210,14 +209,14 @@ confirmed output becomes an input to a later recorded command, use
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
 <target>` after its producer succeeds.
 
-Never add output-only results, scripts, command logs, or images to `data.json`
+Never register output-only results, scripts, command logs, or images as inputs
 unless an exact directly presented non-`pyrun` artifact needs an explicit
-`origin: true` boundary. Otherwise keep script and output paths directly in
-commands or Markdown. An image that is actually consumed by a later command is
-an input and follows the same registry rule.
+origin boundary. Otherwise keep script and output paths directly in commands
+or Markdown. An image that is actually consumed by a later command is an input
+and follows the same registration rule.
 
-`pyrun` reads only `./data.json` at the current owning entry root. It does not
-search a parent entry or the log root.
+`pyrun` resolves names only from the current owning entry. It does not inherit
+inputs from a parent entry or the log root.
 
 `log add` installs the entry-root `pyrun` symlink from the active skill package
 when it creates an entry. Before running or recording an active-work Python

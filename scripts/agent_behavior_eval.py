@@ -332,13 +332,16 @@ def verify_discovery(
     disabled_skills: Sequence[Path],
 ) -> dict[str, Any]:
     """Require one discovered skill name at the immutable snapshot path."""
+    text = _prompt_input_text(prompt_input)
     expected = str(expected_skill.resolve())
     disabled = [str(path.resolve()) for path in disabled_skills]
     entry_pattern = re.compile(
         rf"^- {re.escape(skill_name)}: .*?\(file: ([^)]+)\)$",
         flags=re.MULTILINE,
     )
-    discovered_paths = entry_pattern.findall(_prompt_input_text(prompt_input))
+    discovered_paths = _resolve_discovered_skill_paths(
+        entry_pattern.findall(text), text
+    )
     disabled_occurrences = {
         path: discovered_paths.count(path) for path in disabled
     }
@@ -355,6 +358,24 @@ def verify_discovery(
         and not any(disabled_occurrences.values())
     )
     return result
+
+
+def _resolve_discovered_skill_paths(
+    values: Sequence[str], prompt_input: str
+) -> list[str]:
+    """Resolve absolute and skill-root-aliased discovery paths."""
+
+    root_pattern = re.compile(r"^- `([^`]+)` = `([^`]+)`$", flags=re.MULTILINE)
+    roots = {name: Path(path) for name, path in root_pattern.findall(prompt_input)}
+    resolved: list[str] = []
+    for value in values:
+        path = Path(value)
+        if not path.is_absolute():
+            root_name, separator, relative = value.partition("/")
+            if separator and root_name in roots:
+                path = roots[root_name] / relative
+        resolved.append(str(path.resolve()))
+    return resolved
 
 
 def capture_state(source: Path, destination: Path) -> None:

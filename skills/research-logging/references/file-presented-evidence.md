@@ -1,33 +1,27 @@
 # Presented Evidence Instructions
 
-Use this file when recording, updating a summary, or reviewing computational
-evidence in a research log. These rules make intended evidence mechanically
-discoverable. They do not assess scientific interpretation.
+Use this file when adding or changing a presented result, direct artifact, or
+summary evidence reference. The agent chooses what the research presents and
+where it belongs. The public CLI owns evidence-record validation and storage.
+Never create, inspect, or edit its registry during ordinary Record.
 
-Entry evidence exists only in experimental sections. Synthesis and prose
-sections contain no mechanical evidence targets. Validation reports a
-structurally invalid section rather than guessing its type or partially
-validating it.
+Entry evidence exists only under `Results:` in an experimental section. A
+numerical result in experimental prose is separate evidence even when the same
+value appears in a table.
 
-For entry evidence, keep the retained source, locator, transformation, marker,
-and presentation consistent. Follow the routed locator, transformation, and
-table instructions for the applicable parts. Do not add metadata to a direct
-artifact presentation or originate evidence in a maintained summary.
+## Presentation Markers
 
-## Presented Entry Evidence
+Use one stable descriptive lowercase ID for each statistic, table, or retained
+output. Do not include the value in the ID.
 
-Use these forms:
-
-- Mark an inline numerical result in an experimental section with an adjacent
-  hidden evidence ID. Keep names, connective wording, and parameters outside
-  the marked code span:
+- Put a statistic marker immediately after its single code span:
 
   ```markdown
   Overall error fell to `0.286%`<!-- eid:overall-error -->.
   ```
 
-- Put a hidden evidence ID on the source line immediately before a Markdown
-  table under `Results:`:
+- Put a table or retained-output marker on the source line immediately before
+  the Markdown table or `text` fence, with no intervening line:
 
   ```markdown
   <!-- eid:configuration-table -->
@@ -36,159 +30,103 @@ Use these forms:
   | Candidate | 0.286% |
   ```
 
-- Put a hidden evidence ID on the source line immediately before a `text`
-  fence under `Results:`. Retain the complete selected output in a command log;
-  do not reconstruct it from agent context.
-- Present an artifact directly with a local link or image embed under
-  `Results:`. A direct artifact presentation uses its Markdown target and
-  recorded-command provenance; it has no evidence record or `eid` marker.
+The marker is exactly `<!-- eid:descriptive-id -->`. Keep names, connective
+wording, and parameters outside a marked statistic's code span.
 
-Tables, output fences, artifact links, and image embeds outside experimental
-`Results:` are not mechanical evidence targets. A numerical result in
-experimental prose is separate evidence even when the same value appears in a
-table.
+A direct local artifact link or image embed under `Results:` uses the recorded
+command's provenance. It has no evidence ID or evidence record. Do not add a
+marker to it.
 
-Use one stable descriptive ID per presented statistic, table, or output. IDs
-use at most 96 ASCII lowercase letters, digits, and internal hyphens, begin
-with a letter, and remain stable when wording, headings, or values change. The
-ID must not include the evidence value. The marker is exactly:
+## Common Evidence Workflow
 
-```html
-<!-- eid:descriptive-id -->
-```
+1. Retain the source and register it as an input through
+   `references/file-data-index.md` when it does not already have a local
+   `<name>` token. Require that transaction to succeed before continuing.
+2. Author the complete presentation and marker first.
+3. Resolve `<skill>/scripts/log` from this activated package. Read only
+   `log evidence add --help` or `log evidence update --help`, then invoke the
+   selected action with the logical log path, stable entry ID, evidence ID, and
+   one source token:
 
-Do not add spacing, attributes, aliases, or prose inside the marker. A statistic
-marker immediately follows its one code span on the same source line. A table
-or output marker occupies the immediately preceding source line with no blank
-or prose line between it and the target.
+   ```text
+   <skill>/scripts/log evidence add --path <log> --entry <entry-id> \
+     --id <id> --source <name> [common selection or conversion arguments]
+   ```
 
-## Entry Evidence Records
+   `<log>` is the logical base whose summary is `<log>.md`; do not pass the
+   summary file itself. Use `--select` with a JSON Pointer such as `/accuracy`.
+   Use repeated `--where <pointer> <string|integer|decimal|boolean|null>
+   <value>` to select matching records and repeated `--identity` to assert
+   stable row identity. Use `--as-percentage` only when the retained proportion
+   is intentionally presented as a percentage, and `--scale` only for a
+   researcher-authorized scientific scale conversion.
+4. Require the command to succeed. It resolves and fingerprints the source,
+   infers the document and evidence kind from the unique marker, records exact
+   selection expectations, checks the presentation, and publishes the complete
+   record. Do not open a registry to inspect or confirm a successful result.
 
-Store presentation records in `evidence.json` at the owning entry root. Its
-only top-level keys are `schema`, with value `research-log-evidence/v3`, and
-`records`, containing a non-empty array. Remove the file after removing its
-final record. Use UTF-8 JSON without comments, duplicate keys, non-finite
-numbers, or trailing content. The schema identifier is a data-format value,
-not an authoring-mode choice.
+Invoke dependent authoring actions separately. Read each bounded result and
+stop at the first failure instead of sending the next action in the same shell
+invocation.
 
-Each presentation record contains exactly:
+This common path covers one-source identity statistics, inferred scalar
+rendering and units, fractional percentages, explicit scaling, direct tables
+whose selected source already has the presented shape, and one selected line
+of retained `text` output. Use a complete `<name>` token for a file or
+`<directory-name>/member` for one exact directory member. A bare directory,
+raw path, URI, or cross-entry shorthand is not an evidence source.
 
-- `id`: the stable ID shared with one Markdown marker;
-- `document`: the entry document path relative to the maintained-log root;
-- `kind`: `statistic`, `table`, or `output`;
-- `sources`: one or more ordered retained-source objects; and
-- `transformation`: `null` for supported identity presentation or one closed
-  transformation object.
+## Advanced Definition Routing
 
-Use 1–8 sources for a statistic, exactly one for an output, exactly one for a
-direct or structured table, and 1–32 for a summary table.
+When the intended presentation clearly needs one of the forms below, or the
+common action reports `evidence.common.unsupported`, do not edit the registry
+or activate Repair. Read exactly one matching reference:
 
-Each source object contains exactly `source` and `locator`. `source` is one
-complete `<name>` or `<directory-name>/member` token from the owning entry-root
-`data.json`. A bare directory token is not evidence because a record must name
-one exact local regular file. Follow the routed locator instructions for
-`locator`. Do not use an entry-relative path, `<log>` or `<project>` path,
-cross-entry shorthand, absolute path, URL, object-store URI, whole-artifact
-selection, or free-form selector prose in an evidence record. To consume an
-artifact from another entry, declare that exact artifact in the consuming
-entry's `data.json` and use the local declaration's token.
+- complex source selection or multiple sources:
+  `references/record-evidence-definition-sources.md`;
+- a compound or otherwise advanced numerical presentation:
+  `references/record-evidence-definition-numeric.md`;
+- a direct table needing explicit column formatting:
+  `references/record-evidence-definition-direct-tables.md`;
+- a table built by applying one column recipe to repeated source records:
+  `references/record-evidence-definition-structured-tables.md`;
+- a small table assembled from several exact retained selections:
+  `references/record-evidence-definition-summary-tables.md`; or
+- a retained-output presentation needing an explicit text recipe:
+  `references/record-evidence-definition-outputs.md`.
 
-For retained `data/results.csv`:
+That reference supplies the focused `sources` and `transformation` definition.
+Write only that bounded definition under `/private/tmp`, run the documented
+`--dry-run`, and apply it only after the preflight succeeds. A valid advanced
+case is still Record, not Repair.
 
-```csv
-case,success_rate
-candidate,0.676
-```
-
-the complete record and its presentation are:
-
-```json
-{
-  "schema": "research-log-evidence/v3",
-  "records": [{
-    "id": "candidate-success-rate",
-    "document": "entries/2026-08-27-e001-study/e001.md",
-    "kind": "statistic",
-    "sources": [{
-      "source": "<results>",
-      "locator": {
-        "select": [["success_rate"]],
-        "where": [{
-          "op": "eq",
-          "path": ["case"],
-          "value": "candidate"
-        }]
-      }
-    }],
-    "transformation": {
-      "form": "percentage",
-      "source": {"input": 0, "item": 0}
-    }
-  }]
-}
-```
-
-The corresponding presentation is:
-
-```markdown
-The candidate success rate was `67.6%`<!-- eid:candidate-success-rate -->.
-```
-
-Create, update, or remove a record and its marker in the same authorized
-research operation. Remove `evidence.json` after removing its final record.
-Record and Replace own entry records within their normal scope. A validation
-agent reads but never edits them.
-
-## Locators And Transformations
-
-Use locators only to select retained values and transformations only to shape
-their presentation. Every selected value must contribute exactly once to the
-presented item. If the required expression needs a new calculation or falls
-outside the supported forms, have the recorded research script retain the
-derived value or a bounded presentation-ready source. Do not calculate or copy
-the result while authoring metadata.
-
-## Retained Material
-
-`evidence.json` contains presentation records only. Put intentional
-disconnected retention in entry-root `retention.json` and follow
-`file-retention.md`. Retention affects only orphan classification and cannot
-create or repair evidence, provenance, command, or dependency relationships.
+If current research-owned state is malformed or legacy and prevents the owning
+action from operating, stop and report the exact failure. Do not activate or
+perform Repair without a separate correction request.
 
 ## Summary Evidence
 
-A maintained summary may present a numerical statistic only by referencing an
-already supported entry statistic or exact numerical table cell. Put the
-hidden reference immediately after the summary's code span:
+A maintained summary may present a statistic only by referencing an already
+supported entry statistic or exact table cell:
 
 ```markdown
-The full-sample runtime was `12.3 ms`<!-- ref entry = e004a; eid = full-sample-runtime -->.
+The runtime was `12.3 ms`<!-- ref entry = e004a; eid = full-sample-runtime -->.
 ```
 
 ```markdown
-The selected error was `0.286%`<!-- ref entry = e001; eid = configuration-table; row = 2; column = 3 -->.
+The error was `0.286%`<!-- ref entry = e001; eid = configuration-table; row = 2; column = 3 -->.
 ```
 
-`entry` is the exact entry document ID. `eid` names the record in that entry's
-`evidence.json`. Table coordinates are one-based body-row and presented-column
-coordinates. The summary expression must exactly match the referenced entry
-presentation or table cell; the summary does not declare another source,
-locator, transformation, or producer.
+Table coordinates are one-based body-row and presented-column coordinates. The
+summary expression must exactly match the entry presentation or selected cell.
+Do not originate a calculation, source, transformation, table, output block,
+or direct artifact in the summary.
 
-Do not originate a new computation in the summary. If a summary needs a
-different value, unit, or rounding, first establish that presentation as entry
-evidence or leave it as ordinary unmarked synthesis prose.
+## Boundaries
 
-## Review And Validation Boundaries
-
-During research-log review, report apparent computational evidence that lacks
-a supported form, marker, reference, or record. Also report malformed,
-duplicate, extra, conflicting, misplaced, or structurally stale metadata. Do
-not decide whether selected evidence scientifically supports the surrounding
-claim.
-
-Mechanical validation uses code only. It checks exact association, source
-selection, transformation, presentation, command provenance, and orphan
-detection. Missing, ambiguous, unsupported, or incorrect metadata is a
-completed finding. The validation agent reports it precisely and never edits
-research-owned material.
+Retention records intent for disconnected material only; follow
+`references/file-retention.md` when needed. During Review, report apparent
+evidence that lacks a supported presentation, marker, source, or successful
+authoring transaction. Mechanical validation checks exact association,
+selection, transformation, presentation, provenance, and orphan state; it
+never edits research-owned material.

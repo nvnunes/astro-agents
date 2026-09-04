@@ -146,6 +146,15 @@ class AgentBehaviorEvalTests(unittest.TestCase):
                 encoded, "example", expected, [disabled]
             )
             self.assertTrue(encoded_valid["verified"])
+            aliased = (
+                f"### Skill roots\n- `r7` = `{expected.parent.parent}`\n"
+                "### Available skills\n"
+                "- example: description (file: r7/snapshot/SKILL.md)"
+            )
+            aliased_valid = agent_eval.verify_discovery(
+                aliased, "example", expected, [disabled]
+            )
+            self.assertTrue(aliased_valid["verified"])
             duplicate = prompt_input + f"\n- example: live (file: {disabled.resolve()})"
             invalid = agent_eval.verify_discovery(
                 duplicate, "example", expected, [disabled]

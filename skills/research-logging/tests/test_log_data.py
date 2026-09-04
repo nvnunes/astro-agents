@@ -114,6 +114,8 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("add-origin", family.stdout)
         self.assertNotIn("--identity", family.stdout)
         self.assertIn("--identity", action.stdout)
+        self.assertIn("producerless material input", action.stdout)
+        self.assertIn("logical log base", action.stdout)
 
         script_root = LOG.parent
         code = f"""

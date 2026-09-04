@@ -555,6 +555,10 @@ sole ordinary author of `data.json`; do not edit the registry directly. Omit
 the file when the entry has no command or evidence inputs and no direct artifact
 origin.
 
+Input targets passed to `log data` are absolute or relative to the selected
+entry root, regardless of the caller's working directory. Prefer short
+entry-relative targets such as `data/development.csv` for entry-owned material.
+
 Use `retention.json` only for intentionally retained material outside the
 evidence-rooted graph. Retention affects orphan classification and cannot
 create evidence or repair provenance.
@@ -627,6 +631,24 @@ uncertainty, or table assembly. Researchers do not need to author or inspect its
 technical syntax during normal work. Review and validation report when the
 connection is missing, ambiguous, unsupported, or inconsistent.
 
+For a common one-source presentation, author the result and its stable `eid`
+marker first, then use the active skill's management CLI:
+
+```text
+<skill>/scripts/log evidence add --path <log> --entry <entry-id> \
+  --id <id> --source <name> --select <json-pointer>
+```
+
+The action resolves the retained source, records exact selection expectations,
+infers the presentation kind and rendering from the marker, compares the
+result, and writes the evidence record. It also supports typed equality
+conditions, stable row identities, proportion-to-percentage presentation,
+explicit scaling, direct tables, and retained text output through its
+action-specific help. If common arguments cannot express a
+specification-approved presentation, the skill routes the agent to one focused
+advanced definition; the agent preflights that temporary definition under `/private/tmp`
+and still delegates the registry mutation to the CLI.
+
 Every presented generated result must trace through the recorded workflow until
 it reaches an explicit origin or an inputless confirmed producer. Every reached
 generated output must match `pyrun`'s current output and script fingerprints,
@@ -638,6 +660,17 @@ Material may also be retained intentionally for later investigation even when
 it is not used by a current result. Tell the research-logging agent why it is
 being kept so that it can be distinguished from an accidental orphan. This
 does not turn the material into evidence.
+
+The agent records that intent through:
+
+```text
+<skill>/scripts/log retention add --path <log> --entry <entry-id> \
+  --id <id> [--reason <reason>] <target> [<target> ...]
+```
+
+The action accepts either one nonempty directory or one or more regular files
+and owns the retention registry. Normal Record does not edit or inspect that
+registry directly.
 
 ### Summary evidence
 

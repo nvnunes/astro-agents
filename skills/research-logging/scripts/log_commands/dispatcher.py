@@ -87,12 +87,20 @@ def _top_parser() -> argparse.ArgumentParser:
 
 
 def _entry_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--path", type=Path)
-    parser.add_argument("--entry", required=True)
+    parser.add_argument(
+        "--path",
+        type=Path,
+        help="logical log base whose summary is PATH.md (never the summary file)",
+    )
+    parser.add_argument("--entry", required=True, help="stable entry ID")
 
 
 def _mutation_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="check the complete action without writing",
+    )
 
 
 def _dispatch_init(arguments: Sequence[str]) -> ActionResult:
@@ -134,35 +142,72 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     parser = argparse.ArgumentParser(prog="log evidence")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
-        action = actions.add_parser(name)
+        verb = "Add" if name == "add" else "Replace"
+        action = actions.add_parser(
+            name,
+            help=f"{verb} one evidence record after authoring its marker",
+            description=(
+                f"{verb} one fully checked evidence record. Author the unique "
+                "presentation marker before invoking this action."
+            ),
+        )
         _entry_arguments(action)
         _mutation_argument(action)
-        action.add_argument("--id", required=True)
+        action.add_argument("--id", required=True, help="presentation marker ID")
         source_form = action.add_mutually_exclusive_group(required=True)
-        source_form.add_argument("--source", action="append")
-        source_form.add_argument("--definition", type=Path)
-        action.add_argument("--select", action="append", default=[])
-        action.add_argument("--identity", action="append", default=[])
+        source_form.add_argument(
+            "--source",
+            action="append",
+            help="one local data input name or complete <name> token",
+        )
+        source_form.add_argument(
+            "--definition",
+            type=Path,
+            help="advanced sources/transformation JSON beneath /private/tmp",
+        )
+        action.add_argument(
+            "--select",
+            action="append",
+            default=[],
+            help="JSON Pointer to one selected field or value; repeat as needed",
+        )
+        action.add_argument(
+            "--identity",
+            action="append",
+            default=[],
+            help="JSON Pointer asserting stable record identity; repeat as needed",
+        )
         action.add_argument(
             "--where",
             nargs=3,
             action="append",
             default=[],
             metavar=("POINTER", "TYPE", "VALUE"),
+            help="require a typed equality match; repeat for conjunction",
         )
         transform = action.add_mutually_exclusive_group()
-        transform.add_argument("--as-percentage", action="store_true")
-        transform.add_argument("--scale")
-    rename = actions.add_parser("rename")
+        transform.add_argument(
+            "--as-percentage",
+            action="store_true",
+            help="present one retained proportion as a percentage",
+        )
+        transform.add_argument(
+            "--scale", help="apply one researcher-authorized numeric scale"
+        )
+    rename = actions.add_parser(
+        "rename", help="Rename one evidence ID after every Markdown edit"
+    )
     _entry_arguments(rename)
     _mutation_argument(rename)
     rename.add_argument("old_id")
     rename.add_argument("new_id")
-    remove = actions.add_parser("remove")
+    remove = actions.add_parser(
+        "remove", help="Remove one record after its Markdown references"
+    )
     _entry_arguments(remove)
     _mutation_argument(remove)
     remove.add_argument("--id", required=True)
-    listed = actions.add_parser("list")
+    listed = actions.add_parser("list", help="List bounded evidence semantics")
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
     entry = resolve_entry(resolve_log(args.path), args.entry)
@@ -222,38 +267,72 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     parser = argparse.ArgumentParser(prog="log data")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add-origin", "add-generated"):
-        action = actions.add_parser(name)
+        description = (
+            "Register one producerless material input and stop Provenance"
+            if name == "add-origin"
+            else "Register one current confirmed same-log generated input"
+        )
+        action = actions.add_parser(name, help=description, description=description)
         _entry_arguments(action)
         _mutation_argument(action)
-        action.add_argument("name")
-        action.add_argument("target")
+        action.add_argument("name", help="stable entry-scoped input name")
+        action.add_argument(
+            "target",
+            help="existing absolute or entry-root-relative file or directory",
+        )
         if name == "add-origin":
-            action.add_argument("--identity", action="append")
-    update = actions.add_parser("update")
+            action.add_argument(
+                "--identity",
+                action="append",
+                help="authoritative directory file or final-component pattern",
+            )
+    update = actions.add_parser(
+        "update", help="Change explicitly selected input properties"
+    )
     _entry_arguments(update)
     _mutation_argument(update)
-    update.add_argument("name")
-    update.add_argument("--target")
+    update.add_argument("name", help="existing input name")
+    update.add_argument("--target", help="replacement existing local target")
     classification = update.add_mutually_exclusive_group()
-    classification.add_argument("--origin", action="store_true")
-    classification.add_argument("--generated", action="store_true")
+    classification.add_argument(
+        "--origin", action="store_true", help="assert an explicit origin boundary"
+    )
+    classification.add_argument(
+        "--generated",
+        action="store_true",
+        help="require current confirmed same-log production",
+    )
     identity = update.add_mutually_exclusive_group()
-    identity.add_argument("--identity", action="append")
-    identity.add_argument("--byte-complete", action="store_true")
-    rename = actions.add_parser("rename")
+    identity.add_argument(
+        "--identity",
+        action="append",
+        help="replace an origin directory's authoritative selectors",
+    )
+    identity.add_argument(
+        "--byte-complete",
+        action="store_true",
+        help="identify an origin directory by all descendant bytes",
+    )
+    rename = actions.add_parser(
+        "rename", help="Rename an input after recorded-command token edits"
+    )
     _entry_arguments(rename)
     _mutation_argument(rename)
     rename.add_argument("old_name")
     rename.add_argument("new_name")
-    refresh = actions.add_parser("refresh")
+    refresh = actions.add_parser(
+        "refresh", help="Record an intentional byte change"
+    )
     _entry_arguments(refresh)
     _mutation_argument(refresh)
     refresh.add_argument("name")
-    remove = actions.add_parser("remove")
+    remove = actions.add_parser(
+        "remove", help="Remove an input after command and evidence use"
+    )
     _entry_arguments(remove)
     _mutation_argument(remove)
     remove.add_argument("name")
-    listed = actions.add_parser("list")
+    listed = actions.add_parser("list", help="List bounded input semantics")
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
     from . import data
@@ -304,22 +383,31 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
     parser = argparse.ArgumentParser(prog="log retention")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
-        action = actions.add_parser(name)
+        verb = "Add" if name == "add" else "Replace"
+        action = actions.add_parser(
+            name,
+            help=f"{verb} one disconnected-retention decision",
+            description=f"{verb} one disconnected-retention decision.",
+        )
         _entry_arguments(action)
         _mutation_argument(action)
-        action.add_argument("--id", required=True)
-        action.add_argument("--reason")
-        action.add_argument("targets", nargs="+")
-    rename = actions.add_parser("rename")
+        action.add_argument("--id", required=True, help="stable retention ID")
+        action.add_argument("--reason", help="concise retention intent")
+        action.add_argument(
+            "targets",
+            nargs="+",
+            help="one directory or one or more entry-relative regular files",
+        )
+    rename = actions.add_parser("rename", help="Rename one retention ID")
     _entry_arguments(rename)
     _mutation_argument(rename)
     rename.add_argument("old_id")
     rename.add_argument("new_id")
-    remove = actions.add_parser("remove")
+    remove = actions.add_parser("remove", help="Remove one retention decision")
     _entry_arguments(remove)
     _mutation_argument(remove)
     remove.add_argument("--id", required=True)
-    listed = actions.add_parser("list")
+    listed = actions.add_parser("list", help="List bounded retention semantics")
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
     from . import retention

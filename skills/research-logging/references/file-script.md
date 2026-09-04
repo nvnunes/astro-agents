@@ -37,8 +37,8 @@ when no intermediate table is reused by another command.
 
 When writing entry or log scripts, pass input and output paths as command-line
 arguments. Do not hard-code project, log, entry, data, image, or output paths in
-scripts. Do not make ordinary analysis scripts read `data.json`; `pyrun` reads
-the index and passes resolved paths to the script.
+scripts. Do not make ordinary analysis scripts read the input registry;
+`pyrun` resolves named inputs and passes their paths to the script.
 
 Use the project-declared execution environment. If it is unavailable, report
 that before using another interpreter.

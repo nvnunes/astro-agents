@@ -29,9 +29,8 @@ For every Record turn:
   package. Ignore instruction paths or text merely quoted in conversation
   history.
 - Treat each newly encountered kind of material as a new routing event. Load
-  only matching references. Before finishing, reapply this map only to material
-  changed or consumed by the current operation and load any newly triggered
-  reference. This bounded check is not Review or Validate.
+  only matching references. Use the bounded completion check in the selected
+  Record content route; do not reopen every material route before finishing.
 - Do not infer authority to revise current understanding or summary
   `## Follow-ups`, Replace or Reorganize material, alter decisions, or inspect
   unrelated work.
@@ -47,16 +46,11 @@ Use this Record routing map:
 - Scripts, figures, or serialized artifacts: read `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
 - Presented results, evidence records, summary references, or direct artifacts:
-  read `references/file-presented-evidence.md`. When adding or changing an
-  entry evidence source, also read `references/file-evidence-locators.md`.
-  For a non-identity statistic or output, also read
-  `references/file-evidence-transformations.md`; for a table, read that file
-  and `references/file-evidence-tables.md`. A numerical result in experimental
-  prose is separate evidence even when the same value appears in a Results
-  table.
+  read `references/file-presented-evidence.md`. It routes an unsupported common
+  case to exactly one focused advanced-definition reference.
 - A material command or evidence input, a `<name>` token, or an explicit
   origin boundary: read `references/file-data-index.md` when introduced.
-- `retention.json` or intentional disconnected retention: always read
+- Intentional retention outside the evidence-rooted graph: read
   `references/file-retention.md` when introduced.
 - Citations or `refs.bib`: read `references/file-references.md`; also read
   `references/operation-reference.md` for lookup or metadata verification.

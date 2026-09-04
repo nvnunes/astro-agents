@@ -40,16 +40,33 @@ delete an unmentioned dependent section or file.
    researcher. Copy every affected document in full and every support file that
    could be overwritten or removed. Verify the copied inventory and contents
    before continuing. Never delete this backup as part of Replace.
-5. Apply
-   `references/operation-record-content.md` within the
-   authorized scope to produce, retain, and check the replacement. Leave the
-   log summary unchanged, including its fixed validation-report link, and do
-   not change generated validation files. When a command must
-   overwrite an artifact at the same path, the verified backup must already
-   contain the old artifact.
-6. Remove only the explicitly authorized superseded material, and remove it
-   only after the replacement is complete and checked. Leave the durable backup
-   in place and report its location.
+5. Apply `references/operation-record-content.md` within the authorized scope
+   to produce, retain, and check the replacement. Leave the log summary
+   unchanged, including its fixed validation-report link, unless Update Summary
+   is separately authorized. Do not change generated validation files. When a
+   command must overwrite an artifact at the same path, the verified backup
+   must already contain the old artifact.
+6. After the replacement succeeds, remove the superseded Markdown, evidence
+   markers, separately authorized summary references, and recorded-command
+   uses first. Keep the old source and retained artifacts available. If an
+   unapproved summary or dependent change is required, stop and ask instead of
+   continuing.
+7. Remove each selected research-owned record through its owning CLI action:
+
+   ```text
+   <skill>/scripts/log evidence remove --path <log> --entry <entry-id> --id <id>
+   <skill>/scripts/log data remove --path <log> --entry <entry-id> <name>
+   <skill>/scripts/log retention remove --path <log> --entry <entry-id> --id <id>
+   ```
+
+   Invoke only the families required by the authorized replacement and stop on
+   the first failure. Never repair the failure by editing a registry directly.
+   Leave every old source and retained artifact in place until all required
+   mutations succeed. `pyrun-outputs.json` remains tool-owned and is outside
+   this research-owned removal sequence.
+8. Only after all required record removals succeed, delete the explicitly
+   authorized old source and retained artifacts. Leave the durable backup in
+   place and report its location.
 
 If the backup cannot be created or verified, or the replacement cannot be
 completed, make no destructive change to the active log.

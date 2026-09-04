@@ -1,51 +1,35 @@
-# Retention File Instructions
+# Disconnected Retention Instructions
 
-Use this file when intentionally retaining entry material that lies outside the
-evidence-rooted command graph and would otherwise be orphaned.
+Use this file only when the researcher intentionally keeps entry-owned files
+outside the evidence-rooted command graph. Retention prevents those selected
+files from being classified as accidental orphans. It does not create
+evidence, input, command, producer, lineage, or dependency relationships.
 
-Store declarations in optional entry-root `retention.json` with schema
-`research-log-retention/v1`. It contains a non-empty `records` array and no
-other top-level fields. Remove the file after removing its final record.
+Choose one stable descriptive ID, the exact entry-relative targets, and an
+optional concise reason that records the retention intent. Use either one
+nonempty directory or one or more regular files; do not mix the two forms or
+use symlinks, missing targets, overlapping records, or paths outside the entry.
 
-Use exact paths:
+Resolve `<skill>/scripts/log` from this activated package, read only the
+selected action's help, and invoke:
 
-```json
-{
-  "schema": "research-log-retention/v1",
-  "records": [{
-    "id": "optimizer-debug-traces",
-    "paths": ["data/debug-trace.json", "data/optimizer-state.npz"],
-    "reason": "Diagnostic outputs retained for later investigation."
-  }]
-}
+```text
+<skill>/scripts/log retention add --path <log> --entry <entry-id> \
+  --id <id> [--reason <reason>] <target> [<target> ...]
 ```
 
-Or cover every eligible regular-file descendant of one exact directory:
+`<log>` is the logical base whose summary is `<log>.md`; do not pass the
+summary file. The CLI infers exact-file or all-descendant directory coverage,
+validates the declaration, and owns the retention registry. Never create,
+inspect, or edit that registry during ordinary Record.
 
-```json
-{
-  "schema": "research-log-retention/v1",
-  "records": [{
-    "id": "intermediate-wavefronts",
-    "directory": "data/intermediate-wavefronts",
-    "membership": "all-descendants",
-    "reason": "Intermediate states retained for later comparison."
-  }]
-}
-```
+Use `log retention update` to replace one selected retention decision,
+`rename` to preserve it under a new ID, `remove` when the material no longer
+needs disconnected retention, and `list` for a bounded semantic inventory.
+Every mutation accepts `--dry-run`.
 
-IDs use lowercase letters, digits, and internal hyphens. Paths are normalized,
-entry-relative, existing, non-symlink targets. Records must not overlap. A
-directory declaration includes all descendants and must not be empty.
-
-The optional `reason` records researcher or research-agent intent for later
-semantic review. Mechanical validation does not interpret it.
-
-Retention affects only orphan classification. It does not create evidence,
-command, producer, input, lineage, or dependency relationships. Do not use it
-to conceal missing metadata or provenance. A connected target makes the
-declaration redundant and invalid; remove the declaration when the artifact
-enters the evidence-rooted graph.
-
-`evidence.json` contains presentation records only. Never place a retention
-record there.
+Do not use retention to conceal missing metadata or Provenance. Remove a
+retention declaration when its target enters the evidence-rooted graph. If an
+action fails because existing research-owned state is malformed or legacy,
+report the exact failure and stop; do not activate Repair or edit around the
+command without a separate correction request.

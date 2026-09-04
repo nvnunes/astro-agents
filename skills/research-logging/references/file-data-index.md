@@ -1,149 +1,79 @@
-# Input Registry Instructions
+# Material Input Instructions
 
-Use this file when registering or changing a material input, using a `<name>`
-input token, or declaring where a Provenance chain stops. Use the public
-`<skill>/scripts/log data` actions for ordinary authoring. Never create or edit
-`data.json` directly outside an explicitly authorized Repair.
+Use this file when a recorded command or evidence presentation consumes a file
+or directory, or when the researcher must choose where its Provenance chain
+stops. The public `log data` actions own input-registry validation and storage.
+Never create, inspect, or edit the registry during ordinary Record.
 
-`data.json` is the complete material-input registry. It contains all and only
-file and directory resources consumed by recorded commands or mechanical
-evidence, plus an exact directly presented artifact only when `origin: true`
-is needed to stop its Provenance chain. It is not a general artifact inventory,
-evidence declaration, or producer registry.
+Every material input has one stable entry-scoped name. Recorded commands and
+evidence use `<name>` instead of a raw path. Use
+`<directory-name>/member` for one exact file inside a registered directory.
+Do not use a raw relative or absolute path, URI, bare directory, or cross-entry
+shorthand as an evidence source.
 
-Omit `data.json` when the entry has no command or evidence inputs and no direct
-artifact origin. A present file uses schema `research-log-data/v3` and contains
-a non-empty `inputs` array. Split documents at one entry root share that file.
-Do not create a parent-entry or log-level registry and do not inherit or merge
-another file.
+## Choose The Boundary
 
-Each input has:
+- Choose an origin when the target has no producer in this maintained log and
+  the researcher intends Provenance to stop at its current bytes. Ask whether
+  an accessible external input should be copied into the entry or referenced
+  at its current local location.
+- Choose generated only after a `pyrun` command in the same maintained log has
+  successfully produced and confirmed the current target. Production in
+  another maintained log crosses an origin boundary.
 
-- `name`: a unique entry-scoped ASCII token name; `log`, `project`, `theme`,
-  and numeric entry-family names such as `e004` are reserved;
-- `kind`: `file` or `directory`;
-- `location`: a normalized local path from the entry root or an absolute local
-  path;
-- `fingerprint`: SHA-256 for a local file, `directory-sha256-v1` for a small
-  byte-complete directory, `identity-files-sha256-v1` for a managed directory
-  with explicit authoritative identity files,
-  `identity-patterns-sha256-v1` for a managed directory with bounded exact and
-  wildcard file selectors; and
-- `origin`: a required boolean. `true` explicitly stops the Provenance chain at
-  this artifact after its current byte fingerprint is verified. `false`
-  requires a validated producer and recursive upstream lineage.
+Storage location does not determine this choice. Do not infer an origin merely
+because no producer was found, and do not hide a known same-log producer behind
+an origin boundary.
 
-Use exact `<name>` arguments for file inputs. Use `<directory-name>` with an
-`input-directory` role to consume either every byte-complete descendant or one
-managed logical aggregate according to its fingerprint algorithm. Use
-`<directory-name>/member` to consume one exact member. Raw relative paths,
-absolute paths, and URIs are invalid for command inputs and evidence sources
-even when they match a declared location. An evidence source must resolve to
-one local regular file, so use `<name>` for a file or
-`<directory-name>/member` for one exact directory member; a bare directory
-token is not evidence.
+## Register And Maintain Inputs
 
-Register a producerless local file or directory as an explicit origin:
+Resolve `<skill>/scripts/log` from this activated package and read only the
+selected action's help. `<log>` is the logical base whose summary is
+`<log>.md`; do not pass the summary file.
 
-```bash
+```text
 <skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  development_set /data/project/development.csv
-<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  reference_cases data/reference-cases
-```
-
-The CLI infers file versus directory, normalizes the target, records its
-current fingerprint, and asserts that no confirmed producer in the same log is
-hidden by the origin boundary.
-
-For a large managed directory, declare the bounded files that authoritatively
-identify the logical resource. Do not use this form merely to avoid hashing;
-the named files must change whenever the scientifically relevant resource
-identity changes:
-
-```bash
-<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  build_root /data/builds/v3 \
-  --identity build.h5 --identity build.yaml
-```
-
-`identity-files-sha256-v1` accepts 1–64 exact normalized relative file paths.
-It hashes only those non-symlink regular files and never traverses the declared
-directory. Its aggregate digest covers each relative path and file SHA-256.
-Undeclared descendants are deliberately outside the bytewise identity. Use it
-for a producer-owned build, dataset, cache, or archive whose root control files
-or manifests are the authoritative logical identity. Continue using
-`directory-sha256-v1` when complete descendant membership is itself the
-contract.
-
-When a managed producer owns a small variable family of root files, use bounded
-identity patterns:
-
-```bash
-<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  build_root /data/builds/v3 \
-  --identity build.h5 --identity build.yaml --identity build.log \
-  --identity "maps-*.h5"
-```
-
-`identity-patterns-sha256-v1` accepts 1–64 normalized selectors and resolves at
-most 64 unique regular files. Exact selectors may name nested files. Wildcards
-(`*`, `?`, and character classes) are allowed only in the final path component;
-an exact selector must resolve to one regular file, while a wildcard selector
-may resolve to zero files. The selector set as a whole must resolve to at least
-one file. Recursive `**`, wildcard parent directories, symlinks, and overlapping
-selectors are invalid. Validation re-expands every selector, so an added,
-removed, or renamed matching file changes the aggregate fingerprint. The
-fingerprint covers the selectors, sorted matched paths, and each file's SHA-256.
-It scans each distinct wildcard parent once, examines at most 100,000 immediate
-entries in that parent, and never traverses undeclared descendants.
-
-Register generated material only after its producing `pyrun` command succeeds:
-
-```bash
+  <name> <target>
 <skill>/scripts/log data add-generated --path <log> --entry <entry-id> \
-  generated_samples data/generated-samples.csv
+  <name> <target>
 ```
 
-The action requires one current confirmed producer in the same maintained log
-and an exact match to the target's current bytes. Production in another log is
-an origin boundary rather than same-log generated lineage.
+Write `<target>` as an absolute path or a path relative to the selected entry
+root, regardless of the shell's current directory. For entry-owned material,
+prefer the short entry-relative form such as `data/metrics.json`.
 
-Fingerprint drift is a validation failure and never updates the registry as a
-side effect of command execution. After intentionally changing or replacing an
-input, refresh it explicitly:
+The action infers file versus directory, normalizes the target, records its
+current fingerprint, verifies the asserted boundary, and publishes canonical
+state. After success, use the token without opening the registry.
 
-```bash
-<skill>/scripts/log data refresh --path <log> --entry <entry-id> \
-  development_set
-```
+Use the corresponding action for later intent:
 
-Use `log data update` to change a target, explicitly change its origin or
-generated classification, replace an origin directory's repeated `--identity`
-selectors, or select `--byte-complete`. Omitted properties remain unchanged.
-Use `log data rename` after updating every recorded-command token; it renames
-same-entry evidence source tokens atomically and reports producer commands that
-must be rerun. Use `log data remove` only after removing command and evidence
-use. Removing the final item removes `data.json`. Use `log data list` for a
-bounded semantic inventory; it does not expose fingerprints or registry
-structure. Every mutation accepts `--dry-run`.
+- `log data update` changes an explicitly named target or origin/generated
+  boundary;
+- `log data refresh` records an intentional byte change after rechecking the
+  same boundary;
+- `log data rename` runs only after every recorded-command token is updated;
+  it also changes same-entry evidence source tokens and reports producer
+  commands that must be rerun;
+- `log data remove` runs only after command and evidence use is removed; and
+- `log data list` returns a bounded semantic inventory when needed.
 
-A generated output belongs in `data.json` when a later recorded command or an
-evidence record consumes it. Set `origin: false` so it must trace to its unique
-earlier producer. An output of a historical non-`pyrun` workflow may instead
-be marked `origin: true` only when the researcher deliberately chooses to stop
-validated lineage at those current bytes. Outputs consumed by neither surface
-do not belong in the registry, except for an exact directly presented
-non-`pyrun` artifact declared as an origin. Images, command logs, and scripts
-otherwise follow the same rule: register them only when they are material
-inputs to a command or evidence record.
+Use action-specific `--dry-run` when a mutation needs preflight. Advanced
+origin-directory identity options belong to the selected action's help and
+explicit researcher intent; do not load or reproduce their registry
+representation during ordinary Record.
 
-Storage location does not decide origin status. An origin may be inside the
-entry, and a generated intermediate may be elsewhere. Base the boundary on the
-intended Provenance chain.
+A generated output belongs in the input registry only when a later recorded
+command or evidence presentation consumes it. Output-only results, scripts,
+command logs, and images remain absent unless they later become material
+inputs. A directly presented historical non-`pyrun` artifact may need an
+explicit origin declaration; a directly presented generated artifact does not.
 
-During review, report missing input declarations, raw-path token bypasses,
-unused items, duplicate targets, conflicting declarations for one target,
-fingerprint drift, remote-only material, and an origin boundary that hides a
-confirmed `pyrun` producer. Do not refresh fingerprints or decide origin status
-without researcher authority.
+If an action fails because existing research-owned state is malformed or
+legacy, report the exact failure and stop. A failed Record command does not
+authorize Repair or direct registry editing.
+
+During Review, report missing declarations, raw-path bypasses, unused inputs,
+duplicate targets, cross-entry disagreement, changed bytes, remote-only
+material, and origin boundaries that hide confirmed same-log producers. Do not
+refresh bytes or choose an origin boundary without researcher authority.

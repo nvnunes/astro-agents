@@ -142,6 +142,14 @@ class LogHelpAndContextTests(unittest.TestCase):
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertIn("--source", action.stdout)
         self.assertIn("--definition", action.stdout)
+        self.assertIn("Author the unique presentation marker", action.stdout)
+        self.assertIn("JSON Pointer", action.stdout)
+        self.assertIn("logical log base", action.stdout)
+
+        retention = run(Path.cwd(), "retention", "add", "--help")
+        self.assertEqual(retention.returncode, 0, retention.stderr)
+        self.assertIn("disconnected-retention decision", retention.stdout)
+        self.assertIn("one directory or one or more", retention.stdout)
 
     def test_help_and_selected_family_imports_are_lazy(self) -> None:
         script_root = LOG.parent

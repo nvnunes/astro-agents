@@ -136,6 +136,13 @@ The research-log test gate must verify:
   `docs/research-log-mechanical-validator-spec.md` resolves to its focused
   advanced-definition reference, and each documented accepted or rejected
   example has public-CLI conformance coverage;
+- ordinary Record routes evidence, input, and retention mutations through the
+  owning `log` action without opening registry schemas; an unsupported common
+  presentation loads exactly one focused definition reference, while a failed
+  authoring action neither activates Repair nor Reorganize;
+- Replace removes superseded Markdown and uses first, then invokes only the
+  required evidence, data, and retention removals, and leaves old artifacts
+  available until every selected transaction succeeds;
 - malformed regular-file `pyrun-outputs.json` state is preserved at the first
   unused recognized adjacent backup, replaced with canonical empty current
   state, and reported as requiring Repair before the command can execute;

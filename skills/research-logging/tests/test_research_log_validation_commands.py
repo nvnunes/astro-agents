@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import subprocess
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest import mock
 from research_log_data import (
     FingerprintObservation,
     InputResource,
+    build_git_repository_input,
     build_identity_directory,
     build_local_input,
     data_file_from_inputs,
@@ -18,6 +20,33 @@ from research_log_data import (
 from research_log_validation_test_support import unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
+
+
+def _git_repository(root: Path) -> tuple[Path, str]:
+    repository = root / "source-repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    write(repository / "source.txt", "source\n")
+    subprocess.run(["git", "add", "source.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Research Log Tests",
+            "-c",
+            "user.email=research-log@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+    ).strip()
+    return repository, commit
 
 
 def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
@@ -56,6 +85,54 @@ def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
 
 
 class CommandV2RoleTests(unittest.TestCase):
+    def test_git_repository_projections_form_one_material_relationship(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            repository, commit = _git_repository(root)
+            resource = build_git_repository_input(
+                "source-repository",
+                repository.as_posix(),
+                commit,
+                entry_root=context.entry_root,
+            )
+            data_file = data_file_from_inputs(
+                context.entry_root / "data.json",
+                entry_root=context.entry_root,
+                inputs=(resource,),
+            )
+            context = replace(context, data_file=data_file)
+            write(context.entry_root / "scripts/run.py", "# fixture\n")
+            complete = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/run.py \\
+  --input-repository "<source-repository>" \\
+  --input-commit "<source-repository:commit>"
+```
+""",
+                context,
+            )
+            self.assertEqual(len(complete.invocations), 1)
+            self.assertEqual(len(complete.invocations[0].inputs), 1)
+            self.assertEqual(
+                complete.invocations[0].inputs[0].path,
+                resource.material_identity,
+            )
+
+            for token in ("<source-repository>", "<source-repository:commit>"):
+                incomplete = COMMAND.discover_commands(
+                    f"""```bash
+./pyrun scripts/run.py --input-repository "{token}"
+```
+""",
+                    context,
+                )
+                self.assertFalse(incomplete.invocations)
+                self.assertEqual(
+                    incomplete.failures[0].error.code,
+                    "data.git.projection_missing",
+                )
+
     def test_pyrun_capture_is_an_exact_output_and_signature_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

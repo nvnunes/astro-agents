@@ -356,9 +356,12 @@ def _move_retention(
 def _mapped_token(value: str, names: Mapping[str, str]) -> str:
     parts = input_token_parts(value)
     assert parts is not None
-    name, member = parts
+    name, projection, member = parts
     mapped = names.get(name, name)
-    return f"<{mapped}>" + (f"/{member}" if member is not None else "")
+    suffix = f":{projection}" if projection is not None else ""
+    return f"<{mapped}>{suffix}" + (
+        f"/{member}" if member is not None else ""
+    )
 
 
 def _verify_markdown(

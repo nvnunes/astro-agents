@@ -7,6 +7,7 @@ import os
 import posixpath
 import re
 import stat
+import subprocess
 import unicodedata
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
@@ -48,11 +49,16 @@ HASH_CHUNK_BYTES = 1024 * 1024
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 ENTRY_REFERENCE_NAME_RE = re.compile(r"e[0-9]+\Z", re.IGNORECASE)
 INPUT_TOKEN_RE = re.compile(
-    r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)>(?:/(?P<member>.+))?\Z"
+    r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
+    r"(?::(?P<projection>commit))?>(?:/(?P<member>.+))?\Z"
 )
-INPUT_TOKEN_CANDIDATE_RE = re.compile(r"<[A-Za-z0-9][A-Za-z0-9_-]*>")
+INPUT_TOKEN_CANDIDATE_RE = re.compile(
+    r"<[A-Za-z0-9][A-Za-z0-9_-]*(?::commit)?>"
+)
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
+GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 RESERVED_NAMES = frozenset({"log", "project", "theme"})
+GIT_COMMIT_ALGORITHM = "git-commit-sha1-v1"
 
 
 class DataContractError(MechanicalContractError):
@@ -61,7 +67,7 @@ class DataContractError(MechanicalContractError):
 
 @dataclass(frozen=True)
 class Fingerprint:
-    """One local-resource byte-derived fingerprint."""
+    """One local-resource material fingerprint."""
 
     algorithm: str
     digest: str | None = None
@@ -145,6 +151,22 @@ class InputResource:
 
         return _identity(self.as_dict())
 
+    @property
+    def material_identity(self) -> str:
+        """Return the location-independent graph identity of this material."""
+
+        if self.kind == "git-repository":
+            return f"{GIT_COMMIT_ALGORITHM}:{self.fingerprint.digest}"
+        return self.canonical_target
+
+    @property
+    def observation_identity(self) -> str:
+        """Return the locator and expected-identity key for one observation."""
+
+        if self.kind == "git-repository":
+            return f"{self.canonical_target}#{self.material_identity}"
+        return self.canonical_target
+
 
 @dataclass(frozen=True)
 class ResolvedInputToken:
@@ -152,6 +174,8 @@ class ResolvedInputToken:
 
     resource: InputResource
     path: str
+    value: str
+    projection: str | None = None
     member: str | None = None
 
 
@@ -254,7 +278,7 @@ def find_log_consistency_conflicts(
     declarations: dict[str, dict[str, set[Path]]] = {}
     for data_file in data_files:
         for item in data_file.inputs:
-            projections = declarations.setdefault(item.canonical_target, {})
+            projections = declarations.setdefault(item.material_identity, {})
             projections.setdefault(_consistency_projection(item), set()).add(
                 data_file.path
             )
@@ -291,6 +315,33 @@ def build_local_input(
             "location": location,
             "origin": origin,
             "fingerprint": {"algorithm": algorithm, "digest": "0" * 64},
+        },
+        f"input:{name}",
+        entry_root.resolve(),
+    )
+    observation = observe_fingerprint(provisional)
+    return replace(provisional, fingerprint=observation.fingerprint)
+
+
+def build_git_repository_input(
+    name: str,
+    location: str,
+    commit: str,
+    *,
+    entry_root: Path,
+) -> InputResource:
+    """Build one origin repository declaration pinned to an exact commit."""
+
+    provisional = _decode_input(
+        {
+            "name": name,
+            "kind": "git-repository",
+            "location": location,
+            "origin": True,
+            "fingerprint": {
+                "algorithm": GIT_COMMIT_ALGORITHM,
+                "digest": commit,
+            },
         },
         f"input:{name}",
         entry_root.resolve(),
@@ -443,7 +494,7 @@ def data_file_from_inputs(
 
 
 def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInputToken:
-    """Resolve one complete ``<name>`` or ``<directory>/member`` input token."""
+    """Resolve one complete locator, commit, or directory-member input token."""
 
     parts = input_token_parts(value)
     if parts is None:
@@ -453,7 +504,7 @@ def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInput
             {"reason": "invalid_token"},
             "Command Tokens And Roles",
         )
-    name, member = parts
+    name, projection, member = parts
     resource = data_file.by_name.get(name) if data_file is not None else None
     if resource is None:
         _fail(
@@ -462,17 +513,35 @@ def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInput
             {"name": name},
             "Command Tokens And Roles",
         )
+    if projection == "commit":
+        if resource.kind != "git-repository" or member is not None:
+            _invalid(
+                value,
+                {"projection": projection, "resource": resource.name},
+            )
+        assert resource.fingerprint.digest is not None
+        return ResolvedInputToken(
+            resource,
+            resource.material_identity,
+            resource.fingerprint.digest,
+            projection="commit",
+        )
     if member is None:
-        return ResolvedInputToken(resource, resource.canonical_target)
+        return ResolvedInputToken(
+            resource,
+            resource.material_identity,
+            resource.canonical_target,
+        )
     path = _resolve_member(resource, member, value)
-    return ResolvedInputToken(resource, path, member)
+    return ResolvedInputToken(resource, path, path, member=member)
 
 
-def input_token_parts(value: str) -> tuple[str, str | None] | None:
-    """Return the name and optional member of one complete input token."""
+def input_token_parts(value: str) -> tuple[str, str | None, str | None] | None:
+    """Return the name, projection, and member of one complete input token."""
 
     match = INPUT_TOKEN_RE.fullmatch(value)
     name = match.group("name") if match is not None else None
+    projection = match.group("projection") if match is not None else None
     member = match.group("member") if match is not None else None
     if (
         match is None
@@ -480,11 +549,39 @@ def input_token_parts(value: str) -> tuple[str, str | None] | None:
         or not isinstance(name, str)
         or len(name.encode("ascii")) > MAX_NAME_BYTES
         or ENTRY_REFERENCE_NAME_RE.fullmatch(name) is not None
+        or projection is not None
+        and member is not None
         or member is not None
         and not _valid_input_member(member)
     ):
         return None
-    return name, member
+    return name, projection, member
+
+
+def require_git_repository_token_pairs(
+    values: tuple[str, ...], data_file: DataFile | None
+) -> None:
+    """Require each consumed repository to expose locator and commit projections."""
+
+    projections: dict[str, set[str]] = {}
+    for value in values:
+        parts = input_token_parts(value)
+        if parts is None:
+            continue
+        name, projection, _ = parts
+        resource = data_file.by_name.get(name) if data_file is not None else None
+        if resource is None or resource.kind != "git-repository":
+            continue
+        projections.setdefault(name, set()).add(projection or "locator")
+    for name, observed in sorted(projections.items()):
+        required = {"commit", "locator"}
+        if observed != required:
+            _fail(
+                "data.git.projection_missing",
+                name,
+                {"missing": sorted(required - observed)},
+                "Command Tokens And Roles",
+            )
 
 
 def _valid_input_member(member: str) -> bool:
@@ -516,6 +613,8 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
             {"location": resource.location, "reason": "symlink"},
             DATA_SCHEMA,
         )
+    if resource.kind == "git-repository":
+        return _observe_git_repository(resource, path)
     if resource.kind == "file":
         if not path.is_file():
             _target_missing(resource, "not_regular_file")
@@ -839,7 +938,7 @@ def verify_fingerprint(
     *,
     cached: Mapping[str, object] | None = None,
 ) -> FingerprintObservation | None:
-    """Verify one local byte-derived fingerprint."""
+    """Verify one local material fingerprint."""
     observation = _reuse_fingerprint_observation(resource, cached)
     if observation is None:
         observation = observe_fingerprint(resource)
@@ -1092,13 +1191,15 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
         _invalid(subject, {"fields": sorted(value)})
     name = _name(value.get("name"), subject)
     kind = value.get("kind")
-    if kind not in {"file", "directory"}:
+    if kind not in {"file", "directory", "git-repository"}:
         _invalid(subject, {"kind": kind})
     location, target = _location(value.get("location"), subject, entry_root)
     fingerprint = parse_fingerprint(value.get("fingerprint"), subject, kind=kind)
     origin = value.get("origin")
     if not isinstance(origin, bool):
         _invalid(subject, {"origin": origin})
+    if kind == "git-repository" and not origin:
+        _invalid(subject, {"kind": kind, "origin": origin})
     return InputResource(
         name=name,
         kind=kind,
@@ -1191,7 +1292,13 @@ def parse_fingerprint(
         if not isinstance(value, Mapping):
             _invalid(subject, {"fingerprint": value})
         algorithm = value.get("algorithm")
-        kind = "file" if algorithm == "sha256" else "directory"
+        kind = (
+            "file"
+            if algorithm == "sha256"
+            else "git-repository"
+            if algorithm == GIT_COMMIT_ALGORITHM
+            else "directory"
+        )
     return _fingerprint(value, subject, kind)
 
 
@@ -1204,6 +1311,16 @@ def _fingerprint(value: object, subject: str, kind: object) -> Fingerprint:
         return _identity_files_fingerprint(value, subject, kind)
     if algorithm == "identity-patterns-sha256-v1":
         return _identity_pattern_fingerprint(value, subject, kind)
+    if algorithm == GIT_COMMIT_ALGORITHM:
+        digest = value.get("digest")
+        if (
+            set(value) != {"algorithm", "digest"}
+            or kind != "git-repository"
+            or not isinstance(digest, str)
+            or GIT_COMMIT_RE.fullmatch(digest) is None
+        ):
+            _invalid(subject, {"fingerprint": dict(value), "kind": kind})
+        return Fingerprint(GIT_COMMIT_ALGORITHM, digest=digest)
     if algorithm in {"sha256", "directory-sha256-v1"}:
         digest = value.get("digest")
         if (
@@ -1360,7 +1477,7 @@ def _require_unique_inputs(inputs: tuple[InputResource, ...], path: Path) -> Non
             {"names": names},
             DATA_SCHEMA,
         )
-    targets = [item.canonical_target for item in inputs]
+    targets = [item.material_identity for item in inputs]
     if len(targets) != len(set(targets)):
         _fail(
             "data.target.duplicate",
@@ -1612,6 +1729,64 @@ def _consistency_projection(item: InputResource) -> str:
             "kind": item.kind,
         }
     )
+
+
+def _observe_git_repository(
+    resource: InputResource, path: Path
+) -> FingerprintObservation:
+    """Verify one exact commit in a repository without observing live state."""
+
+    if not path.is_dir():
+        _target_missing(resource, "not_git_repository")
+    root = _git_output(path, "rev-parse", "--show-toplevel")
+    if root is None:
+        bare = _git_output(path, "rev-parse", "--is-bare-repository")
+        git_dir = _git_output(path, "rev-parse", "--absolute-git-dir")
+        if (
+            bare != "true"
+            or git_dir is None
+            or Path(git_dir).resolve() != path.resolve()
+        ):
+            _target_missing(resource, "not_git_repository")
+    elif Path(root).resolve() != path.resolve():
+        _target_missing(resource, "not_repository_root")
+    assert resource.fingerprint.digest is not None
+    object_kind = _git_output(path, "cat-file", "-t", resource.fingerprint.digest)
+    if object_kind != "commit":
+        _fail(
+            "data.fingerprint.mismatch",
+            resource.name,
+            {
+                "commit": resource.fingerprint.digest,
+                "object_kind": object_kind,
+                "reason": "commit_unavailable" if object_kind is None else "not_commit",
+            },
+            "Fingerprints",
+        )
+    return FingerprintObservation(
+        resource.fingerprint,
+        cache_identity={"kind": "git-repository"},
+    )
+
+
+def _git_output(path: Path, *arguments: str) -> str | None:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
 
 
 def _identity(value: object) -> str:

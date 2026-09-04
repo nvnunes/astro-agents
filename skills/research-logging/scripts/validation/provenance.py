@@ -108,6 +108,8 @@ def require_origin_boundary(
 
     if not resource.origin:
         raise ValueError("origin-boundary validation requires origin: true")
+    if resource.kind == "git-repository":
+        return
     if resource.kind == "directory":
         directory_producers = _directory_producers(
             Path(resource.canonical_target), invocations

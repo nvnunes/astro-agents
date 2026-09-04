@@ -56,6 +56,7 @@ class DataAddArguments:
     name: str
     target: str
     identity: tuple[str, ...] | None
+    commit: str | None
     dry_run: bool
 
 
@@ -68,6 +69,7 @@ class DataUpdateArguments:
     classification: str | None
     identity: tuple[str, ...] | None
     byte_complete: bool
+    commit: str | None
     dry_run: bool
 
 

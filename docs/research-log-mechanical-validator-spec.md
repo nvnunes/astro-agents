@@ -2455,8 +2455,9 @@ for explicitly authorized Repair.
 - Every proven command input and every evidence source has exactly one data
   item in the consuming entry.
 - Every input-bearing command argument and evidence source uses the item's
-  exact `<name>` token or one exact `<directory-name>/member` token. Raw paths
-  and URIs are invalid.
+  exact `<name>` token or one exact `<directory-name>/member` token. A Git
+  repository consumer additionally uses the matching `<name:commit>` token.
+  Raw paths and URIs are invalid.
 - A generated output enters `data.json` when a later recorded command or an
   evidence record consumes it. An output consumed by neither surface remains
   absent.
@@ -2510,7 +2511,9 @@ Boolean `origin`:
 `[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, `theme`, and names matching
 `e[0-9]+` case-insensitively are reserved. The numeric entry-family namespace
 is reserved for maintained entry identifiers.
-`kind` is `file` or `directory`.
+`kind` is `file`, `directory`, or `git-repository`. A `git-repository` item is
+always an origin and identifies one tracked repository snapshot rather than
+the repository directory or live checkout.
 
 `location` is a normalized POSIX path relative to the owning entry root or an
 absolute POSIX path. Paths have no reverse solidus, empty segment, or `.`
@@ -2518,17 +2521,22 @@ segment. Relative paths may use `..`; resolution from the entry root determines
 their canonical target. A location contains no URI, token, environment, glob,
 shell, or template expansion. One location is at most 2,048 UTF-8 bytes.
 
-A canonical target is the safely resolved filesystem identity after the
+A canonical target is the safely resolved filesystem locator after the
 existing first-class entry `data` or `images` symlink rule. No other declared
-or nested symlink is allowed. Names and canonical targets are both unique
-within one file.
+or nested symlink is allowed. Names are unique within one file. File and
+directory canonical targets are also unique. Git repository declarations use
+their commit fingerprint as material identity, so one repository locator may
+identify different commits under different names; the same pinned commit may
+not be declared twice in one file.
 
-Separate entries may declare the same target when each consumes it. Within one
-maintained log, all declarations of that target must agree on `kind`,
-`fingerprint`, and `origin`. Conflict fails; validation does not choose one
-declaration. The conflicting declarations are unavailable to dependent command
-and graph evaluation; other declarations in the same registry and entries that
-do not declare the target continue evaluation.
+Separate entries may declare the same material when each consumes it. Within
+one maintained log, all file and directory declarations of one target must
+agree on `kind`, `fingerprint`, and `origin`. Git repository declarations agree
+when their commit material identity agrees; locator paths may differ. Conflict
+fails; validation does not choose one declaration. The conflicting
+declarations are unavailable to dependent command and graph evaluation; other
+declarations in the same registry and entries that do not declare the target
+continue evaluation.
 
 ### Fingerprints
 
@@ -2541,12 +2549,26 @@ Every item has exactly one closed fingerprint:
   `{"algorithm":"identity-files-sha256-v1","files":["<relative path>",...],"digest":"<64 lowercase hex>"}`.
 - A pattern-managed local directory uses
   `{"algorithm":"identity-patterns-sha256-v1","patterns":["<relative selector>",...],"digest":"<64 lowercase hex>"}`.
+- A pinned Git repository uses
+  `{"algorithm":"git-commit-sha1-v1","digest":"<40 lowercase hex>"}`.
 
-Every resource is locally accessible and uses a byte-derived content digest.
+Every resource is locally accessible. Files and directories use byte-derived
+content digests. A Git repository fingerprint identifies the exact commit
+object and its tracked snapshot.
 Size, modification time, and change time may determine whether a cached digest
 must be recomputed, but they are never the identity being validated. If the
 recomputed digest is unchanged, the resource is unchanged for Provenance.
 Fingerprint drift fails and validation never rewrites an authored digest.
+
+For `git-commit-sha1-v1`, `location` is only a local repository locator. It
+must be an exact worktree or bare-repository root, and the full lowercase
+40-hex object must exist there with object type `commit`. Validation does not
+observe or assign material meaning to `HEAD`, the index, working-tree bytes,
+untracked files, `.git/config`, or the repository directory. Moving the locator
+does not change material identity when the new repository contains the same
+commit. A live environment, dirty or untracked file, generated model, map,
+cache, build product, submodule checkout, or other consumed state outside that
+commit is a separate material input.
 
 `directory-sha256-v1` hashes the UTF-8 bytes of canonical compact JSON:
 
@@ -2654,8 +2676,8 @@ the declared, fingerprinted artifact. It is independent of storage location.
 An origin may be inside or outside the entry, and an artifact inside the entry
 may be either an origin or generated material.
 
-An item with `origin: true` is a terminal byte-identified input. Validation
-does not claim how that artifact came into existence. An item with
+An item with `origin: true` is a terminal identified input. Validation does not
+claim how that artifact or commit snapshot came into existence. An item with
 `origin: false` must trace to one unique earlier producer and then through that
 producer's direct inputs. More than one earlier producer is ambiguous. An
 origin boundary that hides a confirmed `pyrun` producer is invalid. An origin
@@ -2663,10 +2685,25 @@ does not connect an otherwise unreached artifact or suppress a Hygiene finding.
 
 ### Command Tokens And Roles
 
-An exact file token is the whole argument `<name>`. A directory member token is
-`<name>/` plus one non-empty normalized POSIX member path with no absolute
-prefix, empty segment, `.`, `..`, reverse solidus, URI scheme, symlink, glob,
-shell, or template expansion. Member syntax requires a directory item.
+An exact file or repository-locator token is the whole argument `<name>`. A
+Git repository commit token is the whole argument `<name:commit>`. A directory
+member token is `<name>/` plus one non-empty normalized POSIX member path with
+no absolute prefix, empty segment, `.`, `..`, reverse solidus, URI scheme,
+symlink, glob, shell, or template expansion. Member syntax requires a directory
+item; `:commit` requires a Git repository item and cannot have a member suffix.
+
+Every command that consumes a Git repository uses both `<name>` and
+`<name:commit>`. `pyrun` resolves them to the locator path and exact full commit
+respectively, verifies the commit before execution, and records one direct
+input fingerprint. Static discovery resolves the same pair to one material
+relationship whose identity is the commit snapshot rather than the locator.
+Either projection without the other fails closed.
+
+Maintenance note: Changes to repository input registration or token projection
+must be reflected in
+[Material Input Instructions](../skills/research-logging/references/file-data-index.md)
+and
+[Recorded Command Instructions](../skills/research-logging/references/file-entry-commands.md).
 
 `pyrun` resolves tokens before execution. Script parameters may retain clean
 internal names through `dest=`; compatibility aliases are not required.
@@ -2702,10 +2739,11 @@ of its option. An explicit declaration overrides automatic role inference from
 the option name.
 
 The runner and static command discovery use the same parsed declarations.
-Input kind comes from `data.json`: a whole-directory token is a directory and a
-file or exact directory-member token is a file. Output kind comes from the
-stable target after successful execution. Captures remain file-only. The exact
-entry `data` and `images` roots remain invalid material targets.
+Input kind comes from `data.json`: a whole-directory token is a directory, a
+file or exact directory-member token is a file, and a paired locator and commit
+projection is one Git repository input. Output kind comes from the stable
+target after successful execution. Captures remain file-only. The exact entry
+`data` and `images` roots remain invalid material targets.
 
 Role declarations are classification metadata. They are excluded from the
 persisted `parameters` vector and do not change output support when reordered
@@ -2788,8 +2826,8 @@ fingerprint forms as `data.json`.
 
 `pyrun` records its current working entry root, resolves the command through
 that entry's `data.json`, and publishes output records only after the process
-succeeds, the script and every direct input still have the pre-execution byte
-fingerprints, and every output can be observed completely. Publication
+succeeds, the script and every direct input still have their pre-execution
+identities, and every output can be observed completely. Publication
 replaces only records for outputs produced by that invocation and preserves
 records for other output keys. It is atomic under an entry-specific lock.
 Failed execution, capture, observation, or publication confirms no record.
@@ -3049,6 +3087,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | `data.declaration.conflict` | conformance | Entries disagree on one target's kind, fingerprint, or boundary. |
 | `data.input.undeclared` | provenance | A proven input has no item, including an unknown token. |
 | `data.input.token_missing` | conformance | A proven input uses a raw location instead of its item token. |
+| `data.git.projection_missing` | conformance | A repository-consuming command omits its locator or commit projection. |
 | `material.candidate.unresolved` | conformance | A path-like or dynamic material candidate has no proven role. |
 | `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
 | `data.origin.invalid` | provenance | An origin boundary hides a confirmed `pyrun` producer. |
@@ -3283,12 +3322,12 @@ The input-registry operations are:
 
 ```text
 <skill>/scripts/log data add-origin --path LOG --entry ENTRY NAME TARGET
-  [--identity SELECTOR]... [--dry-run]
+  [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
   [--dry-run]
 <skill>/scripts/log data update --path LOG --entry ENTRY NAME
   [--target TARGET] [--origin | --generated]
-  [--identity SELECTOR]... [--byte-complete] [--dry-run]
+  [--identity SELECTOR]... [--byte-complete] [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data rename --path LOG --entry ENTRY OLD-NAME NEW-NAME
   [--dry-run]
 <skill>/scripts/log data refresh --path LOG --entry ENTRY NAME [--dry-run]
@@ -3298,10 +3337,15 @@ The input-registry operations are:
 
 These actions infer kind and canonical location and use the production
 fingerprint and data-file contracts. `add-origin` rejects a confirmed producer
-in the same log. `add-generated` requires one current confirmed same-log
+in the same log. Its mutually exclusive `--commit` form requires a full
+lowercase commit hash and makes `TARGET` a Git repository locator.
+`add-generated` requires one current confirmed same-log
 producer whose recorded output and current target bytes agree. `update` applies
-only explicit changes and rechecks the resulting boundary. Managed identity is
-available only for origin directories. `refresh` preserves the target,
+only explicit changes and rechecks the resulting boundary; changing a Git
+repository target preserves and verifies its commit unless `--commit` replaces
+it. Git repository inputs cannot become generated or use directory identity
+options. Managed identity is available only for origin directories. `refresh`
+preserves the target,
 classification, and identity mode. `remove` requires prior removal of command
 and evidence use and removes an empty registry. `rename` requires prior command
 token edits, atomically updates same-entry evidence source tokens, and reports

@@ -155,6 +155,8 @@ class FingerprintCache:
 
     def verify(self, resource: InputResource) -> FingerprintObservation | None:
         """Observe one local resource and compare it with its authored identity."""
+        if resource.kind == "git-repository":
+            return self._verify_without_cache(resource)
         path = Path(resource.canonical_target)
         if (
             path.is_symlink()

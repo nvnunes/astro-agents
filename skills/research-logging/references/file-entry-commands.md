@@ -56,6 +56,9 @@ with full paths and recognizes:
 - `<log>/...` resolves to a path under the research-log folder.
 - `<name>` resolves to one exact named file or directory input owned by the
   current entry.
+- For a pinned Git repository input, `<name>` resolves to its local repository
+  locator and `<name:commit>` resolves to its full commit hash. A consuming
+  command must pass both; they establish one material relationship.
 - `<directory-name>/member` resolves one exact regular-file member of a
   declared directory input.
 

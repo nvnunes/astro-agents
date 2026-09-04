@@ -101,6 +101,37 @@ def data_inputs(entry: Path) -> list[dict[str, object]]:
     return json.loads((entry / "data.json").read_text(encoding="utf-8"))["inputs"]
 
 
+def source_repository(root: Path) -> tuple[Path, str, str]:
+    repository = root / "source-repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    source = repository / "source.txt"
+    source.write_text("source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Research Log Tests",
+            "-c",
+            "user.email=research-log@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+    ).strip()
+    blob = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:source.txt"], cwd=repository, text=True
+    ).strip()
+    return repository, commit, blob
+
+
 class LogDataTests(unittest.TestCase):
     def test_help_is_progressive_and_data_implementation_is_lazy(self) -> None:
         top = run(Path.cwd(), "--help")
@@ -114,6 +145,7 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("add-origin", family.stdout)
         self.assertNotIn("--identity", family.stdout)
         self.assertIn("--identity", action.stdout)
+        self.assertIn("--commit", action.stdout)
         self.assertIn("producerless material input", action.stdout)
         self.assertIn("logical log base", action.stdout)
 
@@ -215,6 +247,179 @@ print(json.dumps({{
                     },
                 ],
             )
+
+    def test_git_repository_actions_keep_locator_and_commit_coupled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry = scaffold(root)
+            repository, commit, blob = source_repository(root)
+            common = ("--path", str(logical), "--entry", "e001")
+
+            abbreviated = run(
+                entry,
+                "data",
+                "add-origin",
+                *common,
+                "source-repository",
+                str(repository),
+                "--commit",
+                commit[:12],
+            )
+            self.assertEqual(abbreviated.returncode, 2)
+            self.assertFalse((entry / "data.json").exists())
+
+            added = run(
+                entry,
+                "data",
+                "add-origin",
+                *common,
+                "source-repository",
+                str(repository),
+                "--commit",
+                commit,
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            item = data_inputs(entry)[0]
+            self.assertEqual(item["kind"], "git-repository")
+            self.assertTrue(item["origin"])
+            self.assertEqual(item["fingerprint"]["digest"], commit)
+
+            listed = run(entry, "data", "list", *common)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(
+                result(listed)["records"],
+                [
+                    {
+                        "classification": "origin",
+                        "commit": commit,
+                        "kind": "git-repository",
+                        "name": "source-repository",
+                        "target": repository.resolve().as_posix(),
+                    }
+                ],
+            )
+
+            before = (entry / "data.json").read_bytes()
+            invalid = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "source-repository",
+                "--commit",
+                blob,
+            )
+            generated = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "source-repository",
+                "--generated",
+            )
+            self.assertEqual(invalid.returncode, 2)
+            self.assertEqual(generated.returncode, 2)
+            self.assertEqual((entry / "data.json").read_bytes(), before)
+
+            worktree = root / "source-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), commit],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            moved = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "source-repository",
+                "--target",
+                str(worktree),
+            )
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            self.assertEqual(
+                data_inputs(entry)[0]["location"], worktree.resolve().as_posix()
+            )
+
+            (repository / "source.txt").write_text("updated\n", encoding="utf-8")
+            subprocess.run(["git", "add", "source.txt"], cwd=repository, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Research Log Tests",
+                    "-c",
+                    "user.email=research-log@example.invalid",
+                    "commit",
+                    "-m",
+                    "updated fixture",
+                ],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            updated_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+            ).strip()
+            updated = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "source-repository",
+                "--commit",
+                updated_commit,
+            )
+            self.assertEqual(updated.returncode, 0, updated.stderr)
+            self.assertEqual(
+                data_inputs(entry)[0]["fingerprint"]["digest"], updated_commit
+            )
+
+            refreshed = run(
+                entry, "data", "refresh", *common, "source-repository"
+            )
+            self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+            self.assertFalse(result(refreshed)["changed"])
+
+            renamed = run(
+                entry,
+                "data",
+                "rename",
+                *common,
+                "source-repository",
+                "renamed-repository",
+            )
+            self.assertEqual(renamed.returncode, 0, renamed.stderr)
+            self.assertEqual(data_inputs(entry)[0]["name"], "renamed-repository")
+            removed = run(
+                entry, "data", "remove", *common, "renamed-repository"
+            )
+            self.assertEqual(removed.returncode, 0, removed.stderr)
+            self.assertFalse((entry / "data.json").exists())
+
+            legacy = run(
+                entry,
+                "data",
+                "add-origin",
+                *common,
+                "legacy-repository",
+                str(repository),
+                "--identity",
+                ".git/config",
+            )
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+            upgraded = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "legacy-repository",
+                "--commit",
+                updated_commit,
+            )
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            self.assertEqual(data_inputs(entry)[0]["kind"], "git-repository")
 
     def test_add_conflict_and_dry_run_leave_registry_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

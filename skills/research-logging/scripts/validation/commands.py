@@ -13,7 +13,9 @@ from research_log_data import (
     DataFile,
     FingerprintObservation,
     InputResource,
+    input_token_candidate,
     input_token_parts,
+    require_git_repository_token_pairs,
     resolve_input_token,
     verify_fingerprint,
 )
@@ -1021,6 +1023,16 @@ def _relationships(
             role = _inferred_runner_role(value, role, context)
         _collect_argument(value, target, role, state, candidates)
     collections.extend(_repeated_collections(relationships, context.document))
+    try:
+        require_git_repository_token_pairs(
+            tuple(
+                [item.value for item in command.options]
+                + list(command.positionals)
+            ),
+            context.data_file,
+        )
+    except DataContractError as error:
+        _fail(error.code, context.document, error.observed)
     relationships = _deduplicate_relationships(relationships, context.document)
     return tuple(relationships), tuple(collections), tuple(candidates)
 
@@ -1089,7 +1101,7 @@ def _path_like(value: str) -> bool:
     return (
         "://" in value
         or value.startswith(("/", "./", "../"))
-        or re.search(r"<[A-Za-z0-9][A-Za-z0-9_-]*>", value) is not None
+        or input_token_candidate(value)
         or Path(value).suffix in MATERIAL_SUFFIXES
     )
 
@@ -1163,8 +1175,7 @@ def _apply_role(
 def _named_input(
     value: str, context: CommandContext, *, target: str | None = None
 ) -> MaterialRelationship | None:
-    match = re.match(r"<([A-Za-z0-9][A-Za-z0-9_-]*)>", value)
-    if match is None or match.group(1) in {"log", "project", "theme"}:
+    if input_token_parts(value) is None:
         return None
     try:
         resolved = resolve_input_token(value, context.data_file)
@@ -1172,7 +1183,7 @@ def _named_input(
         _fail(error.code, context.document, error.observed)
     resource = resolved.resource
     return MaterialRelationship(
-        resolved.path,
+        resource.material_identity,
         "input",
         "named-input",
         target or resource.name,

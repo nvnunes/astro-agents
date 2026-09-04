@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -49,21 +50,190 @@ def data_fixture(root: Path) -> tuple[Path, Path]:
     return entry, source
 
 
+def git_repository(root: Path) -> tuple[Path, str, str]:
+    repository = root / "source-repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    source = repository / "source.txt"
+    source.write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Research Log Tests",
+            "-c",
+            "user.email=research-log@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+    ).strip()
+    blob = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:source.txt"], cwd=repository, text=True
+    ).strip()
+    return repository, commit, blob
+
+
 class DataFileTests(unittest.TestCase):
     def test_input_token_parts_enforces_complete_member_syntax(self) -> None:
-        self.assertEqual(DATA.input_token_parts("<results>"), ("results", None))
+        self.assertEqual(
+            DATA.input_token_parts("<results>"), ("results", None, None)
+        )
+        self.assertEqual(
+            DATA.input_token_parts("<results:commit>"),
+            ("results", "commit", None),
+        )
         self.assertEqual(
             DATA.input_token_parts("<results>/nested/file.csv"),
-            ("results", "nested/file.csv"),
+            ("results", None, "nested/file.csv"),
         )
         for token in (
             "<results>/../secret.csv",
             "<results>/nested//file.csv",
             "<results>/nested\\file.csv",
             "<results>/https://host/file.csv",
+            "<results:commit>/nested/file.csv",
+            "<results:branch>",
         ):
             with self.subTest(token=token):
                 self.assertIsNone(DATA.input_token_parts(token))
+
+    def test_git_repository_identity_is_the_exact_commit_not_live_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = root / "entry"
+            entry.mkdir()
+            repository, commit, blob = git_repository(root)
+
+            resource = DATA.build_git_repository_input(
+                "source-repository",
+                repository.as_posix(),
+                commit,
+                entry_root=entry,
+            )
+            self.assertEqual(resource.kind, "git-repository")
+            self.assertTrue(resource.origin)
+            self.assertEqual(resource.fingerprint.digest, commit)
+            self.assertEqual(
+                resource.material_identity,
+                f"{DATA.GIT_COMMIT_ALGORITHM}:{commit}",
+            )
+
+            bare_repository = root / "source-repository.git"
+            subprocess.run(
+                ["git", "clone", "--bare", str(repository), str(bare_repository)],
+                check=True,
+                capture_output=True,
+            )
+            bare_resource = DATA.build_git_repository_input(
+                "bare-source-repository",
+                bare_repository.as_posix(),
+                commit,
+                entry_root=entry,
+            )
+            self.assertEqual(
+                bare_resource.material_identity, resource.material_identity
+            )
+
+            worktree = root / "source-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), commit],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            worktree_resource = DATA.build_git_repository_input(
+                "source-worktree",
+                worktree.as_posix(),
+                commit,
+                entry_root=entry,
+            )
+            self.assertEqual(
+                worktree_resource.material_identity, resource.material_identity
+            )
+
+            (repository / "source.txt").write_text("dirty\n", encoding="utf-8")
+            (repository / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+            DATA.verify_fingerprint(resource)
+
+            moved = root / "moved-repository"
+            repository.rename(moved)
+            moved_resource = DATA.build_git_repository_input(
+                "moved-source-repository",
+                moved.as_posix(),
+                commit,
+                entry_root=entry,
+            )
+            self.assertEqual(
+                moved_resource.material_identity, resource.material_identity
+            )
+
+            for invalid in (blob, "0" * 40):
+                with (
+                    self.subTest(commit=invalid),
+                    self.assertRaisesRegex(
+                        DATA.DataContractError, "data.fingerprint.mismatch"
+                    ),
+                ):
+                    DATA.build_git_repository_input(
+                        "invalid-repository",
+                        moved.as_posix(),
+                        invalid,
+                        entry_root=entry,
+                    )
+
+    def test_git_repository_rejects_invalid_forms_and_non_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = root / "entry"
+            entry.mkdir()
+            repository, commit, _ = git_repository(root)
+            path = entry / "data.json"
+            base = {
+                "name": "source-repository",
+                "kind": "git-repository",
+                "location": repository.as_posix(),
+                "fingerprint": {
+                    "algorithm": DATA.GIT_COMMIT_ALGORITHM,
+                    "digest": commit,
+                },
+                "origin": True,
+            }
+            for replacement in (
+                {"origin": False},
+                {
+                    "fingerprint": {
+                        "algorithm": DATA.GIT_COMMIT_ALGORITHM,
+                        "digest": commit[:12],
+                    }
+                },
+            ):
+                payload = {**base, **replacement}
+                path.write_text(
+                    json.dumps({"schema": DATA.DATA_SCHEMA, "inputs": [payload]}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    DATA.DataContractError, "data.declaration.invalid"
+                ):
+                    DATA.load_data_file(path, entry_root=entry)
+
+            not_repository = root / "not-repository"
+            not_repository.mkdir()
+            with self.assertRaisesRegex(DATA.DataContractError, "data.target.missing"):
+                DATA.build_git_repository_input(
+                    "missing-repository",
+                    not_repository.as_posix(),
+                    commit,
+                    entry_root=entry,
+                )
 
     def test_retired_v1_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

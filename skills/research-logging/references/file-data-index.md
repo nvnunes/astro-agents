@@ -1,8 +1,9 @@
 # Material Input Instructions
 
-Use this file when a recorded command or evidence presentation consumes a file
-or directory, or when the researcher must choose where its Provenance chain
-stops. The public `log data` actions own input-registry validation and storage.
+Use this file when a recorded command consumes a file, directory, or pinned Git
+repository; an evidence presentation consumes a file or directory; or the
+researcher must choose where its Provenance chain stops. The public `log data`
+actions own input-registry validation and storage.
 Never create, inspect, or edit the registry during ordinary Record.
 
 Every material input has one stable entry-scoped name. Recorded commands and
@@ -33,7 +34,7 @@ selected action's help. `<log>` is the logical base whose summary is
 
 ```text
 <skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  <name> <target>
+  <name> <target> [--commit <full-commit-hash>]
 <skill>/scripts/log data add-generated --path <log> --entry <entry-id> \
   <name> <target>
 ```
@@ -42,9 +43,18 @@ Write `<target>` as an absolute path or a path relative to the selected entry
 root, regardless of the shell's current directory. For entry-owned material,
 prefer the short entry-relative form such as `data/metrics.json`.
 
-The action infers file versus directory, normalizes the target, records its
-current fingerprint, verifies the asserted boundary, and publishes canonical
-state. After success, use the token without opening the registry.
+The action infers file versus directory unless `--commit` selects a Git
+repository, normalizes the target, records its current identity, verifies the
+asserted boundary, and publishes canonical state. After success, use the token
+without opening the registry.
+
+For source code identified by a repository commit, use `add-origin --commit`
+with the repository root as `<target>` and an exact lowercase 40-character
+commit hash. Pass both `<name>` for the repository locator and `<name:commit>`
+for the pinned commit to every consuming `pyrun` command. Together they form
+one material input. The commit covers only its tracked snapshot; register any
+dirty or untracked file, live environment, generated model, cache, build
+product, or submodule checkout separately when the command consumes it.
 
 Use the corresponding action for later intent:
 

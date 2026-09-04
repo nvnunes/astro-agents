@@ -302,10 +302,15 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
             help="existing absolute or entry-root-relative file or directory",
         )
         if name == "add-origin":
-            action.add_argument(
+            representation = action.add_mutually_exclusive_group()
+            representation.add_argument(
                 "--identity",
                 action="append",
                 help="authoritative directory file or final-component pattern",
+            )
+            representation.add_argument(
+                "--commit",
+                help="full lowercase commit hash identifying a Git repository input",
             )
     update = actions.add_parser(
         "update", help="Change explicitly selected input properties"
@@ -333,6 +338,10 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
         "--byte-complete",
         action="store_true",
         help="identify an origin directory by all descendant bytes",
+    )
+    identity.add_argument(
+        "--commit",
+        help="full lowercase commit hash identifying a Git repository input",
     )
     rename = actions.add_parser(
         "rename", help="Rename an input after recorded-command token edits"
@@ -371,6 +380,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                     if getattr(args, "identity", None) is not None
                     else None
                 ),
+                commit=getattr(args, "commit", None),
                 dry_run=args.dry_run,
             ),
         )
@@ -386,6 +396,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                 classification=classification_value,
                 identity=(tuple(args.identity) if args.identity is not None else None),
                 byte_complete=args.byte_complete,
+                commit=args.commit,
                 dry_run=args.dry_run,
             ),
         )

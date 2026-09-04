@@ -423,7 +423,7 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
             if entry.data_file is None:
                 continue
             for resource in entry.data_file.inputs:
-                if resource.canonical_target == conflict.canonical_target:
+                if resource.material_identity == conflict.canonical_target:
                     _add_input_prerequisite(entry, resource, check, state)
     return entries
 
@@ -612,7 +612,7 @@ def _record_entry_surface_error(
 def _verify_input(
     resource: InputResource, state: _ScanState
 ) -> FingerprintObservation | None:
-    key = resource.canonical_target
+    key = resource.observation_identity
     observation = state.input_observations.get(key)
     if observation is not None:
         return validate_fingerprint_observation(resource, observation)
@@ -659,7 +659,7 @@ def _add_input_prerequisite_for_root(
         if resource.kind == "directory"
         else state.input_prerequisite_files
     )
-    targets.setdefault(resource.canonical_target, []).append(check)
+    targets.setdefault(resource.material_identity, []).append(check)
 
 
 def _observe_script_identity(path: Path, state: _ScanState) -> ScriptObservation:
@@ -2065,7 +2065,7 @@ def _resolve_source(
         _fail(
             "evidence.declaration.invalid",
             value,
-            {"reason": "directory_member_required"},
+            {"reason": "file_source_required"},
         )
     path = Path(resolved.path)
     _validate_entry_source_path(path, entry, value)
@@ -2085,7 +2085,7 @@ def _trusted_input_identity(
     resource = source.resource
     if resource.kind != "file":
         return None
-    observation = state.input_observations.get(resource.canonical_target)
+    observation = state.input_observations.get(resource.observation_identity)
     if observation is None or observation.fingerprint.digest is None:
         return None
     identity = observation.cache_identity

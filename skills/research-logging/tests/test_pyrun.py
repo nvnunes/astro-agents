@@ -45,6 +45,30 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def commit_source(repository: Path) -> str:
+    source = repository / "tracked-source.txt"
+    source.write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", source.name], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Research Log Tests",
+            "-c",
+            "user.email=research-log@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+    ).strip()
+
+
 def make_entry(root: Path, *, with_data: bool = True) -> Path:
     (root / "log.md").write_text("# Log\n", encoding="utf-8")
     entry = root / "log" / "entries" / "2026-05-01-e001-test-entry"
@@ -206,6 +230,78 @@ class PyrunResolutionTests(unittest.TestCase):
                     str(collection.resolve()),
                     str((collection / "member.npz").resolve()),
                 ],
+            )
+
+    def test_git_repository_requires_and_records_both_projections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            commit = commit_source(root)
+            entry = make_entry(root)
+            resource = DATA.build_git_repository_input(
+                "source-repository",
+                root.as_posix(),
+                commit,
+                entry_root=entry,
+            )
+            payload = json.loads((entry / "data.json").read_text(encoding="utf-8"))
+            payload["inputs"].append(resource.as_dict())
+            (entry / "data.json").write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+            script = entry / "scripts" / "record_repository.py"
+            script.write_text(
+                "import argparse, json\n"
+                "p=argparse.ArgumentParser()\n"
+                "p.add_argument('--input-repository')\n"
+                "p.add_argument('--input-commit')\n"
+                "p.add_argument('--output-json'); a=p.parse_args()\n"
+                "open(a.output_json, 'w').write(json.dumps({"
+                "'repository': a.input_repository, 'commit': a.input_commit}))\n",
+                encoding="utf-8",
+            )
+
+            for token in ("<source-repository>", "<source-repository:commit>"):
+                incomplete = run(
+                    [
+                        sys.executable,
+                        str(PYRUN),
+                        "scripts/record_repository.py",
+                        "--input-repository",
+                        token,
+                        "--output-json",
+                        "data/repository.json",
+                    ],
+                    cwd=entry,
+                )
+                self.assertNotEqual(incomplete.returncode, 0)
+                self.assertIn("data.git.projection_missing", incomplete.stderr)
+                self.assertFalse((entry / "data" / "repository.json").exists())
+
+            completed = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/record_repository.py",
+                    "--input-repository",
+                    "<source-repository>",
+                    "--input-commit",
+                    "<source-repository:commit>",
+                    "--output-json",
+                    "data/repository.json",
+                ],
+                cwd=entry,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            generated = json.loads(
+                (entry / "data" / "repository.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(generated, {"repository": str(root), "commit": commit})
+            support = json.loads(
+                (entry / "pyrun-outputs.json").read_text(encoding="utf-8")
+            )["outputs"]["data/repository.json"]
+            self.assertEqual(
+                support["inputs"],
+                {"source-repository": resource.fingerprint.as_dict()},
             )
 
     def test_rejects_embedded_missing_and_unsafe_member_tokens(self) -> None:

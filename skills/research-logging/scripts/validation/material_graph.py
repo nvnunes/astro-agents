@@ -286,10 +286,15 @@ def _add_reached_input(
     *,
     depth: int,
 ) -> None:
-    material = _material_node(state.nodes, relationship.path)
-    state.edges.add(GraphEdge("input", material, command))
-    _connect_local(state.connected, material.identity, state.roots)
     resource = relationship.input_resource
+    material = _material_node(
+        state.nodes,
+        relationship.path,
+        path_based=resource is None or resource.kind != "git-repository",
+    )
+    state.edges.add(GraphEdge("input", material, command))
+    if resource is None or resource.kind != "git-repository":
+        _connect_local(state.connected, material.identity, state.roots)
     if resource is not None:
         declaration = _node(
             state.nodes,
@@ -389,8 +394,11 @@ def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
     return node
 
 
-def _material_node(nodes: set[GraphNode], value: str) -> GraphNode:
-    return _node(nodes, "material", Path(value).resolve().as_posix())
+def _material_node(
+    nodes: set[GraphNode], value: str, *, path_based: bool = True
+) -> GraphNode:
+    identity = Path(value).resolve().as_posix() if path_based else value
+    return _node(nodes, "material", identity)
 
 
 def _connect_local(

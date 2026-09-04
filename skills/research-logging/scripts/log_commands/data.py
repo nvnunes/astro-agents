@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from glob import has_magic
 from pathlib import Path
 
 from research_log_data import (
     DataFile,
     InputResource,
+    build_git_repository_input,
     build_identity_directory,
     build_identity_pattern_directory,
     build_local_input,
@@ -42,6 +43,17 @@ from .model import (
 from .storage import PublicationError, atomic_write_texts, entry_lock, remove_or_write
 
 
+@dataclass(frozen=True)
+class _InputDefinition:
+    """Complete semantic definition used to build one registry input."""
+
+    name: str
+    target: str
+    origin: bool
+    identity: tuple[str, ...] | None
+    commit: str | None
+
+
 def list_inputs(entry: EntryContext) -> ActionResult:
     """Return bounded semantic input declarations without registry internals."""
 
@@ -54,6 +66,11 @@ def list_inputs(entry: EntryContext) -> ActionResult:
         False,
         records=tuple(
             {
+                **(
+                    {"commit": item.fingerprint.digest}
+                    if item.kind == "git-repository"
+                    else {}
+                ),
                 "classification": "origin" if item.origin else "generated",
                 "kind": item.kind,
                 "name": item.name,
@@ -73,10 +90,13 @@ def add(
         current = _load(entry)
         candidate = _build_item(
             entry,
-            arguments.name,
-            arguments.target,
-            origin=not generated,
-            identity=arguments.identity,
+            _InputDefinition(
+                arguments.name,
+                arguments.target,
+                not generated,
+                arguments.identity,
+                arguments.commit,
+            ),
         )
         existing = current.by_name.get(arguments.name) if current else None
         if existing is not None:
@@ -108,6 +128,7 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         and arguments.classification is None
         and arguments.identity is None
         and not arguments.byte_complete
+        and arguments.commit is None
     ):
         raise ActionError("data.update.empty", "update requires an explicit change")
     with entry_lock(entry):
@@ -119,12 +140,16 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
             else arguments.classification == "origin"
         )
         identity = _updated_identity(existing, arguments)
+        commit = _updated_commit(existing, arguments)
         candidate = _build_item(
             entry,
-            existing.name,
-            arguments.target or existing.location,
-            origin=origin,
-            identity=identity,
+            _InputDefinition(
+                existing.name,
+                arguments.target or existing.location,
+                origin,
+                identity,
+                commit,
+            ),
         )
         built = _build(entry, _replace(current, existing.name, candidate))
         _require_boundary(entry, built, candidate)
@@ -250,37 +275,59 @@ def rename(
 
 def _build_item(
     entry: EntryContext,
-    name: str,
-    target: str,
-    *,
-    origin: bool,
-    identity: tuple[str, ...] | None,
+    definition: _InputDefinition,
 ) -> InputResource:
-    location = normalize_input_location(target, entry_root=entry.root)
+    location = normalize_input_location(definition.target, entry_root=entry.root)
     path = Path(location) if Path(location).is_absolute() else entry.root / location
     kind = "file" if path.is_file() else "directory" if path.is_dir() else None
     if kind is None:
-        raise ActionError("data.target.missing", target)
-    if identity:
-        if not origin or kind != "directory":
+        raise ActionError("data.target.missing", definition.target)
+    if definition.commit is not None:
+        if not definition.origin or kind != "directory" or definition.identity:
+            raise ActionError(
+                "data.git.invalid",
+                "--commit requires an origin Git repository without --identity",
+            )
+        return build_git_repository_input(
+            definition.name,
+            location,
+            definition.commit,
+            entry_root=entry.root,
+        )
+    if definition.identity:
+        if not definition.origin or kind != "directory":
             raise ActionError(
                 "data.identity.invalid", "--identity requires an origin directory"
             )
-        if any(has_magic(selector) for selector in identity):
+        if any(has_magic(selector) for selector in definition.identity):
             return build_identity_pattern_directory(
-                name, location, identity, entry_root=entry.root, origin=True
+                definition.name,
+                location,
+                definition.identity,
+                entry_root=entry.root,
+                origin=True,
             )
         return build_identity_directory(
-            name, location, identity, entry_root=entry.root, origin=True
+            definition.name,
+            location,
+            definition.identity,
+            entry_root=entry.root,
+            origin=True,
         )
     return build_local_input(
-        name, kind, location, entry_root=entry.root, origin=origin
+        definition.name,
+        kind,
+        location,
+        entry_root=entry.root,
+        origin=definition.origin,
     )
 
 
 def _updated_identity(
     existing: InputResource, arguments: DataUpdateArguments
 ) -> tuple[str, ...] | None:
+    if arguments.commit is not None:
+        return None
     if arguments.identity is not None:
         return arguments.identity
     if arguments.byte_complete:
@@ -292,9 +339,30 @@ def _updated_identity(
     return None
 
 
+def _updated_commit(
+    existing: InputResource, arguments: DataUpdateArguments
+) -> str | None:
+    if arguments.commit is not None:
+        return arguments.commit
+    if existing.kind == "git-repository":
+        if arguments.classification == "generated":
+            raise ActionError(
+                "data.git.invalid", "a Git repository input must be an origin"
+            )
+        if arguments.identity is not None or arguments.byte_complete:
+            raise ActionError(
+                "data.git.invalid",
+                "a Git repository input cannot use directory identity options",
+            )
+        return existing.fingerprint.digest
+    return None
+
+
 def _require_boundary(
     entry: EntryContext, data: DataFile, candidate: InputResource
 ) -> None:
+    if candidate.kind == "git-repository":
+        return
     materials = inspect_log_materials(
         entry.log, data_overrides={entry.root: data}
     )
@@ -341,10 +409,13 @@ def _renamed_evidence(
 
 
 def _rename_token(value: str, old_name: str, new_name: str) -> str:
-    name, member = input_token_parts(value) or (None, None)
+    name, projection, member = input_token_parts(value) or (None, None, None)
     if name != old_name:
         return value
-    return f"<{new_name}>" + (f"/{member}" if member is not None else "")
+    suffix = f":{projection}" if projection is not None else ""
+    return f"<{new_name}>{suffix}" + (
+        f"/{member}" if member is not None else ""
+    )
 
 
 def _token_name(value: str) -> str | None:

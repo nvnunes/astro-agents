@@ -24,6 +24,7 @@ from research_log_data import (
     Fingerprint,
     input_token_candidate,
     load_data_file,
+    require_git_repository_token_pairs,
     resolve_input_token,
 )
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
@@ -180,7 +181,7 @@ def resolve_arg(
             raise SystemExit(f"pyrun: could not observe input {resource.name!r}")
         observed_inputs[resource.name] = observation.fingerprint
         verified.add(resource.name)
-    return resolved.path
+    return resolved.value
 
 
 def _execution_layout(
@@ -511,6 +512,10 @@ def main(argv: list[str]) -> int:
                 )
                 for arg in script_args
             ]
+            try:
+                require_git_repository_token_pairs(script_args, data)
+            except DataContractError as error:
+                raise SystemExit(f"pyrun: {error}") from error
             output_paths = _declared_outputs(
                 script_args, captures, roles, entry, root, log
             )

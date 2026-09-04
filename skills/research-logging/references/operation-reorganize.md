@@ -29,8 +29,8 @@ Use normal workspace editing tools. Reorganize has no CLI operation.
   summary entry links, local document links, citations, recorded commands,
   evidence-record document paths, and presentation-marker associations.
 - Move entry-owned support material only when the requested organization
-  requires it. Apply `references/operation-record-content.md` only to affected
-  content, support material, evidence records, or presentation markers.
+  requires it. Load only the corresponding file guidance for an affected
+  command, input, retention decision, evidence presentation, or document.
 - Preserve the summary's fixed validation-report link and every generated
   validation file exactly.
 

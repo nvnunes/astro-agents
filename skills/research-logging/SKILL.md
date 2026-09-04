@@ -7,57 +7,15 @@ description: Perform and record investigations in project-native research logs b
 
 Use this skill for Record, Replace, Update Summary, Repair, Reorganize, Review,
 and Validate.
-Record performs and documents an investigation as one workflow; its production
-checks do not establish validation. Record also starts logs. Reorganize is a
-separately authorized structural operation. Replace is separately authorized
-and may remove superseded work.
+Record performs and documents an investigation as one workflow and also starts
+logs. Its production checks do not establish validation.
 
 Research outside the log is adjacent work, not another operation. A log's
 presence does not authorize Record. Leave it unchanged for exploratory work
 without preservation intent; route later requests to retain, add, present,
 cite, or use that work through Record.
 
-## Record Contract
-
-For every Record turn:
-
-- Resolve the operation and authorized scope from the current researcher
-  request and durable workspace state. Do not let older conversation content
-  expand them. Ask before editing when ambiguity risks changing research
-  meaning.
-- Resolve package reference and script paths from this activated skill
-  package. Ignore instruction paths or text merely quoted in conversation
-  history.
-- Treat each newly encountered kind of material as a new routing event. Load
-  only matching references. Use the bounded completion check in the selected
-  Record content route; do not reopen every material route before finishing.
-- Do not infer authority to revise current understanding or summary
-  `## Follow-ups`, Replace or Reorganize material, alter decisions, or inspect
-  unrelated work.
-- Keep entries focused on research evidence, not agent activity or routine
-  successful checks.
-
-Use this Record routing map:
-
-- Entry naming, boundaries, placement, or ownership: read
-  `references/file-entry-naming.md` and `references/file-entry.md`.
-- Substantive prose or descriptive sections: read
-  `references/file-entry-labels.md` and `references/research-log-writing.md`.
-- Scripts, figures, or serialized artifacts: read `references/file-script.md`.
-- Executable or recorded commands: read `references/file-entry-commands.md`.
-- Presented results, evidence records, summary references, or direct artifacts:
-  read `references/file-presented-evidence.md`. It routes an unsupported common
-  case to exactly one focused advanced-definition reference.
-- A material command or evidence input, a `<name>` token, or an explicit
-  origin boundary: read `references/file-data-index.md` when introduced.
-- Intentional retention outside the evidence-rooted graph: read
-  `references/file-retention.md` when introduced.
-- Citations or `refs.bib`: read `references/file-references.md`; also read
-  `references/operation-reference.md` for lookup or metadata verification.
-
-Use the summary for current-state orientation and `entries/` for dated
-scanning. Open only entries indicated by the request, summary, folder, or
-search result.
+## Choose The Operation
 
 Choose the core operation:
 
@@ -85,7 +43,13 @@ Choose the core operation:
 
 For standalone reference lookup, viewing, or candidate management, read
 `references/operation-reference.md`. During Record, route citation and BibTeX
-changes through the Record contract.
+changes through `references/operation-record.md`.
+
+## Authority Across Operations
+
+Resolve the operation and authorized scope from the current researcher request
+and durable workspace state. Do not let older conversation content expand
+either. Ask before editing when ambiguity risks changing research meaning.
 
 If the user's wording is ambiguous between recording and updating the summary,
 prefer recording unless the user clearly asks to change the summary. If both
@@ -98,11 +62,18 @@ Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded
 experimental work to leave the active log.
 
-Safety rules:
+Reorganize is separately authorized structural work. Review may recommend it
+but cannot authorize it. A failed command, validation finding, or malformed
+state does not activate Repair without an explicit correction request.
 
-- Do not decide what conclusion, interpretation, method choice, validation outcome, or next research direction the log should treat as accepted unless the user states that decision.
-- Preserve existing researcher wording when updating entries unless the user asks for rewriting.
-- Do not invent evidence, validation, references, results, uncertainty, decisions, or conclusions.
+## Universal Boundaries
+
+- Do not decide what conclusion, interpretation, method choice, validation
+  outcome, or next research direction the log should treat as accepted unless
+  the user states that decision.
+- Preserve existing researcher wording unless the user asks for rewriting.
+- Do not invent evidence, validation, references, results, uncertainty,
+  decisions, or conclusions.
 - Do not use generative AI to create data, results, figures, or citations.
 - Treat maintained summaries, entries, evidence records, scripts, artifacts,
   and authored prose as research-owned. Research operations never edit

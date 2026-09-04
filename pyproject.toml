@@ -20,6 +20,5 @@ files = [
   "skills/research-logging/scripts/log_commands",
   "skills/research-logging/scripts/pyrun",
   "skills/research-logging/scripts/research_log_data.py",
-  "skills/research-logging/scripts/research_log_validation.py",
   "skills/research-logging/scripts/validation",
 ]

@@ -11,8 +11,8 @@ the shared Record rules.
 1. Resolve the logical `<log>` base whose summary is `<log>.md` and whose
    matching directory is `<log>/`.
 2. Use today's local date unless the researcher indicates another start date.
-   Choose a descriptive topic slug using
-   `references/file-entry-naming.md`.
+   Choose a short, concrete, descriptive topic slug from the researcher's
+   framing.
 3. Resolve `scripts/log` from this activated skill package, read only `log add
    --help`, and run:
 
@@ -26,6 +26,6 @@ the shared Record rules.
    transaction-residue diagnostic; do not treat the request as a retry or
    complete the scaffold manually.
 4. Use the returned entry document and apply
-   `references/file-entry.md` and `references/operation-record-content.md` to
-   perform and preserve the research.
+   `references/operation-record-content.md` to perform and preserve the
+   research.
 5. Do not revise current understanding or log-level follow-ups.

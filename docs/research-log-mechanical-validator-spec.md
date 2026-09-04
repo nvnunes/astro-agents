@@ -3227,11 +3227,8 @@ identities. These are the only
 public standard-validation inputs; there is no mode, decisions, review,
 semantic, or reproduction input.
 
-During the management-entrypoint migration,
-`research_log_validation.py discover --root` and
-`research_log_validation.py validate --summary` are compatibility spellings
-over the same discovery and one-log validation implementations. They add no
-behavior and are retired after maintained callers move to `scripts/log`.
+There is no alternate validation launcher or `--summary` compatibility
+spelling. All maintained callers use `scripts/log`.
 
 The scaffolding operations are:
 

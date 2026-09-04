@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
 REFERENCES = SKILL / "references"
+REFERENCE_PATTERN = re.compile(r"references/([A-Za-z0-9_.-]+\.md)")
 
 
 def reference(name: str) -> str:
@@ -12,14 +14,82 @@ def reference(name: str) -> str:
 
 
 class RecordSurfaceTests(unittest.TestCase):
+    def test_skill_routes_operations_without_loading_record_material(self) -> None:
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        expected_operations = {
+            "operation-record.md",
+            "operation-reference.md",
+            "operation-reorganize.md",
+            "operation-repair.md",
+            "operation-replace.md",
+            "operation-review.md",
+            "operation-update-summary.md",
+            "operation-validate.md",
+        }
+        references = set(REFERENCE_PATTERN.findall(skill))
+        self.assertEqual(
+            references,
+            expected_operations | {"file-validation-records.md"},
+        )
+
+        record = reference("operation-record.md")
+        for routed in (
+            "file-data-index.md",
+            "file-entry-commands.md",
+            "file-entry-labels.md",
+            "file-presented-evidence.md",
+            "file-references.md",
+            "file-retention.md",
+            "file-script.md",
+            "research-log-writing.md",
+        ):
+            self.assertIn(f"references/{routed}", record)
+        self.assertLess(
+            record.index("## Select The Record Path"),
+            record.index("## Material Routing"),
+        )
+        self.assertIn("read exactly one path", record)
+
+    def test_record_subroutes_do_not_cross_operation_boundaries(self) -> None:
+        record_routes = (
+            "operation-record.md",
+            "operation-record-start.md",
+            "operation-record-new.md",
+            "operation-record-existing.md",
+            "operation-record-content.md",
+        )
+        forbidden = (
+            "operation-reorganize.md",
+            "operation-repair.md",
+            "operation-replace.md",
+            "operation-review.md",
+            "operation-update-summary.md",
+            "operation-validate.md",
+        )
+        for route in record_routes:
+            text = reference(route)
+            for name in forbidden:
+                self.assertNotIn(f"references/{name}", text, route)
+
+        for route in REFERENCES.glob("operation-*.md"):
+            if route.name.startswith("operation-record"):
+                continue
+            text = route.read_text(encoding="utf-8")
+            self.assertNotIn("references/operation-record", text, route.name)
+
+    def test_creation_routes_do_not_load_naming_or_summary_contracts(self) -> None:
+        for route in ("operation-record-start.md", "operation-record-new.md"):
+            text = reference(route)
+            self.assertNotIn("references/file-entry-naming.md", text, route)
+            self.assertNotIn("references/file-summary", text, route)
+        self.assertNotIn(
+            "references/file-summary", reference("operation-record-content.md")
+        )
+
     def test_ordinary_record_does_not_route_to_registry_grammars(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        for stale in (
-            "references/file-evidence-locators.md",
-            "references/file-evidence-transformations.md",
-            "references/file-evidence-tables.md",
-        ):
-            self.assertNotIn(stale, skill)
+        self.assertNotIn("## Record Contract", skill)
+        self.assertIn("## Contract", reference("operation-record.md"))
 
         ordinary = "\n".join(
             (
@@ -45,6 +115,21 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("Never create, inspect, or edit its registry", ordinary)
         self.assertIn("Never create, inspect, or edit the registry", ordinary)
         self.assertIn("Never create,\ninspect, or edit that registry", ordinary)
+
+    def test_every_reference_has_an_operation_route(self) -> None:
+        pending = list(REFERENCE_PATTERN.findall((SKILL / "SKILL.md").read_text()))
+        reached: set[str] = set()
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            path = REFERENCES / name
+            self.assertTrue(path.is_file(), name)
+            reached.add(name)
+            pending.extend(REFERENCE_PATTERN.findall(path.read_text(encoding="utf-8")))
+
+        all_references = {path.name for path in REFERENCES.glob("*.md")}
+        self.assertEqual(reached, all_references)
 
     def test_advanced_evidence_cases_route_to_one_focused_definition(self) -> None:
         presented = reference("file-presented-evidence.md")

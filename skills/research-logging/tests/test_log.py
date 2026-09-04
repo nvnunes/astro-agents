@@ -12,9 +12,6 @@ from unittest import mock
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
-VALIDATION = (
-    Path(__file__).resolve().parents[1] / "scripts" / "research_log_validation.py"
-)
 
 
 def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -264,57 +261,22 @@ print(json.dumps({{
 
 
 class LogValidationRouteTests(unittest.TestCase):
-    def test_new_routes_preserve_discovery_and_one_log_results(self) -> None:
+    def test_public_routes_preserve_one_log_discovery_and_batch_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, _ = fixture(root)
-            environment = os.environ.copy()
-            environment.pop("PYTHONHOME", None)
             common = ("--date", "2026-09-03", "--dry-run", "--recompute")
-            legacy = subprocess.run(
-                [
-                    sys.executable,
-                    str(VALIDATION),
-                    "validate",
-                    "--summary",
-                    str(logical.with_suffix(".md")),
-                    *common,
-                ],
-                cwd=root,
-                text=True,
-                capture_output=True,
-                env=environment,
-                check=False,
-            )
             current = run(root, "validate", "--path", str(logical), *common)
-            self.assertEqual(current.returncode, legacy.returncode, current.stderr)
+            self.assertEqual(current.returncode, 0, current.stderr)
             current_payload = json.loads(current.stdout)
-            legacy_payload = json.loads(legacy.stdout)
-            self.assertEqual(
-                set(current_payload["metrics"]), set(legacy_payload["metrics"])
-            )
-            current_payload.pop("metrics")
-            legacy_payload.pop("metrics")
-            self.assertEqual(current_payload, legacy_payload)
+            self.assertEqual(current_payload["status"], "complete_findings")
+            self.assertFalse(current_payload["published"])
 
-            old_discovery = subprocess.run(
-                [
-                    sys.executable,
-                    str(VALIDATION),
-                    "discover",
-                    "--root",
-                    str(root),
-                ],
-                cwd=root,
-                text=True,
-                capture_output=True,
-                env=environment,
-                check=False,
-            )
             new_discovery = run(root, "discover", "--root", str(root))
-            self.assertEqual(new_discovery.returncode, old_discovery.returncode)
+            self.assertEqual(new_discovery.returncode, 0, new_discovery.stderr)
             self.assertEqual(
-                json.loads(new_discovery.stdout), json.loads(old_discovery.stdout)
+                json.loads(new_discovery.stdout)["summaries"],
+                [logical.with_suffix(".md").resolve().as_posix()],
             )
 
             batch = run(root, "validate", "--root", str(root), *common)

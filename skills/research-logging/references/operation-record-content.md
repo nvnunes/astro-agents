@@ -1,7 +1,6 @@
 # Record Content Instructions
 
-Use this file after choosing a new-entry, existing-entry, or replacement
-content path.
+Use this file after choosing a new-entry or existing-entry Record path.
 
 `Record Content` applies shared behavior for performing and preserving research
 inside an entry.

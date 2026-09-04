@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "research_log_validation.py"
-sys.path.insert(0, str(SCRIPT.parent))
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
 
 
 def write(path: Path, text: str) -> None:
@@ -167,7 +167,6 @@ def mechanical_log(
 __all__ = [
     "Any",
     "Path",
-    "SCRIPT",
     "importlib",
     "json",
     "mechanical_log",

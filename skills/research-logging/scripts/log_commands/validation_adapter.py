@@ -1,30 +1,80 @@
-"""Adapters preserving validation and discovery ownership under ``log``."""
+"""Public validation and discovery adapters for ``scripts/log``."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence, cast
+from typing import Mapping, Sequence, cast
 
-from validation.cli import (
-    COMPLETED_STATUSES,
-    evaluate_validation,
+from validation.controller import (
+    ValidationControllerError,
+    ValidationRequest,
+    validate,
 )
-from validation.cli import run_discover as run_discovery_cli
-from validation.controller import ValidationControllerError
 from validation.discovery import discover_summaries
 
 from .context import resolve_log
 from .model import ActionError
 
+COMPLETED_STATUSES = frozenset(
+    {"complete_clear", "complete_findings", "unsupported_metadata"}
+)
+CLI_RESULT_SCHEMA = "research-log-validation-cli-result/1"
+
+
+def evaluate_validation(
+    summary: Path,
+    *,
+    result_date: str | None = None,
+    dry_run: bool = False,
+    recompute: bool = False,
+) -> dict[str, object]:
+    """Return the bounded public result for one validation request."""
+
+    result = validate(
+        ValidationRequest(
+            summary,
+            result_date=result_date,
+            publish=not dry_run,
+            recompute=recompute,
+        )
+    )
+    return _public_result(result)
+
+
+def _public_result(result: dict[str, object]) -> dict[str, object]:
+    """Bound a completed published result to its generated artifacts."""
+
+    if not result.get("published") or not isinstance(result.get("record"), dict):
+        return result
+    record = cast(Mapping[str, object], result["record"])
+    summary = Path(str(result["summary"]))
+    log_root = summary.with_suffix("")
+    return {
+        "generated": {
+            "human": (log_root / "validation.md").as_posix(),
+            "mechanical": (log_root / "validation/mechanical.json").as_posix(),
+        },
+        "metrics": result.get("metrics", {}),
+        "published": True,
+        "result_date": record.get("result_date"),
+        "rules_version": record.get("rules_version"),
+        "schema": CLI_RESULT_SCHEMA,
+        "scopes": record.get("scopes", []),
+        "status": result["status"],
+        "summary": result["summary"],
+    }
+
 
 def run_discover(root: Path) -> int:
-    """Print the existing bounded discovery result."""
+    """Print the bounded maintained-summary inventory."""
 
     try:
-        return run_discovery_cli(root)
+        result = discover_summaries(root)
     except ValueError as error:
         raise ActionError("discovery.failed", str(error)) from error
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def run_validate(

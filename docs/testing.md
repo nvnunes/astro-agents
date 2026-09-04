@@ -71,7 +71,6 @@ linting only the main validator:
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \
   skills/research-logging/scripts/research_log_data.py \
-  skills/research-logging/scripts/research_log_validation.py \
   skills/research-logging/scripts/log_commands/*.py \
   skills/research-logging/scripts/validation/*.py
 ./.conda/bin/ruff check skills/research-logging/scripts \
@@ -108,8 +107,7 @@ The research-log test gate must verify:
 - `log discover --root`, one-log `log validate --path`, and all-log
   `log validate --root` preserve the validation engine's bounded output and
   status contracts; omitted `--path` resolves only one unambiguous maintained
-  log, while the temporary `research_log_validation.py` compatibility launcher
-  retains `discover --root` and one-log `validate --summary`;
+  log, and `--summary` is not a public compatibility spelling;
 - `log evidence` and `log retention` mutations use stable entry locks,
   production decoders, atomic canonical publication, write-free dry runs, and
   bounded semantic result envelopes while leaving generated validation state

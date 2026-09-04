@@ -40,12 +40,17 @@ delete an unmentioned dependent section or file.
    researcher. Copy every affected document in full and every support file that
    could be overwritten or removed. Verify the copied inventory and contents
    before continuing. Never delete this backup as part of Replace.
-5. Apply `references/operation-record-content.md` within the authorized scope
-   to produce, retain, and check the replacement. Leave the log summary
-   unchanged, including its fixed validation-report link, unless Update Summary
-   is separately authorized. Do not change generated validation files. When a
-   command must overwrite an artifact at the same path, the verified backup
-   must already contain the old artifact.
+5. Produce, retain, and check the replacement within the authorized scope.
+   Load only the applicable file guidance: `references/file-entry-labels.md`
+   and `references/research-log-writing.md` for prose;
+   `references/file-script.md` and `references/file-entry-commands.md` for
+   executable work; and `references/file-presented-evidence.md`,
+   `references/file-data-index.md`, or `references/file-retention.md` for the
+   corresponding material. Leave the log summary unchanged, including its
+   fixed validation-report link, unless Update Summary is separately
+   authorized. Do not change generated validation files. When a command must
+   overwrite an artifact at the same path, the verified backup must already
+   contain the old artifact.
 6. After the replacement succeeds, remove the superseded Markdown, evidence
    markers, separately authorized summary references, and recorded-command
    uses first. Keep the old source and retained artifacts available. If an

@@ -23,19 +23,15 @@ research log. Starting a log is the new-log path within Record.
    or complete the target manually; a partial scaffold requires separately
    authorized Repair.
 5. Do not create `refs.bib`, `scripts/`, entry-local `data/`, `images/`, or
-   other supporting files or folders unless they are immediately needed. Route
-   reference work through
-   `references/operation-reference.md` and entry-local
-   support material through
-   `references/file-entry.md` when needed.
+   other supporting files or folders unless they are immediately needed. If
+   initial material must be recorded, follow the Record content route below.
 
 ## Initial Entry
 
 If the user provides material to record as the first entry:
 
 1. Use today's local date unless the user indicates another start date.
-2. Choose a concrete descriptive topic slug using
-   `references/file-entry-naming.md`.
+2. Choose a short, concrete, descriptive topic slug from the user's framing.
 3. After `log init` succeeds, create the entry through
 
    ```text
@@ -46,7 +42,7 @@ If the user provides material to record as the first entry:
    The command allocates the stable entry ID, creates the minimal entry
    document, installs its `pyrun` symlink, and appends its summary link.
 4. Record the supplied material in the returned entry document using
-   `references/file-entry.md` and `references/operation-record-content.md`.
+   `references/operation-record-content.md`.
 
 If the user asks only to start an empty log, do not create an entry.
 

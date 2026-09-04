@@ -218,15 +218,16 @@ an input and follows the same registry rule.
 `pyrun` reads only `./data.json` at the current owning entry root. It does not
 search a parent entry or the log root.
 
-For every active investigation with a Python command created or revised during
-Record, create an entry-root `pyrun` symlink to the resolved
-`scripts/pyrun` from this skill package before running or recording the command.
-Invoke those Python commands through `./pyrun`; do not record direct `python`
-commands or invoke the installed script directly. Do not copy or vendor
-`pyrun`. Use a relative symlink when practical. If symlinks are unavailable,
-report that and get researcher approval before invoking the installed script
-directly. Record the approved exception beside the command; do not copy
-`pyrun` as a fallback.
+`log add` installs the entry-root `pyrun` symlink from the active skill package
+when it creates an entry. Before running or recording an active-work Python
+command, require that symlink to resolve to the active package's
+`scripts/pyrun`. Invoke the command through `./pyrun`; do not record direct
+`python` commands, invoke the installed script directly, copy or vendor
+`pyrun`, or replace an unexpected target during Record. A missing or incorrect
+runner in an existing entry is an identified defect for separately authorized
+Repair. If symlinks are unavailable, report that and get researcher approval
+before invoking the installed script directly; record the approved exception
+beside the command.
 
 After creating or changing an entry Python script, `data.json`, `pyrun` symlink,
 or recorded command, run the command from the entry root and confirm its saved

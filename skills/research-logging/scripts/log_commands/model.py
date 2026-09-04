@@ -8,6 +8,24 @@ AUTHORING_RESULT_SCHEMA = "research-log-authoring-result/1"
 
 
 @dataclass(frozen=True)
+class InitArguments:
+    """Typed arguments for creating one empty maintained research log."""
+
+    title: str
+    dry_run: bool
+
+
+@dataclass(frozen=True)
+class AddArguments:
+    """Typed arguments for creating one minimal maintained-log entry."""
+
+    date: str
+    title: str
+    slug: str
+    dry_run: bool
+
+
+@dataclass(frozen=True)
 class EvidenceCommonArguments:
     """Typed arguments for one common evidence add or update action."""
 

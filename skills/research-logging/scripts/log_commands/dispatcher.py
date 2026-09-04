@@ -8,15 +8,18 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from .context import resolve_entry, resolve_log
+from .context import resolve_entry, resolve_log, resolve_log_creation
 from .model import (
     ActionError,
     ActionResult,
+    AddArguments,
     EvidenceCommonArguments,
+    InitArguments,
     RetentionArguments,
 )
 
-FAMILIES = ("discover", "evidence", "retention", "validate")
+FAMILIES = ("add", "discover", "evidence", "init", "retention", "validate")
+AUTHORING_FAMILIES = frozenset({"add", "evidence", "init", "retention"})
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -39,11 +42,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _dispatch_discover(arguments)
         if family == "validate":
             return _dispatch_validate(arguments)
-        result = (
-            _dispatch_evidence(arguments)
-            if family == "evidence"
-            else _dispatch_retention(arguments)
-        )
+        dispatch = {
+            "add": _dispatch_add,
+            "evidence": _dispatch_evidence,
+            "init": _dispatch_init,
+            "retention": _dispatch_retention,
+        }
+        result = dispatch[family](arguments)
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
     except (ActionError, OSError, UnicodeError) as error:
@@ -59,7 +64,7 @@ def _report_failure(family: str, selected_task: str, error: Exception) -> int:
 
     code = getattr(error, "code", f"{family}.failed")
     print(f"log: {code}: {error}", file=sys.stderr)
-    if family in {"evidence", "retention"}:
+    if family in AUTHORING_FAMILIES:
         print(
             json.dumps(
                 ActionResult(selected_task, "failed", str(code), False).as_dict(),
@@ -85,6 +90,41 @@ def _entry_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _mutation_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true")
+
+
+def _dispatch_init(arguments: Sequence[str]) -> ActionResult:
+    parser = argparse.ArgumentParser(prog="log init")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--title", required=True)
+    _mutation_argument(parser)
+    args = parser.parse_args(arguments)
+    from . import scaffold
+
+    return scaffold.initialize(
+        resolve_log_creation(args.path),
+        InitArguments(title=args.title, dry_run=args.dry_run),
+    )
+
+
+def _dispatch_add(arguments: Sequence[str]) -> ActionResult:
+    parser = argparse.ArgumentParser(prog="log add")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--date", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--slug", required=True)
+    _mutation_argument(parser)
+    args = parser.parse_args(arguments)
+    from . import scaffold
+
+    return scaffold.add_entry(
+        resolve_log(args.path),
+        AddArguments(
+            date=args.date,
+            title=args.title,
+            slug=args.slug,
+            dry_run=args.dry_run,
+        ),
+    )
 
 
 def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:

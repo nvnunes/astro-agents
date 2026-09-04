@@ -145,16 +145,35 @@ appears important; you decide whether to record it.
 #### Start a research log
 
 Start with the minimum structure and a summary containing only known context.
-If you already have work to record, create `e001` using the local start date
-and add it to the summary's entry list. Otherwise leave `entries/` empty. Do
-not create reference, script, data, image, or evidence files until they are
-needed. Do not merge with or overwrite an existing log unless that is your
-explicit intent.
+Create that structure through the research-logging skill's path-qualified
+management entrypoint:
+
+```text
+<skill>/scripts/log init --path <log> --title <title>
+```
+
+If you already have work to record, follow successful initialization with
+`log add` using the local start date, title, and descriptive slug. It allocates
+`e001`, creates the minimal entry and its runner link, and adds the summary
+item. Otherwise leave `entries/` empty. Do not create reference, script, data,
+image, or evidence files until they are needed. The commands refuse an existing
+or partial target rather than merging, overwriting, or completing it as a
+retry.
 
 #### Record a new investigation
 
 Start a new entry for a distinct topic or later investigation. Use the local
-start date and the next unused entry ID.
+start date and invoke:
+
+```text
+<skill>/scripts/log add --path <log> --date <YYYY-MM-DD> \
+  --title <title> --slug <slug>
+```
+
+The command allocates one above the highest consistently observed entry ID,
+never fills a gap, creates the minimal entry document and `pyrun` symlink, and
+appends only the new `## Entries` item. It leaves summary interpretation,
+follow-ups, and generated validation unchanged.
 
 #### Continue an investigation
 

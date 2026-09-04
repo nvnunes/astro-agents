@@ -6,6 +6,22 @@ research evidence.
 
 ## Integrated Record Workflow
 
+Given a request for an empty log, Record invokes `log init` with one logical
+log path and title. The command creates only the minimal maintained summary and
+matching `entries/` directory. It does not create an entry or optional support
+material.
+
+Given initial material to record, Record composes successful `log init` and
+`log add`. The add command allocates `e001`, creates only the minimal entry
+document and entry-root `pyrun` symlink, and appends the canonical summary item
+before Record writes the research content.
+
+Given an existing log, `log add` allocates one above the highest ID observed
+consistently across summary links, entry directories, and entry documents. It
+does not fill an ID gap. An existing logical entry, inconsistent identity
+state, or recognizable partial scaffold fails precisely and is not treated as
+a retry or completed manually during Record.
+
 Given a request to investigate a question and record the work, Record
 implements or revises the needed scripts, runs the research, retains and
 analyzes the outputs, documents the evidence, and drafts grounded observations

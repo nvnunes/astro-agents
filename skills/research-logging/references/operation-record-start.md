@@ -10,18 +10,19 @@ research log. Starting a log is the new-log path within Record.
    context.
 2. If no safe target location can be inferred, or if multiple plausible
    locations exist, ask before creating files.
-3. Choose the matching `<log>.md` summary path and `<log>/` folder path.
-4. Check for conflicting existing files or folders. Ask before merging with or
-   overwriting existing material.
-5. Create `<log>.md` and the matching `<log>/entries/` directory.
-6. Write `<log>.md` as a minimal maintained summary using
-   `references/file-summary.md`. Include only
-   user-provided context and do not fabricate current understanding. Initialize
-   the fixed validation-report navigation link with
-   `references/file-summary-validation.md` and
-   `## AI Use` with
-   `references/file-summary-ai-use.md`.
-7. Do not create `refs.bib`, `scripts/`, entry-local `data/`, `images/`, or
+3. Choose the logical `<log>` base whose summary will be `<log>.md` and whose
+   matching directory will be `<log>/`.
+4. Resolve `scripts/log` from this activated skill package and create the empty
+   log through its action-specific help and this command:
+
+   ```text
+   <skill>/scripts/log init --path <log> --title <title>
+   ```
+
+   Stop on a conflict or partial-scaffold diagnostic. Do not merge, overwrite,
+   or complete the target manually; a partial scaffold requires separately
+   authorized Repair.
+5. Do not create `refs.bib`, `scripts/`, entry-local `data/`, `images/`, or
    other supporting files or folders unless they are immediately needed. Route
    reference work through
    `references/operation-reference.md` and entry-local
@@ -33,15 +34,19 @@ research log. Starting a log is the new-log path within Record.
 If the user provides material to record as the first entry:
 
 1. Use today's local date unless the user indicates another start date.
-2. Use `e001` as the entry ID.
-3. Choose a concrete descriptive topic slug using
+2. Choose a concrete descriptive topic slug using
    `references/file-entry-naming.md`.
-4. Create
-   `<log>/entries/<start-date>-e001-<descriptive-topic-slug>/e001.md`.
-5. Record the supplied material using
+3. After `log init` succeeds, create the entry through
+
+   ```text
+   <skill>/scripts/log add --path <log> --date <YYYY-MM-DD> \
+     --title <title> --slug <slug>
+   ```
+
+   The command allocates the stable entry ID, creates the minimal entry
+   document, installs its `pyrun` symlink, and appends its summary link.
+4. Record the supplied material in the returned entry document using
    `references/file-entry.md` and `references/operation-record-content.md`.
-6. Add the entry to `<log>.md` `Entries` using
-   `references/file-summary.md`.
 
 If the user asks only to start an empty log, do not create an entry.
 

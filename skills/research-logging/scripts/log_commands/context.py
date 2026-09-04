@@ -20,12 +20,58 @@ class LogContext:
 
 
 @dataclass(frozen=True)
+class LogCreationContext:
+    """One canonical not-yet-created log and its owning Git project."""
+
+    summary: Path
+    root: Path
+    project_root: Path
+
+
+@dataclass(frozen=True)
 class EntryContext:
     """One stable entry identity resolved within a maintained log."""
 
     log: LogContext
     id: str
     root: Path
+
+
+def resolve_log_creation(
+    value: Path | None, *, cwd: Path | None = None
+) -> LogCreationContext:
+    """Resolve an explicit logical ``<log>`` base before it exists."""
+
+    if value is None:
+        raise ActionError("log.path.required", "init requires --path")
+    current = (cwd or Path.cwd()).resolve()
+    lexical = value if value.is_absolute() else current / value
+    if (
+        lexical.suffix == ".md"
+        or lexical.name == "entries"
+        or any(character in lexical.name for character in "<>\r\n")
+        or lexical.is_symlink()
+    ):
+        raise ActionError("log.path.invalid", "--path names the logical log base")
+    parent = lexical.parent
+    if parent.is_symlink() or not parent.is_dir():
+        raise ActionError(
+            "log.path.invalid", "--path must have an existing regular parent"
+        )
+    parent = parent.resolve()
+    root = parent / lexical.name
+    project_root = _project_root(parent)
+    try:
+        root.relative_to(project_root)
+    except ValueError as error:
+        raise ActionError(
+            "log.path.invalid", "--path must be inside its project"
+        ) from error
+    return LogCreationContext(
+        summary=parent / f"{root.name}.md",
+        root=root,
+        project_root=project_root,
+    )
 
 
 def resolve_log(value: Path | None, *, cwd: Path | None = None) -> LogContext:
@@ -83,3 +129,13 @@ def resolve_entry(log: LogContext, entry_id: str) -> EntryContext:
             f"expected one directory for {entry_id}, found {len(matches)}",
         )
     return EntryContext(log, entry_id, matches[0].resolve())
+
+
+def _project_root(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        marker = candidate / ".git"
+        if not marker.is_symlink() and (marker.is_file() or marker.is_dir()):
+            return candidate
+    raise ActionError(
+        "log.project.unresolved", f"could not resolve Git project for {path}"
+    )

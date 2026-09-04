@@ -114,6 +114,14 @@ The research-log test gate must verify:
   production decoders, atomic canonical publication, write-free dry runs, and
   bounded semantic result envelopes while leaving generated validation state
   byte-identical;
+- `log init` creates only the canonical empty summary and entries directory
+  under a project-scoped creation lock, while `log add` allocates IDs from
+  consistent observed identity state, creates the minimal entry and runner
+  under log-then-entry locks, and commits the appended summary item last;
+- scaffolding conflicts, malformed identities, logical duplicates, and hard
+  interruption residue fail closed, while ordinary injected failures roll back
+  every newly published scaffold path and leave existing summary and generated
+  validation bytes unchanged;
 - `log evidence add|update --definition` accepts only a bounded regular
   non-symlink strict-JSON file beneath `/private/tmp`, routes every source,
   locator, transformation, and presentation through the production contracts,
@@ -276,8 +284,8 @@ asymptotic regression.
 
 Use
 `skills/research-logging/tests/presented-evidence-cases.md` as the focused
-manual behavior cases for Record, Replace, Update Summary, Repair, Review, and
-Validate changes.
+manual behavior cases for Record, Replace, Update Summary, Repair, Reorganize,
+Review, and Validate changes.
 
 ## Codex Runtime Discovery
 

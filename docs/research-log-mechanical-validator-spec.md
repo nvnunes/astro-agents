@@ -3228,6 +3228,29 @@ During the management-entrypoint migration,
 over the same discovery and one-log validation implementations. They add no
 behavior and are retired after maintained callers move to `scripts/log`.
 
+The scaffolding operations are:
+
+```text
+<skill>/scripts/log init --path LOG --title TITLE [--dry-run]
+<skill>/scripts/log add --path LOG --date YYYY-MM-DD --title TITLE --slug SLUG
+  [--dry-run]
+```
+
+`log init` requires an explicit logical path beneath one Git project and uses a
+project-scoped creation lock keyed by that intended path. It creates only the
+canonical empty summary and matching `LOG/entries/`, publishing the summary
+last. An existing or partial target is a conflict rather than a retry.
+
+`log add` holds the log lock and then the newly allocated stable entry lock. It
+requires consistent IDs and document links across the summary inventory, entry
+directories, and entry documents; allocates one above the highest observed ID
+without filling gaps; creates the minimal canonical entry document and a
+relative symlink to the active package's verified `pyrun`; and appends only the
+new summary item. The summary commits last. Ordinary publication failures roll
+back, while recognizable interruption residue fails closed for explicit
+Repair. Neither operation changes summary interpretation, follow-ups, optional
+support material, or generated validation state.
+
 Entry-scoped `log evidence` and `log retention` actions read and validate the
 complete current registry, build candidate state through the production
 decoder, and atomically publish canonical state while holding the stable entry
@@ -3265,8 +3288,11 @@ exit-status contracts.
 Research mutations coordinate through generated locks beneath
 `<log>/.cache/research-log-operations/`. Entry locks are keyed by stable entry
 ID, not folder name. `pyrun`, Evidence, and Retention hold the same entry lock;
-future structural operations take the log lock before affected entry locks in
-sorted ID order. Validate takes no research-mutation lock. Before publishing,
+entry creation and future structural operations take the log lock before
+affected entry locks in sorted ID order. Initial log creation instead uses a
+lock beneath the owning project's `.cache/research-log-operations/`, keyed by
+the intended canonical log path. Validate takes no research-mutation lock.
+Before publishing,
 it rejects an active mutation or any change to the research-owned snapshot it
 evaluated, and rolls back a bundle when the guard fails after installation has
 begun.

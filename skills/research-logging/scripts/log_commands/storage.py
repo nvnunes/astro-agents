@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import tempfile
@@ -11,7 +12,7 @@ from typing import Iterable, Iterator
 
 from validation.operation_state import operation_lock
 
-from .context import EntryContext, LogContext
+from .context import EntryContext, LogContext, LogCreationContext
 
 
 @contextmanager
@@ -27,6 +28,15 @@ def log_lock(log: LogContext) -> Iterator[None]:
     """Hold the canonical log mutation lock."""
 
     with _lock(log, "log.lock"):
+        yield
+
+
+@contextmanager
+def log_creation_lock(log: LogCreationContext) -> Iterator[None]:
+    """Hold the project-scoped lock for one intended canonical log path."""
+
+    identity = hashlib.sha256(log.root.as_posix().encode("utf-8")).hexdigest()
+    with operation_lock(log.project_root, f"create-{identity}.lock"):
         yield
 
 
@@ -78,6 +88,47 @@ def atomic_write_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def atomic_create_text(path: Path, text: str) -> None:
+    """Create one text file atomically without replacing an existing target."""
+
+    path.parent.mkdir(parents=False, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    published = False
+    try:
+        temporary.chmod(0o644)
+        os.link(temporary, path, follow_symlinks=False)
+        published = True
+        _sync_directory(path.parent)
+    except OSError:
+        if published:
+            path.unlink(missing_ok=True)
+            _sync_directory(path.parent)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def create_symlink(path: Path, target: str) -> None:
+    """Create and durably publish one new symbolic link."""
+
+    published = False
+    try:
+        os.symlink(target, path)
+        published = True
+        _sync_directory(path.parent)
+    except OSError:
+        if published:
+            path.unlink(missing_ok=True)
+            _sync_directory(path.parent)
+        raise
+
+
 def remove_or_write(path: Path, text: str | None) -> None:
     """Publish canonical content or durably remove an empty registry."""
 
@@ -86,8 +137,18 @@ def remove_or_write(path: Path, text: str | None) -> None:
         return
     if path.exists():
         path.unlink()
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _sync_directory(path.parent)
+
+
+def sync_directory(path: Path) -> None:
+    """Durably record directory-entry changes in one existing directory."""
+
+    _sync_directory(path)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

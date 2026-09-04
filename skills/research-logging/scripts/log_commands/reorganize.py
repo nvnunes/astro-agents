@@ -140,7 +140,7 @@ def relocate_log(log: LogContext, destination: Path, *, dry_run: bool) -> Action
         raise ActionError(
             "reorganize.relocate.invalid", "--to names a logical log base"
         )
-    target = target.absolute()
+    target = target.parent.resolve() / target.name
     target_summary = target.parent / f"{target.name}.md"
     _require_relocation_target(log, target, target_summary)
     _require_relocation_markdown(log, target.name)
@@ -284,7 +284,7 @@ def _identity_registry_updates(
     for owner, current_data in data.items():
         new_owner = roots.get(owner, owner)
         items = tuple(
-            _mapped_input(item, owner, new_owner, roots) for item in current_data.inputs
+            _mapped_input(item, new_owner, roots) for item in current_data.inputs
         )
         data_candidate = data_file_from_inputs(
             new_owner / "data.json", entry_root=new_owner, inputs=items
@@ -323,7 +323,7 @@ def _relocated_data_updates(
     for owner, current in data.items():
         new_owner = roots[owner]
         items = tuple(
-            _relocated_input(item, old_log.root, new_log.root, owner, new_owner)
+            _relocated_input(item, old_log.root, new_log.root, new_owner)
             for item in current.inputs
         )
         built = data_file_from_inputs(
@@ -340,7 +340,6 @@ def _relocated_data_updates(
 
 def _mapped_input(
     item: InputResource,
-    old_owner: Path,
     new_owner: Path,
     roots: Mapping[Path, Path],
 ) -> InputResource:
@@ -362,7 +361,6 @@ def _relocated_input(
     item: InputResource,
     old_log: Path,
     new_log: Path,
-    old_owner: Path,
     new_owner: Path,
 ) -> InputResource:
     if Path(item.location).is_absolute():

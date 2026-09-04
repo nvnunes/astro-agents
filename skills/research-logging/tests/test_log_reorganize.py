@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -66,6 +67,10 @@ def create_log(root: Path, count: int = 2) -> tuple[Path, list[Path]]:
 
 def result(process: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(process.stdout)
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class ReorganizeHelpTests(unittest.TestCase):
@@ -173,6 +178,47 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertTrue(entry.is_dir())
             self.assertFalse(entry.with_name("2026-09-01-e001-changed").exists())
 
+    def test_update_entry_preserves_cross_entry_relative_data_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, consumer = entries
+            shared = source / "data" / "shared.txt"
+            shared.parent.mkdir()
+            shared.write_text("stable\n", encoding="utf-8")
+            relative = os.path.relpath(shared, start=consumer).replace(os.sep, "/")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "shared",
+                relative,
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("trial-1", "renamed"),
+                encoding="utf-8",
+            )
+            changed = run(
+                root,
+                "reorganize",
+                "update-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--slug",
+                "renamed",
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            payload = json.loads((consumer / "data.json").read_text())
+            self.assertIn("e001-renamed", payload["inputs"][0]["location"])
+
     def test_reorder_applies_a_complete_simultaneous_permutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -207,6 +253,76 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertIn("2026-09-01-e002-trial-1", names)
             self.assertIn("2026-09-02-e003-trial-2", names)
 
+    def test_reorder_updates_evidence_document_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            entry = entries[1]
+            data = entry / "data" / "result.txt"
+            data.parent.mkdir()
+            data.write_text("complete\n", encoding="utf-8")
+            run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "result",
+                "data/result.txt",
+            )
+            document = entry / "e002.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Trial\n\n`Results:`\n\n"
+                + "<!-- eid:run-result -->\n```text\ncomplete\n```\n",
+                encoding="utf-8",
+            )
+            recorded = run(
+                root,
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "--id",
+                "run-result",
+                "--source",
+                "result",
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+
+            summary = logical.with_suffix(".md")
+            text = summary.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.startswith("- `")]
+            swapped = [
+                lines[1].replace("e002", "e001"),
+                lines[0].replace("e001", "e002"),
+            ]
+            start = text.index(lines[0])
+            end = text.index(lines[-1]) + len(lines[-1])
+            summary.write_text(
+                text[:start] + "\n".join(swapped) + text[end:], encoding="utf-8"
+            )
+            changed = run(
+                root,
+                "reorganize",
+                "reorder",
+                "--path",
+                str(logical),
+                "--entries",
+                "e002,e001",
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            moved = logical / "entries" / "2026-09-02-e001-trial-2"
+            evidence = json.loads((moved / "evidence.json").read_text())
+            self.assertEqual(
+                evidence["records"][0]["document"],
+                "entries/2026-09-02-e001-trial-2/e001.md",
+            )
+
     def test_relocate_moves_the_complete_pair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -231,6 +347,47 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertTrue(destination.with_suffix(".md").is_file())
             self.assertFalse(logical.exists())
             self.assertFalse(summary.exists())
+
+    def test_relocate_preserves_an_external_relative_data_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 1)
+            external = root / "source.txt"
+            external.write_text("source\n", encoding="utf-8")
+            location = os.path.relpath(external, start=entries[0]).replace(os.sep, "/")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "source",
+                location,
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("study/", "renamed/"),
+                encoding="utf-8",
+            )
+            destination = root / "archive" / "logs" / "renamed"
+            destination.parent.mkdir(parents=True)
+            moved = run(
+                root,
+                "reorganize",
+                "relocate-log",
+                "--path",
+                str(logical),
+                "--to",
+                str(destination),
+            )
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            new_entry = destination / "entries" / entries[0].name
+            data = json.loads((new_entry / "data.json").read_text())
+            resolved = (new_entry / data["inputs"][0]["location"]).resolve()
+            self.assertEqual(resolved, external.resolve())
 
     def test_remove_empty_entry_requires_the_summary_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -290,7 +447,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
 
 
 class ReorganizeTransferTests(unittest.TestCase):
-    def test_transfer_moves_selected_data_and_evidence_after_agent_edits(self) -> None:
+    def test_transfer_all_moves_data_and_evidence_after_agent_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, entries = create_log(root, 2)
@@ -332,6 +489,38 @@ class ReorganizeTransferTests(unittest.TestCase):
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
+            script = source / "scripts" / "make.py"
+            script.parent.mkdir()
+            script.write_text("print('complete')\n", encoding="utf-8")
+            (source / "pyrun-outputs.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-pyrun-outputs/v1",
+                        "outputs": {
+                            "data/result.txt": {
+                                "confirmed": True,
+                                "fingerprint": {
+                                    "algorithm": "sha256",
+                                    "digest": sha256(source_data),
+                                },
+                                "inputs": {},
+                                "parameters": ["--output", "data/result.txt"],
+                                "script": {
+                                    "path": "scripts/make.py",
+                                    "fingerprint": {
+                                        "algorithm": "sha256",
+                                        "digest": sha256(script),
+                                    },
+                                },
+                            }
+                        },
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
             marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
             source_document.write_text(
                 source_document.read_text(encoding="utf-8").replace(marker, ""),
@@ -361,10 +550,7 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "e001",
                 "--to-entry",
                 "e002",
-                "--evidence",
-                "run-result",
-                "--data",
-                "result",
+                "--all",
                 "--document-map",
                 source_document_field,
                 destination_document_field,
@@ -373,6 +559,9 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "data/result.txt",
             )
             self.assertEqual(transferred.returncode, 0, transferred.stderr)
+            self.assertEqual(len(result(transferred)["records"]), 1)
+            support = json.loads((source / "pyrun-outputs.json").read_text())
+            self.assertEqual(support["outputs"], {})
             self.assertFalse((source / "data.json").exists())
             self.assertFalse((source / "evidence.json").exists())
             evidence = json.loads((destination / "evidence.json").read_text())
@@ -462,6 +651,138 @@ class ReorganizeTransferTests(unittest.TestCase):
             self.assertEqual(transferred.returncode, 0, transferred.stderr)
             evidence = json.loads((entry / "evidence.json").read_text())
             self.assertEqual(evidence["records"][0]["document"], new_document)
+
+    def test_cross_entry_transfer_applies_every_mapping_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            source_data = source / "data"
+            source_data.mkdir()
+            result_path = source_data / "result.txt"
+            result_path.write_text("complete\n", encoding="utf-8")
+            retained_path = source_data / "retained.log"
+            retained_path.write_text("diagnostic\n", encoding="utf-8")
+            for name, target in (
+                ("result", "data/result.txt"),
+                ("retained", "data/retained.log"),
+            ):
+                registered = run(
+                    root,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    name,
+                    target,
+                )
+                self.assertEqual(registered.returncode, 0, registered.stderr)
+            retained = run(
+                root,
+                "retention",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "keep-run",
+                "data/retained.log",
+            )
+            self.assertEqual(retained.returncode, 0, retained.stderr)
+            source_document = source / "e001.md"
+            old_marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
+            source_document.write_text(
+                source_document.read_text(encoding="utf-8")
+                + "\n## Trial\n\n`Results:`\n\n"
+                + old_marker,
+                encoding="utf-8",
+            )
+            recorded = run(
+                root,
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "run-result",
+                "--source",
+                "result",
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            source_document.write_text(
+                source_document.read_text(encoding="utf-8").replace(old_marker, ""),
+                encoding="utf-8",
+            )
+            destination_document = destination / "e002.md"
+            new_marker = "<!-- eid:moved-result -->\n```text\ncomplete\n```\n"
+            destination_document.write_text(
+                destination_document.read_text(encoding="utf-8")
+                + "\n## Trial\n\n`Results:`\n\n"
+                + new_marker,
+                encoding="utf-8",
+            )
+            moved_result = destination / "data" / "moved.txt"
+            moved_result.parent.mkdir()
+            result_path.rename(moved_result)
+            moved_retained = destination / "logs" / "retained.log"
+            moved_retained.parent.mkdir()
+            retained_path.rename(moved_retained)
+            old_document = source.relative_to(logical).as_posix() + "/e001.md"
+            new_document = destination.relative_to(logical).as_posix() + "/e002.md"
+            transferred = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--evidence",
+                "run-result",
+                "--data",
+                "result,retained",
+                "--retention",
+                "keep-run",
+                "--document-map",
+                old_document,
+                new_document,
+                "--path-map",
+                "data/result.txt",
+                "data/moved.txt",
+                "--path-map",
+                "data/retained.log",
+                "logs/retained.log",
+                "--data-map",
+                "result",
+                "moved-data",
+                "--evidence-map",
+                "run-result",
+                "moved-result",
+                "--retention-map",
+                "keep-run",
+                "kept-run",
+            )
+            self.assertEqual(transferred.returncode, 0, transferred.stderr)
+            evidence = json.loads((destination / "evidence.json").read_text())
+            self.assertEqual(evidence["records"][0]["id"], "moved-result")
+            self.assertEqual(
+                evidence["records"][0]["sources"][0]["source"], "<moved-data>"
+            )
+            data = json.loads((destination / "data.json").read_text())
+            self.assertEqual(
+                {item["name"] for item in data["inputs"]},
+                {"moved-data", "retained"},
+            )
+            retention = json.loads((destination / "retention.json").read_text())
+            self.assertEqual(retention["records"][0]["id"], "kept-run")
+            self.assertEqual(retention["records"][0]["paths"], ["logs/retained.log"])
 
 
 if __name__ == "__main__":

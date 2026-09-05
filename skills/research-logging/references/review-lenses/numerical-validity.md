@@ -26,7 +26,8 @@ references.
 
 Use retained diagnostics and static inspection first. Disposable calculations
 may probe reasoning already represented in the account. Rerunning the recorded
-workflow is reproduction; varying it is follow-on research.
+workflow is reproduction; varying it is follow-on research. Verify feasible
+arithmetic from retained inputs before reporting a quantitative contradiction.
 
 ## Exclusions
 

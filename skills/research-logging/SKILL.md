@@ -63,8 +63,11 @@ an identified defect through Repair.
 Treat `Validate`, `Review`, and `Reproduction` as strong indicators of the
 corresponding operation, but interpret the complete request and ask when the
 intended operation remains unclear. The researcher does not need to describe
-Validate as “mechanical.” Do not infer semantic Review from a request to check
-or verify work performed under another operation.
+Validate as “mechanical.” Treat a bare request to check or verify a research
+log as ambiguous and ask whether the researcher wants Validate, Review, or
+Reproduction. A specific semantic question may route to Review by its meaning.
+Do not infer semantic Review from a request to check or verify work performed
+under another operation.
 
 Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded

@@ -25,6 +25,10 @@ Start from the retained result in the target and trace backward through the
 substantive computation to its upstream inputs. Stop at the retained result-to-
 presentation boundary owned by mechanical validation.
 
+Before reporting a quantitative contradiction, verify feasible arithmetic from
+the retained inputs with a read-only or disposable calculation. Do not treat
+that diagnostic as new evidence or as reproduction of the recorded workflow.
+
 ## Exclusions
 
 - Mechanical validation owns deterministic selection and rendering from the

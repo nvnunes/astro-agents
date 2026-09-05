@@ -74,8 +74,8 @@ definition mode, not Repair.
 
 ## Complete
 
-After the requested correction succeeds, invoke mechanical validation as a
-separate operation:
+After repairing a published mechanical-validation finding, invoke mechanical
+validation as a separate operation:
 
 ```text
 <skill>/scripts/log validate --path <log>
@@ -84,3 +84,7 @@ separate operation:
 Confirm whether the named condition cleared. Report any unrelated findings
 without correcting them. If validation remains incomplete or the named defect
 persists, report the exact result and stop; do not keep broadening the repair.
+
+For a Review finding or another non-validation defect, run only the bounded
+checks appropriate to the correction. Do not start Validate, Review, or
+reproduction merely because the repair changed research-owned material.

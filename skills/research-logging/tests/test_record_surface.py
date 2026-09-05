@@ -123,7 +123,11 @@ class RecordSurfaceTests(unittest.TestCase):
             "all nineteen lenses",
             "does not execute a research command",
             "the agent stops for researcher direction",
+            "does not automatically invoke Validate",
             "assigns no aggregate group verdict",
+            "check this research log",
+            "sibling `<log>/` tree",
+            "verifies feasible arithmetic",
             "`$science-writing`",
         ):
             self.assertIn(expected, normalized_cases)

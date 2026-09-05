@@ -32,7 +32,9 @@ than through a keyword table.
 
 Treat `Validate`, `Review`, and `Reproduction` as strong operation signals, but
 interpret the complete request. Researchers need not say “mechanical” to mean
-Validate. Ask which operation they want when the intent remains unclear.
+Validate. Treat a bare request to check or verify a research log as ambiguous
+and ask which of the three operations the researcher wants. A stated semantic
+question may still route directly to its matching lens by meaning.
 
 After selection, read only the chosen files under
 `references/review-lenses/`. A named group expands to its constituent lens
@@ -45,6 +47,10 @@ Resolve the review target separately from the lens selection. The target may be
 a passage, claim, evidence presentation, figure, table, script, artifact,
 entry, summary, complete log, or an explicitly named collection.
 
+- When a maintained `<log>.md` file identifies the research log, the complete
+  log target includes that summary and its sibling `<log>/` tree. Discover the
+  tree independently of summary navigation because incomplete navigation may
+  itself be a finding. Inspect only the material needed by the selected lenses.
 - Apply findings only to the requested target.
 - Inspect supporting material only when a selected lens requires it.
 - Do not turn inspected context into a wider review.
@@ -124,7 +130,8 @@ the class, owning lens or lenses, title, and durable affected location. Follow
 with one readable description that identifies the support or absence, explains
 the reasoning and consequence, and ends with a short recommended action. Do not
 use separate `Basis`, `Consequence`, or similar field labels, and do not assign
-a universal severity.
+a universal severity. Verify that every reported file path and line locator
+names the material actually inspected.
 
 If no material issues are found, say that no material issues were found within
 the named target and applied lenses. List unverified areas and out-of-scope

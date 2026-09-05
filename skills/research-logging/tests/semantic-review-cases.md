@@ -41,6 +41,16 @@ asks which operation the researcher wants. The explicit operation names are
 strong intent signals, and Validate does not require the researcher to say
 “mechanical.”
 
+Given only “check this research log” or “verify this research log,” the agent
+asks whether the researcher wants Validate, Review, or Reproduction. Given a
+specific semantic question beginning with “check” or “verify,” it may instead
+route by meaning to the matching Review lenses.
+
+Given a maintained `<log>.md` target, the complete log includes that summary
+and its sibling `<log>/` tree. The agent discovers the tree independently of
+summary navigation, then loads only the material required by the selected
+lenses. An unlisted entry is not automatically outside the log.
+
 ## Loading And Traversal
 
 Given one selected lens, the agent loads the shared Review operation, catalog,
@@ -86,6 +96,12 @@ Given a completed Review, the agent stops for researcher direction. A later
 instruction to address named findings authorizes the same agent to switch to
 the appropriate owning research operation. It does not broaden the work to
 unselected findings.
+
+Given authorization to address a semantic Review finding, the agent switches
+to the owning research operation and runs only that operation's bounded checks.
+Repairing a Review finding does not automatically invoke Validate, another
+Review, or reproduction. Repair of a published mechanical-validation finding
+may separately rerun validation to confirm that named condition.
 
 Given a review finding about a researcher decision, the agent may report weak
 support but does not reverse, replace, or relabel the decision. Given missing
@@ -139,7 +155,10 @@ maintainability and architecture remain code-quality review concerns.
 
 Given a reported result, Result Derivation traces backward from the retained
 result through substantive calculations to its upstream inputs. It stops before
-the retained result-to-log-presentation relationship owned by validation.
+the retained result-to-log-presentation relationship owned by validation. It
+verifies feasible arithmetic from retained inputs before reporting a
+quantitative contradiction, without turning that diagnostic into evidence or
+reproduction.
 
 Given a research method, Methodological Validity assesses the suitability of
 the design, comparisons, controls, models, and assumptions. Correct

@@ -2984,12 +2984,18 @@ A local directory is either a byte-complete bounded collection with a
 - A generated directory must match one exact earlier `output-directory`.
   Overlapping roots, separate member producers, or a second directory producer
   fail exclusivity.
-- One exclusive `pyrun` output-directory and its exact generated directory
-  input form one atomic artifact. Every regular-file descendant present at
-  successful execution belongs to that artifact and its recursive fingerprint.
-  Reaching the root or one exact member connects the complete bundle for
-  ownership and Hygiene without claiming that sibling members were consumed or
-  presented.
+- One exclusive `pyrun` output-directory and one exact directory-level
+  `pyrun-outputs.json` record with the same script, parameters, and material
+  input identities form one atomic artifact. The record may remain unconfirmed,
+  and its output fingerprint may be stale; confirmation and current bytes are
+  separate Provenance checks when the artifact is reached. Every regular-file
+  descendant observed by the record belongs to the artifact and its recursive
+  fingerprint. Reaching the root or one exact member connects the complete
+  bundle for ownership and Hygiene without claiming that sibling members were
+  consumed or presented.
+- Atomic output ownership does not require a generated directory declaration
+  in `data.json`. Register the directory only when a later command or evidence
+  presentation consumes the bundle or one exact member.
 - Output-directory ownership is invocation-exclusive. Repeated exact outputs
   may share a parent without asserting directory ownership.
 - Command relationship bounds count one authored whole-directory role as one
@@ -3142,6 +3148,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Exact member | no root/member producer | origin | Consume only that member; siblings stay disconnected. |
 | Whole directory | one exact earlier `output-directory` | absent | Trace all members to that producer. |
 | Exact member | one exact earlier `output-directory` | absent | Trace only that member and connect the atomic root for Hygiene; do not claim sibling consumption. |
+| Workflow outside evidence closure | exact exclusive `output-directory` with matching directory support | absent | Treat the output-only directory as one atomic artifact without adding it to `data.json`. |
 | Any directory | overlapping or separate member producers | either | Fail `directory.producer.conflict`. |
 | Generated directory | no exact earlier directory producer | absent | Fail `lineage.missing`. |
 | Origin directory | confirmed root/member producer | present | Fail `directory.origin.conflict`. |

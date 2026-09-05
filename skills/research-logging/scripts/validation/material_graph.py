@@ -125,6 +125,7 @@ class MaterialGraphRequest:
     retention_files: Sequence[RetentionFile]
     input_registries: Sequence[InputRegistrySurface] = ()
     producer_index: ProducerIndex | None = None
+    supported_output_directories: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -150,8 +151,8 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     )
     bundles = _atomic_output_bundles(
         request.invocations,
-        request.input_registries,
         producer_index,
+        request.supported_output_directories,
     )
     state = _GraphState(
         roots=_connection_roots(roots),
@@ -350,19 +351,11 @@ def _reached_prior_producer(
 
 def _atomic_output_bundles(
     invocations: Sequence[Invocation],
-    surfaces: Sequence[InputRegistrySurface],
     producer_index: ProducerIndex,
+    supported_output_directories: frozenset[str],
 ) -> tuple[_AtomicOutputBundle, ...]:
-    """Derive unambiguous atomic roots from existing authored contracts."""
+    """Derive unambiguous atomic roots from command-owned output support."""
 
-    generated_directories = {
-        resource.material_identity
-        for surface in surfaces
-        for resource in surface.data_file.inputs
-        if resource.kind == "directory"
-        and not resource.origin
-        and resource.fingerprint.algorithm == "directory-sha256-v1"
-    }
     bundles: list[_AtomicOutputBundle] = []
     for invocation in invocations:
         for collection in invocation.collections:
@@ -370,7 +363,7 @@ def _atomic_output_bundles(
                 collection.direction != "output"
                 or collection.mechanism != "directory"
                 or collection.root is None
-                or collection.root not in generated_directories
+                or collection.root not in supported_output_directories
             ):
                 continue
             matches = producer_index.lookup(collection.root)

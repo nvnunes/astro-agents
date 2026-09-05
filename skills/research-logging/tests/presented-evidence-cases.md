@@ -494,8 +494,10 @@ the bundle's recursive fingerprint and directory-level output support for
 Provenance. The reached member covers the bundle for Hygiene without claiming
 that sibling files were consumed or presented.
 
-Given an unreached generated output-directory bundle, validation reports one
-orphan Hygiene finding at the declared root rather than one finding per member.
+Given an unreached output-directory bundle with matching directory-level
+`pyrun` support, validation reports one orphan Hygiene finding at the output
+root rather than one finding per member, even when the output-only bundle is
+absent from `data.json`.
 Given an unmatched directory-output support record, it likewise reports only
 the root and suppresses descendant orphan findings.
 

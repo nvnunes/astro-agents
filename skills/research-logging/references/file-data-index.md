@@ -83,7 +83,8 @@ directory once rather than registering its files separately. Use `<name>` when
 a later command consumes the whole bundle and `<name>/member` when a command or
 evidence record consumes one exact file. The member remains exact, while the
 directory's complete recursive fingerprint and producer establish its identity
-and Provenance.
+and Provenance. Leave an output-only result unregistered; its exact
+directory-level `pyrun` support establishes the atomic output boundary.
 
 If an action fails because existing research-owned state is malformed or
 legacy, report the exact failure and stop. A failed Record command does not

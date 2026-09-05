@@ -141,6 +141,23 @@ def output_signature_mismatches(
 ) -> list[str]:
     """Return exact signature fields that disagree with one invocation."""
 
+    mismatches: list[str] = []
+    if record.fingerprint != current_output:
+        mismatches.append("output_fingerprint")
+    mismatches.extend(
+        output_producer_mismatches(invocation, record, material=material)
+    )
+    return mismatches
+
+
+def output_producer_mismatches(
+    invocation: Invocation,
+    record: OutputSupport,
+    *,
+    material: str,
+) -> list[str]:
+    """Return producer-signature fields that disagree with one invocation."""
+
     expected_inputs = _output_signature_inputs(invocation, material)
     current_script = (
         Fingerprint("sha256", digest=invocation.script_identity)
@@ -148,8 +165,6 @@ def output_signature_mismatches(
         else None
     )
     mismatches: list[str] = []
-    if record.fingerprint != current_output:
-        mismatches.append("output_fingerprint")
     if record.script.path != invocation.script_argument:
         mismatches.append("script")
     if current_script is None or record.script.fingerprint != current_script:

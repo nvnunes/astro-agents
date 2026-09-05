@@ -92,6 +92,7 @@ from .mechanical_results import (
 from .mechanical_values import SelectionResult
 from .output_support import (
     confirmed_output_record,
+    output_producer_mismatches,
     require_current_output_support,
     resolve_output_support,
 )
@@ -1576,6 +1577,7 @@ def _compose_graph(state: _ScanState) -> None:
         retention_files=_unique_retention_files(state.entries),
         input_registries=_input_registry_surfaces(state),
         producer_index=state.producer_index,
+        supported_output_directories=_supported_output_directories(state),
     )
     try:
         state.graph = compose_material_graph(request)
@@ -1987,6 +1989,40 @@ def _input_registry_surfaces(state: _ScanState) -> tuple[InputRegistrySurface, .
                 InputRegistrySurface(_material_owner(entry, state), entry.data_file),
             )
     return tuple(surfaces.values())
+
+
+def _supported_output_directories(state: _ScanState) -> frozenset[str]:
+    """Return exact directory outputs backed by matching producer support."""
+
+    supported: set[str] = set()
+    for invocation in state.invocations:
+        output_file = state.output_files.get(invocation.material_owner)
+        if output_file is None:
+            continue
+        entry_root = _entry_root_for_owner(invocation.material_owner, state)
+        for collection in invocation.collections:
+            if (
+                collection.direction != "output"
+                or collection.mechanism != "directory"
+                or collection.root is None
+            ):
+                continue
+            key = portable_output_path(
+                collection.root,
+                entry_root=entry_root,
+                project_root=state.project_root,
+            )
+            record = output_file.outputs.get(key)
+            if (
+                record is None
+                or record.fingerprint.algorithm != "directory-sha256-v1"
+                or output_producer_mismatches(
+                    invocation, record, material=collection.root
+                )
+            ):
+                continue
+            supported.add(collection.root)
+    return frozenset(supported)
 
 
 def _evidence_input_names(

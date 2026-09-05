@@ -89,7 +89,9 @@ Treat one `pyrun` output directory as one artifact only when that invocation
 owns the complete directory. Use a leaf directory for one model and an
 enclosing study directory only when one invocation produces the complete
 study. Do not also declare its members as separate outputs or let another
-invocation write inside the owned directory.
+invocation write inside the owned directory. `pyrun` records the complete
+directory as one output artifact even when no later work consumes it; do not
+register an output-only bundle merely to establish that ownership.
 
 Make evidence-relevant input and output relationships mechanically visible.
 Prefer a natural option name whose complete leading or trailing token is

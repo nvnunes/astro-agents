@@ -366,7 +366,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ]
             self.assertEqual(len(missing), 1)
 
-    def test_unreached_generated_bundle_is_one_root_hygiene_finding(self) -> None:
+    def test_unreached_output_only_bundle_is_one_root_hygiene_finding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             entry_root = entry.parent
@@ -382,11 +382,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry_root=entry_root,
                 origin=False,
             )
-            data_path = entry_root / "data.json"
-            data = json.loads(data_path.read_text())
-            data["inputs"].append(resource.as_dict())
-            data["inputs"].sort(key=lambda item: item["name"])
-            write(data_path, json.dumps(data, indent=2) + "\n")
             write(
                 entry,
                 entry.read_text().replace(
@@ -395,6 +390,24 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "```\n\n`Results:`",
                 ),
             )
+            support_path = entry_root / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            support["outputs"]["data/bundle"] = {
+                "confirmed": False,
+                "fingerprint": resource.fingerprint.as_dict(),
+                "inputs": {},
+                "parameters": ["--output-dir", "data/bundle"],
+                "script": {
+                    "path": "scripts/bundle.py",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(
+                            (entry_root / "scripts/bundle.py").read_bytes()
+                        ).hexdigest(),
+                    },
+                },
+            }
+            write(support_path, json.dumps(support, indent=2) + "\n")
 
             result = _evaluate(summary).result
             bundle_root = bundle.resolve().as_posix()
@@ -411,6 +424,22 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             self.assertEqual(len(bundle_findings), 1)
             self.assertEqual(bundle_findings[0].subject, bundle_root)
+
+            support["outputs"]["data/bundle"]["parameters"].append("changed")
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            mismatched = _evaluate(summary).result
+            mismatched_subjects = {
+                check.subject
+                for check in mismatched.checks
+                if check.failure is not None
+                and check.failure.code == "orphan.material.unused"
+            }
+            self.assertNotIn(bundle_root, mismatched_subjects)
+            self.assertTrue(
+                {member.resolve().as_posix() for member in members}.issubset(
+                    mismatched_subjects
+                )
+            )
 
     def test_unmatched_directory_support_suppresses_descendant_orphans(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

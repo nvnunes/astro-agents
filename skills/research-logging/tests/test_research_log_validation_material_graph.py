@@ -141,17 +141,71 @@ def _request(
     *,
     evidence: tuple[object, ...] = (),
     retention_files: tuple[object, ...] = (),
+    supported_output_directories: frozenset[str] | None = None,
 ) -> object:
+    if supported_output_directories is None:
+        supported_output_directories = frozenset(
+            collection.root
+            for invocation in invocations
+            for collection in invocation.collections
+            if collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+        )
     return GRAPH.MaterialGraphRequest(
         entry_roots={"e001": entry_root},
         evidence=evidence,
         invocations=invocations,
         retention_files=retention_files,
         input_registries=(GRAPH.InputRegistrySurface("entries/entry", data_file),),
+        supported_output_directories=supported_output_directories,
     )
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_supported_output_only_directory_is_one_atomic_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            source_only = data_file_from_inputs(
+                entry_root / "data.json",
+                entry_root=entry_root,
+                inputs=(data_file.by_name["source"],),
+            )
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            members = {
+                (entry_root / "data/bundle/model.pt").resolve().as_posix(),
+                (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
+            }
+
+            result = GRAPH.compose_material_graph(
+                _request(entry_root, source_only, invocations)
+            )
+
+            self.assertIn(bundle, result.orphan.orphaned)
+            self.assertTrue(members.isdisjoint(result.orphan.orphaned))
+            self.assertFalse(result.orphan.unused_input_names)
+
+    def test_output_directory_without_matching_support_is_not_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            members = {
+                (entry_root / "data/bundle/model.pt").resolve().as_posix(),
+                (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
+            }
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    supported_output_directories=frozenset(),
+                )
+            )
+
+            self.assertNotIn(bundle, result.orphan.orphaned)
+            self.assertTrue(members.issubset(result.orphan.orphaned))
+
     def test_whole_bundle_consumer_connects_members_for_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_root, data_file, invocations, final = _bundle_consumer_surface(

@@ -28,6 +28,11 @@ change a recorded command's output, preserve the old interface or add a
 versioned one. If code must be frozen, snapshot only the entry adapter or
 configuration.
 
+Use ordinary imports or ordinary Python child invocations for
+evidence-affecting Python code beneath the maintained log. `pyrun`
+automatically records the log-local source files that execute; do not use an
+execution mechanism that bypasses that observation.
+
 When generation is expensive or stochastic, or its output supports multiple
 results, use separate `generate or record -> retained artifact -> analyze or
 summarize -> retained table -> plot` stages. Make plotting scripts read retained

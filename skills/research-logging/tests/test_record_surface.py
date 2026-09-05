@@ -138,6 +138,16 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn(internal, data)
             self.assertNotIn(internal, evidence)
 
+    def test_log_local_code_guidance_stays_in_script_reference(self) -> None:
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        record = reference("operation-record.md")
+        script = reference("file-script.md")
+
+        self.assertIn("ordinary imports or ordinary Python child invocations", script)
+        self.assertIn("automatically records the log-local source files", script)
+        self.assertNotIn("dependency observation", skill)
+        self.assertNotIn("dependency observation", record)
+
     def test_every_reference_has_an_operation_route(self) -> None:
         pending = list(REFERENCE_PATTERN.findall((SKILL / "SKILL.md").read_text()))
         reached: set[str] = set()

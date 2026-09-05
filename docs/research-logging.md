@@ -544,6 +544,10 @@ should not have to reshape a natural command merely to satisfy validation.
 Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results.
 `pyrun` records each output's current script, parameters, inputs, and bytes.
+It also records log-local Python source files loaded by the command or by an
+ordinary Python child invocation. A logical path through an intentional log
+symlink remains log-local. Changing a recorded helper makes the dependent
+output support stale; reproduction refreshes the observed dependency set.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that

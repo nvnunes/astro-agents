@@ -324,9 +324,10 @@ uses `<bundle>` for the whole directory or `<bundle>/member` for one exact file.
 It does not register each member or let another invocation write inside the
 owned directory.
 
-Given several non-`pyrun` commands in one fence, an annotation uses `command-N`
-to select only the command that needs it. Commands without annotations require
-no empty placeholder. Validation does not inspect script internals to infer a
+Given a shell-language fence containing a non-`pyrun` command, validation fails
+the whole fence as command-surface conformance and derives no relationships
+from it. Historical reconstruction text outside a shell fence does not enter
+the command graph. Validation does not inspect script internals to infer a
 missing relationship.
 
 ## Statistics

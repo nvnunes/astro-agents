@@ -76,8 +76,7 @@ representation during ordinary Record.
 A generated output belongs in the input registry only when a later recorded
 command or evidence presentation consumes it. Output-only results, scripts,
 command logs, and images remain absent unless they later become material
-inputs. A directly presented historical non-`pyrun` artifact may need an
-explicit origin declaration; a directly presented generated artifact does not.
+inputs.
 
 When one `pyrun` invocation owns an output directory, register that generated
 directory once rather than registering its files separately. Use `<name>` when

@@ -17,6 +17,9 @@ PROVENANCE = importlib.import_module("validation.provenance")
 def _context(root: Path, inputs: tuple[object, ...] = ()) -> object:
     entry_root = root / "docs" / "log" / "entries" / "entry"
     entry_root.mkdir(parents=True, exist_ok=True)
+    write(entry_root / "scripts/run.py", "# fixture\n")
+    write(entry_root / "scripts/build.py", "# fixture\n")
+    write(entry_root / "scripts/final.py", "# fixture\n")
     data_file = (
         data_file_from_inputs(
             entry_root / "data.json", entry_root=entry_root, inputs=inputs
@@ -52,7 +55,6 @@ def _invocation(
         sequence=sequence,
         tokens=("./pyrun", "scripts/run.py"),
         executable="./pyrun",
-        via_pyrun=True,
         script_argument="scripts/run.py",
         parameters=(),
         script="scripts/run.py",
@@ -248,7 +250,10 @@ class ProvenanceLineageTests(unittest.TestCase):
             target = context.entry_root / "data" / "final.csv"
             write(target, "value\n1\n")
             commands = COMMAND.discover_commands(
-                "```bash\ntool --output-data data/final.csv\n```\n", context
+                "```bash\n"
+                "./pyrun scripts/run.py --output-data data/final.csv\n"
+                "```\n",
+                context,
             ).invocations
 
             result = PROVENANCE.evaluate_provenance(target, commands)
@@ -275,7 +280,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
                 """```bash
-tool --input-data '<source>' --output-data data/final.csv
+./pyrun scripts/run.py --input-data '<source>' --output-data data/final.csv
 ```
 """,
                 context,
@@ -303,8 +308,8 @@ tool --input-data '<source>' --output-data data/final.csv
             context = _context(root, (generated,))
             commands = COMMAND.discover_commands(
                 """```bash
-tool --output-data data/intermediate.csv
-tool --input-data '<generated>' --output-data data/final.csv
+./pyrun scripts/run.py --output-data data/intermediate.csv
+./pyrun scripts/run.py --input-data '<generated>' --output-data data/final.csv
 ```
 """,
                 context,
@@ -329,7 +334,8 @@ tool --input-data '<generated>' --output-data data/final.csv
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
                 "```bash\n"
-                "tool --input-data '<source>' --output-data data/final.csv\n"
+                "./pyrun scripts/run.py --input-data '<source>' "
+                "--output-data data/final.csv\n"
                 "```\n",
                 context,
             ).invocations
@@ -384,8 +390,8 @@ tool --input-data '<generated>' --output-data data/final.csv
                 PROVENANCE.evaluate_provenance(target, ())
             commands = COMMAND.discover_commands(
                 """```bash
-tool --output-data data/final.csv
-tool --output-data data/final.csv
+./pyrun scripts/run.py --output-data data/final.csv
+./pyrun scripts/run.py --output-data data/final.csv
 ```
 """,
                 context,
@@ -408,8 +414,8 @@ tool --output-data data/final.csv
             context = _context(root, (bundle,))
             commands = COMMAND.discover_commands(
                 """```bash
-tool --output-directory data/bundle
-tool --input-directory '<bundle>' --output-data data/final.csv
+./pyrun scripts/run.py --output-directory data/bundle
+./pyrun scripts/run.py --input-directory '<bundle>' --output-data data/final.csv
 ```
 <!-- command-1 output-directory = output-directory -->
 <!-- command-2 input-directory = input-directory -->

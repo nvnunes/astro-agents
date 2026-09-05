@@ -19,29 +19,28 @@ Run commands as needed to produce and finalize their saved outputs. Do not rerun
 an unchanged command solely to test reproducibility or provenance, expand into
 an entry-wide or log-wide audit, or treat successful execution as validation.
 
-For completed work, preserve the actual scripts, commands, environment,
-settings, artifacts, and checks. Do not invent a generator, normalize a command
-to `./pyrun`, or rerun it for documentation. State reconstruction limits.
+For completed work, preserve the actual scripts, settings, artifacts, and
+checks. Record an executable command only when it is a valid `pyrun`
+invocation. Otherwise describe the historical command in prose and state the
+reconstruction or provenance limit; do not invent or rerun a replacement.
 
 Write commands from the entry root as the working directory. Put every
 recorded executable command in a `bash` fence under the applicable `Steps:`
-label. Ordinary shell commands can be written directly inside that fence.
+label. Every command in every shell-language fence must invoke `pyrun`
+directly. Non-`pyrun` reconstruction history belongs in prose, not a shell
+fence, and does not participate in Provenance.
 
 When repeated commands are clearer as a finite shell abstraction, validation
-can mechanically account for a closed static subset: literal `for` loops;
-locally defined functions of any valid name invoked with one or more literal
-arguments and using `$1`, `shift`, and `$@`; and loop-local literal `case`
+can mechanically account for literal scalar and array loop bindings, finite
+literal `for` loops with arbitrary nesting, and loop-local literal `case`
 branches that assign a scalar or literal array. Those constructs may substitute
-`$name`, `${name}`, or `${array[@]}` only from a binding established in the
-same supported construct. A trailing `&` and standalone `wait` may express
-scheduling. Prefer an explicit command for a one-off invocation.
+`$name`, `${name}`, or `${array[@]}` only from a binding established for the
+loop. Prefer an explicit command for a one-off invocation.
 
-This is not general Bash interpretation. Do not rely on environment variables,
-globs, command or process substitution, arithmetic, dynamic value lists or case
-selection, or nested control flow to make evidence relationships visible. The
-validator does not execute shell. An unsupported or unbound construct is
-fail-closed and establishes no relationship; its body is not mined for likely
-commands.
+This is not general Bash interpretation. The validator accepts only the forms
+above and direct `pyrun` invocations. It does not execute shell. If any part of
+a fence is unsupported or unbound, the whole fence fails closed and establishes
+no relationships.
 
 For Python commands, use `./pyrun` to simplify recorded syntax. Verify any
 project-declared environment is available before running it. `pyrun` uses
@@ -64,6 +63,12 @@ with full paths and recognizes:
 
 Data tokens occupy the complete input argument. Quote arguments that contain
 angle tokens. Do not embed a token in `label=<name>` or another opaque value.
+
+`pyrun` automatically gives each execution isolated temporary
+`MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable
+`--env NAME=value` runner options only for additional result-affecting
+environment values. They require the `--` separator, are normalized into the
+execution signature, and cannot override the two runner-managed names.
 
 Treat each recorded command as a compact specification of the run. Expose
 result-defining values through named CLI options, including the dataset or
@@ -114,10 +119,8 @@ output. Captures remain file-only. Use these declarations only when natural
 names do not expose the correct role; an explicit declaration overrides a
 misleading automatic role.
 
-Do not add hidden command metadata. Preserve existing non-`pyrun` command
-history faithfully; when it cannot expose a required material relationship
-through natural role-bearing option names and named input tokens, report the
-provenance limit instead of rewriting it solely for validation.
+Do not add hidden command metadata. Comments adjacent to command fences have no
+command semantics.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
@@ -196,11 +199,10 @@ confirmed output becomes an input to a later recorded command, use
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
 <target>` after its producer succeeds.
 
-Never register output-only results, scripts, command logs, or images as inputs
-unless an exact directly presented non-`pyrun` artifact needs an explicit
-origin boundary. Otherwise keep script and output paths directly in commands
-or Markdown. An image that is actually consumed by a later command is an input
-and follows the same registration rule.
+Never register output-only results, scripts, command logs, or images as inputs.
+Keep script and output paths directly in commands or Markdown. An image that is
+actually consumed by a later command is an input and follows the same
+registration rule.
 
 `pyrun` resolves names only from the current owning entry. It does not inherit
 inputs from a parent entry or the log root.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 PYRUN_CAPTURE_STREAMS = {
@@ -15,8 +15,13 @@ PYRUN_ROLE_OPTIONS = {
     "--other-inputs": "input",
     "--other-outputs": "output",
 }
+PYRUN_ENV_OPTION = "--env"
+PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"})
 _OPTION_SELECTOR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _POSITIONAL_SELECTOR_RE = re.compile(r"@[1-9][0-9]*\Z")
+_ENVIRONMENT_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>[^\x00\r\n]*)\Z"
+)
 
 
 class PyrunContractError(ValueError):
@@ -41,6 +46,15 @@ class PyrunLayout:
     parameters: tuple[str, ...]
     captures: tuple[tuple[str, str], ...]
     roles: tuple[tuple[str, str], ...]
+    environment: tuple[tuple[str, str], ...]
+
+
+@dataclass
+class _RunnerState:
+    captures: list[tuple[str, str]] = field(default_factory=list)
+    declarations: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    environment: dict[str, str] = field(default_factory=dict)
+    signature_prefix: list[str] = field(default_factory=list)
 
 
 def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
@@ -53,43 +67,70 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
     """
 
     index = 0
-    captures: list[tuple[str, str]] = []
-    declarations: dict[str, tuple[str, ...]] = {}
-    signature_prefix: list[str] = []
-    runner_options = PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys()
+    state = _RunnerState()
+    runner_options = (
+        PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys() | {PYRUN_ENV_OPTION}
+    )
     while index < len(arguments) and arguments[index] in runner_options:
-        option = arguments[index]
-        if index + 1 >= len(arguments):
-            raise PyrunContractError(f"{option} lacks target")
-        target = arguments[index + 1]
-        if option in PYRUN_CAPTURE_STREAMS:
-            captures.append((option, target))
-            signature_prefix.extend((option, target))
-        else:
-            if option in declarations:
-                raise PyrunContractError(f"duplicate {option} declaration")
-            declarations[option] = _parse_selectors(option, target)
-        index += 2
-    if captures or declarations:
+        index = _consume_runner_option(arguments, index, state)
+    if state.captures or state.declarations or state.environment:
         if index >= len(arguments) or arguments[index] != "--":
             raise PyrunContractError("runner options require -- before the script")
-        if captures:
-            _validate_captures(captures)
-            signature_prefix.append("--")
+        _validate_captures(state.captures)
+        if state.captures or state.environment:
+            state.signature_prefix.extend(
+                item
+                for name, value in sorted(state.environment.items())
+                for item in ("--env", f"{name}={value}")
+            )
+            state.signature_prefix.append("--")
         index += 1
     if index >= len(arguments):
         raise PyrunContractError("missing script")
     script_arguments = tuple(arguments[index + 1 :])
-    roles = _normalized_roles(declarations)
+    roles = _normalized_roles(state.declarations)
     _validate_role_targets(roles, script_arguments)
     return PyrunLayout(
         index,
         arguments[index],
         script_arguments,
-        tuple((*signature_prefix, *script_arguments)),
-        tuple(captures),
+        tuple((*state.signature_prefix, *script_arguments)),
+        tuple(state.captures),
         roles,
+        tuple(sorted(state.environment.items())),
     )
+
+
+def _consume_runner_option(
+    arguments: Sequence[str], index: int, state: _RunnerState
+) -> int:
+    option = arguments[index]
+    if index + 1 >= len(arguments):
+        raise PyrunContractError(f"{option} lacks target")
+    target = arguments[index + 1]
+    if option == PYRUN_ENV_OPTION:
+        name, value = _parse_environment(target)
+        if name in state.environment:
+            raise PyrunContractError(f"duplicate --env declaration for {name}")
+        state.environment[name] = value
+    elif option in PYRUN_CAPTURE_STREAMS:
+        state.captures.append((option, target))
+        state.signature_prefix.extend((option, target))
+    else:
+        if option in state.declarations:
+            raise PyrunContractError(f"duplicate {option} declaration")
+        state.declarations[option] = _parse_selectors(option, target)
+    return index + 2
+
+
+def _parse_environment(value: str) -> tuple[str, str]:
+    match = _ENVIRONMENT_RE.fullmatch(value)
+    if match is None:
+        raise PyrunContractError("--env requires NAME=value")
+    name = match.group("name")
+    if name in PYRUN_MANAGED_ENVIRONMENT:
+        raise PyrunContractError(f"{name} is managed automatically")
+    return name, match.group("value")
 
 
 def split_argument_values(

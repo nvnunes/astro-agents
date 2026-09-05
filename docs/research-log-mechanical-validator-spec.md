@@ -83,11 +83,11 @@ records. Commands outside that closure do not require
 confirmed output support or recursive lineage validation. Separately,
 complete-graph output reconciliation reports every graph-declared output whose
 artifact is absent as a Provenance failure and every output record absent from
-the current graph as a Hygiene finding. Recorded command surfaces, optional
-adjacent command annotations, exact path and named-input connections, `pyrun`
-output support, and observed retained material establish Provenance without an
-authored lineage graph. Resolved script bytes are part of the output-support
-signature, but script internals do not establish material associations.
+the current graph as a Hygiene finding. Recorded `pyrun` command surfaces,
+exact path and named-input connections, `pyrun` output support, and observed
+retained material establish Provenance without an authored lineage graph.
+Resolved script bytes are part of the output-support signature, but script
+internals do not establish material associations.
 
 The complete specification owns:
 
@@ -2707,6 +2707,22 @@ does not connect an otherwise unreached artifact or suppress a Hygiene finding.
 
 ### Command Tokens And Roles
 
+Every command in every `bash`, `console`, `sh`, `shell`, or `zsh` fence must be
+a direct `pyrun` invocation or part of the closed finite-loop grammar below.
+All such fences are checked for conformance. Only fences in an entry section
+containing both `Steps:` and `Results:` labels contribute invocations to the
+Provenance graph.
+
+The shell grammar accepts multiple direct `pyrun` invocations; literal scalar
+and array bindings used by loops; finite literal `for` loops with arbitrary
+nesting; and loop-local literal `case` branches that select scalar or array
+bindings. Variables may be expanded only from those statically established
+bindings. If any part of a fence is outside this grammar, the entire fence
+fails closed and contributes no invocation or relationship. Comments are
+inert. The parser never executes shell or mines unsupported bodies for likely
+commands. Historical non-`pyrun` commands may be described in prose but do not
+participate in Provenance.
+
 An exact file or repository-locator token is the whole argument `<name>`. A
 Git repository commit token is the whole argument `<name:commit>`. A directory
 member token is `<name>/` plus one non-empty normalized POSIX member path with
@@ -2730,17 +2746,17 @@ and
 `pyrun` resolves tokens before execution. Script parameters may retain clean
 internal names through `dest=`; compatibility aliases are not required.
 
-Named tokens establish input direction. Every other input proven by shell
-direction, an input annotation, an input-bearing option, or a finite input
-collection must use its matching token. A raw value matching an item is a
-missing token; a raw proven input without an item is undeclared.
+Named tokens establish input direction. Every other input proven by an
+input-bearing option or finite input collection must use its matching token. A
+raw value matching an item is a missing token; a raw proven input without an
+item is undeclared.
 
 A path-like argument with no role is not silently dropped. A candidate is
 path-like when its complete static value resolves to an existing filesystem
 target, is an absolute path or URI, begins with `./` or `../`, contains a named
 token, or ends with a registered retained material suffix. A slash alone is not
-path evidence. A candidate must acquire input or output direction through shell
-syntax, a natural option name, or an annotation. A dynamic material candidate
+path evidence. A candidate must acquire input or output direction through a
+natural option name or runner role declaration. A dynamic material candidate
 that cannot resolve to one bounded value also fails. Other scalar arguments
 create no edge.
 
@@ -2780,11 +2796,12 @@ without changing the resolved relationships. Capture options retain their
 existing execution-signature behavior. A successful command publishes no
 record for a declared output that is absent.
 
-Command annotations retain argument roles for historical and non-`pyrun`
-commands. The roles are `input`,
-`output`, `input-directory`, and `output-directory`. A `type` clause and values
-`model` or `simulation` are invalid. Script filenames receive no provenance
-classification.
+`pyrun` also accepts repeatable `--env NAME=value` runner options before the
+required `--` separator. It normalizes them by name into the persisted
+execution signature and child environment. Duplicate names, malformed names,
+and the runner-managed names `MPLCONFIGDIR` and `XDG_CACHE_HOME` are invalid.
+Each run receives fresh temporary directories for those two managed values.
+Script filenames receive no provenance classification.
 
 The exact entry-local `data` and `images` directories are shared artifact-tree
 roots, not material artifacts or collections. An unclassified argument that
@@ -2848,10 +2865,11 @@ target have the entry-relative key. Each record has
 exactly `confirmed`, `fingerprint`, `script`, `parameters`, and `inputs`.
 `script.path` is the script argument passed to `pyrun`, not an inferred command
 or command ID. `parameters` is the exact ordered argument tail after the script,
-except that capture options, their targets, and the separating `--` precede the
-script arguments so the record matches the validator's normalized `pyrun`
-invocation signature. Runner role declarations are excluded from this vector.
-Their separator is also excluded when no capture is present. `inputs` maps
+except that capture options and normalized `--env` options, their values, and
+the separating `--` precede the script arguments so the record matches the
+validator's normalized `pyrun` invocation signature. Runner role declarations
+are excluded from this vector. Their separator is also excluded when neither a
+capture nor environment option is present. `inputs` maps
 every directly consumed `data.json` name to
 the fingerprint used by the run. Fingerprints use the same closed local
 fingerprint forms as `data.json`.
@@ -2886,8 +2904,8 @@ targets. `--capture-stdout-stderr` is mutually exclusive with both. With one
 runner option, that option and `--` stay on the `./pyrun` line. With several,
 put `./pyrun`, each option-value pair, and `--` on separate lines. Line wrapping
 does not change parsing. Captured bytes are mirrored to the corresponding
-terminal stream. Raw shell redirection and `tee` remain valid shell syntax but
-cannot create confirmed `pyrun` output support.
+terminal stream. Raw shell redirection and `tee` are outside the
+recorded-command grammar.
 
 An existing record may contain `confirmed: false`. Such a record preserves the
 temporary distinction between retained fingerprints and a directly observed
@@ -3247,7 +3265,7 @@ Unrelated commands and entry material remain independently evaluable.
 
 | Condition | Owning scope | Aggregate effect |
 | --- | --- | --- |
-| Malformed JSON, Markdown, path, supported source structure, or authored command annotation | Conformance | Fails conformance; dependent evidence or provenance is not applicable. |
+| Malformed JSON, Markdown, path, supported source structure, or recorded command surface | Conformance | Fails conformance; dependent evidence or provenance is not applicable. |
 | Missing or conflicting evidence declaration or exact presentation mismatch | Evidence | Fails evidence. |
 | Missing, ambiguous, conflicting, stale, unconfirmed, or incomplete producer, lineage, execution-support, input, origin, or directory relationship | Provenance | Fails Provenance without changing the evidence-value result. |
 | Temporary access failure or material changing during observation | Owning check as unavailable | Makes the aggregate incomplete. |
@@ -3272,12 +3290,12 @@ specification when correcting the authored research record.
 
 One evidence-rooted generated-material provenance outcome depends on:
 
-1. command parser, command annotation grammar, input-token grammar, and
-   option-name role-grammar versions;
+1. command parser, input-token grammar, runner-option grammar, and option-name
+   role-grammar versions;
 2. canonical invocation identity and shell structure;
 3. resolved executable or local-script identities;
-4. exact command path, annotation, redirection, option-role, and named-token
-   projections;
+4. exact command path, runner environment, capture, option-role, and
+   named-token projections;
 5. canonical material identity and direction proof;
 6. competing producer identities for the same material;
 7. exact upstream input-output identity matches;
@@ -3737,10 +3755,10 @@ access failure is `unavailable`.
 
 ## Future Command-Discovery Expansion If Warranted
 
-The contract intentionally stops at bounded static expansion, shell direction,
-named inputs, the closed leading-or-trailing `input`/`output` option-name
-convention, optional adjacent command-role annotations, exact file inputs, and
-exact bounded directory inputs and outputs. A missing or ambiguous result
+The contract intentionally stops at bounded static loop expansion, direct
+`pyrun` invocations, named inputs, runner role declarations, the closed
+leading-or-trailing `input`/`output` option-name convention, exact file inputs,
+and exact bounded directory inputs and outputs. A missing or ambiguous result
 fails regardless of whether one relationship appears likely.
 
 Additional automatic role words, internal-token matching,
@@ -3750,8 +3768,7 @@ deferred until several concrete cases show that the current forms make natural
 research authoring materially awkward. A proposed addition requires
 retained-corpus evidence and explicit researcher approval. It must be closed,
 independently checkable from recorded state, bounded, and simpler overall than
-renaming the option or repairing the command surface with an adjacent
-annotation.
+renaming the option or using a runner role declaration.
 
 No future mechanism may select a merely plausible producer, suppress an orphan
 without a retention record, invent missing lineage, override shell
@@ -3970,7 +3987,7 @@ The transformation contract follows these evolution rules:
 
 A change to evidence JSON schema dispatch, record or marker identity, field
 ownership, summary-reference syntax or coordinates, cardinality, Markdown
-parsing, exact comparison, command identity, annotation or input-token syntax,
+parsing, exact comparison, command identity, runner-option or input-token syntax,
 Provenance proof forms, origin-boundary semantics, output-support semantics,
 graph semantics, or result scopes that alters an existing valid outcome
 requires the applicable new evidence, command-discovery, or

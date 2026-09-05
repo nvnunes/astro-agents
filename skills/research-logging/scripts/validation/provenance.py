@@ -313,8 +313,7 @@ def require_origin_boundary(
         confirmed = [
             match.producer
             for match in matches
-            if match.producer.via_pyrun
-            and confirmed_record is not None
+            if confirmed_record is not None
             and any(
                 confirmed_record(match.producer, output)
                 for output in match.confirmation_targets
@@ -332,8 +331,7 @@ def require_origin_boundary(
     confirmed = [
         producer
         for producer in file_producers
-        if producer.via_pyrun
-        and confirmed_record is not None
+        if confirmed_record is not None
         and confirmed_record(producer, canonical)
     ]
     if len(confirmed) == 1:

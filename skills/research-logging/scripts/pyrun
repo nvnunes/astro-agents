@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 from contextlib import ExitStack
 from pathlib import Path
@@ -52,7 +53,7 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun [--other-inputs <selectors>] "
+        "       pyrun [--env NAME=value] [--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
@@ -193,6 +194,7 @@ def _execution_layout(
     tuple[str, ...],
     dict[str, str],
     dict[str, str],
+    dict[str, str],
 ]:
     """Return the shared runner layout used to execute and publish support."""
 
@@ -206,7 +208,18 @@ def _execution_layout(
         layout.parameters,
         dict(layout.captures),
         dict(layout.roles),
+        dict(layout.environment),
     )
+
+
+def _execution_environment(explicit: dict[str, str], root: Path) -> dict[str, str]:
+    """Return the child environment with isolated runner-owned cache roots."""
+
+    environment = os.environ.copy()
+    environment.update(explicit)
+    environment["MPLCONFIGDIR"] = str(root / "matplotlib")
+    environment["XDG_CACHE_HOME"] = str(root / "cache")
+    return environment
 
 
 def _selected_values(
@@ -295,11 +308,15 @@ def _capture_paths(
     return result
 
 
-def _run_with_captures(command: list[str], captures: dict[str, Path], cwd: Path) -> int:
+def _run_with_captures(
+    command: list[str], captures: dict[str, Path], cwd: Path, environment: dict[str, str]
+) -> int:
     """Run one process while mirroring each requested captured byte stream."""
 
     if not captures:
-        return subprocess.run(command, cwd=cwd, check=False).returncode
+        return subprocess.run(
+            command, cwd=cwd, env=environment, check=False
+        ).returncode
     capture_errors: list[BaseException] = []
     mirror_errors: list[BaseException] = []
     capture_failed = threading.Event()
@@ -313,6 +330,7 @@ def _run_with_captures(command: list[str], captures: dict[str, Path], cwd: Path)
         process = subprocess.Popen(
             command,
             cwd=cwd,
+            env=environment,
             stdout=subprocess.PIPE
             if combined is not None or "--capture-stdout" in captures
             else None,
@@ -494,7 +512,7 @@ def main(argv: list[str]) -> int:
         ):
             quarantine_invalid_pyrun_outputs(entry, project_root=root)
             data = _load_data(entry)
-            script_argument, script_args, parameters, captures, roles = (
+            script_argument, script_args, parameters, captures, roles, explicit_env = (
                 _execution_layout(argv)
             )
             _require_declared_input_tokens(script_args, roles, data)
@@ -530,11 +548,13 @@ def main(argv: list[str]) -> int:
                 script_args, captures, roles, entry, root, log
             )
             capture_paths = _capture_paths(captures, entry, root, log)
-            returncode = _run_with_captures(
-                [python_executable(root), str(script_path), *resolved_arguments],
-                capture_paths,
-                cwd,
-            )
+            with tempfile.TemporaryDirectory(prefix="pyrun-") as temporary:
+                returncode = _run_with_captures(
+                    [python_executable(root), str(script_path), *resolved_arguments],
+                    capture_paths,
+                    cwd,
+                    _execution_environment(explicit_env, Path(temporary)),
+                )
             if returncode != 0:
                 return returncode
             try:

@@ -374,8 +374,6 @@ def _atomic_output_bundles(
         directory_producers = build_directory_producer_index(invocations)
     bundles: list[_AtomicOutputBundle] = []
     for invocation in invocations:
-        if not invocation.via_pyrun:
-            continue
         for collection in invocation.collections:
             if (
                 collection.direction != "output"

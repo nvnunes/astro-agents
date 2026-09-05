@@ -116,12 +116,6 @@ def require_current_output_support(
             material,
             {"output": key, "producer": invocation.identity},
         )
-    if not invocation.via_pyrun:
-        _fail(
-            "provenance.output.signature_mismatch",
-            material,
-            {"output": key, "reason": "producer_not_pyrun"},
-        )
     mismatches = output_signature_mismatches(
         invocation, record, current_output, material=material
     )

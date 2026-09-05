@@ -1303,8 +1303,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 bad_entry,
                 "# Invalid entry\n\n## Trial\n\n`Steps:`\n\n"
-                "```bash\ntool --output-data data/result.csv\n```\n"
-                "<!-- command type=model -->\n\n`Results:`\n\nDone.\n",
+                "```bash\npython scripts/run.py\n```\n\n`Results:`\n\nDone.\n",
             )
             write(
                 summary,
@@ -1326,11 +1325,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
             invalid = next(
                 check
                 for check in evaluation.result.checks
-                if check.identity == "entry:e002:command"
+                if check.identity.startswith("entry:e002:command")
             )
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
-            self.assertEqual(invalid.failure.code, "invocation.annotation.invalid")
+            self.assertEqual(invalid.failure.code, "invocation.command.unsupported")
 
     def test_split_entry_loads_shared_root_surfaces_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1378,7 +1377,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             command = (
                 "## Trial\n\n"
                 "`Steps:`\n\n"
-                "```bash\ntool --output-data data/result.csv\n```\n\n"
+                "```bash\n./pyrun scripts/run.py --output-data data/result.csv\n```\n\n"
                 "`Results:`\n\nDone.\n"
             )
             write(first, command)
@@ -1426,13 +1425,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(entry_root / "data.json", _origin_data_json(entry_root))
             write(
                 first,
-                "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
+                "## Trial\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/run.py --label baseline\n```\n\n"
                 "`Results:`\n\nDone.\n",
             )
             write(
                 second,
                 "## Trial\n\n`Steps:`\n\n"
-                "```bash\ntool --catalog '<catalog>'\n```\n\n"
+                "```bash\n./pyrun scripts/run.py --catalog '<catalog>'\n```\n\n"
                 "`Results:`\n\nDone.\n",
             )
 
@@ -1462,7 +1462,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             write(
                 listed,
-                "## Trial\n\n`Steps:`\n\n```bash\ntool --label baseline\n```\n\n"
+                "## Trial\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/run.py --label baseline\n```\n\n"
                 "`Results:`\n\nDone.\n",
             )
             write(
@@ -2331,14 +2332,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertEqual(dependent.status, RESULTS.CheckStatus.NOT_APPLICABLE)
                 self.assertIn({"dependency": command.identity}, dependent.dependencies)
 
-    def test_failed_command_does_not_hide_later_producer(self) -> None:
+    def test_invalid_command_makes_the_whole_fence_unusable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
                     "```bash\n./pyrun",
-                    "```bash\ntool --output-data 'data/${missing}.csv'\n./pyrun",
+                    "```bash\npython scripts/run.py\n./pyrun",
                 ),
             )
 
@@ -2355,24 +2356,27 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.identity == "provenance:e001:success-rate"
             )
             self.assertEqual(command_failure.status, RESULTS.CheckStatus.FAIL)
-            self.assertEqual(command_failure.failure.code, "material.unresolved")
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(
+                command_failure.failure.code, "invocation.command.unsupported"
+            )
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
 
-    def test_adjacent_annotation_is_a_complete_mechanical_correction(self) -> None:
+    def test_adjacent_comment_cannot_supply_a_material_role(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory), output_option="results")
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
                     "```\n\n`Results:`",
-                    "```\n<!-- command results = output -->\n\n`Results:`",
+                    "```\n<!-- results are retained -->\n\n`Results:`",
                 ),
             )
 
             evaluation = _evaluate(summary)
 
             self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+                evaluation.result.completion,
+                RESULTS.CompletionState.COMPLETE_FINDINGS,
             )
 
     def test_pyrun_other_roles_are_shared_with_static_discovery(self) -> None:
@@ -2599,14 +2603,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(provenance_check.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
 
-    def test_malformed_annotation_has_complete_precise_failure_payload(self) -> None:
+    def test_unsupported_command_has_complete_precise_failure_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "```\n\n`Results:`",
-                    "```\n<!-- command type=model -->\n\n`Results:`",
+                    "```bash\n./pyrun",
+                    "```bash\npython scripts/run.py\n./pyrun",
                 ),
             )
 
@@ -2616,7 +2620,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 check.failure
                 for check in evaluation.result.checks
                 if check.failure is not None
-                and check.failure.code == "invocation.annotation.invalid"
+                and check.failure.code == "invocation.command.unsupported"
             )
             self.assertTrue(failure.subject)
             self.assertTrue(failure.observed)

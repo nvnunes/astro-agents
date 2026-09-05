@@ -59,22 +59,6 @@ SCRIPT_HASH_CHUNK_BYTES = 1024 * 1024
 FENCE_RE = re.compile(r"^(?P<marker>`{3,}|~{3,})(?P<info>[^`~]*)$")
 HEADING_RE = re.compile(r"^##[ \t]+.+$")
 BLOCK_LABEL_RE = re.compile(r"^[ \t]*`(?P<label>Steps|Results):`[ \t]*$")
-ANNOTATION_RE = re.compile(
-    r"<!-- command(?P<ordinal>-[1-9][0-9]*)? (?P<body>.*?) -->\Z",
-    re.DOTALL,
-)
-TARGET_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-POSITIONAL_RE = re.compile(r"@(?P<number>[1-9][0-9]*)\Z")
-ASSIGNMENT_RE = re.compile(r"(?P<target>[^=;]+) = (?P<value>[^=;]+)\Z")
-ENVIRONMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*\Z")
-ROLE_TOKENS = frozenset(
-    {
-        "input",
-        "output",
-        "input-directory",
-        "output-directory",
-    }
-)
 SHELL_LANGUAGES = frozenset({"bash", "console", "sh", "shell", "zsh"})
 MATERIAL_SUFFIXES = frozenset(
     {
@@ -166,7 +150,6 @@ class Invocation:
     sequence: int
     tokens: tuple[str, ...]
     executable: str
-    via_pyrun: bool
     script_argument: str | None
     parameters: tuple[str, ...]
     script: str | None
@@ -183,7 +166,6 @@ class DiscoveryResult:
     """All supported invocations found in one command document."""
 
     invocations: tuple[Invocation, ...]
-    unsupported: tuple[Mapping[str, object], ...]
     failures: tuple[CommandDiscoveryFailure, ...]
 
 
@@ -204,17 +186,9 @@ class _ParsedCommand:
     parameters: tuple[str, ...]
     options: tuple[OptionOccurrence, ...]
     positionals: tuple[str, ...]
-    redirections: tuple[tuple[str, str], ...]
-    tee_outputs: tuple[str, ...]
     capture_outputs: tuple[tuple[str, str], ...]
     runner_roles: Mapping[str, str]
     static_projection: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class _Annotation:
-    ordinal: int
-    roles: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -247,7 +221,6 @@ class _RoleState:
     context: CommandContext
     relationships: list[MaterialRelationship]
     collections: list[MaterialCollection]
-    via_pyrun: bool
 
 
 @dataclass(frozen=True)
@@ -280,27 +253,27 @@ def discover_commands(
         context.script_identity_observer,
     )
     invocations: list[Invocation] = []
-    unsupported: list[Mapping[str, object]] = []
     command_failures: list[CommandDiscoveryFailure] = []
     duplicate_counts: dict[str, int] = {}
     concrete_invocations = 0
-    for fence_number, (body, annotation_texts) in enumerate(
-        _command_fences(text, context.require_experimental_context), 1
-    ):
+    for fence_number, (body, eligible) in enumerate(_command_fences(text), 1):
         parsed, failures = _parse_fence(body)
-        unsupported.extend(
-            {"fence": fence_number, "reason": failure} for failure in failures
-        )
-        concrete_count = sum(command is not None for command in parsed)
-        if annotation_texts and not concrete_count:
-            _fail(
-                "invocation.command.unsupported",
-                f"{context.document}:fence-{fence_number}",
-                {"annotation": True},
+        if failures:
+            command_failures.append(
+                CommandDiscoveryFailure(
+                    fence_number,
+                    1,
+                    CommandV2Error(
+                        "invocation.command.unsupported",
+                        f"{context.document}:fence-{fence_number}",
+                        {"reason": failures[0]},
+                        "Recorded-Command Provenance And Material Graph",
+                    ),
+                )
             )
-        decoded_annotations = _parse_annotations(
-            annotation_texts, concrete_count, context.document
-        )
+            continue
+        if context.require_experimental_context and not eligible:
+            continue
         concrete_ordinal = 0
         for command in parsed:
             if command is None:
@@ -316,7 +289,6 @@ def discover_commands(
                         "limit": MAX_INVOCATIONS_PER_LOG,
                     },
                 )
-            annotation = decoded_annotations.get(concrete_ordinal)
             canonical_value: object = list(command.tokens)
             if command.static_projection:
                 canonical_value = [canonical_value, list(command.static_projection)]
@@ -325,7 +297,6 @@ def discover_commands(
             try:
                 invocation = _build_invocation(
                     command,
-                    annotation,
                     context,
                     _InvocationPosition(
                         fence_number,
@@ -342,7 +313,7 @@ def discover_commands(
             duplicate_counts[canonical] = duplicate + 1
             invocations.append(invocation)
     return DiscoveryResult(
-        tuple(invocations), tuple(unsupported), tuple(command_failures)
+        tuple(invocations), tuple(command_failures)
     )
 
 
@@ -370,7 +341,9 @@ def command_input_names(
     """Return data-token names present in statically parsed command arguments."""
 
     names: set[str] = set()
-    for body, _ in _command_fences(text, require_experimental_context):
+    for body, eligible in _command_fences(text):
+        if require_experimental_context and not eligible:
+            continue
         parsed, _ = _parse_fence(body)
         for command in parsed:
             if command is None:
@@ -384,12 +357,10 @@ def command_input_names(
     return frozenset(names)
 
 
-def _command_fences(
-    text: str, require_experimental_context: bool
-) -> list[tuple[str, tuple[str, ...]]]:
+def _command_fences(text: str) -> list[tuple[str, bool]]:
     lines = text.splitlines()
     eligible = _experimental_sections(lines)
-    result: list[tuple[str, tuple[str, ...]]] = []
+    result: list[tuple[str, bool]] = []
     index = 0
     while index < len(lines):
         opening = FENCE_RE.fullmatch(lines[index].strip())
@@ -411,18 +382,8 @@ def _command_fences(
             body.append(lines[index])
             index += 1
         index += 1
-        annotations: list[str] = []
-        while index < len(lines) and lines[index].lstrip().startswith("<!-- command"):
-            annotation = [lines[index].strip()]
-            while "-->" not in annotation[-1] and index + 1 < len(lines):
-                index += 1
-                annotation.append(lines[index].strip())
-            annotations.append("\n".join(annotation))
-            index += 1
-        if language in SHELL_LANGUAGES and (
-            not require_experimental_context or eligible[start]
-        ):
-            result.append(("\n".join(body), tuple(annotations)))
+        if language in SHELL_LANGUAGES:
+            result.append(("\n".join(body), eligible[start]))
     return result
 
 
@@ -538,56 +499,26 @@ def _parse_command(
     parsed_tokens: Sequence[StaticToken], static_projection: tuple[str, ...] = ()
 ) -> _ParsedCommand:
     tokens = tuple(token.value for token in parsed_tokens)
-    operators = tuple(
-        index for index, token in enumerate(parsed_tokens) if token.operator
-    )
-    pipeline_indexes = tuple(index for index in operators if tokens[index] == "|")
-    if not tokens or len(pipeline_indexes) > 1:
-        raise ValueError("unsupported pipeline")
-    unsupported = {"&&", "||", ";"}
-    if any(tokens[index] in unsupported for index in operators):
-        raise ValueError("unsupported shell control flow")
-    background_indexes = tuple(index for index in operators if tokens[index] == "&")
-    if background_indexes and background_indexes != (len(tokens) - 1,):
-        raise ValueError("unsupported shell control flow")
-    command_end = len(tokens) - 1 if background_indexes else len(tokens)
-    command_tokens = tuple(parsed_tokens[:command_end])
-    components = _pipeline_components(command_tokens)
-    principal = components[0]
-    executable_index = next(
-        (
-            index
-            for index, token in enumerate(principal)
-            if not ENVIRONMENT_RE.fullmatch(token.value)
-        ),
-        -1,
-    )
-    if executable_index < 0:
+    if not tokens:
         raise ValueError("missing executable")
-    executable_index = _unwrap_caffeinate(principal, executable_index)
-    executable = Path(principal[executable_index].value).name
-    redirections, ordinary = _redirections(principal)
-    capture_outputs: tuple[tuple[str, str], ...] = ()
-    runner_roles: Mapping[str, str] = {}
-    parameters: tuple[str, ...] = ()
-    if executable == "pyrun":
-        script_index, parameters, capture_outputs, runner_roles = _pyrun_layout(
-            ordinary, executable_index
-        )
-    elif executable.startswith("python"):
-        script_index = executable_index + 1
-        if script_index >= len(ordinary):
-            raise ValueError("interpreter lacks script")
-        parameters = tuple(ordinary[script_index + 1 :])
-    else:
-        script_index = None
-    argument_start = (
-        script_index + 1 if script_index is not None else executable_index + 1
+    if any(token.operator for token in parsed_tokens):
+        raise ValueError("unsupported shell operator")
+    if any(
+        "$" in token.value
+        or "`" in token.value
+        or any(character in token.value for character in "*?[]")
+        for token in parsed_tokens
+    ):
+        raise ValueError("dynamic or unsupported shell argument")
+    executable_index = 0
+    if Path(tokens[0]).name != "pyrun":
+        raise ValueError("shell commands must invoke pyrun directly")
+    ordinary = list(tokens)
+    script_index, parameters, capture_outputs, runner_roles = _pyrun_layout(
+        ordinary, executable_index
     )
+    argument_start = script_index + 1
     options, positionals = split_argument_values(ordinary[argument_start:])
-    tee_outputs: tuple[str, ...] = ()
-    if len(components) == 2:
-        tee_outputs = _terminal_tee(tuple(token.value for token in components[1]))
     return _ParsedCommand(
         tokens,
         executable_index,
@@ -595,8 +526,6 @@ def _parse_command(
         parameters,
         options,
         positionals,
-        redirections,
-        tee_outputs,
         capture_outputs,
         runner_roles,
         static_projection,
@@ -625,126 +554,10 @@ def _pyrun_layout(
     )
 
 
-def _unwrap_caffeinate(principal: Sequence[StaticToken], executable_index: int) -> int:
-    """Return the wrapped executable index for a bounded caffeinate command."""
-    if Path(principal[executable_index].value).name != "caffeinate":
-        return executable_index
-    index = executable_index + 1
-    while index < len(principal) and principal[index].value.startswith("-"):
-        option = principal[index].value
-        index += 1
-        if option in {"-t", "-w"}:
-            if index >= len(principal):
-                raise ValueError("caffeinate option lacks value")
-            index += 1
-    if index >= len(principal):
-        raise ValueError("caffeinate lacks wrapped command")
-    return index
-
-
-def _pipeline_components(tokens: Sequence[StaticToken]) -> list[list[StaticToken]]:
-    components: list[list[StaticToken]] = [[]]
-    for token in tokens:
-        if token == StaticToken("|", True):
-            if not components[-1]:
-                raise ValueError("empty pipeline component")
-            components.append([])
-        else:
-            components[-1].append(token)
-    if not components[-1]:
-        raise ValueError("empty pipeline component")
-    return components
-
-
-def _redirections(
-    tokens: Sequence[StaticToken],
-) -> tuple[tuple[tuple[str, str], ...], list[str]]:
-    redirections: list[tuple[str, str]] = []
-    ordinary: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if (
-            not token.operator
-            and token.value.isdecimal()
-            and index + 2 < len(tokens)
-            and tokens[index + 1].operator
-            and tokens[index + 1].value in {">", ">>"}
-        ):
-            redirections.append(("output", tokens[index + 2].value))
-            index += 3
-            continue
-        if token.operator and token.value in {"<", ">", ">>"}:
-            if index + 1 >= len(tokens):
-                raise ValueError("redirection lacks target")
-            redirections.append(
-                (
-                    "input" if token.value == "<" else "output",
-                    tokens[index + 1].value,
-                )
-            )
-            index += 2
-            continue
-        if token.operator:
-            raise ValueError("unsupported shell operator")
-        ordinary.append(token.value)
-        index += 1
-    return tuple(redirections), ordinary
-
-
-def _terminal_tee(tokens: Sequence[str]) -> tuple[str, ...]:
-    if not tokens or Path(tokens[0]).name != "tee" or len(tokens) < 2:
-        raise ValueError("unsupported terminal pipeline")
-    if any(token.startswith("-") for token in tokens[1:]):
-        raise ValueError("unsupported tee option")
-    return tuple(tokens[1:])
-
-
-def _parse_annotations(
-    values: Sequence[str], command_count: int, document: str
-) -> dict[int, _Annotation]:
-    result: dict[int, _Annotation] = {}
-    last = 0
-    for value in values:
-        match = ANNOTATION_RE.fullmatch(value)
-        if match is None:
-            _fail("invocation.annotation.invalid", document, {"annotation": value})
-        ordinal = int(match.group("ordinal")[1:]) if match.group("ordinal") else 1
-        if ordinal <= last or ordinal > command_count or ordinal in result:
-            _fail(
-                "invocation.annotation.invalid",
-                document,
-                {"ordinal": ordinal, "commands": command_count},
-            )
-        last = ordinal
-        result[ordinal] = _annotation_body(match.group("body"), ordinal, document)
-    return result
-
-
-def _annotation_body(body: str, ordinal: int, document: str) -> _Annotation:
-    clauses = re.split(r"\s*;\s*", body.strip())
-    roles: dict[str, str] = {}
-    for clause in clauses:
-        assignment = ASSIGNMENT_RE.fullmatch(clause.strip())
-        if assignment is None:
-            _fail("invocation.annotation.invalid", document, {"clause": clause})
-        target, value = assignment.group("target"), assignment.group("value")
-        if (
-            target == "type"
-            or value in {"model", "simulation"}
-            or value not in ROLE_TOKENS
-            or target in roles
-            or TARGET_RE.fullmatch(target) is None
-            and POSITIONAL_RE.fullmatch(target) is None
-        ):
-            _fail("invocation.annotation.invalid", document, {"clause": clause})
-        roles[target] = value
-    return _Annotation(ordinal, roles)
 
 
 def _build_invocation(
     command: _ParsedCommand,
-    annotation: _Annotation | None,
     context: CommandContext,
     position: _InvocationPosition,
 ) -> Invocation:
@@ -754,11 +567,8 @@ def _build_invocation(
         if command.script_index is not None
         else None
     )
-    workflow_token = script_token or _explicit_local_executable(executable, context)
-    script, script_identity = _resolve_script(workflow_token, context)
-    relationships, collections, candidates = _relationships(
-        command, annotation, context
-    )
+    script, script_identity = _resolve_script(script_token, context)
+    relationships, collections, candidates = _relationships(command, context)
     if candidates:
         _fail(
             "material.candidate.unresolved",
@@ -794,7 +604,6 @@ def _build_invocation(
         position.sequence,
         command.tokens,
         executable,
-        Path(executable).name == "pyrun",
         script_token,
         command.parameters,
         script,
@@ -963,18 +772,8 @@ def _observe_script(path: Path) -> ScriptObservation:
     )
 
 
-def _explicit_local_executable(executable: str, context: CommandContext) -> str | None:
-    if executable.startswith("./") or executable.startswith("../"):
-        return executable
-    path = Path(executable)
-    if path.is_absolute() and _within(path.resolve(), context.project_root):
-        return executable
-    return None
-
-
 def _relationships(
     command: _ParsedCommand,
-    annotation: _Annotation | None,
     context: CommandContext,
 ) -> tuple[
     tuple[MaterialRelationship, ...], tuple[MaterialCollection, ...], tuple[str, ...]
@@ -982,28 +781,8 @@ def _relationships(
     relationships: list[MaterialRelationship] = []
     collections: list[MaterialCollection] = []
     candidates: list[str] = []
-    annotated = annotation.roles if annotation else {}
     runner_roles = command.runner_roles
-    via_pyrun = Path(command.tokens[command.executable_index]).name == "pyrun"
-    state = _RoleState(context, relationships, collections, via_pyrun)
-    options = {occurrence.name for occurrence in command.options}
-    positionals = {f"@{index}" for index in range(1, len(command.positionals) + 1)}
-    missing = set(annotated) - options - positionals
-    if missing:
-        _fail(
-            "invocation.annotation.invalid",
-            context.document,
-            {"targets": sorted(missing)},
-        )
-    for direction, value in (
-        *command.redirections,
-        *(("output", item) for item in command.tee_outputs),
-    ):
-        relationships.append(
-            _relationship(
-                _RelationshipRequest(value, direction, "shell", None), context
-            )
-        )
+    state = _RoleState(context, relationships, collections)
     for target, value in command.capture_outputs:
         relationships.append(
             _relationship(
@@ -1020,15 +799,15 @@ def _relationships(
     for occurrence in command.options:
         role = runner_roles.get(
             occurrence.name,
-            annotated.get(occurrence.name, automatic_option_role(occurrence.name)),
+            automatic_option_role(occurrence.name),
         )
-        if via_pyrun and role in {"input", "output"}:
+        if role in {"input", "output"}:
             role = _inferred_runner_role(occurrence.value, role, context)
         _collect_argument(occurrence.value, occurrence.name, role, state, candidates)
     for index, value in enumerate(command.positionals, 1):
         target = f"@{index}"
-        role = runner_roles.get(target, annotated.get(target))
-        if via_pyrun and role in {"input", "output"}:
+        role = runner_roles.get(target)
+        if role in {"input", "output"}:
             role = _inferred_runner_role(value, role, context)
         _collect_argument(value, target, role, state, candidates)
     collections.extend(_repeated_collections(relationships, context.document))
@@ -1163,7 +942,7 @@ def _apply_role(
                 direction,
                 target,
                 context,
-                portable_output=state.via_pyrun,
+                portable_output=True,
             )
         )
         state.relationships.extend(
@@ -1187,7 +966,7 @@ def _apply_role(
                 direction,
                 "option",
                 target,
-                portable_output=state.via_pyrun and direction == "output",
+                portable_output=direction == "output",
             ),
             context,
         )

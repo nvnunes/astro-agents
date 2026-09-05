@@ -2423,7 +2423,6 @@ def _error_scope(error: MechanicalContractError, default: CheckScope) -> CheckSc
         "evidence.file.",
         "evidence.json.",
         "evidence.record.",
-        "invocation.annotation.",
         "invocation.command.",
         "invocation.path_value.",
         "locator.condition.",

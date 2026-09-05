@@ -124,6 +124,44 @@ def add_directory_input(entry: Path, name: str, directory: Path) -> None:
 
 
 class PyrunResolutionTests(unittest.TestCase):
+    def test_environment_options_are_normalized_into_the_signature(self) -> None:
+        first = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--env", "OMP_NUM_THREADS=2", "--env", "CUDA_VISIBLE_DEVICES=0",
+                "--", "scripts/model.py", "--mode", "exact",
+            ]
+        )
+        second = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--env", "CUDA_VISIBLE_DEVICES=0", "--env", "OMP_NUM_THREADS=2",
+                "--", "scripts/model.py", "--mode", "exact",
+            ]
+        )
+
+        self.assertEqual(first.environment, second.environment)
+        self.assertEqual(first.parameters, second.parameters)
+        self.assertEqual(
+            first.parameters,
+            (
+                "--env", "CUDA_VISIBLE_DEVICES=0", "--env", "OMP_NUM_THREADS=2",
+                "--", "--mode", "exact",
+            ),
+        )
+
+    def test_environment_options_reject_invalid_and_runner_managed_names(self) -> None:
+        cases = (
+            ["--env", "missing", "--", "scripts/model.py"],
+            ["--env", "MODE=one", "--env", "MODE=two", "--", "scripts/model.py"],
+            ["--env", "MPLCONFIGDIR=/tmp/custom", "--", "scripts/model.py"],
+            ["--env", "XDG_CACHE_HOME=/tmp/custom", "--", "scripts/model.py"],
+            ["--env", "MODE=one", "scripts/model.py"],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), self.assertRaises(
+                PYRUN_MODULE.PyrunContractError
+            ):
+                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+
     def test_other_role_layout_is_normalized_and_not_persisted(self) -> None:
         first = PYRUN_MODULE.parse_pyrun_arguments(
             [
@@ -368,6 +406,41 @@ class PyrunResolutionTests(unittest.TestCase):
 
 
 class PyrunOutputSupportTests(unittest.TestCase):
+    def test_execution_receives_explicit_and_isolated_managed_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/environment.py").write_text(
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "Path(sys.argv[1]).write_text(json.dumps({name: os.environ[name] "
+                "for name in ('MODE', 'MPLCONFIGDIR', 'XDG_CACHE_HOME')}))\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable, str(PYRUN), "--env", "MODE=exact",
+                    "--other-outputs", "@1", "--", "scripts/environment.py",
+                    "data/environment.json",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observed = json.loads(
+                (entry / "data/environment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(observed["MODE"], "exact")
+            self.assertNotEqual(
+                observed["MPLCONFIGDIR"], os.environ.get("MPLCONFIGDIR")
+            )
+            self.assertNotEqual(
+                observed["XDG_CACHE_HOME"], os.environ.get("XDG_CACHE_HOME")
+            )
+            self.assertFalse(Path(observed["MPLCONFIGDIR"]).exists())
+            self.assertFalse(Path(observed["XDG_CACHE_HOME"]).exists())
+
     def test_execution_and_output_publication_hold_the_stable_entry_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

@@ -73,6 +73,16 @@ validation behavior, also run:
   -s skills/research-logging/tests -p 'test_research_log_validation*.py'
 ```
 
+For output-code currentness or material-graph integration, use these focused
+tests while iterating before running that complete validator set:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_validation_engine.py \
+  skills/research-logging/tests/test_research_log_validation_material_graph.py
+```
+
 For any research-logging tool change, run the complete tool gate rather than
 linting only the main validator:
 

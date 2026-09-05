@@ -91,9 +91,12 @@ from .mechanical_results import (
 )
 from .mechanical_values import SelectionResult
 from .output_support import (
+    ResolvedCodeSupport,
     confirmed_output_record,
     output_producer_mismatches,
+    output_support_matches_invocation,
     require_current_output_support,
+    resolve_code_support,
     resolve_output_support,
 )
 from .presentation import require_artifact_source_association
@@ -1003,10 +1006,28 @@ def _validate_output_support(
         support=support,
     )
     current_output = _observe_provenance_path(resolved.path, state)
+    candidate = resolved.record
+    resolved_code = (
+        resolve_code_support(
+            candidate,
+            entry_root=root,
+            subject=resolved.subject,
+        )
+        if candidate is not None and candidate.code is not None
+        else ()
+    )
+    current_code = (
+        _observe_output_code(resolved_code, state)
+        if candidate is not None
+        and candidate.confirmed
+        and candidate.code is not None
+        else None
+    )
     record = require_current_output_support(
         invocation,
         resolved,
         current_output=current_output,
+        current_code=current_code,
     )
     support_file = support
     return {
@@ -1016,6 +1037,18 @@ def _validate_output_support(
         "record_file_sha256": state.output_file_observations.get(
             support_file.path.resolve().as_posix()
         ),
+    }
+
+
+def _observe_output_code(
+    code: Sequence[ResolvedCodeSupport],
+    state: _ScanState,
+) -> Mapping[str, Fingerprint]:
+    """Observe each unique resolved code file once for output currentness."""
+
+    return {
+        item.key: _observe_provenance_path(item.resolved, state)
+        for item in code
     }
 
 
@@ -1591,6 +1624,7 @@ def _compose_graph(state: _ScanState) -> None:
         input_registries=_input_registry_surfaces(state),
         producer_index=state.producer_index,
         supported_output_directories=_supported_output_directories(state),
+        code_inputs=_graph_code_inputs(state),
     )
     try:
         state.graph = compose_material_graph(request)
@@ -1682,6 +1716,64 @@ def _graph_evidence_connections(state: _ScanState) -> tuple[EvidenceConnection, 
             )
         )
     return tuple(connections)
+
+
+def _graph_code_inputs(state: _ScanState) -> Mapping[str, tuple[str, ...]]:
+    """Return conservative code edges from support associated with commands."""
+
+    result: dict[str, tuple[str, ...]] = {}
+    for invocation in state.invocations:
+        root = _entry_root_for_owner(invocation.material_owner, state)
+        support = state.output_files.get(invocation.material_owner)
+        if support is None:
+            continue
+        mappings: list[tuple[tuple[str, Fingerprint], ...]] = []
+        paths: tuple[str, ...] | None = None
+        invalid = False
+        for material in _invocation_output_materials(invocation):
+            key = portable_output_path(
+                material,
+                entry_root=root,
+                project_root=state.project_root,
+            )
+            record = support.outputs.get(key)
+            if (
+                record is None
+                or record.code is None
+                or not output_support_matches_invocation(
+                    invocation, record, material=material
+                )
+            ):
+                continue
+            try:
+                resolved = resolve_code_support(
+                    record,
+                    entry_root=root,
+                    subject=material,
+                )
+            except MechanicalContractError:
+                invalid = True
+                break
+            mappings.append(record.code)
+            current_paths = tuple(item.path.absolute().as_posix() for item in resolved)
+            if paths is None:
+                paths = current_paths
+        if invalid or not mappings or len(set(mappings)) != 1:
+            continue
+        result[invocation.identity] = paths or ()
+    return result
+
+
+def _invocation_output_materials(invocation: Invocation) -> tuple[str, ...]:
+    """Return canonical output identities that can own output support."""
+
+    materials = {relationship.path for relationship in invocation.outputs}
+    materials.update(
+        collection.root
+        for collection in invocation.collections
+        if collection.direction == "output" and collection.root is not None
+    )
+    return tuple(sorted(materials))
 
 
 def _record_unmatched_outputs(state: _ScanState) -> _UnmatchedOutputs:

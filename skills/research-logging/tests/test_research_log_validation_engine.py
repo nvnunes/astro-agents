@@ -176,6 +176,19 @@ def _evaluate(summary: Path, *, check_comparison: dict[str, Any] | None = None) 
     )
 
 
+def _set_code_support(
+    entry: Path,
+    code: dict[str, dict[str, str]],
+    *,
+    output: str = "data/results.csv",
+) -> dict[str, Any]:
+    path = entry.parent / "pyrun-outputs.json"
+    support = json.loads(path.read_text(encoding="utf-8"))
+    support["outputs"][output]["code"] = code
+    write(path, json.dumps(support, indent=2) + "\n")
+    return support
+
+
 def _origin_data_json(entry_root: Path) -> str:
     source = entry_root / "data/catalog.csv"
     write(source, "id\n1\n")
@@ -258,6 +271,262 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_current_code_support_enters_provenance_and_suppresses_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            helper = entry.parent / "scripts/helper.py"
+            write(helper, "VALUE = 1\n")
+            _set_code_support(
+                entry,
+                {
+                    "scripts/helper.py": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
+                    }
+                },
+            )
+
+            result = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in result.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject == helper.resolve().as_posix()
+                    for check in result.checks
+                )
+            )
+
+    def test_changed_and_unconfirmed_code_support_stays_connected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            helper = entry.parent / "scripts/helper.py"
+            write(helper, "VALUE = 1\n")
+            support = _set_code_support(
+                entry,
+                {
+                    "scripts/helper.py": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
+                    }
+                },
+            )
+            support_path = entry.parent / "pyrun-outputs.json"
+
+            write(helper, "VALUE = 2\n")
+            changed = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in changed.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code, "provenance.output.signature_mismatch"
+            )
+            self.assertIn("code", provenance.failure.observed["fields"])
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject == helper.resolve().as_posix()
+                    for check in changed.checks
+                )
+            )
+
+            support["outputs"]["data/results.csv"]["confirmed"] = False
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            unconfirmed = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in unconfirmed.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.failure.code, "provenance.output.unconfirmed")
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject == helper.resolve().as_posix()
+                    for check in unconfirmed.checks
+                )
+            )
+
+    def test_unavailable_and_duplicate_code_targets_fail_without_graph_edges(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            helper = entry.parent / "scripts/helper.py"
+            alias = entry.parent / "scripts/alias.py"
+            write(helper, "VALUE = 1\n")
+            alias.symlink_to(helper.name)
+            fingerprint = {
+                "algorithm": "sha256",
+                "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
+            }
+            _set_code_support(
+                entry,
+                {
+                    "scripts/helper.py": fingerprint,
+                    "scripts/alias.py": fingerprint,
+                },
+            )
+
+            duplicate = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in duplicate.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
+            self.assertEqual(
+                provenance.failure.observed["reason"],
+                "duplicate_resolved_identity",
+            )
+            self.assertTrue(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject == helper.resolve().as_posix()
+                    for check in duplicate.checks
+                )
+            )
+
+            alias.unlink()
+            helper.unlink()
+            _set_code_support(entry, {"scripts/missing.py": fingerprint})
+            missing = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in missing.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
+            self.assertEqual(provenance.failure.observed["reason"], "unavailable")
+
+            code_directory = entry.parent / "scripts/directory.py"
+            code_directory.mkdir()
+            _set_code_support(entry, {"scripts/directory.py": fingerprint})
+            wrong_kind = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in wrong_kind.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
+            self.assertEqual(
+                provenance.failure.observed["reason"], "not_regular_file"
+            )
+
+    def test_unmatched_code_support_does_not_connect_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            helper = entry.parent / "scripts/helper.py"
+            stale = entry.parent / "data/stale.csv"
+            write(helper, "VALUE = 1\n")
+            write(stale, "stale\n")
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            record = dict(support["outputs"]["data/results.csv"])
+            record["fingerprint"] = {
+                "algorithm": "sha256",
+                "digest": hashlib.sha256(stale.read_bytes()).hexdigest(),
+            }
+            record["code"] = {
+                "scripts/helper.py": {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
+                }
+            }
+            support["outputs"]["data/stale.csv"] = record
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            result = _evaluate(summary).result
+            failures = {
+                (check.failure.code, check.subject)
+                for check in result.checks
+                if check.failure is not None
+            }
+            self.assertIn(
+                ("hygiene.output.unmatched", stale.resolve().as_posix()), failures
+            )
+            self.assertIn(
+                ("orphan.material.unused", helper.resolve().as_posix()), failures
+            )
+
+    def test_code_observation_reuses_one_resolved_file_across_logical_paths(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            entry_root = entry.parent
+            helper = entry_root.parent.parent / "shared/helper.py"
+            write(helper, "VALUE = 1\n")
+            linked = entry_root / "scripts/linked"
+            linked.symlink_to(helper.parent, target_is_directory=True)
+            fingerprint = DATA.Fingerprint(
+                "sha256", digest=hashlib.sha256(helper.read_bytes()).hexdigest()
+            )
+            support = ENGINE.load_pyrun_outputs(
+                entry_root / "pyrun-outputs.json",
+                entry_root=entry_root,
+                project_root=root,
+            )
+            base = support.outputs["data/results.csv"]
+            direct = replace(base, code=(("<log>/shared/helper.py", fingerprint),))
+            alias = replace(base, code=(("scripts/linked/helper.py", fingerprint),))
+            state = ENGINE._ScanState(
+                summary, summary.with_suffix(""), root.resolve()
+            )
+
+            with ENGINE.FingerprintCache(root, writable=False, reuse=False) as cache:
+                state.fingerprint_cache = cache
+                with mock.patch.object(
+                    cache,
+                    "observe_regular_file",
+                    wraps=cache.observe_regular_file,
+                ) as observe:
+                    ENGINE._observe_output_code(
+                        ENGINE.resolve_code_support(
+                            direct,
+                            entry_root=entry_root,
+                            subject="data/results.csv",
+                        ),
+                        state,
+                    )
+                    ENGINE._observe_output_code(
+                        ENGINE.resolve_code_support(
+                            alias,
+                            entry_root=entry_root,
+                            subject="data/results.csv",
+                        ),
+                        state,
+                    )
+
+            helper_calls = [
+                call
+                for call in observe.call_args_list
+                if call.args[0].resolve() == helper.resolve()
+            ]
+            self.assertEqual(len(helper_calls), 1)
+
+    def test_legacy_support_skips_code_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+
+            with mock.patch.object(ENGINE, "_observe_output_code") as observe:
+                result = _evaluate(summary).result
+
+            self.assertEqual(result.completion, RESULTS.CompletionState.COMPLETE_CLEAR)
+            observe.assert_not_called()
+
     def test_bundle_member_uses_root_support_and_atomic_hygiene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -2709,6 +2978,36 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             unchanged = _evaluate(summary, check_comparison=comparison)
             write(entry.parent / "scripts" / "model.py", "# changed identity\n")
+            changed = _evaluate(summary, check_comparison=comparison)
+
+            self.assertGreater(unchanged.metrics["checks_unchanged"], 0)
+            self.assertLess(
+                changed.metrics["checks_unchanged"],
+                unchanged.metrics["checks_unchanged"],
+            )
+            self.assertEqual(
+                changed.result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
+            )
+
+    def test_changed_code_reopens_an_unchanged_provenance_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            helper = entry.parent / "scripts/helper.py"
+            write(helper, "VALUE = 1\n")
+            _set_code_support(
+                entry,
+                {
+                    "scripts/helper.py": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
+                    }
+                },
+            )
+            first = _evaluate(summary)
+            comparison = _comparison(first)
+
+            unchanged = _evaluate(summary, check_comparison=comparison)
+            write(helper, "VALUE = 2\n")
             changed = _evaluate(summary, check_comparison=comparison)
 
             self.assertGreater(unchanged.metrics["checks_unchanged"], 0)

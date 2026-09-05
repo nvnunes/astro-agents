@@ -239,9 +239,11 @@ Future validation changes must preserve these invariants:
 - **End-to-end Provenance:** A passing evidence-rooted chain identifies the
   retained artifact, reaches explicit origins through unique producers, and
   matches each generated output to current output and script fingerprints,
-  exact ordered parameters, and direct-input fingerprints recorded by `pyrun`.
-  This is a bounded support claim, not causation, complete dependency capture,
-  scientific validity, or reproduction.
+  exact ordered parameters, direct-input fingerprints, and observed log-local
+  Python code fingerprints recorded by `pyrun`. Associated code support joins
+  the material graph independently of confirmation so Hygiene does not
+  duplicate a Provenance failure. This is a bounded support claim, not
+  causation, scientific validity, or reproduction.
 - **Output-owned execution state:** `pyrun-outputs.json` is keyed by output so
   command splitting, merging, and renaming reconcile through current graph
   membership rather than command identity. Validation reads this state but

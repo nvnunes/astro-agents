@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
@@ -126,6 +126,7 @@ class MaterialGraphRequest:
     input_registries: Sequence[InputRegistrySurface] = ()
     producer_index: ProducerIndex | None = None
     supported_output_directories: frozenset[str] = frozenset()
+    code_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -133,6 +134,7 @@ class _GraphState:
     roots: Mapping[str, tuple[Path, ...]]
     producer_index: ProducerIndex
     outputs: Mapping[str, tuple[Invocation, ...]]
+    code_inputs: Mapping[str, tuple[str, ...]]
     bundles_by_material: Mapping[str, _AtomicOutputBundle]
     nodes: set[GraphNode]
     edges: set[GraphEdge]
@@ -164,6 +166,7 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         roots=_connection_roots(roots),
         producer_index=producer_index,
         outputs=producer_index.outputs,
+        code_inputs=request.code_inputs or {},
         bundles_by_material=_bundle_material_index(bundles),
         nodes=set(),
         edges=set(),
@@ -282,6 +285,10 @@ def _trace_material(
         script = _material_node(state, producer.script)
         state.edges.add(GraphEdge("script", command, script))
         _connect_material(script, state)
+    for path in state.code_inputs.get(producer.identity, ()):
+        code = _material_node(state, path)
+        state.edges.add(GraphEdge("code", code, command))
+        _connect_material(code, state)
     for relationship in producer.inputs:
         _add_reached_input(relationship, producer, command, state, depth=depth)
     state.visiting.remove(producer.identity)

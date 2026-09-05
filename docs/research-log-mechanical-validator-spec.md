@@ -2877,7 +2877,7 @@ The top-level keys are exactly `schema` and `outputs`. Output keys are unique
 canonical identities: normalized entry-relative paths beneath `data/` or
 `images/`, or normalized `<project>/...` paths for outputs elsewhere beneath
 the current Git project. Two spellings that resolve to the same entry-local
-target have the entry-relative key. Each record has
+target have the entry-relative key. Each current record has
 exactly `confirmed`, `fingerprint`, `script`, `parameters`, `inputs`, and
 `code`.
 `script.path` is the script argument passed to `pyrun`, not an inferred command
@@ -2911,9 +2911,30 @@ legacy record shape without `code`. It preserves that omission when reading,
 projecting, or rewriting the record and applies the previous validation
 behavior. Missing `code` is not interpreted as an observed empty mapping. New
 successful `pyrun` executions always write `code`; this compatibility is
-removed only after every maintained record has migrated. During this
-compatibility stage, validation decodes the new field but does not yet use it
-for output currentness, graph edges, or Hygiene conclusions.
+removed only after every maintained record has migrated.
+
+For a current record, validation resolves every logical code path to an
+existing regular file and rejects two keys that resolve to the same file. A
+reached, confirmed output compares every current code fingerprint with the
+recorded mapping. A missing or non-file target, or a duplicate resolved
+identity, is `provenance.output.code_invalid`; a fingerprint difference is a
+`code` field in `provenance.output.signature_mismatch`. Code observations use
+the shared fingerprint service and one resolved file observation is reused
+across output records and logical aliases. Execution-linked stability checks
+re-observe the same files before validation completes.
+
+A current record associates with a reconstructed invocation only when its
+output identity, script path, ordered parameters, and direct input names
+match. Confirmation and output, script, input, and code fingerprints are
+currentness rather than association fields. Associated records for one
+invocation must agree on their complete `code` mappings. Structurally valid
+associated support adds one `code` input edge from each recorded file to the
+invocation when that invocation enters the evidence-rooted graph. Thus an
+associated unconfirmed record or a record with stale fingerprints still
+connects its helpers for Hygiene while Provenance fails independently.
+Malformed, unavailable, inconsistent, or unmatched support adds no code edge
+and suppresses no helper orphan. A legacy record without `code` adds no code
+edge, creates no new failure, and does not prove an empty dependency set.
 
 #### Python Code Observation
 
@@ -3259,7 +3280,8 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
 | `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
 | `provenance.output.unconfirmed` | provenance | A reached generated output has only an unconfirmed baseline. |
-| `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, or direct inputs differ from the confirmed record. |
+| `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, direct inputs, or recorded code differ from the confirmed record. |
+| `provenance.output.code_invalid` | provenance | A recorded code path is unavailable, is not a regular file, or duplicates another resolved code identity. |
 | `provenance.output.signature_unsupported` | provenance | A reached producer input cannot be represented in the exact record signature. |
 | `provenance.output.missing` | provenance | The current graph declares an output whose artifact is absent. |
 | `provenance.observation.unavailable` | provenance | Execution-linked bytes changed during validation or could not be re-observed. |
@@ -3388,8 +3410,10 @@ One evidence-rooted generated-material provenance outcome depends on:
 7. exact upstream input-output identity matches;
 8. input declaration, fingerprint, and origin-boundary projections;
 9. exact output-support confirmation, output fingerprint, script path and
-   fingerprint, ordered parameters, and direct input fingerprint mapping; and
-10. required directory mechanism and membership projections.
+   fingerprint, ordered parameters, direct input fingerprint mapping, and
+   observed code mapping when present; and
+10. required directory mechanism, membership, and associated code-edge
+    projections.
 
 One combined evidence-and-provenance outcome additionally depends on its
 evidence-record, source, locator, transformation, presentation, and association

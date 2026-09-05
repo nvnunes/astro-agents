@@ -142,6 +142,7 @@ def _request(
     evidence: tuple[object, ...] = (),
     retention_files: tuple[object, ...] = (),
     supported_output_directories: frozenset[str] | None = None,
+    code_inputs: dict[str, tuple[str, ...]] | None = None,
 ) -> object:
     if supported_output_directories is None:
         supported_output_directories = frozenset(
@@ -159,10 +160,44 @@ def _request(
         retention_files=retention_files,
         input_registries=(GRAPH.InputRegistrySurface("entries/entry", data_file),),
         supported_output_directories=supported_output_directories,
+        code_inputs=code_inputs or {},
     )
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_reached_invocation_connects_each_code_input_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            helper = entry_root / "scripts/helper.py"
+            write(helper, "VALUE = 1\n")
+            output = (entry_root / "data/reached.csv").resolve().as_posix()
+            invocation = invocations[0]
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "result", "e001.md:eid:result", (output,)
+                        ),
+                    ),
+                    code_inputs={
+                        invocation.identity: (
+                            helper.as_posix(),
+                            helper.as_posix(),
+                        )
+                    },
+                )
+            )
+
+            code_edges = [edge for edge in result.edges if edge.kind == "code"]
+            self.assertEqual(len(code_edges), 1)
+            self.assertEqual(code_edges[0].source.identity, helper.resolve().as_posix())
+            self.assertEqual(code_edges[0].target.identity, invocation.identity)
+            self.assertIn(helper.resolve().as_posix(), result.orphan.connected)
+
     def test_supported_output_only_directory_is_one_atomic_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _bundle_surface(Path(directory))

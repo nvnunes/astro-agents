@@ -1733,7 +1733,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluation.metrics["source_evaluations"], 2)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
 
-    def test_direct_artifact_bypasses_evidence_file_and_enters_provenance(self) -> None:
+    def test_generated_artifact_uses_evidence_and_enters_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             write(entry.parent / "data" / "report.txt", "retained report\n")
@@ -1746,9 +1746,39 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
                 .replace(
                     "The success rate was",
-                    "[Retained report](data/report.txt)\n\nThe success rate was",
+                    "[Retained report](data/report.txt)"
+                    "<!-- eid:retained-report -->\n\nThe success rate was",
                 ),
             )
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text())
+            data["inputs"].append(
+                {
+                    "name": "report",
+                    "kind": "file",
+                    "location": "data/report.txt",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(
+                            (entry.parent / "data/report.txt").read_bytes()
+                        ).hexdigest(),
+                    },
+                    "origin": False,
+                }
+            )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text())
+            evidence["records"].append(
+                {
+                    "id": "retained-report",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [{"source": "<report>", "locator": None}],
+                    "transformation": None,
+                }
+            )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             support_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             parameters = [
@@ -1776,15 +1806,38 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(
                 evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
             )
-            identities = {check.identity for check in evaluation.result.checks}
-            self.assertTrue(
-                any(
-                    identity.startswith("provenance:artifact:")
-                    for identity in identities
-                )
+            checks = {check.identity: check for check in evaluation.result.checks}
+            self.assertEqual(
+                checks["evidence:e001:retained-report"].status,
+                RESULTS.CheckStatus.PASS,
+            )
+            self.assertEqual(
+                checks["provenance:e001:retained-report"].status,
+                RESULTS.CheckStatus.PASS,
             )
 
-    def test_direct_artifact_may_use_an_explicit_origin_boundary(self) -> None:
+    def test_unmarked_artifact_requires_an_evidence_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(entry.parent / "data" / "report.txt", "retained report\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "[Retained report](data/report.txt)\n\nThe success rate was",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            failures = {
+                check.failure.code
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertIn("association.declaration_missing", failures)
+
+    def test_artifact_evidence_may_use_an_explicit_origin_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             report = entry.parent / "data" / "historical-report.txt"
@@ -1808,10 +1861,24 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry,
                 entry.read_text(encoding="utf-8").replace(
                     "The success rate was",
-                    "[Historical report](data/historical-report.txt)\n\n"
-                    "The success rate was",
+                    "[Historical report](data/historical-report.txt)"
+                    "<!-- eid:historical-report -->\n\nThe success rate was",
                 ),
             )
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text())
+            evidence["records"].append(
+                {
+                    "id": "historical-report",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [
+                        {"source": "<historical_report>", "locator": None}
+                    ],
+                    "transformation": None,
+                }
+            )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
 
@@ -1825,6 +1892,63 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             self.assertNotIn("producer.missing", failures)
             self.assertNotIn("orphan.input.unused", failures)
+
+    def test_artifact_association_uses_path_not_equal_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            first = entry.parent / "data" / "first.png"
+            second = entry.parent / "data" / "second.png"
+            write(first, "same bytes\n")
+            write(second, "same bytes\n")
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text())
+            for name, path in (("first", first), ("second", second)):
+                data["inputs"].append(
+                    {
+                        "name": name,
+                        "kind": "file",
+                        "location": f"data/{path.name}",
+                        "fingerprint": {
+                            "algorithm": "sha256",
+                            "digest": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        },
+                        "origin": True,
+                    }
+                )
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "![First](data/first.png)<!-- eid:first-image -->\n\n"
+                    "The success rate was",
+                ),
+            )
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text())
+            evidence["records"].append(
+                {
+                    "id": "first-image",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [{"source": "<second>", "locator": None}],
+                    "transformation": None,
+                }
+            )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            check = next(
+                item
+                for item in evaluation.result.checks
+                if item.identity == "evidence:e001:first-image"
+            )
+            self.assertEqual(check.status, RESULTS.CheckStatus.FAIL)
+            assert check.failure is not None
+            self.assertEqual(
+                check.failure.code, "association.artifact.source_mismatch"
+            )
 
     def test_unavailable_and_resource_limit_completion_is_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

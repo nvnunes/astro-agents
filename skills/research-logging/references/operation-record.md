@@ -55,7 +55,7 @@ material as a new routing event and load only its matching reference.
   `references/file-entry-labels.md` and `references/research-log-writing.md`.
 - Scripts, figures, or serialized artifacts: read `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
-- Presented results, evidence records, summary references, or direct artifacts:
+- Presented results, evidence records, summary references, or artifact links:
   read `references/file-presented-evidence.md`. It routes an unsupported common
   case to exactly one focused advanced-definition reference.
 - A material command or evidence input, a `<name>` token, or an explicit origin

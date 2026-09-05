@@ -71,6 +71,37 @@ def add_or_update_common(
 
     with entry_lock(entry):
         current = load_current(entry)
+        presentation = find_entry_presentation(
+            entry.root, entry.log.root, arguments.record_id
+        )
+        if presentation.kind == "artifact":
+            if (
+                arguments.select
+                or arguments.identity
+                or arguments.where
+                or arguments.as_percentage
+                or arguments.scale is not None
+            ):
+                raise ActionError(
+                    "evidence.common.unsupported",
+                    "artifact evidence accepts only one whole-artifact source",
+                )
+            evaluated = evaluate_candidate_record(
+                entry_root=entry.root,
+                log_root=entry.log.root,
+                record_id=arguments.record_id,
+                raw_sources=[
+                    {"source": _token(arguments.source), "locator": None},
+                ],
+                transformation=None,
+            )
+            return apply_candidate_locked(
+                entry,
+                action,
+                evaluated.record,
+                current=current,
+                dry_run=arguments.dry_run,
+            )
         locator = _common_locator(entry, arguments)
         transformation = _common_transformation(entry, arguments, locator)
         evaluated = evaluate_candidate_record(

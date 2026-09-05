@@ -72,7 +72,7 @@ def fixture(root: Path) -> tuple[Path, Path]:
         "Validation: [latest completed report](study/validation.md)\n\n"
         "## Summary\n\n"
         "## Entries\n\n"
-        "- [Study](study/entries/2026-09-03-e001-study/e001.md)\n",
+        "- `2026-09-03` [Study](study/entries/2026-09-03-e001-study/e001.md)\n",
         encoding="utf-8",
     )
     document = entry / "e001.md"
@@ -435,6 +435,158 @@ with operation_lock(Path(sys.argv[1]), sys.argv[2]):
 
 
 class LogEvidenceTests(unittest.TestCase):
+    def test_artifact_accepts_one_exact_registered_directory_member(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = fixture(Path(directory))
+            image = entry / "images" / "maps" / "map.png"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"map bytes")
+            common = ("--path", str(logical), "--entry", "e001")
+            registered = run(
+                entry,
+                "data",
+                "add-origin",
+                *common,
+                "artifacts",
+                "images/maps",
+                "--identity",
+                "map.png",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Image\n\n`Background:`\n\nInspect the map.\n\n"
+                "`Steps:`\n\nOpen the image.\n\n`Results:`\n\n"
+                "![Map](images/maps/map.png)<!-- eid:map-image -->\n",
+                encoding="utf-8",
+            )
+
+            added = run(
+                entry,
+                "evidence",
+                "add",
+                *common,
+                "--id",
+                "map-image",
+                "--source",
+                "<artifacts>/map.png",
+            )
+
+            self.assertEqual(added.returncode, 0, added.stderr)
+            record = json.loads((entry / "evidence.json").read_text())["records"][0]
+            self.assertEqual(record["sources"][0]["source"], "<artifacts>/map.png")
+
+    def test_whole_artifact_round_trip_and_path_association(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = fixture(Path(directory))
+            artifact = entry / "data" / "residual map.png"
+            artifact.write_bytes(b"retained image bytes")
+            duplicate = entry / "data" / "duplicate.png"
+            duplicate.write_bytes(artifact.read_bytes())
+            add_input(entry, "residual-map", artifact)
+            add_input(entry, "duplicate", duplicate)
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Artifact\n\n`Background:`\n\nInspect the map.\n\n"
+                "`Steps:`\n\nOpen the retained image.\n\n`Results:`\n\n"
+                "![Residual map](<data/residual%20map.png>)"
+                "<!-- eid:residual-map -->\n",
+                encoding="utf-8",
+            )
+            common = ("--path", str(logical), "--entry", "e001")
+            arguments = (
+                "evidence",
+                "add",
+                *common,
+                "--id",
+                "residual-map",
+                "--source",
+                "residual-map",
+            )
+
+            dry_run = run(entry, *arguments, "--dry-run")
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+            added = run(entry, *arguments)
+            self.assertEqual(added.returncode, 0, added.stderr)
+            record = json.loads((entry / "evidence.json").read_text())["records"][0]
+            self.assertEqual(record["kind"], "artifact")
+            self.assertEqual(
+                record["sources"],
+                [{"locator": None, "source": "<residual-map>"}],
+            )
+            self.assertIsNone(record["transformation"])
+
+            before = (entry / "evidence.json").read_bytes()
+            mismatched = run(
+                entry,
+                "evidence",
+                "update",
+                *common,
+                "--id",
+                "residual-map",
+                "--source",
+                "duplicate",
+            )
+            self.assertEqual(mismatched.returncode, 2)
+            self.assertIn("association.artifact.source_mismatch", mismatched.stderr)
+            self.assertEqual((entry / "evidence.json").read_bytes(), before)
+
+            selected = run(entry, *arguments, "--select", "/value")
+            self.assertEqual(selected.returncode, 2)
+            self.assertEqual((entry / "evidence.json").read_bytes(), before)
+
+            listed = run(entry, "evidence", "list", *common)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(
+                authoring_result(listed)["records"][0]["kind"], "artifact"
+            )
+            unchanged = run(
+                entry,
+                "evidence",
+                "update",
+                *common,
+                "--id",
+                "residual-map",
+                "--source",
+                "residual-map",
+            )
+            self.assertEqual(authoring_result(unchanged)["status"], "unchanged")
+
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "eid:residual-map", "eid:renamed-map"
+                ),
+                encoding="utf-8",
+            )
+            renamed = run(
+                entry,
+                "evidence",
+                "rename",
+                *common,
+                "residual-map",
+                "renamed-map",
+            )
+            self.assertEqual(renamed.returncode, 0, renamed.stderr)
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "<!-- eid:renamed-map -->", ""
+                ),
+                encoding="utf-8",
+            )
+            removed = run(
+                entry,
+                "evidence",
+                "remove",
+                *common,
+                "--id",
+                "renamed-map",
+            )
+            self.assertEqual(removed.returncode, 0, removed.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+
     def test_common_percentage_table_and_output_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = fixture(Path(directory))

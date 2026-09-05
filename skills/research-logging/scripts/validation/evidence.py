@@ -94,12 +94,15 @@ class EvidenceSource:
     """One ordered source token and embedded locator declaration."""
 
     source: str
-    locator: Mapping[str, Any]
+    locator: Mapping[str, Any] | None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the canonical evidence-source object."""
 
-        return {"locator": dict(self.locator), "source": self.source}
+        return {
+            "locator": dict(self.locator) if self.locator is not None else None,
+            "source": self.source,
+        }
 
 
 @dataclass(frozen=True)
@@ -192,19 +195,6 @@ class SummaryReference:
     line: int
     row: int | None = None
     column: int | None = None
-
-
-@dataclass(frozen=True)
-class DirectArtifactPresentation:
-    """One local-like Markdown artifact target presented under Results."""
-
-    document: str
-    line: int
-    target: str
-    normalized_target: str
-    label: str
-    image: bool
-    section: str | None
 
 
 @dataclass(frozen=True)
@@ -501,6 +491,29 @@ def _presentations_on_line(
         (number, match.start("code") + len(match.group("code")))
         for match in EID_LINE_RE.finditer(line)
     }
+    document_path = PurePosixPath(_normalized_relative(document, document))
+    if experimental and context.under_results:
+        for link in MARKDOWN_LINK_RE.finditer(line):
+            normalized = _artifact_target(link.group("target"), document_path)
+            if normalized is None:
+                continue
+            marker = EID_COMMENT_RE.match(line, link.end())
+            if marker is None:
+                continue
+            items.append(
+                PresentedItem(
+                    id=marker.group("id"),
+                    document=document,
+                    kind="artifact",
+                    value=normalized,
+                    line=number,
+                    section=context.section,
+                    context_valid=True,
+                    section_classification=context.classification,
+                    under_results=True,
+                )
+            )
+            consumed.add((number, link.end()))
     marker = EID_COMMENT_RE.fullmatch(line.strip())
     if marker is None:
         return items, consumed
@@ -562,57 +575,6 @@ def _block_presentation(
     )
 
 
-def index_direct_artifacts(
-    text: str,
-    *,
-    document: str,
-) -> tuple[DirectArtifactPresentation, ...]:
-    """Index natural local artifact links and images under experimental Results."""
-
-    lines = text.splitlines()
-    contexts = _line_contexts(lines)
-    fenced = _fenced_lines(lines)
-    artifacts: list[DirectArtifactPresentation] = []
-    document_path = PurePosixPath(_normalized_relative(document, document))
-    for number, line in enumerate(lines, 1):
-        if fenced[number - 1]:
-            continue
-        context = contexts[number - 1]
-        if context.classification != "experimental" or not context.under_results:
-            continue
-        for match in MARKDOWN_LINK_RE.finditer(line):
-            raw_target = match.group("target")
-            target = raw_target[1:-1] if raw_target.startswith("<") else raw_target
-            target = urllib.parse.unquote(target)
-            parsed = urllib.parse.urlparse(target)
-            path_text = target.split("#", 1)[0]
-            if (
-                parsed.scheme.lower() in EXTERNAL_TARGET_SCHEMES
-                or target.startswith("#")
-                or not path_text
-                or PurePosixPath(path_text).suffix.lower() == ".md"
-            ):
-                continue
-            pure = PurePosixPath(path_text)
-            normalized = (
-                pure.as_posix()
-                if pure.is_absolute()
-                else _normalize_join(document_path.parent, pure)
-            )
-            artifacts.append(
-                DirectArtifactPresentation(
-                    document=document,
-                    line=number,
-                    target=target,
-                    normalized_target=normalized,
-                    label=match.group("label"),
-                    image=bool(match.group("image")),
-                    section=context.section,
-                )
-            )
-    return tuple(artifacts)
-
-
 def index_entry_documents(text: str) -> tuple[str, ...]:
     """Return unique owned-entry targets from the summary entry inventory."""
 
@@ -659,6 +621,13 @@ def index_entry_presentation_candidates(
             )
         if not experimental or not context.under_results:
             continue
+        document_path = PurePosixPath("entry.md")
+        if not fenced[index]:
+            candidates.extend(
+                PresentationCandidate("artifact", index + 1)
+                for match in MARKDOWN_LINK_RE.finditer(line)
+                if _artifact_target(match.group("target"), document_path) is not None
+            )
         if not fenced[index] and _looks_like_table(lines, index):
             candidates.append(PresentationCandidate("table", index + 1))
         fence = FENCE_RE.fullmatch(line)
@@ -907,20 +876,32 @@ def _decode_record(
     record_id = _record_id(value.get("id"), subject)
     kind = value.get("kind")
     expected = {"document", "id", "kind", "sources", "transformation"}
-    if set(value) != expected or kind not in {"statistic", "table", "output"}:
+    if set(value) != expected or kind not in {
+        "artifact",
+        "statistic",
+        "table",
+        "output",
+    }:
         _invalid(subject, {"fields": sorted(value), "kind": kind})
     document = _document(value["document"], subject, entry_relative, entry_root)
     sources = value["sources"]
-    if not isinstance(sources, list) or not 1 <= len(sources) <= MAX_SOURCES:
+    maximum_sources = 1 if kind == "artifact" else MAX_SOURCES
+    if not isinstance(sources, list) or not 1 <= len(sources) <= maximum_sources:
         _invalid(
             subject,
             {"sources": len(sources) if isinstance(sources, list) else None},
         )
     decoded_sources = tuple(
-        _decode_source(source, f"{subject}.sources[{number}]")
+        _decode_source(
+            source,
+            f"{subject}.sources[{number}]",
+            whole_artifact=kind == "artifact",
+        )
         for number, source in enumerate(sources)
     )
     transformation = value["transformation"]
+    if kind == "artifact" and transformation is not None:
+        _invalid(subject, {"transformation": transformation})
     if transformation is not None and (
         not isinstance(transformation, Mapping) or not transformation
     ):
@@ -934,7 +915,9 @@ def _decode_record(
     )
 
 
-def _decode_source(value: object, subject: str) -> EvidenceSource:
+def _decode_source(
+    value: object, subject: str, *, whole_artifact: bool
+) -> EvidenceSource:
     if not isinstance(value, Mapping) or set(value) != {"source", "locator"}:
         _invalid(
             subject,
@@ -944,9 +927,15 @@ def _decode_source(value: object, subject: str) -> EvidenceSource:
     locator = value["locator"]
     if not isinstance(source, str) or input_token_parts(source) is None:
         _invalid(subject, {"reason": "input_token_required", "source": source})
-    if not isinstance(locator, Mapping) or not locator:
+    if whole_artifact:
+        if locator is not None:
+            _invalid(subject, {"locator": locator})
+    elif not isinstance(locator, Mapping) or not locator:
         _invalid(subject, {"locator": locator})
-    return EvidenceSource(source=source, locator=dict(locator))
+    return EvidenceSource(
+        source=source,
+        locator=dict(locator) if isinstance(locator, Mapping) else None,
+    )
 
 
 def _record_id(value: object, subject: str) -> str:
@@ -997,6 +986,30 @@ def _normalized_relative(value: object, subject: str) -> str:
     if pure.as_posix() != value:
         _invalid(subject, {"path": value})
     return value
+
+
+def _artifact_target(
+    raw_target: str, document_path: PurePosixPath
+) -> str | None:
+    """Return one eligible local artifact target relative to the log root."""
+
+    target = raw_target[1:-1] if raw_target.startswith("<") else raw_target
+    target = urllib.parse.unquote(target)
+    parsed = urllib.parse.urlparse(target)
+    path_text = target.split("#", 1)[0]
+    if (
+        parsed.scheme.lower() in EXTERNAL_TARGET_SCHEMES
+        or target.startswith("#")
+        or not path_text
+        or PurePosixPath(path_text).suffix.lower() == ".md"
+    ):
+        return None
+    pure = PurePosixPath(path_text)
+    return (
+        pure.as_posix()
+        if pure.is_absolute()
+        else _normalize_join(document_path.parent, pure)
+    )
 
 
 def _line_contexts(lines: Sequence[str]) -> tuple[_LineContext, ...]:

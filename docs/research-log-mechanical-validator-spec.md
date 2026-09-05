@@ -78,8 +78,8 @@ validator. The research-logging skill carries the bounded authoring and
 operational rules agents need to produce compatible research logs; ordinary
 research-agent work does not load this implementation specification.
 
-Provenance lineage and execution-support validation is rooted in evidence and
-direct artifact presentations. Commands outside that closure do not require
+Provenance lineage and execution-support validation is rooted in evidence
+records. Commands outside that closure do not require
 confirmed output support or recursive lineage validation. Separately,
 complete-graph output reconciliation reports every graph-declared output whose
 artifact is absent as a Provenance failure and every output record absent from
@@ -255,7 +255,7 @@ embedded source-list or locator delimiter grammar.
 string prefix. The evaluator applies the current locator grammar before
 parsing and uses `v2:` followed by its canonical JSON serialization as the
 locator identity. A source object cannot contain a serialized locator string
-or omit `locator`.
+or omit `locator`. Only a `kind:"artifact"` record uses `locator:null`.
 
 Array order defines transformation input slots. There is no outer source-list
 parser, mixed locator version, or CSV escaping in this host form.
@@ -760,8 +760,8 @@ without replacement characters.
 
 The value-selection registry is limited to CSV/TSV, JSON, NPZ, HDF5/MATLAB
 7.3, and UTF-8 plain text or command logs because those profiles cover the
-retained locator corpus. Images, PDFs, SVG, and source files remain direct
-artifacts rather than locator containers.
+retained locator corpus. Images, PDFs, SVG, and source files remain
+whole-artifact evidence sources rather than locator containers.
 
 ### Directories, Pickle, And Opaque Sources
 
@@ -772,8 +772,9 @@ Pickle and other execution-capable serialized objects are prohibited as
 mechanically inspected value sources. The repair is to retain a supported
 machine-readable companion artifact through an explicit recorded command.
 
-An otherwise opaque source is not a locator container. Authors may present
-it as a direct artifact or retain a supported machine-readable companion.
+An otherwise opaque source is not a locator container. Authors may present it
+through a whole-artifact evidence record or retain a supported
+machine-readable companion.
 
 ### Future Source Profiles If Warranted
 
@@ -1980,9 +1981,6 @@ unsupported state merely because it is below a directory named `validation`.
 Evidence records embed locator and transformation objects directly under the
 current grammars.
 
-Direct artifact presentations use their Markdown target and the provenance
-contract rather than `evidence.json`.
-
 ### Evidence JSON File Schema
 
 `evidence.json` uses one exact top-level object:
@@ -2020,8 +2018,8 @@ An entry-root presentation record has exactly:
 ```
 
 Required keys are `id`, `document`, `kind`, `sources`, and `transformation`;
-unknown keys fail. `kind` is `statistic`, `table`, or `output`. `sources` is a
-non-empty ordered array of exact evidence source objects containing locators.
+unknown keys fail. `kind` is `artifact`, `statistic`, `table`, or `output`.
+`sources` is a non-empty ordered array of exact evidence source objects.
 `transformation` is `null` for identity or the JSON object portion of a
 transformation without a `v2:` prefix. Record kinds are entry
 presentations. Summaries use the Markdown-owned references defined below, and
@@ -2036,6 +2034,25 @@ The evaluator applies the current grammars to every embedded locator and
 non-null transformation. Their canonical identities retain the `v2:` prefix
 plus canonical JSON serialization, even though the host file stores only the
 JSON object.
+
+An artifact record is the closed whole-artifact form:
+
+```json
+{
+  "id": "residual-map",
+  "document": "entries/2026-08-27-e001-study/e001.md",
+  "kind": "artifact",
+  "sources": [{"source": "<residual-map>", "locator": null}],
+  "transformation": null
+}
+```
+
+It has exactly one source, a null locator, and a null transformation. Null
+locators are prohibited for every other record kind. The source resolves to
+one registered file or one exact member of a registered directory; a bare
+directory is invalid. The source registry fingerprint supplies complete
+artifact identity, so the evidence record does not duplicate a path or digest
+and validation does not open the artifact through a format-specific reader.
 
 `id` uses this grammar and is at most 96 ASCII characters:
 
@@ -2089,6 +2106,10 @@ Marker placement depends on `kind`:
   comment, label, or prose line may intervene before the first table row.
 - An `output` marker occupies the immediately preceding source line before the
   opening `text` fence. No blank, comment, label, or prose line may intervene.
+- An `artifact` marker immediately follows one eligible local Markdown link or
+  image embed on the same source line with no intervening characters. It binds
+  to that immediately preceding Markdown node, including when one line contains
+  several separately marked artifacts.
 
 One marker binds exactly one presented item. One presented item has exactly one
 marker. A marker ID must resolve to exactly one presentation record whose
@@ -2169,8 +2190,8 @@ fidelity to the entry remain Semantic Review concerns.
 The active association contract has this structural boundary:
 
 - entry statistics are eligible only in an experimental section;
-- entry tables and output blocks are eligible only beneath that experimental
-  section's `Results:` label;
+- entry tables, output blocks, and local artifact links or image embeds are
+  eligible only beneath that experimental section's `Results:` label;
 - summary statistics are eligible only in the maintained summary; and
 - synthesis and prose entry sections contain no evidence-record targets.
 
@@ -2178,31 +2199,36 @@ The deterministic section classifier remains outside this specification but
 its declared classifier version and classification result are association
 dependencies. A marker cannot override an ineligible context.
 
-Every eligible entry statistic, table, or `text` output block must have one
-valid entry marker, and every eligible summary statistic must have one valid
-summary reference. A missing entry marker fails
+Every eligible entry statistic, table, `text` output block, local artifact
+link, or local image embed must have one valid entry marker, and every eligible
+summary statistic must have one valid summary reference. A missing entry marker fails
 `association.declaration_missing`; a missing summary reference fails
 `summary.reference.missing`. Other unmarked prose is not promoted to evidence
 by validation. Semantic Review may report an apparently evidential claim that
 uses no supported presentation form.
 
-Artifact links and image embeds in experimental `Results:` remain direct
-artifact presentations. They do not use evidence-record files or evidence markers.
-Their exact Markdown target supplies presentation identity, and
-the recorded-command provenance subcontract below owns their producer and
-lineage checks.
+External links, fragment-only links, and Markdown-document links are not
+artifact evidence presentations. Summaries cannot present artifact evidence.
+
+For an artifact record, validation normalizes the marked Markdown target
+relative to its document and independently resolves the source token through
+`data.json`. Both must identify the same canonical artifact path before
+fingerprint, content, or Provenance evaluation. A different path fails
+`association.artifact.source_mismatch` even when its bytes are identical.
 
 ### Evidence Source And Transformation Cardinality
 
-Entry records consume source objects in their declared array order. Each object
-contains one embedded locator and must return one successful ordered typed
-selection. The transformation input slot is the zero-based `sources` array
-position.
+Non-artifact entry records consume source objects in their declared array
+order. Each object contains one embedded locator and must return one successful
+ordered typed selection. The transformation input slot is the zero-based
+`sources` array position. Artifact records use the whole source and have no
+selection or transformation input.
 
 Cardinality is closed by presentation kind:
 
 | Kind or table mode | Source objects | Additional requirement |
 | --- | ---: | --- |
+| `artifact` | 1 | The source and marked Markdown target resolve to the same complete artifact. |
 | `statistic` | 1–8 | The transformation produces exactly one supported non-table form. |
 | `output` | 1 | The locator selects exactly one string and identity or `form:"text"` produces the complete block payload. |
 | `table` / `direct` | 1 | The selected table and recipe satisfy direct-table one-to-one rules. |
@@ -2214,10 +2240,8 @@ not a second table grammar. A statistic may use null identity only when one
 selected primitive renders to exactly one canonical statistic expression. An
 output may use null identity only for one selected string.
 
-A whole-artifact reference is prohibited in an evidence record because it
-returns no source-internal selection to the transformation contract. Authors
-must use a bounded locator. Whole artifacts remain valid for direct artifact
-presentations outside evidence-record files.
+Whole-artifact evidence is valid only through `kind:"artifact"`. It cannot use
+a locator or transformation and cannot be consumed by summary evidence.
 
 ### Strict Presentation Parsing And Comparison
 
@@ -2362,6 +2386,7 @@ codes are:
 | `association.presentation_missing` | evidence | An evidence presentation record has no matching presentation. |
 | `association.document_mismatch` | evidence | The evidence record and marker do not identify the same permitted document. |
 | `association.kind_mismatch` | evidence | Declared and observed presentation kinds differ. |
+| `association.artifact.source_mismatch` | evidence | A marked artifact target and its one source token resolve to different canonical paths. |
 | `association.context_invalid` | conformance | The presentation is outside its permitted section or label. |
 | `association.source_cardinality` | evidence | The source count violates its kind or table mode. |
 | `association.presentation.syntax_invalid` | conformance | The marked Markdown item is outside the closed structural parser. |
@@ -2444,8 +2469,7 @@ conclusion.
 
 `data.json` is primarily an input registry. It contains all and only resources
 used as material inputs by recorded commands or evidence records owned by one
-entry root, plus an exact directly presented artifact only when its explicit
-`origin: true` declaration is needed to stop Provenance.
+entry root.
 
 The public `log data` actions are the sole ordinary authoring interface for
 this file. They infer representation fields, validate the asserted Provenance
@@ -2462,11 +2486,9 @@ for explicitly authorized Repair.
   evidence record consumes it. An output consumed by neither surface remains
   absent.
 - Evidence use counts as registry use when evaluating unused declarations.
-- A direct artifact's matching origin declaration counts as registry use. A
-  direct generated artifact does not need a `data.json` item.
 - An evidence source resolves to one local regular file. A bare directory token
   is invalid; select one exact member instead.
-- An entry with no inputs or direct-artifact origin omits `data.json`; a
+- An entry with no inputs omits `data.json`; a
   present file is non-empty.
 - Split documents at one entry root share one file. The validator does not
   search, inherit, merge, or shadow parent-entry or log-level files.
@@ -3394,6 +3416,12 @@ never modifies, retains, copies, or removes the definition. `--dry-run`
 performs the complete source observation, evaluation, presentation comparison,
 candidate build, and mutation preflight without writing the registry.
 
+When the unique marker belongs to an artifact link or image embed, common mode
+accepts one `--source` and no selection or conversion arguments. It infers the
+closed artifact record, requires the marked target and source token to resolve
+to the same canonical path, verifies the registered fingerprint, and publishes
+through the ordinary evidence lifecycle without loading an artifact reader.
+
 The explicit single-log Reorganize operations are:
 
 ```text
@@ -3791,10 +3819,11 @@ executable interface unchanged is not a valid repair.
   graph relationship and confirmed output support; raw redirection or `tee`
   does not provide that support. The marked fence payload must still match the
   selected retained text exactly.
-- A direct artifact presentation has no evidence record. Its normalized
-  Markdown target must match exactly one mechanically proven command output and
-  one exact confirmed output record. A path merely mentioned by a command does
-  not suffice.
+- A whole-artifact evidence presentation resolves its one source token and
+  compares that canonical path with the normalized Markdown target before
+  applying ordinary fingerprint and Provenance checks. A generated artifact
+  still requires one mechanically proven command output and exact confirmed
+  output support; an explicit origin stops the chain.
 - A cross-log source is observed as a locally declared origin of the consuming log.
   Validation does not import the source log's command graph or validation
   result.

@@ -109,8 +109,24 @@ def evaluate_candidate_record(
     selections = []
     for source in record.sources:
         resolved = resolve_input_token(source.source, data)
+        if resolved.member is None and resolved.resource.kind != "file":
+            raise PresentationEvaluationError(
+                "evidence.declaration.invalid",
+                source.source,
+                {"reason": "file_source_required"},
+                "Evidence Presentation Authoring",
+            )
+        source_path = Path(resolved.path)
+        if presentation.kind == "artifact":
+            require_artifact_source_association(
+                presentation, source_path=source_path, log_root=log_root
+            )
         verify_fingerprint(resolved.resource)
-        selections.append(evaluate_locator(Path(resolved.path), source.locator))
+        if presentation.kind != "artifact":
+            assert source.locator is not None
+            selections.append(evaluate_locator(source_path, source.locator))
+    if presentation.kind == "artifact":
+        return CandidateEvaluation(record, presentation, ())
     result = evaluate_transformation(
         record.transformation, selections, presentation_kind=record.kind
     )
@@ -118,3 +134,21 @@ def evaluate_candidate_record(
         result, presented_kind=presentation.kind, presented=presentation.value
     )
     return CandidateEvaluation(record, presentation, tuple(selections))
+
+
+def require_artifact_source_association(
+    presentation: PresentedItem, *, source_path: Path, log_root: Path
+) -> None:
+    """Require one artifact marker and source token to identify the same path."""
+
+    if presentation.kind != "artifact":
+        return
+    marked = (log_root / presentation.value).resolve()
+    declared = source_path.resolve()
+    if marked != declared:
+        raise PresentationEvaluationError(
+            "association.artifact.source_mismatch",
+            presentation.id,
+            {"declared": declared.as_posix(), "marked": marked.as_posix()},
+            "Artifact Evidence Association",
+        )

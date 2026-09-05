@@ -630,6 +630,100 @@ class ReorganizeIdentityTests(unittest.TestCase):
 
 
 class ReorganizeTransferTests(unittest.TestCase):
+    def test_transfer_moves_artifact_registry_state_after_agent_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            source_image = source / "images" / "map.png"
+            source_image.parent.mkdir()
+            source_image.write_bytes(b"map bytes")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "map",
+                "images/map.png",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            section = (
+                "\n## Map\n\n`Background:`\n\nInspect the map.\n\n"
+                "`Steps:`\n\nOpen the image.\n\n`Results:`\n\n"
+                "![Map](images/map.png)<!-- eid:result-map -->\n"
+            )
+            source_document = source / "e001.md"
+            source_document.write_text(
+                source_document.read_text(encoding="utf-8") + section,
+                encoding="utf-8",
+            )
+            recorded = run(
+                root,
+                "evidence",
+                "add",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--id",
+                "result-map",
+                "--source",
+                "map",
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+
+            source_document.write_text(
+                source_document.read_text(encoding="utf-8").replace(section, ""),
+                encoding="utf-8",
+            )
+            destination_document = destination / "e002.md"
+            moved_section = section.replace("images/map.png", "images/moved.png")
+            destination_document.write_text(
+                destination_document.read_text(encoding="utf-8") + moved_section,
+                encoding="utf-8",
+            )
+            destination_image = destination / "images" / "moved.png"
+            destination_image.parent.mkdir()
+            source_image.rename(destination_image)
+            old_document = source.relative_to(logical).as_posix() + "/e001.md"
+            new_document = destination.relative_to(logical).as_posix() + "/e002.md"
+
+            transferred = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--evidence",
+                "result-map",
+                "--data",
+                "map",
+                "--document-map",
+                old_document,
+                new_document,
+                "--path-map",
+                "images/map.png",
+                "images/moved.png",
+            )
+
+            self.assertEqual(transferred.returncode, 0, transferred.stderr)
+            record = json.loads((destination / "evidence.json").read_text())[
+                "records"
+            ][0]
+            self.assertEqual(record["kind"], "artifact")
+            self.assertEqual(
+                record["sources"], [{"locator": None, "source": "<map>"}]
+            )
+            self.assertFalse((source / "data.json").exists())
+            self.assertFalse((source / "evidence.json").exists())
+
     def test_transfer_all_moves_data_and_evidence_after_agent_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

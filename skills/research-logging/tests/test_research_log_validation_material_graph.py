@@ -67,7 +67,6 @@ def _request(
     return GRAPH.MaterialGraphRequest(
         entry_roots={"e001": entry_root},
         evidence=evidence,
-        direct_artifacts=(),
         invocations=invocations,
         retention_files=retention_files,
         input_registries=(GRAPH.InputRegistrySurface("entries/entry", data_file),),

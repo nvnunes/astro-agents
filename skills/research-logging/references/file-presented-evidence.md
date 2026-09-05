@@ -1,6 +1,6 @@
 # Presented Evidence Instructions
 
-Use this file when adding or changing a presented result, direct artifact, or
+Use this file when adding or changing a presented result, artifact, or
 summary evidence reference. The agent chooses what the research presents and
 where it belongs. The public CLI owns evidence-record validation and storage.
 Never create, inspect, or edit its registry during ordinary Record.
@@ -11,8 +11,8 @@ value appears in a table.
 
 ## Presentation Markers
 
-Use one stable descriptive lowercase ID for each statistic, table, or retained
-output. Do not include the value in the ID.
+Use one stable descriptive lowercase ID for each statistic, table, retained
+output, or whole artifact. Do not include the value in the ID.
 
 - Put a statistic marker immediately after its single code span:
 
@@ -30,12 +30,16 @@ output. Do not include the value in the ID.
   | Candidate | 0.286% |
   ```
 
+- Put an artifact marker immediately after its local Markdown link or image
+  embed on the same source line, with no intervening characters:
+
+  ```markdown
+  ![Residual map](images/residual-map.png)<!-- eid:residual-map -->
+  [Download results](data/results.csv)<!-- eid:results-download -->
+  ```
+
 The marker is exactly `<!-- eid:descriptive-id -->`. Keep names, connective
 wording, and parameters outside a marked statistic's code span.
-
-A direct local artifact link or image embed under `Results:` uses the recorded
-command's provenance. It has no evidence ID or evidence record. Do not add a
-marker to it.
 
 ## Common Evidence Workflow
 
@@ -60,6 +64,8 @@ marker to it.
    stable row identity. Use `--as-percentage` only when the retained proportion
    is intentionally presented as a percentage, and `--scale` only for a
    researcher-authorized scientific scale conversion.
+   For a whole artifact, pass only its one source token; the action recognizes
+   the marked link or image and rejects selection or conversion arguments.
 4. Require the command to succeed. It resolves and fingerprints the source,
    infers the document and evidence kind from the unique marker, records exact
    selection expectations, checks the presentation, and publishes the complete
@@ -69,7 +75,7 @@ Invoke dependent authoring actions separately. Read each bounded result and
 stop at the first failure instead of sending the next action in the same shell
 invocation.
 
-This common path covers one-source identity statistics, inferred scalar
+This common path covers whole artifacts, one-source identity statistics, inferred scalar
 rendering and units, fractional percentages, explicit scaling, direct tables
 whose selected source already has the presented shape, and one selected line
 of retained `text` output. Use a complete `<name>` token for a file or
@@ -120,7 +126,7 @@ The error was `0.286%`<!-- ref entry = e001; eid = configuration-table; row = 2;
 Table coordinates are one-based body-row and presented-column coordinates. The
 summary expression must exactly match the entry presentation or selected cell.
 Do not originate a calculation, source, transformation, table, output block,
-or direct artifact in the summary.
+or artifact in the summary.
 
 ## Boundaries
 

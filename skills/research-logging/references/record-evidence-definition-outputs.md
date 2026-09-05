@@ -1,9 +1,8 @@
 # Advanced Retained-Output Evidence
 
 Use this file when a marked `text` output block needs an explicit retained-text
-locator or transformation that common evidence arguments cannot express. A
-direct artifact link or image embed is not an evidence record and does not use
-this mode.
+locator or transformation that common evidence arguments cannot express.
+Whole artifacts use the common one-source workflow instead of this mode.
 
 ## Workflow
 

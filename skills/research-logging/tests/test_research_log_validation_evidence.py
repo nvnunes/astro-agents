@@ -82,6 +82,47 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
+    def test_artifact_record_requires_one_whole_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
+            fields = {
+                "document": "entries/2026-08-28-e001-study/e001.md",
+                "id": "result-map",
+                "kind": "artifact",
+                "sources": [{"source": "<result-map>", "locator": None}],
+                "transformation": None,
+            }
+
+            record = EVIDENCE.evidence_record_from_fields(
+                subject="artifact",
+                log_root=log_root,
+                entry_root=entry_root,
+                fields=fields,
+            )
+            self.assertEqual(record.as_dict(), fields)
+            invalid = (
+                {**fields, "sources": fields["sources"] * 2},
+                {
+                    **fields,
+                    "sources": [
+                        {"source": "<result-map>", "locator": {"select": [[]]}}
+                    ],
+                },
+                {**fields, "transformation": {"form": "scalar"}},
+            )
+            for candidate in invalid:
+                with self.subTest(candidate=candidate):
+                    with self.assertRaisesRegex(
+                        EVIDENCE.EvidenceContractError,
+                        "evidence.declaration.invalid",
+                    ):
+                        EVIDENCE.evidence_record_from_fields(
+                            subject="artifact",
+                            log_root=log_root,
+                            entry_root=entry_root,
+                            fields=candidate,
+                        )
+
     def test_retired_v2_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = evidence_fixture(Path(directory))
@@ -480,30 +521,37 @@ class EvidenceAssociationTests(unittest.TestCase):
                 {("e001", "output"): EVIDENCE.CanonicalPresentation("output")},
             )
 
-    def test_direct_artifacts_preserve_normalized_markdown_targets(self) -> None:
+    def test_artifact_markers_preserve_normalized_markdown_targets(self) -> None:
         text = (
             "# Entry\n\n## Trial\n\n`Background:`\n\nQ\n\n"
             "`Steps:`\n\nRead the retained outputs.\n\n`Results:`\n\n"
-            "![Figure](../images/result.png) and "
-            '[table](<data/result.csv> "download").\n'
+            "![Figure](../images/result%20map.png)<!-- eid:result-map --> and "
+            '[table](<data/result.csv> "download")<!-- eid:result-table -->.\n'
             "[navigation](notes.md) [external](https://example.com/a.csv)\n"
             "```text\n[not an artifact](data/inside.csv)\n```\n"
         )
 
-        artifacts = EVIDENCE.index_direct_artifacts(
+        artifacts = tuple(
+            item
+            for item in EVIDENCE.index_entry_presentations(
             text,
             document="entries/2026-08-28-e001-study/e001.md",
+            )
+            if item.kind == "artifact"
         )
 
         self.assertEqual(len(artifacts), 2)
         self.assertEqual(
-            [artifact.normalized_target for artifact in artifacts],
+            [artifact.value for artifact in artifacts],
             [
-                "entries/images/result.png",
+                "entries/images/result map.png",
                 "entries/2026-08-28-e001-study/data/result.csv",
             ],
         )
-        self.assertTrue(artifacts[0].image)
+        self.assertEqual(
+            [artifact.id for artifact in artifacts],
+            ["result-map", "result-table"],
+        )
 
 
 if __name__ == "__main__":

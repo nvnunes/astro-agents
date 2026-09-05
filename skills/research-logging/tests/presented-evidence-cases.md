@@ -32,6 +32,17 @@ output can be read, and inspects the figure. It records a defect, correction,
 or limitation that affects the evidence, but does not narrate a routine
 successful inspection or declare validation.
 
+Given a local artifact link or image embed under experimental `Results:`,
+Record registers the artifact as a generated or origin input, puts one stable
+evidence marker immediately after the Markdown node, and invokes common
+`log evidence add` with its one source token. It does not load locator,
+transformation, or registry-schema guidance.
+
+Given two artifact links on one line, Record assigns and records each ID
+independently. Given a source token that resolves to a different path from the
+marked target, even with identical bytes, the authoring action fails and Record
+does not edit `evidence.json` or substitute a plausible source.
+
 Given a changed analysis stage that consumes a serialized intermediate, Record
 reloads the intermediate and checks its expected structure. It records shape,
 row count, or schema only when that information helps explain, reuse, or assess
@@ -116,9 +127,9 @@ actual workflow. An entry evidence source also loads locator guidance. A
 non-identity statistic or output loads transformation guidance, while a table
 loads transformation and table guidance.
 
-A summary reference or direct artifact does not load locator, transformation,
-or table guidance merely because another item in the entry uses it. It does not
-load citation guidance without citation work.
+A summary reference or whole-artifact evidence record does not load locator,
+transformation, or table guidance merely because another item in the entry uses
+it. It does not load citation guidance without citation work.
 
 When `data.json`, a `<name>` token, or a durable origin input first becomes
 necessary after an investigation has begun, Record treats it as a new routing

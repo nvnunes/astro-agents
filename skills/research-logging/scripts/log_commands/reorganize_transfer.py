@@ -33,6 +33,7 @@ from validation.operation_state import begin_reorganization, finish_guarded_publ
 from validation.presentation import (
     find_entry_presentation,
     index_entry_presentations_all,
+    require_artifact_source_association,
 )
 from validation.pyrun_outputs import (
     PyrunOutputsFile,
@@ -451,8 +452,19 @@ def _verify_evidence_values(
         selections = []
         for source in record.sources:
             resolved = resolve_input_token(source.source, data)
+            source_path = Path(resolved.path)
+            if presentation.kind == "artifact":
+                require_artifact_source_association(
+                    presentation,
+                    source_path=source_path,
+                    log_root=entry.log.root,
+                )
             verify_fingerprint(resolved.resource)
-            selections.append(evaluate_locator(Path(resolved.path), source.locator))
+            if presentation.kind != "artifact":
+                assert source.locator is not None
+                selections.append(evaluate_locator(source_path, source.locator))
+        if presentation.kind == "artifact":
+            continue
         transformed = evaluate_transformation(
             record.transformation,
             selections,
@@ -731,15 +743,21 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
     } or not isinstance(sources, list):
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
     decoded_sources: list[EvidenceSource] = []
+    kind = fields.get("kind")
     for source in sources:
         if not isinstance(source, Mapping) or set(source) != {"source", "locator"}:
             raise ActionError("reorganize.transfer.schema_invalid", str(path))
         locator = source.get("locator")
-        if not isinstance(source.get("source"), str) or not isinstance(
-            locator, Mapping
+        if not isinstance(source.get("source"), str) or not (
+            isinstance(locator, Mapping) or (kind == "artifact" and locator is None)
         ):
             raise ActionError("reorganize.transfer.schema_invalid", str(path))
-        decoded_sources.append(EvidenceSource(source["source"], dict(locator)))
+        decoded_sources.append(
+            EvidenceSource(
+                source["source"],
+                dict(locator) if isinstance(locator, Mapping) else None,
+            )
+        )
     if not all(
         isinstance(fields.get(name), str) for name in ("id", "document", "kind")
     ):

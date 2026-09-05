@@ -549,9 +549,8 @@ or Provenance.
 ### Input registry
 
 Use entry-root `data.json` for every file or directory consumed as a material
-input by a recorded command or evidence record. It contains all and only those
-inputs, plus a directly presented artifact when an explicit origin boundary is
-needed. Each has one stable name, local location, strong fingerprint, and
+input by a recorded command or evidence record. Each has one stable name,
+local location, strong fingerprint, and
 Boolean `origin`. An origin stops the Provenance chain at that artifact;
 generated material continues to its unique earlier producer regardless of
 where the file is stored.
@@ -574,8 +573,7 @@ record consumes it. After its producer succeeds, register it with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
 <target>` so it traces to that current confirmed producer. `log data` is the
 sole ordinary author of `data.json`; do not edit the registry directly. Omit
-the file when the entry has no command or evidence inputs and no direct artifact
-origin.
+the file when the entry has no command or evidence inputs.
 
 Input targets passed to `log data` are absolute or relative to the selected
 entry root, regardless of the caller's working directory. Prefer short

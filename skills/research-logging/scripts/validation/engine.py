@@ -43,14 +43,12 @@ from .evidence import (
     MAX_SUMMARY_REFERENCES_PER_LOG,
     SECTION_CLASSIFIER_VERSION,
     CanonicalPresentation,
-    DirectArtifactPresentation,
     EvidenceFile,
     EvidenceSource,
     PresentationRecord,
     PresentedItem,
     SummaryReference,
     associate_presentations,
-    index_direct_artifacts,
     index_entry_documents,
     index_entry_presentation_candidates,
     index_entry_presentations,
@@ -74,7 +72,6 @@ from .locator import (
     require_source_unchanged,
 )
 from .material_graph import (
-    DirectArtifactConnection,
     EvidenceConnection,
     InputRegistrySurface,
     MaterialGraphRequest,
@@ -98,6 +95,7 @@ from .output_support import (
     require_current_output_support,
     resolve_output_support,
 )
+from .presentation import require_artifact_source_association
 from .provenance import (
     DirectoryProducerIndex,
     build_directory_producer_index,
@@ -203,7 +201,6 @@ class _ScanState:
     ) = None
     command_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     records: list[_RecordOutcome] = field(default_factory=list)
-    direct: list[DirectArtifactConnection] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
     output_files: dict[str, PyrunOutputsFile] = field(default_factory=dict)
     output_record_errors: dict[str, MechanicalContractError] = field(
@@ -1053,7 +1050,7 @@ def _evaluate_entries(state: _ScanState) -> None:
     _record_unowned_evidence(state)
     for entry in state.entries:
         try:
-            presentations, direct = _entry_presentations(entry, state)
+            presentations = _entry_presentations(entry, state)
             state.presentation_count += len(presentations)
             if state.presentation_count > MAX_PRESENTATIONS_PER_LOG:
                 _fail(
@@ -1090,7 +1087,6 @@ def _evaluate_entries(state: _ScanState) -> None:
                 outcome = _evaluate_record(entry, record, associated[record.id], state)
                 state.records.append(outcome)
                 state.checks.extend((outcome.evidence_check, outcome.provenance_check))
-            _evaluate_direct_artifacts(entry, direct, state)
         except MechanicalContractError as error:
             identity = f"entry:{entry.id}:association"
             scope = _error_scope(error, CheckScope.EVIDENCE)
@@ -1099,9 +1095,8 @@ def _evaluate_entries(state: _ScanState) -> None:
 
 def _entry_presentations(
     entry: _Entry, state: _ScanState
-) -> tuple[tuple[PresentedItem, ...], tuple[DirectArtifactPresentation, ...]]:
+) -> tuple[PresentedItem, ...]:
     presented: list[PresentedItem] = []
-    direct: list[DirectArtifactPresentation] = []
     document = entry.document
     text = _read_text(document, state)
     relative = document.relative_to(state.log_root).as_posix()
@@ -1126,8 +1121,7 @@ def _entry_presentations(
     indexed = index_entry_presentations(text, document=relative)
     _require_complete_markers(document, indexed, text, state)
     presented.extend(indexed)
-    direct.extend(index_direct_artifacts(text, document=relative))
-    return tuple(presented), tuple(direct)
+    return tuple(presented)
 
 
 def _document_evidence_file(entry: _Entry, state: _ScanState) -> EvidenceFile | None:
@@ -1232,6 +1226,12 @@ def _evaluate_record(
         materials = tuple(
             _resolve_source(source, entry, state) for source in record.sources
         )
+        if record.kind == "artifact":
+            require_artifact_source_association(
+                item,
+                source_path=materials[0].path,
+                log_root=state.log_root,
+            )
     except MechanicalContractError as error:
         evidence = _error_check(
             identity, _error_scope(error, CheckScope.EVIDENCE), error
@@ -1264,6 +1264,27 @@ def _evaluate_record(
             entry.id, record, item, materials, evidence, provenance, None, ()
         )
     provenance = _record_provenance(entry, record, materials, state)
+    if record.kind == "artifact":
+        evidence = _pass_check(
+            identity,
+            CheckScope.EVIDENCE,
+            dependencies=(
+                {
+                    "artifact": materials[0].path.as_posix(),
+                    "presentation": f"{item.document}:{item.id}",
+                },
+            ),
+        )
+        return _RecordOutcome(
+            entry.id,
+            record,
+            item,
+            materials,
+            evidence,
+            provenance,
+            None,
+            (),
+        )
     try:
         selections = [
             _selection(source, resolved, state)
@@ -1323,6 +1344,7 @@ def _transform_and_compare(
 def _selection(
     source: EvidenceSource, resolved: _ResolvedSource, state: _ScanState
 ) -> SelectionResult:
+    assert source.locator is not None
     path = resolved.path
     source_key = path.resolve().as_posix()
     parsed_locator = parse_locator(source.locator)
@@ -1471,125 +1493,6 @@ def _record_provenance(
         )
 
 
-def _evaluate_direct_artifacts(
-    entry: _Entry,
-    artifacts: Sequence[DirectArtifactPresentation],
-    state: _ScanState,
-) -> None:
-    for artifact in artifacts:
-        identity = f"artifact:{artifact.document}:{artifact.line}"
-        target = state.log_root / artifact.normalized_target
-        canonical = target.resolve().as_posix()
-        origin_resource = next(
-            (
-                resource
-                for resource in (
-                    entry.data_file.inputs if entry.data_file is not None else ()
-                )
-                if resource.origin and resource.canonical_target == canonical
-            ),
-            None,
-        )
-        input_names = (
-            (f"{_material_owner(entry, state)}:{origin_resource.name}",)
-            if origin_resource is not None
-            else ()
-        )
-        state.direct.append(
-            DirectArtifactConnection(
-                entry.id,
-                identity,
-                canonical,
-                origin=origin_resource is not None,
-                input_names=input_names,
-            )
-        )
-        try:
-            if origin_resource is not None:
-                prerequisites = tuple(
-                    state.input_prerequisite_checks.get(
-                        _input_declaration_key(
-                            _material_owner(entry, state), origin_resource
-                        ),
-                        (),
-                    )
-                )
-                if prerequisites:
-                    state.checks.append(
-                        _checks_depending_on(
-                            f"provenance:{identity}",
-                            CheckScope.PROVENANCE,
-                            prerequisites,
-                        )
-                    )
-                    continue
-                require_origin_boundary(
-                    target,
-                    origin_resource,
-                    state.invocations,
-                    confirmed_record=lambda invocation, output: (
-                        _has_confirmed_output_record(invocation, output, state)
-                    ),
-                    directory_producers=state.directory_producers,
-                )
-                state.checks.append(
-                    _pass_check(
-                        f"provenance:{identity}",
-                        CheckScope.PROVENANCE,
-                        dependencies=(
-                            {"artifacts": [canonical]},
-                            {
-                                "declaration": origin_resource.content_identity,
-                                "kind": "origin",
-                            },
-                        ),
-                    )
-                )
-                continue
-            result = evaluate_provenance(
-                target,
-                state.invocations,
-                producer_validator=lambda invocation, output: (
-                    _validate_output_support(invocation, output, state)
-                ),
-                confirmed_record=lambda invocation, output: (
-                    _has_confirmed_output_record(invocation, output, state)
-                ),
-                directory_producers=state.directory_producers,
-            )
-            state.checks.append(
-                _pass_check(
-                    f"provenance:{identity}",
-                    CheckScope.PROVENANCE,
-                    dependencies=(
-                        {"artifacts": [target.resolve().as_posix()]},
-                        {"dependency_projection": result.dependency_projection},
-                    ),
-                )
-            )
-        except MechanicalContractError as error:
-            blockers = _command_blockers(error.subject, state)
-            if error.code in {"producer.missing", "lineage.missing"} and blockers:
-                state.checks.append(
-                    _blocked_check(
-                        f"provenance:{identity}",
-                        CheckScope.PROVENANCE,
-                        error.subject,
-                        blockers,
-                        dependencies=({"artifacts": [target.resolve().as_posix()]},),
-                    )
-                )
-                continue
-            state.checks.append(
-                _error_check(
-                    f"provenance:{identity}",
-                    CheckScope.PROVENANCE,
-                    error,
-                    dependencies=({"artifacts": [target.resolve().as_posix()]},),
-                )
-            )
-
-
 def _evaluate_summary(text: str, state: _ScanState) -> None:
     references = index_summary_references(text)
     if len(references) > MAX_SUMMARY_REFERENCES_PER_LOG:
@@ -1660,7 +1563,6 @@ def _compose_graph(state: _ScanState) -> None:
     request = MaterialGraphRequest(
         entry_roots={entry.id: entry.root for entry in state.entries},
         evidence=_graph_evidence_connections(state),
-        direct_artifacts=tuple(state.direct),
         invocations=state.invocations,
         retention_files=_unique_retention_files(state.entries),
         input_registries=_input_registry_surfaces(state),

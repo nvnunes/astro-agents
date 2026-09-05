@@ -76,18 +76,6 @@ class EvidenceConnection:
 
 
 @dataclass(frozen=True)
-class DirectArtifactConnection:
-    """One directly presented local artifact."""
-
-    entry: str
-    presentation: str
-    material: str
-    dependencies: tuple[str, ...] = ()
-    origin: bool = False
-    input_names: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class InputRegistrySurface:
     """One material-owner-local input registry."""
 
@@ -124,7 +112,6 @@ class MaterialGraphRequest:
 
     entry_roots: Mapping[str, Path]
     evidence: Sequence[EvidenceConnection]
-    direct_artifacts: Sequence[DirectArtifactConnection]
     invocations: Sequence[Invocation]
     retention_files: Sequence[RetentionFile]
     input_registries: Sequence[InputRegistrySurface] = ()
@@ -160,7 +147,6 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     )
     graph_started = time.perf_counter()
     _add_evidence(request.evidence, state)
-    _add_direct_artifacts(request.direct_artifacts, state)
     _bound_graph(state.nodes, state.edges)
     graph_seconds = time.perf_counter() - graph_started
 
@@ -173,7 +159,6 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         request.input_registries,
         request.invocations,
         request.evidence,
-        request.direct_artifacts,
     )
     orphan = _orphan_result(inventory, state.connected, retained, unused_names)
     orphan_seconds = time.perf_counter() - orphan_started
@@ -220,19 +205,6 @@ def _add_evidence(
             if not origin:
                 _trace_material(material.identity, None, state, depth=0)
         state.dependencies.append(_evidence_projection(connection))
-
-
-def _add_direct_artifacts(
-    connections: Sequence[DirectArtifactConnection], state: _GraphState
-) -> None:
-    for connection in connections:
-        presentation = _node(state.nodes, "presentation", connection.presentation)
-        material = _material_node(state.nodes, connection.material)
-        state.edges.add(GraphEdge("direct-artifact", presentation, material))
-        _connect_local(state.connected, material.identity, state.roots)
-        if not connection.origin:
-            _trace_material(material.identity, None, state, depth=0)
-        state.dependencies.append(_artifact_projection(connection))
 
 
 def _trace_material(
@@ -576,7 +548,6 @@ def _unused_input_names(
     surfaces: Sequence[InputRegistrySurface],
     invocations: Sequence[Invocation],
     evidence: Sequence[EvidenceConnection],
-    direct_artifacts: Sequence[DirectArtifactConnection],
 ) -> set[str]:
     used = {
         f"{invocation.material_owner}:{relationship.input_resource.name}"
@@ -585,9 +556,6 @@ def _unused_input_names(
         if relationship.input_resource is not None
     }
     used.update(name for connection in evidence for name in connection.input_names)
-    used.update(
-        name for connection in direct_artifacts for name in connection.input_names
-    )
     declared = {
         f"{surface.owner}:{resource.name}"
         for surface in surfaces
@@ -605,17 +573,6 @@ def _evidence_projection(connection: EvidenceConnection) -> object:
         "materials": sorted(connection.materials),
         "presentation": connection.presentation,
         "record": connection.record,
-    }
-
-
-def _artifact_projection(connection: DirectArtifactConnection) -> object:
-    return {
-        "dependencies": list(connection.dependencies),
-        "entry": connection.entry,
-        "input_names": sorted(connection.input_names),
-        "material": connection.material,
-        "origin": connection.origin,
-        "presentation": connection.presentation,
     }
 
 

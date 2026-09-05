@@ -3361,7 +3361,7 @@ The input-registry operations are:
 <skill>/scripts/log data add-origin --path LOG --entry ENTRY NAME TARGET
   [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
-  [--dry-run]
+  [--pending-confirmation] [--dry-run]
 <skill>/scripts/log data update --path LOG --entry ENTRY NAME
   [--target TARGET] [--origin | --generated]
   [--identity SELECTOR]... [--byte-complete] [--commit COMMIT] [--dry-run]
@@ -3377,7 +3377,15 @@ fingerprint and data-file contracts. `add-origin` rejects a confirmed producer
 in the same log. Its mutually exclusive `--commit` form requires a full
 lowercase commit hash and makes `TARGET` a Git repository locator.
 `add-generated` requires one current confirmed same-log
-producer whose recorded output and current target bytes agree. `update` applies
+producer whose recorded output and current target bytes agree. Its
+`--pending-confirmation` form is reserved for explicit Repair and migration:
+it requires one structurally valid, unambiguous current same-log producer and
+the current target, but permits absent or explicitly unconfirmed output
+support so reproduction can establish confirmation later. It does not change
+`pyrun-outputs.json`, add persisted pending state, or relax missing and
+ambiguous producer checks. When a support record is already confirmed, the
+producer's own current output and signature checks still apply, while recursive
+lineage may remain pending reproduction. `update` applies
 only explicit changes and rechecks the resulting boundary; changing a Git
 repository target preserves and verifies its commit unless `--commit` replaces
 it. Git repository inputs cannot become generated or use directory identity

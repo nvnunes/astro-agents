@@ -30,6 +30,13 @@ definition mode, not Repair.
 - Use the owning `<skill>/scripts/log` action when the current research-owned
   state is parseable and that action expresses the intended correction. Read
   only that action's help before invoking it.
+- When an explicitly identified retained generated target must be registered
+  before reproduction can confirm it, use `log data add-generated
+  --pending-confirmation`. Require the target and exactly one current same-log
+  `pyrun` producer to be unambiguous. Treat the resulting unconfirmed
+  Provenance finding as pending reproduction, not as a completed repair. Do
+  not use this form to bypass a missing or ambiguous producer or to classify an
+  uncertain boundary.
 - When malformed or legacy research-owned Markdown or JSON prevents the owning
   action from operating, edit only the affected file with the normal workspace
   tools. Search
@@ -59,8 +66,9 @@ definition mode, not Repair.
   correction; only Validate may replace them afterward.
 - Do not edit `pyrun-outputs.json` or its recognized backups. Those are
   tool-owned execution-support state. Use an existing owning command when one
-  can re-establish the required support; otherwise report the unresolved
-  tool-state condition.
+  can re-establish the required support. Pending generated-input registration
+  may precede that reproduction but never changes or substitutes for execution
+  support; otherwise report the unresolved tool-state condition.
 - Do not infer Replace authorization. If the correction would remove
   superseded experimental work, stop and request explicit Replace authority.
 - Do not reorganize document or entry boundaries unless the researcher also

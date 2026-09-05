@@ -228,6 +228,13 @@ only the applicable mechanical contract, directly corrects the named defect,
 and leaves unrelated records unchanged. A Markdown-only defect is corrected in
 the affected document without opening registry schemas that are not involved.
 
+Given an explicitly identified retained generated target that must enter the
+input registry before reproduction, Repair uses `log data add-generated
+--pending-confirmation` only when one current same-log `pyrun` producer is
+unambiguous. The action records the current target as generated without editing
+execution support. Missing or ambiguous producers still fail, and validation
+continues to report unconfirmed Provenance until reproduction succeeds.
+
 Given recognized residue from an interrupted research-owned transaction,
 Repair follows its exact diagnostic and owning implementation contract. It
 does not treat unknown files as residue. Repair never edits generated

@@ -27,7 +27,12 @@ from validation.output_support import (
     require_current_output_support,
     resolve_output_support,
 )
-from validation.provenance import ProvenanceResult, evaluate_provenance
+from validation.provenance import (
+    ProvenanceResult,
+    build_directory_producer_index,
+    evaluate_provenance,
+    require_declared_producer,
+)
 from validation.pyrun_outputs import (
     PyrunOutputsFile,
     empty_pyrun_outputs,
@@ -119,6 +124,47 @@ class LogMaterials:
                 "generated target changed during producer verification",
             )
         return result
+
+    def require_pending_generated(self, resource: InputResource) -> Invocation:
+        """Require one producer while leaving absent execution proof pending."""
+
+        directory_producers = build_directory_producer_index(self.invocations)
+        producer = require_declared_producer(
+            resource.canonical_target,
+            self.invocations,
+            directory_producers=directory_producers,
+        )
+        root = self._root(producer)
+        resolved = resolve_output_support(
+            producer,
+            resource.canonical_target,
+            entry_root=root,
+            project_root=self.project_root,
+            support=self._output_support(producer.material_owner, root),
+        )
+        if resolved.record is not None and resolved.record.confirmed:
+            current = resource.fingerprint
+            if resolved.path.resolve().as_posix() != resource.canonical_target:
+                try:
+                    with FingerprintCache(
+                        self.project_root, writable=False, reuse=True
+                    ) as cache:
+                        observation = (
+                            cache.observe_directory(resolved.path)
+                            if resolved.path.is_dir()
+                            else cache.observe_regular_file(resolved.path)
+                        )
+                except FingerprintCacheError as error:
+                    raise ActionError(
+                        "provenance.observation.unavailable", str(error)
+                    ) from error
+                current = observation.fingerprint
+            require_current_output_support(
+                producer,
+                resolved,
+                current_output=current,
+            )
+        return producer
 
     def rerun_commands(
         self, entry_root: Path, *, old_name: str, new_name: str

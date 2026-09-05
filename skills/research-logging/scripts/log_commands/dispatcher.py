@@ -312,6 +312,15 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                 "--commit",
                 help="full lowercase commit hash identifying a Git repository input",
             )
+        else:
+            action.add_argument(
+                "--pending-confirmation",
+                action="store_true",
+                help=(
+                    "register one uniquely declared output before reproduction "
+                    "confirms it"
+                ),
+            )
     update = actions.add_parser(
         "update", help="Change explicitly selected input properties"
     )
@@ -381,6 +390,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                     else None
                 ),
                 commit=getattr(args, "commit", None),
+                pending_confirmation=getattr(args, "pending_confirmation", False),
                 dry_run=args.dry_run,
             ),
         )

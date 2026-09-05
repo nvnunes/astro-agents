@@ -86,6 +86,11 @@ def add(
 ) -> ActionResult:
     """Add one inferred local input after checking its asserted boundary."""
 
+    if arguments.pending_confirmation and not generated:
+        raise ActionError(
+            "data.pending.invalid",
+            "pending confirmation applies only to generated inputs",
+        )
     with entry_lock(entry):
         current = _load(entry)
         candidate = _build_item(
@@ -102,21 +107,33 @@ def add(
         if existing is not None:
             if existing == candidate:
                 assert current is not None
-                _require_boundary(entry, current, candidate)
+                producer = _require_boundary(
+                    entry,
+                    current,
+                    candidate,
+                    pending_confirmation=arguments.pending_confirmation,
+                )
                 return _result(
                     "add-generated" if generated else "add-origin",
                     "unchanged",
                     False,
+                    producer,
                 )
             raise ActionError("data.input.conflict", arguments.name)
         built = _build(entry, (*_items(current), candidate))
-        _require_boundary(entry, built, candidate)
+        producer = _require_boundary(
+            entry,
+            built,
+            candidate,
+            pending_confirmation=arguments.pending_confirmation,
+        )
         if not arguments.dry_run:
             remove_or_write(built.path, built.canonical_json())
         return _result(
             "add-generated" if generated else "add-origin",
             "dry-run" if arguments.dry_run else "changed",
             True,
+            producer,
         )
 
 
@@ -359,10 +376,14 @@ def _updated_commit(
 
 
 def _require_boundary(
-    entry: EntryContext, data: DataFile, candidate: InputResource
-) -> None:
+    entry: EntryContext,
+    data: DataFile,
+    candidate: InputResource,
+    *,
+    pending_confirmation: bool = False,
+) -> dict[str, object] | None:
     if candidate.kind == "git-repository":
-        return
+        return None
     materials = inspect_log_materials(
         entry.log, data_overrides={entry.root: data}
     )
@@ -373,8 +394,17 @@ def _require_boundary(
             materials.invocations,
             confirmed_record=materials.confirmed,
         )
-        return
+        return None
+    if pending_confirmation:
+        producer = materials.require_pending_generated(candidate)
+        return {
+            "confirmation": "pending",
+            "document": producer.document,
+            "fence": producer.fence,
+            "ordinal": producer.ordinal,
+        }
     materials.require_generated(candidate)
+    return None
 
 
 def _renamed_evidence(
@@ -489,7 +519,16 @@ def _build(entry: EntryContext, inputs: tuple[InputResource, ...]) -> DataFile:
     )
 
 
-def _result(action: str, status: str, changed: bool) -> ActionResult:
+def _result(
+    action: str,
+    status: str,
+    changed: bool,
+    producer: dict[str, object] | None = None,
+) -> ActionResult:
     return ActionResult(
-        f"data.{action}", status, f"data.{status}", changed
+        f"data.{action}",
+        status,
+        f"data.{status}",
+        changed,
+        records=(producer,) if producer is not None else None,
     )

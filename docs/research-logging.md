@@ -843,9 +843,9 @@ Check the requested area against these questions:
   files checked against their expected structure? For work completed
   elsewhere, does the record preserve the actual workflow and identify missing
   material rather than replacing it with a cleaner reconstruction? Does
-  `data.json` contain all and only command and evidence inputs plus any direct
-  artifact origin, use unique names and targets, resolve every token, preserve
-  fingerprints, and distinguish explicit origins from generated inputs? Are intentional disconnected
+  `data.json` contain all and only command and evidence inputs, use unique names
+  and targets, resolve every token, preserve fingerprints, and distinguish
+  explicit origins from generated inputs? Are intentional disconnected
   artifacts declared only through `retention.json`?
 - **Summary:** Is every substantive point supported by an entry? Does the
   summary describe current understanding, preserve the stable validation-report

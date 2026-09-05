@@ -137,9 +137,11 @@ class LogDataTests(unittest.TestCase):
         top = run(Path.cwd(), "--help")
         family = run(Path.cwd(), "data", "--help")
         action = run(Path.cwd(), "data", "add-origin", "--help")
+        generated = run(Path.cwd(), "data", "add-generated", "--help")
         self.assertEqual(top.returncode, 0, top.stderr)
         self.assertEqual(family.returncode, 0, family.stderr)
         self.assertEqual(action.returncode, 0, action.stderr)
+        self.assertEqual(generated.returncode, 0, generated.stderr)
         self.assertIn("data", top.stdout)
         self.assertNotIn("--identity", top.stdout)
         self.assertIn("add-origin", family.stdout)
@@ -148,6 +150,8 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("--commit", action.stdout)
         self.assertIn("producerless material input", action.stdout)
         self.assertIn("logical log base", action.stdout)
+        self.assertNotIn("--pending-confirmation", action.stdout)
+        self.assertIn("--pending-confirmation", generated.stdout)
 
         script_root = LOG.parent
         code = f"""
@@ -613,6 +617,19 @@ print(json.dumps({{
             )
             self.assertEqual(missing.returncode, 2)
             self.assertEqual(result(missing)["code"], "producer.missing")
+            missing_pending = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(missing_pending.returncode, 2)
+            self.assertEqual(
+                result(missing_pending)["code"], "producer.missing"
+            )
 
             script = entry / "scripts" / "build.py"
             script.write_text(
@@ -694,6 +711,201 @@ print(json.dumps({{
             self.assertEqual(invalid_identity.returncode, 2)
             self.assertEqual(result(invalid_identity)["code"], "data.identity.invalid")
             self.assertEqual((entry / "data.json").read_bytes(), before)
+
+    def test_pending_generated_bootstraps_reproduction_without_claiming_support(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = scaffold(Path(directory))
+            source = entry / "data" / "source.csv"
+            source.write_text("value\n1\n", encoding="utf-8")
+            common = ("--path", str(logical), "--entry", "e001")
+            self.assertEqual(
+                run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    *common,
+                    "source",
+                    "data/source.csv",
+                ).returncode,
+                0,
+            )
+            generated = entry / "data" / "generated.csv"
+            generated.write_text("value\n1\n", encoding="utf-8")
+            script = entry / "scripts" / "build.py"
+            script.write_text(
+                "import argparse, shutil\n"
+                "p=argparse.ArgumentParser()\n"
+                "p.add_argument('--input', required=True)\n"
+                "p.add_argument('--output', required=True)\n"
+                "a=p.parse_args()\n"
+                "shutil.copyfile(a.input, a.output)\n",
+                encoding="utf-8",
+            )
+            (entry / "e001.md").write_text(
+                "# Trial\n\n## Build\n\n`Steps:`\n\n"
+                "```bash\n"
+                './pyrun scripts/build.py --input "<source>" '
+                "--output data/generated.csv\n"
+                "```\n\n`Results:`\n\nGenerated output.\n",
+                encoding="utf-8",
+            )
+
+            strict = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(
+                result(strict)["code"], "provenance.output.unrecorded"
+            )
+            before = (entry / "data.json").read_bytes()
+            checked = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "--dry-run",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertEqual((entry / "data.json").read_bytes(), before)
+            self.assertEqual(
+                result(checked)["records"],
+                [
+                    {
+                        "confirmation": "pending",
+                        "document": "entries/2026-09-04-e001-trial/e001.md",
+                        "fence": 1,
+                        "ordinal": 1,
+                    }
+                ],
+            )
+
+            added = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            item = next(
+                value for value in data_inputs(entry) if value["name"] == "generated"
+            )
+            self.assertFalse(item["origin"])
+            self.assertNotIn("pending", item)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+            executed = run_pyrun(
+                entry,
+                "scripts/build.py",
+                "--input",
+                "<source>",
+                "--output",
+                "data/generated.csv",
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            confirmed = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+            self.assertEqual(result(confirmed)["status"], "unchanged")
+
+    def test_pending_generated_defers_unconfirmed_recursive_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = scaffold(Path(directory))
+            source = entry / "data" / "source.csv"
+            intermediate = entry / "data" / "intermediate.csv"
+            source.write_text("value\n1\n", encoding="utf-8")
+            intermediate.write_text("value\n1\n", encoding="utf-8")
+            common = ("--path", str(logical), "--entry", "e001")
+            self.assertEqual(
+                run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    *common,
+                    "source",
+                    "data/source.csv",
+                ).returncode,
+                0,
+            )
+            script = entry / "scripts" / "build.py"
+            script.write_text(
+                "import argparse, shutil\n"
+                "p=argparse.ArgumentParser(); p.add_argument('--input'); "
+                "p.add_argument('--output'); a=p.parse_args()\n"
+                "shutil.copyfile(a.input, a.output)\n",
+                encoding="utf-8",
+            )
+            (entry / "e001.md").write_text(
+                "# Trial\n\n## Intermediate\n\n`Steps:`\n\n```bash\n"
+                './pyrun scripts/build.py --input "<source>" '
+                "--output data/intermediate.csv\n"
+                "```\n\n`Results:`\n\nPending.\n\n"
+                "## Final\n\n`Steps:`\n\n```bash\n"
+                './pyrun scripts/build.py --input "<intermediate>" '
+                "--output data/final.csv\n"
+                "```\n\n`Results:`\n\nProduced.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                run(
+                    entry,
+                    "data",
+                    "add-generated",
+                    *common,
+                    "--pending-confirmation",
+                    "intermediate",
+                    "data/intermediate.csv",
+                ).returncode,
+                0,
+            )
+            executed = run_pyrun(
+                entry,
+                "scripts/build.py",
+                "--input",
+                "<intermediate>",
+                "--output",
+                "data/final.csv",
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            strict = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "final",
+                "data/final.csv",
+            )
+            self.assertEqual(
+                result(strict)["code"], "provenance.output.unrecorded"
+            )
+            pending = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "--dry-run",
+                "final",
+                "data/final.csv",
+            )
+            self.assertEqual(pending.returncode, 0, pending.stderr)
 
     def test_other_log_production_is_an_origin_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -850,11 +1062,13 @@ print(json.dumps({{
                 ("bundle", "data/bundle"),
                 ("one", "data/bundle/one.csv"),
             ):
+                pending = ("--pending-confirmation",) if name == "one" else ()
                 added = run(
                     entry,
                     "data",
                     "add-generated",
                     *common,
+                    *pending,
                     name,
                     target,
                 )
@@ -933,6 +1147,18 @@ print(json.dumps({{
             self.assertEqual(
                 result(unconfirmed)["code"], "provenance.output.unconfirmed"
             )
+            pending = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "--dry-run",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(pending.returncode, 0, pending.stderr)
+            self.assertEqual(len(data_inputs(entry)), 1)
             support["outputs"]["data/generated.csv"]["confirmed"] = True
             support_path.write_text(json.dumps(support) + "\n", encoding="utf-8")
             (entry / "data" / "generated.csv").write_text(
@@ -948,6 +1174,19 @@ print(json.dumps({{
             )
             self.assertEqual(
                 result(stale)["code"], "provenance.output.signature_mismatch"
+            )
+            stale_pending = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(
+                result(stale_pending)["code"],
+                "provenance.output.signature_mismatch",
             )
             self.assertEqual(len(data_inputs(entry)), 1)
 
@@ -975,6 +1214,18 @@ print(json.dumps({{
                 "data/generated.csv",
             )
             self.assertEqual(result(ambiguous)["code"], "producer.ambiguous")
+            ambiguous_pending = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--pending-confirmation",
+                "generated",
+                "data/generated.csv",
+            )
+            self.assertEqual(
+                result(ambiguous_pending)["code"], "producer.ambiguous"
+            )
 
     def test_update_requires_explicit_change_and_rechecks_classification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -158,6 +158,19 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn("references/operation-repair.md", text)
             self.assertNotIn("references/operation-reorganize.md", text)
 
+    def test_pending_generated_registration_is_repair_only(self) -> None:
+        repair = reference("operation-repair.md")
+        ordinary = "\n".join(
+            (
+                (SKILL / "SKILL.md").read_text(encoding="utf-8"),
+                reference("operation-record.md"),
+                reference("operation-record-content.md"),
+                reference("file-data-index.md"),
+            )
+        )
+        self.assertIn("--pending-confirmation", repair)
+        self.assertNotIn("--pending-confirmation", ordinary)
+
     def test_record_sequences_separately_requested_validation(self) -> None:
         content = reference("operation-record-content.md")
         cases = CASES.read_text(encoding="utf-8")

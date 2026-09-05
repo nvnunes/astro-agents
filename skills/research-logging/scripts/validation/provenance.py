@@ -243,6 +243,21 @@ def evaluate_many(
     )
 
 
+def require_declared_producer(
+    material: Path | str,
+    invocations: Sequence[Invocation],
+    *,
+    directory_producers: DirectoryProducerIndex | None = None,
+) -> Invocation:
+    """Require one structurally valid producer without asserting execution."""
+
+    canonical = Path(material).resolve().as_posix()
+    index = directory_producers or build_directory_producer_index(invocations)
+    producer = _starting_producer(canonical, invocations, index)
+    _require_declared_producer_ready(canonical, producer, index)
+    return producer
+
+
 def build_directory_producer_index(
     invocations: Sequence[Invocation],
 ) -> DirectoryProducerIndex:
@@ -364,8 +379,10 @@ def _unique_producer(
     *,
     starting: bool,
 ) -> Invocation:
-    if starting and Path(material).is_dir():
-        return _starting_directory_producer(material, state)
+    if starting:
+        return _starting_producer(
+            material, state.invocations, state.directory_producers
+        )
     candidates = [
         invocation
         for invocation in state.outputs.get(material, ())
@@ -387,12 +404,32 @@ def _unique_producer(
     return candidates[0]
 
 
+def _starting_producer(
+    material: str,
+    invocations: Sequence[Invocation],
+    directory_producers: DirectoryProducerIndex,
+) -> Invocation:
+    if Path(material).is_dir():
+        return _starting_directory_producer(material, directory_producers)
+    candidates = _output_index(invocations).get(material, ())
+    if not candidates:
+        _fail("producer.missing", material, {"consumer": None})
+    _fail_shared_output_directory(material, candidates)
+    if len(candidates) != 1:
+        _fail(
+            "producer.ambiguous",
+            material,
+            {"producers": [item.identity for item in candidates]},
+        )
+    return candidates[0]
+
+
 def _starting_directory_producer(
-    material: str, state: _WalkState
+    material: str, directory_producers: DirectoryProducerIndex
 ) -> Invocation:
     """Require one exact output-directory producer for a starting root."""
 
-    matches = state.directory_producers.lookup(material)
+    matches = directory_producers.lookup(material)
     exact = tuple(match.producer for match in matches if match.exact_directory)
     if not exact:
         _fail("producer.missing", material, {"consumer": None})
@@ -419,6 +456,20 @@ def _starting_directory_producer(
 def _require_producer_ready(
     material: str, producer: Invocation, state: _WalkState
 ) -> None:
+    _require_declared_producer_ready(
+        material, producer, state.directory_producers
+    )
+    if producer.identity in state.visiting:
+        _fail("lineage.cycle", material, {"invocation": producer.identity})
+    if state.producer_validator is not None:
+        state.support.append(state.producer_validator(producer, material))
+
+
+def _require_declared_producer_ready(
+    material: str,
+    producer: Invocation,
+    directory_producers: DirectoryProducerIndex,
+) -> None:
     path = Path(material)
     if not path.is_file() and not path.is_dir():
         _fail(
@@ -426,17 +477,13 @@ def _require_producer_ready(
             material,
             {"producer": producer.identity},
         )
-    if producer.identity in state.visiting:
-        _fail("lineage.cycle", material, {"invocation": producer.identity})
     if _requires_local_script(producer) and producer.script_identity is None:
         _fail(
             "invocation.executable.unresolved",
             producer.identity,
             {"script": producer.script},
         )
-    _validate_output_directories(producer, state.directory_producers)
-    if state.producer_validator is not None:
-        state.support.append(state.producer_validator(producer, material))
+    _validate_output_directories(producer, directory_producers)
 
 
 def _record_producer_lineage(

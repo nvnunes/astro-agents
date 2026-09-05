@@ -57,6 +57,7 @@ class DataAddArguments:
     target: str
     identity: tuple[str, ...] | None
     commit: str | None
+    pending_confirmation: bool
     dry_run: bool
 
 

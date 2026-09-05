@@ -129,17 +129,10 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 shared,
             )
 
-    def test_new_code_mapping_round_trips_while_legacy_shape_is_preserved(self) -> None:
+    def test_code_mapping_round_trips_and_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "log/entries/entry"
             write(entry / "scripts/helper.py", "VALUE = 1\n")
-            legacy = OutputSupport(
-                True,
-                Fingerprint("sha256", digest="a" * 64),
-                ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
-                (),
-                (),
-            )
             current = OutputSupport(
                 True,
                 Fingerprint("sha256", digest="c" * 64),
@@ -151,10 +144,9 @@ class PyrunOutputsContractTests(unittest.TestCase):
 
             written = _update_outputs(
                 entry,
-                {"data/legacy.csv": legacy, "data/current.csv": current},
+                {"data/current.csv": current},
             )
             raw = json.loads(written.path.read_text())
-            self.assertNotIn("code", raw["outputs"]["data/legacy.csv"])
             self.assertEqual(
                 raw["outputs"]["data/current.csv"]["code"],
                 {
@@ -165,8 +157,12 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 },
             )
             loaded = load_pyrun_outputs(written.path, entry_root=entry)
-            self.assertIsNone(loaded.outputs["data/legacy.csv"].code)
             self.assertEqual(loaded.outputs["data/current.csv"], current)
+
+            del raw["outputs"]["data/current.csv"]["code"]
+            written.path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaisesRegex(PyrunOutputsError, "pyrun.outputs.invalid"):
+                load_pyrun_outputs(written.path, entry_root=entry)
 
     def test_code_mapping_rejects_noncanonical_non_python_and_oversized_forms(
         self,
@@ -227,6 +223,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="a" * 64)),
                 ("--output-data", "data/output.csv"),
                 (),
+                (),
             )
 
             result = _update_outputs(entry, {"data/output.csv": record})
@@ -251,6 +248,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 ("--label", ""),
                 (),
+                (),
             )
 
             written = _update_outputs(entry, {"data/output.csv": record})
@@ -271,12 +269,14 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 ("--mode", "old"),
                 (),
+                (),
             )
             second = OutputSupport(
                 True,
                 Fingerprint("sha256", digest="c" * 64),
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 ("--mode", "old"),
+                (),
                 (),
             )
             _update_outputs(
@@ -291,6 +291,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                     Fingerprint("sha256", digest="e" * 64),
                 ),
                 ("--mode", "new"),
+                (),
                 (),
             )
 
@@ -360,6 +361,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 ("--mode", "valid"),
                 (),
+                (),
             )
             path = _update_outputs(entry, {"data/output.csv": valid}).path
             before = path.read_bytes()
@@ -368,6 +370,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 Fingerprint("sha256", digest="a" * 64),
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 tuple("value" for _ in range(PYRUN_OUTPUTS.MAX_PARAMETERS + 1)),
+                (),
                 (),
             )
 
@@ -385,12 +388,14 @@ class PyrunOutputsContractTests(unittest.TestCase):
                     (f"input{index}", Fingerprint("sha256", digest="c" * 64))
                     for index in range(PYRUN_OUTPUTS.MAX_INPUTS + 1)
                 ),
+                (),
             )
             overlong_parameter = OutputSupport(
                 True,
                 Fingerprint("sha256", digest="a" * 64),
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
                 ("x" * (PYRUN_OUTPUTS.MAX_STRING_BYTES + 1),),
+                (),
                 (),
             )
             for record in (too_many_inputs, overlong_parameter):
@@ -409,6 +414,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 True,
                 Fingerprint("sha256", digest="a" * 64),
                 ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
+                (),
                 (),
                 (),
             )

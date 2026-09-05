@@ -55,7 +55,7 @@ class OutputSupport:
     script: ScriptSupport
     parameters: tuple[str, ...]
     inputs: tuple[tuple[str, Fingerprint], ...]
-    code: tuple[tuple[str, Fingerprint], ...] | None = None
+    code: tuple[tuple[str, Fingerprint], ...]
 
     def as_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -65,8 +65,7 @@ class OutputSupport:
             "parameters": list(self.parameters),
             "script": self.script.as_dict(),
         }
-        if self.code is not None:
-            result["code"] = {name: value.as_dict() for name, value in self.code}
+        result["code"] = {name: value.as_dict() for name, value in self.code}
         return result
 
 
@@ -510,9 +509,8 @@ def _validated_serialization(
 
 
 def _decode_record(value: object, subject: str, *, entry_root: Path) -> OutputSupport:
-    legacy = {"confirmed", "fingerprint", "inputs", "parameters", "script"}
-    current = legacy | {"code"}
-    if not isinstance(value, Mapping) or set(value) not in (legacy, current):
+    fields = {"code", "confirmed", "fingerprint", "inputs", "parameters", "script"}
+    if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
     confirmed = value.get("confirmed")
@@ -535,9 +533,7 @@ def _decode_record(value: object, subject: str, *, entry_root: Path) -> OutputSu
         if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
             _invalid(subject, {"input": name})
         decoded_inputs.append((name, _decode_fingerprint(fingerprint, subject)))
-    decoded_code = (
-        _decode_code(code, subject, entry_root=entry_root) if "code" in value else None
-    )
+    decoded_code = _decode_code(code, subject, entry_root=entry_root)
     if not isinstance(script, Mapping) or set(script) != {"path", "fingerprint"}:
         _invalid(subject, {"script": _fields(script)})
     script_path = script.get("path")
@@ -552,7 +548,7 @@ def _decode_record(value: object, subject: str, *, entry_root: Path) -> OutputSu
         ),
         tuple(cast(list[str], parameters)),
         tuple(sorted(decoded_inputs)),
-        tuple(sorted(decoded_code)) if decoded_code is not None else None,
+        tuple(sorted(decoded_code)),
     )
 
 

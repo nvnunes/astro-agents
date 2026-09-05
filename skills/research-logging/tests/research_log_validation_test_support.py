@@ -126,6 +126,7 @@ def mechanical_log(
                                 "digest": catalog_digest,
                             }
                         },
+                        "code": {},
                         "parameters": [
                             "--catalog",
                             "<catalog>",

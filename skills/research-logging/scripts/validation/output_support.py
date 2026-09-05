@@ -167,7 +167,7 @@ def output_signature_mismatches(
     mismatches.extend(
         output_producer_mismatches(invocation, record, material=material)
     )
-    if current_code is not None and dict(record.code or ()) != current_code:
+    if current_code is not None and dict(record.code) != current_code:
         mismatches.append("code")
     return mismatches
 
@@ -199,8 +199,6 @@ def resolve_code_support(
 ) -> tuple[ResolvedCodeSupport, ...]:
     """Resolve one code mapping and reject unavailable or aliased targets."""
 
-    if record.code is None:
-        return ()
     result: list[ResolvedCodeSupport] = []
     identities: dict[str, str] = {}
     for key, _ in record.code:

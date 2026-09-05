@@ -1739,7 +1739,6 @@ def _graph_code_inputs(state: _ScanState) -> Mapping[str, tuple[str, ...]]:
             record = support.outputs.get(key)
             if (
                 record is None
-                or record.code is None
                 or not output_support_matches_invocation(
                     invocation, record, material=material
                 )

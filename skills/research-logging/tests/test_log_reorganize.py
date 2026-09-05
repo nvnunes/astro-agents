@@ -742,6 +742,7 @@ class ReorganizeTransferTests(unittest.TestCase):
                                     "digest": sha256(source_data),
                                 },
                                 "inputs": {},
+                                "code": {},
                                 "parameters": ["--output", "data/result.txt"],
                                 "script": {
                                     "path": "scripts/make.py",

@@ -118,6 +118,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
                                 "digest": catalog_digest,
                             }
                         },
+                        "code": {},
                         "parameters": [
                             "--catalog",
                             "<catalog>",
@@ -517,15 +518,27 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ]
             self.assertEqual(len(helper_calls), 1)
 
-    def test_legacy_support_skips_code_validation(self) -> None:
+    def test_support_without_code_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
+            summary, entry = _log(Path(directory))
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            del support["outputs"]["data/results.csv"]["code"]
+            write(support_path, json.dumps(support, indent=2) + "\n")
 
-            with mock.patch.object(ENGINE, "_observe_output_code") as observe:
-                result = _evaluate(summary).result
+            result = _evaluate(summary).result
 
-            self.assertEqual(result.completion, RESULTS.CompletionState.COMPLETE_CLEAR)
-            observe.assert_not_called()
+            self.assertEqual(
+                result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
+            )
+            self.assertIn(
+                "pyrun.outputs.invalid",
+                {
+                    check.failure.code
+                    for check in result.checks
+                    if check.failure is not None
+                },
+            )
 
     def test_bundle_member_uses_root_support_and_atomic_hygiene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -665,6 +678,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "confirmed": False,
                 "fingerprint": resource.fingerprint.as_dict(),
                 "inputs": {},
+                "code": {},
                 "parameters": ["--output-dir", "data/bundle"],
                 "script": {
                     "path": "scripts/bundle.py",
@@ -935,6 +949,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
                     }
                 },
+                "code": {},
                 "parameters": [
                     "--input-data",
                     "<catalog>",

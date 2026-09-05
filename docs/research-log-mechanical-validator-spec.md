@@ -2877,7 +2877,7 @@ The top-level keys are exactly `schema` and `outputs`. Output keys are unique
 canonical identities: normalized entry-relative paths beneath `data/` or
 `images/`, or normalized `<project>/...` paths for outputs elsewhere beneath
 the current Git project. Two spellings that resolve to the same entry-local
-target have the entry-relative key. Each current record has
+target have the entry-relative key. Each record has
 exactly `confirmed`, `fingerprint`, `script`, `parameters`, `inputs`, and
 `code`.
 `script.path` is the script argument passed to `pyrun`, not an inferred command
@@ -2906,14 +2906,7 @@ path. Every output from one invocation receives the same complete `code`
 mapping. An empty mapping records that the observed execution loaded no
 eligible helper.
 
-During the staged code-dependency cutover, the reader also accepts the exact
-legacy record shape without `code`. It preserves that omission when reading,
-projecting, or rewriting the record and applies the previous validation
-behavior. Missing `code` is not interpreted as an observed empty mapping. New
-successful `pyrun` executions always write `code`; this compatibility is
-removed only after every maintained record has migrated.
-
-For a current record, validation resolves every logical code path to an
+Validation resolves every logical code path to an
 existing regular file and rejects two keys that resolve to the same file. A
 reached, confirmed output compares every current code fingerprint with the
 recorded mapping. A missing or non-file target, or a duplicate resolved
@@ -2933,8 +2926,7 @@ invocation when that invocation enters the evidence-rooted graph. Thus an
 associated unconfirmed record or a record with stale fingerprints still
 connects its helpers for Hygiene while Provenance fails independently.
 Malformed, unavailable, inconsistent, or unmatched support adds no code edge
-and suppresses no helper orphan. A legacy record without `code` adds no code
-edge, creates no new failure, and does not prove an empty dependency set.
+and suppresses no helper orphan.
 
 #### Python Code Observation
 

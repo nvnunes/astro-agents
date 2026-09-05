@@ -10,6 +10,12 @@ happen while the public surface settles.
 Public release work is still settling. Until the first tagged release, use git
 history for detailed change-by-change context.
 
+- Added researcher-directed semantic Review for research logs. Nineteen focused
+  lenses compose into Analysis, Evidence, and Record review groups, while
+  focused requests load only the selected lens material and unqualified
+  requests return a group-first menu. Review reports findings without changing
+  research-owned content, running validation or reproduction, or assigning
+  semantic pass status.
 - Cut research-log validation over to the code-only mechanical engine. The
   public CLI now publishes schema-1 `mechanical.json`, its independent
   disposable cache, and the shared `validation.md` report. Recognized

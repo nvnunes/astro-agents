@@ -2956,7 +2956,7 @@ A local directory is either a byte-complete bounded collection with a
   descendant and gives each member an input edge.
 - `<name>/member` under an exact input role consumes only that member. The
   member connects to the aggregate for fingerprint and origin-boundary
-  evaluation; siblings receive no command or orphan connection.
+  evaluation; siblings receive no command-input or evidence-source edge.
 - Both forms count as use of the data item.
 - An origin directory is valid only when no confirmed `pyrun` record identifies
   its root or any member as generated. Its boundary reaches a consumed member
@@ -2964,6 +2964,12 @@ A local directory is either a byte-complete bounded collection with a
 - A generated directory must match one exact earlier `output-directory`.
   Overlapping roots, separate member producers, or a second directory producer
   fail exclusivity.
+- One exclusive `pyrun` output-directory and its exact generated directory
+  input form one atomic artifact. Every regular-file descendant present at
+  successful execution belongs to that artifact and its recursive fingerprint.
+  Reaching the root or one exact member connects the complete bundle for
+  ownership and Hygiene without claiming that sibling members were consumed or
+  presented.
 - Output-directory ownership is invocation-exclusive. Repeated exact outputs
   may share a parent without asserting directory ownership.
 - Command relationship bounds count one authored whole-directory role as one
@@ -3025,7 +3031,8 @@ non-empty, non-symlink entry-relative directory, sets `membership` to exactly
 optional `reason` is at most 2,048 UTF-8 bytes. Targets must not overlap within
 or across records. IDs are unique within `retention.json` and do not share an
 evidence ID namespace. A connected target makes retention redundant and
-invalid.
+invalid. Reaching any member of an atomic generated output directory connects
+the bundle's complete membership for this redundancy check.
 
 ### Evidence-rooted Hygiene
 
@@ -3043,10 +3050,14 @@ outputs for orphans or retention.
 Connectivity starts only at evidence sources and direct presentations and
 traces backward through unique producers and declared inputs. A command outside
 this closure connects none of its scripts, inputs, outputs, or directory
-members. An origin boundary terminates a reached branch but never connects an
-unreached artifact or suppresses a Hygiene finding.
+members. Its atomic output directory remains one unreached artifact rather than
+one artifact per descendant. An origin boundary terminates a reached branch but
+never connects an unreached artifact or suppresses a Hygiene finding.
 
-Each eligible file is connected, declared-retained, or orphaned.
+Each eligible standalone file or atomic generated output directory is
+connected, declared-retained, or orphaned. An exact bundle-member edge remains
+member-specific in the evidence and command graph, but it connects the complete
+bundle membership for ownership and orphan classification.
 `validation/mechanical.json` records authoritative artifact-level orphan
 checks. An unused data item produces one `orphan.input.unused` check; unused
 declarations are reported separately and do not inflate artifact counts.
@@ -3056,8 +3067,10 @@ Hygiene condition. A current graph output whose file is absent is
 `provenance.output.missing`: it breaks Provenance and is not a Hygiene finding.
 A record in `pyrun-outputs.json` whose output key is absent from the complete
 current graph is an unmatched output. If the file also exists, it is reported
-only as `hygiene.output.unmatched`, not again as an orphan. An existing file
-outside the current graph with no output record is an ordinary orphan.
+only as `hygiene.output.unmatched`, not again as an orphan. An unmatched
+directory-output record suppresses descendant orphan findings and produces one
+finding at its root. An existing file outside the current graph with no output
+record is an ordinary orphan.
 
 | Current graph output | Current file | Output record | Result |
 | --- | --- | --- | --- |
@@ -3066,8 +3079,9 @@ outside the current graph with no output record is an ordinary orphan.
 | no | yes | no | Hygiene: orphan output |
 
 An output present in the complete graph but outside the evidence-rooted closure
-is an orphan unless retained. Its record is not unmatched because the graph
-still identifies its current producer.
+is an orphan unless retained. An atomic output directory produces one root
+orphan rather than descendant findings. Its record is not unmatched because
+the graph still identifies its current producer.
 
 `validation.md` reports one Hygiene finding count that combines orphan
 artifacts, unmatched outputs, and unused input declarations. Their distinct
@@ -3077,7 +3091,8 @@ below, but never equal to, the owning entry root. Starting with each child
 directory, collapse the highest directory whose every eligible file is
 orphaned; otherwise recurse in normalized lexical order. Root-level files
 remain individual findings. Mixed directories retain individual files or
-smaller groups. No artifact appears twice.
+smaller groups. Atomic output-directory collapse occurs before this ordinary
+grouping and always uses the declared output root. No artifact appears twice.
 
 A group identity is `orphan-group:` plus lowercase SHA-256 of canonical JSON
 for `[maintained-log identity, entry material owner, normalized entry-relative
@@ -3106,12 +3121,13 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Whole `input-directory` | no root/member producer | origin | Consume all fingerprinted members through the aggregate boundary. |
 | Exact member | no root/member producer | origin | Consume only that member; siblings stay disconnected. |
 | Whole directory | one exact earlier `output-directory` | absent | Trace all members to that producer. |
-| Exact member | one exact earlier `output-directory` | absent | Trace that member without connecting siblings. |
+| Exact member | one exact earlier `output-directory` | absent | Trace only that member and connect the atomic root for Hygiene; do not claim sibling consumption. |
 | Any directory | overlapping or separate member producers | either | Fail `directory.producer.conflict`. |
 | Generated directory | no exact earlier directory producer | absent | Fail `lineage.missing`. |
 | Origin directory | confirmed root/member producer | present | Fail `directory.origin.conflict`. |
 | Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
-| Workflow outside evidence closure | any | any | Members remain orphan-eligible unless retained. |
+| Workflow outside evidence closure | atomic output directory | absent | Report one root-level orphan unless the complete bundle is retained. |
+| Workflow outside evidence closure | other directory | any | Members remain orphan-eligible unless retained. |
 
 ### Diagnostics
 

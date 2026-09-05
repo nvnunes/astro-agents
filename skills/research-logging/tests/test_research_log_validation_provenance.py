@@ -120,6 +120,69 @@ class ProvenanceLineageTests(unittest.TestCase):
                 ["member", "exact"],
             )
 
+    def test_reached_output_directory_rejects_nested_competing_producer(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "bundle"
+            target = bundle / "model.pt"
+            nested = bundle / "metrics"
+            nested_member = nested / "result.csv"
+            write(target, "model\n")
+            write(nested_member, "value\n1\n")
+            invocations = (
+                _invocation(
+                    "bundle",
+                    0,
+                    outputs=(
+                        target.resolve().as_posix(),
+                        nested_member.resolve().as_posix(),
+                    ),
+                    directories=(bundle.resolve().as_posix(),),
+                ),
+                _invocation(
+                    "nested",
+                    1,
+                    outputs=(nested_member.resolve().as_posix(),),
+                    directories=(nested.resolve().as_posix(),),
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                PROVENANCE.ProvenanceV2Error,
+                "collection.output_directory.shared",
+            ):
+                PROVENANCE.evaluate_provenance(target, invocations)
+
+    def test_one_invocation_cannot_claim_nested_output_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "bundle"
+            target = bundle / "model.pt"
+            nested = bundle / "metrics"
+            nested_member = nested / "result.csv"
+            write(target, "model\n")
+            write(nested_member, "value\n1\n")
+            invocation = _invocation(
+                "bundle",
+                0,
+                outputs=(
+                    target.resolve().as_posix(),
+                    nested_member.resolve().as_posix(),
+                ),
+                directories=(
+                    bundle.resolve().as_posix(),
+                    nested.resolve().as_posix(),
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                PROVENANCE.ProvenanceV2Error,
+                "collection.output_directory.shared",
+            ):
+                PROVENANCE.evaluate_provenance(target, (invocation,))
+
     def test_repeated_indexed_origin_queries_do_not_resolve_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

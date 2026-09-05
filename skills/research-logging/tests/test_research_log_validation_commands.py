@@ -85,6 +85,42 @@ def _context(root: Path, data_index: dict[str, str] | None = None) -> object:
 
 
 class CommandV2RoleTests(unittest.TestCase):
+    def test_pyrun_named_directory_member_preserves_exact_input_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            member = entry_root / "data/bundle/model.pt"
+            write(member, "model\n")
+            resource = build_local_input(
+                "bundle",
+                "directory",
+                "data/bundle",
+                entry_root=entry_root,
+                origin=False,
+            )
+            context = replace(
+                _context(root),
+                data_file=data_file_from_inputs(
+                    entry_root / "data.json",
+                    entry_root=entry_root,
+                    inputs=(resource,),
+                ),
+            )
+            write(entry_root / "scripts/use.py", "# fixture\n")
+
+            result = COMMAND.discover_commands(
+                "```bash\n"
+                "./pyrun scripts/use.py --input-model '<bundle>/model.pt'\n"
+                "```\n",
+                context,
+            )
+
+            invocation = result.invocations[0]
+            self.assertEqual(len(invocation.inputs), 1)
+            self.assertEqual(invocation.inputs[0].path, member.resolve().as_posix())
+            self.assertEqual(invocation.inputs[0].input_resource, resource)
+            self.assertEqual(invocation.collections, ())
+
     def test_git_repository_projections_form_one_material_relationship(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

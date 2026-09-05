@@ -258,6 +258,14 @@ class _OrphanGroupingState:
     result: dict[str, Mapping[str, object]]
 
 
+@dataclass(frozen=True)
+class _UnmatchedOutputs:
+    """Output-support paths absent from the current command graph."""
+
+    paths: frozenset[str]
+    directory_roots: frozenset[str]
+
+
 # Top-level evaluation lifecycle.
 
 
@@ -995,7 +1003,7 @@ def _validate_output_support(
     )
     support_file = support
     return {
-        "output": key,
+        "output": resolved.key,
         "record": record.as_dict(),
         "record_file": support_file.path.as_posix(),
         "record_file_sha256": state.output_file_observations.get(
@@ -1560,12 +1568,14 @@ def _require_complete_summary_references(
 
 
 def _compose_graph(state: _ScanState) -> None:
+    assert state.directory_producers is not None
     request = MaterialGraphRequest(
         entry_roots={entry.id: entry.root for entry in state.entries},
         evidence=_graph_evidence_connections(state),
         invocations=state.invocations,
         retention_files=_unique_retention_files(state.entries),
         input_registries=_input_registry_surfaces(state),
+        directory_producers=state.directory_producers,
     )
     try:
         state.graph = compose_material_graph(request)
@@ -1577,10 +1587,14 @@ def _compose_graph(state: _ScanState) -> None:
     orphan = state.graph.orphan
     _record_missing_outputs(state)
     unmatched = _record_unmatched_outputs(state)
-    orphaned = tuple(path for path in orphan.orphaned if path not in unmatched)
+    orphaned = tuple(
+        path
+        for path in orphan.orphaned
+        if not _covered_by_unmatched_output(path, unmatched)
+    )
     _record_orphan_artifacts(state, orphan.inventory, orphaned)
     _record_unused_inputs(state, orphan.unused_input_names)
-    if not orphaned and not orphan.unused_input_names and not unmatched:
+    if not orphaned and not orphan.unused_input_names and not unmatched.paths:
         state.checks.append(
             _pass_check(
                 "orphan:log",
@@ -1655,7 +1669,7 @@ def _graph_evidence_connections(state: _ScanState) -> tuple[EvidenceConnection, 
     return tuple(connections)
 
 
-def _record_unmatched_outputs(state: _ScanState) -> set[str]:
+def _record_unmatched_outputs(state: _ScanState) -> _UnmatchedOutputs:
     graph_outputs = {
         relationship.path
         for invocation in state.invocations
@@ -1668,11 +1682,13 @@ def _record_unmatched_outputs(state: _ScanState) -> set[str]:
         if collection.direction == "output" and collection.root is not None
     )
     unmatched: set[str] = set()
+    directory_roots: set[str] = set()
     for owner, output_file in sorted(state.output_files.items()):
         root = _entry_root_for_owner(owner, state)
         for key in sorted(output_file.outputs):
             if key.startswith(PROJECT_OUTPUT_PREFIX):
                 continue
+            record = output_file.outputs[key]
             canonical = output_target_path(
                 key,
                 entry_root=root,
@@ -1682,6 +1698,8 @@ def _record_unmatched_outputs(state: _ScanState) -> set[str]:
             if canonical in graph_outputs:
                 continue
             unmatched.add(canonical)
+            if record.fingerprint.algorithm == "directory-sha256-v1":
+                directory_roots.add(canonical)
             state.checks.append(
                 _failure_check(
                     f"hygiene:unmatched-output:{owner}:{key}",
@@ -1698,7 +1716,16 @@ def _record_unmatched_outputs(state: _ScanState) -> set[str]:
                     ),
                 )
             )
-    return unmatched
+    return _UnmatchedOutputs(frozenset(unmatched), frozenset(directory_roots))
+
+
+def _covered_by_unmatched_output(
+    material: str, unmatched: _UnmatchedOutputs
+) -> bool:
+    if material in unmatched.paths:
+        return True
+    path = Path(material)
+    return any(_within(path, Path(root)) for root in unmatched.directory_roots)
 
 
 def _record_orphan_artifacts(

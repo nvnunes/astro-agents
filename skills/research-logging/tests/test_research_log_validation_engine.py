@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -201,7 +202,251 @@ def _origin_data_json(entry_root: Path) -> str:
     )
 
 
+def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
+    entry_root = entry.parent
+    bundle = entry_root / "data/bundle"
+    member = bundle / "results.csv"
+    sibling = bundle / "model.pt"
+    bundle.mkdir()
+    (entry_root / "data/results.csv").replace(member)
+    write(sibling, "model\n")
+
+    data_path = entry_root / "data.json"
+    data = json.loads(data_path.read_text())
+    data["inputs"] = [
+        item for item in data["inputs"] if item["name"] != "results"
+    ]
+    resource = DATA.build_local_input(
+        "results",
+        "directory",
+        "data/bundle",
+        entry_root=entry_root,
+        origin=False,
+    )
+    data["inputs"].append(resource.as_dict())
+    data["inputs"].sort(key=lambda item: item["name"])
+    write(data_path, json.dumps(data, indent=2) + "\n")
+
+    evidence_path = entry_root / "evidence.json"
+    write(
+        evidence_path,
+        evidence_path.read_text().replace(
+            '"source": "<results>"',
+            '"source": "<results>/results.csv"',
+        ),
+    )
+    write(
+        entry,
+        entry.read_text().replace(
+            "--output-data data/results.csv",
+            "--output-dir data/bundle",
+        ),
+    )
+    support_path = entry_root / "pyrun-outputs.json"
+    support = json.loads(support_path.read_text())
+    record = support["outputs"].pop("data/results.csv")
+    record["fingerprint"] = resource.fingerprint.as_dict()
+    record["parameters"] = [
+        "--catalog",
+        "<catalog>",
+        "--output-dir",
+        "data/bundle",
+    ]
+    support["outputs"]["data/bundle"] = record
+    write(support_path, json.dumps(support, indent=2) + "\n")
+    return bundle, member, sibling
+
+
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_bundle_member_uses_root_support_and_atomic_hygiene(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            bundle, member, sibling = _convert_result_to_bundle(entry)
+
+            complete = _evaluate(summary).result
+
+            self.assertEqual(
+                complete.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+            provenance = next(
+                check
+                for check in complete.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            artifact = provenance.dependencies[0]
+            self.assertEqual(artifact["artifacts"], [member.resolve().as_posix()])
+            self.assertEqual(
+                provenance.dependencies[1]["material"], member.resolve().as_posix()
+            )
+
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            support["outputs"]["data/bundle"]["parameters"].append("--stale")
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            stale = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in stale.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code,
+                "provenance.output.signature_mismatch",
+            )
+            self.assertEqual(provenance.failure.subject, bundle.resolve().as_posix())
+
+            support["outputs"]["data/bundle"]["parameters"].pop()
+            support["outputs"]["data/bundle"]["confirmed"] = False
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            unconfirmed = _evaluate(summary).result
+            provenance = next(
+                check
+                for check in unconfirmed.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code, "provenance.output.unconfirmed"
+            )
+            self.assertEqual(provenance.failure.subject, bundle.resolve().as_posix())
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject in {
+                        member.resolve().as_posix(),
+                        sibling.resolve().as_posix(),
+                    }
+                    for check in unconfirmed.checks
+                )
+            )
+
+            support["outputs"]["data/bundle"]["confirmed"] = True
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            write(sibling, "changed model\n")
+            modified = _evaluate(summary).result
+            self.assertIn(
+                "data.fingerprint.mismatch",
+                {
+                    check.failure.code
+                    for check in modified.checks
+                    if check.failure is not None
+                },
+            )
+            modified_provenance = next(
+                check
+                for check in modified.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                modified_provenance.failure.code,
+                "provenance.output.signature_mismatch",
+            )
+            self.assertEqual(
+                modified_provenance.failure.subject,
+                bundle.resolve().as_posix(),
+            )
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "orphan.material.unused"
+                    and check.subject.startswith(bundle.resolve().as_posix() + "/")
+                    for check in modified.checks
+                )
+            )
+
+            shutil.rmtree(bundle)
+            deleted = _evaluate(summary).result
+            missing = [
+                check
+                for check in deleted.checks
+                if check.failure is not None
+                and check.failure.code == "provenance.output.missing"
+                and check.subject == bundle.resolve().as_posix()
+            ]
+            self.assertEqual(len(missing), 1)
+
+    def test_unreached_generated_bundle_is_one_root_hygiene_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            entry_root = entry.parent
+            bundle = entry_root / "data/bundle"
+            members = (bundle / "one.csv", bundle / "two.csv")
+            for index, member in enumerate(members, 1):
+                write(member, f"value\n{index}\n")
+            write(entry_root / "scripts/bundle.py", "# bundle\n")
+            resource = DATA.build_local_input(
+                "bundle",
+                "directory",
+                "data/bundle",
+                entry_root=entry_root,
+                origin=False,
+            )
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text())
+            data["inputs"].append(resource.as_dict())
+            data["inputs"].sort(key=lambda item: item["name"])
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text().replace(
+                    "```\n\n`Results:`",
+                    "./pyrun scripts/bundle.py --output-dir data/bundle\n"
+                    "```\n\n`Results:`",
+                ),
+            )
+
+            result = _evaluate(summary).result
+            bundle_root = bundle.resolve().as_posix()
+            bundle_findings = [
+                check
+                for check in result.checks
+                if check.failure is not None
+                and check.failure.code == "orphan.material.unused"
+                and (
+                    check.subject == bundle_root
+                    or check.subject.startswith(bundle_root + "/")
+                )
+            ]
+
+            self.assertEqual(len(bundle_findings), 1)
+            self.assertEqual(bundle_findings[0].subject, bundle_root)
+
+    def test_unmatched_directory_support_suppresses_descendant_orphans(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            entry_root = entry.parent
+            stale = entry_root / "data/stale"
+            members = (stale / "one.csv", stale / "two.csv")
+            for index, member in enumerate(members, 1):
+                write(member, f"value\n{index}\n")
+            resource = DATA.build_local_input(
+                "stale",
+                "directory",
+                "data/stale",
+                entry_root=entry_root,
+                origin=False,
+            )
+            support_path = entry_root / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text())
+            record = dict(support["outputs"]["data/results.csv"])
+            record["fingerprint"] = resource.fingerprint.as_dict()
+            support["outputs"]["data/stale"] = record
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            result = _evaluate(summary).result
+            root = stale.resolve().as_posix()
+            findings = [
+                check
+                for check in result.checks
+                if check.failure is not None
+                and (check.subject == root or check.subject.startswith(root + "/"))
+            ]
+
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].failure.code, "hygiene.output.unmatched")
+            self.assertEqual(findings[0].subject, root)
+
     def test_project_output_supports_generated_input_without_entering_hygiene(
         self,
     ) -> None:

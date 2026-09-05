@@ -575,6 +575,13 @@ record consumes it. After its producer succeeds, register it with
 sole ordinary author of `data.json`; do not edit the registry directly. Omit
 the file when the entry has no command or evidence inputs.
 
+One `pyrun` output-directory declaration represents one atomic generated
+artifact when that invocation owns the complete directory. Register the
+directory once. A whole-directory consumer uses `<name>`; an exact member
+consumer or evidence source uses `<name>/member`. The member association stays
+exact while identity, output support, and Provenance use the complete recursive
+directory fingerprint.
+
 Input targets passed to `log data` are absolute or relative to the selected
 entry root, regardless of the caller's working directory. Prefer short
 entry-relative targets such as `data/development.csv` for entry-owned material.

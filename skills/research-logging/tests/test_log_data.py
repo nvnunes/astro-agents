@@ -1008,9 +1008,7 @@ print(json.dumps({{
             self.assertEqual(origin.returncode, 0, origin.stderr)
             self.assertTrue(data_inputs(consumer)[0]["origin"])
 
-    def test_generated_directory_and_selected_member_share_directory_support(
-        self,
-    ) -> None:
+    def test_generated_directory_registers_atomic_bundle_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
             source = entry / "data" / "source.csv"
@@ -1058,25 +1056,19 @@ print(json.dumps({{
                 "data/bundle",
             )
             self.assertEqual(executed.returncode, 0, executed.stderr)
-            for name, target in (
-                ("bundle", "data/bundle"),
-                ("one", "data/bundle/one.csv"),
-            ):
-                pending = ("--pending-confirmation",) if name == "one" else ()
-                added = run(
-                    entry,
-                    "data",
-                    "add-generated",
-                    *common,
-                    *pending,
-                    name,
-                    target,
-                )
-                self.assertEqual(
-                    added.returncode,
-                    0,
-                    f"{name}: {added.stderr}",
-                )
+            added = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "bundle",
+                "data/bundle",
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            self.assertEqual(
+                [(item["name"], item["location"]) for item in data_inputs(entry)],
+                [("bundle", "data/bundle"), ("source", "data/source.csv")],
+            )
             conflict = run(
                 entry,
                 "data",

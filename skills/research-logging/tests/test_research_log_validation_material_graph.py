@@ -56,6 +56,84 @@ def _surface(root: Path) -> tuple[Path, Path, object, object]:
     return log_root, entry_root, data_file, invocations
 
 
+def _bundle_surface(root: Path) -> tuple[Path, Path, object, object]:
+    log_root = root / "docs" / "log"
+    entry_root = log_root / "entries" / "entry"
+    write(entry_root / "e001.md", "# Entry\n")
+    write(entry_root / "scripts" / "build.py", "# fixture\n")
+    write(entry_root / "data" / "source.csv", "value\n1\n")
+    write(entry_root / "data" / "bundle" / "model.pt", "model\n")
+    write(entry_root / "data" / "bundle" / "metrics.csv", "value\n2\n")
+    source = build_local_input(
+        "source",
+        "file",
+        "data/source.csv",
+        entry_root=entry_root,
+        origin=True,
+    )
+    bundle = build_local_input(
+        "bundle",
+        "directory",
+        "data/bundle",
+        entry_root=entry_root,
+        origin=False,
+    )
+    data_file = data_file_from_inputs(
+        entry_root / "data.json",
+        entry_root=entry_root,
+        inputs=(source, bundle),
+    )
+    context = COMMAND.CommandContext(
+        log_id="docs/log",
+        entry="e001",
+        document="entries/entry/e001.md",
+        entry_root=entry_root,
+        log_root=log_root,
+        project_root=root,
+        data_file=data_file,
+        require_experimental_context=False,
+    )
+    invocations = COMMAND.discover_commands(
+        """```bash
+./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
+```
+""",
+        context,
+    ).invocations
+    return log_root, entry_root, data_file, invocations
+
+
+def _bundle_consumer_surface(
+    root: Path, input_token: str
+) -> tuple[Path, object, object, str]:
+    log_root, entry_root, data_file, _ = _bundle_surface(root)
+    write(entry_root / "scripts/use.py", "# fixture\n")
+    final = entry_root / "data/final.csv"
+    write(final, "value\n3\n")
+    context = COMMAND.CommandContext(
+        log_id="docs/log",
+        entry="e001",
+        document="entries/entry/e001.md",
+        entry_root=entry_root,
+        log_root=log_root,
+        project_root=root,
+        data_file=data_file,
+        require_experimental_context=False,
+    )
+    input_option = (
+        "--input-directory" if input_token == "<bundle>" else "--input-data"
+    )
+    invocations = COMMAND.discover_commands(
+        f"""```bash
+./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
+./pyrun scripts/use.py {input_option} '{input_token}' --output-data data/final.csv
+```
+""",
+        context,
+    ).invocations
+    return entry_root, data_file, invocations, final.resolve().as_posix()
+
+
 def _request(
     entry_root: Path,
     data_file: object,
@@ -74,6 +152,247 @@ def _request(
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_whole_bundle_consumer_connects_members_for_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry_root, data_file, invocations, final = _bundle_consumer_surface(
+                Path(directory), "<bundle>"
+            )
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            members = {
+                (entry_root / "data/bundle/model.pt").resolve().as_posix(),
+                (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
+            }
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "final", "e001.md:eid:final", (final,)
+                        ),
+                    ),
+                )
+            )
+
+            self.assertTrue(members.issubset(result.orphan.connected))
+            input_materials = {
+                edge.source.identity
+                for edge in result.edges
+                if edge.kind == "input"
+            }
+            self.assertTrue(members.issubset(input_materials))
+            self.assertNotIn(bundle, input_materials)
+
+    def test_exact_bundle_member_consumer_keeps_input_edge_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry_root, data_file, invocations, final = _bundle_consumer_surface(
+                Path(directory), "<bundle>/model.pt"
+            )
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "final", "e001.md:eid:final", (final,)
+                        ),
+                    ),
+                )
+            )
+
+            input_materials = {
+                edge.source.identity
+                for edge in result.edges
+                if edge.kind == "input"
+            }
+            self.assertIn(model, input_materials)
+            self.assertNotIn(metrics, input_materials)
+            self.assertIn(metrics, result.orphan.connected)
+
+    def test_selected_bundle_member_connects_atomic_ownership_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001",
+                            "model",
+                            "e001.md:eid:model",
+                            (model,),
+                            input_names=("entries/entry:bundle",),
+                        ),
+                    ),
+                )
+            )
+
+            self.assertIn(model, result.orphan.connected)
+            self.assertIn(metrics, result.orphan.connected)
+            evidence_sources = {
+                edge.target.identity
+                for edge in result.edges
+                if edge.kind == "evidence-source"
+            }
+            self.assertEqual(evidence_sources, {model})
+            self.assertIn(
+                ("membership", model, bundle),
+                {
+                    (edge.kind, edge.source.identity, edge.target.identity)
+                    for edge in result.edges
+                },
+            )
+
+    def test_unreached_bundle_is_one_root_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            members = {
+                (entry_root / "data/bundle/model.pt").resolve().as_posix(),
+                (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
+            }
+
+            result = GRAPH.compose_material_graph(
+                _request(entry_root, data_file, invocations)
+            )
+
+            self.assertIn(bundle, result.orphan.orphaned)
+            self.assertTrue(members.isdisjoint(result.orphan.orphaned))
+
+    def test_reached_bundle_makes_member_retention_redundant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            write(
+                entry_root / "retention.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-retention/v1",
+                        "records": [
+                            {
+                                "id": "metrics",
+                                "paths": ["data/bundle/metrics.csv"],
+                            }
+                        ],
+                    }
+                ),
+            )
+            retained = RETENTION.load_retention_file(
+                entry_root / "retention.json", entry_root=entry_root
+            )
+
+            with self.assertRaisesRegex(
+                GRAPH.MaterialGraphV2Error, "retention.declaration.invalid"
+            ):
+                GRAPH.compose_material_graph(
+                    _request(
+                        entry_root,
+                        data_file,
+                        invocations,
+                        evidence=(
+                            GRAPH.EvidenceConnection(
+                                "e001",
+                                "model",
+                                "e001.md:eid:model",
+                                (model,),
+                                input_names=("entries/entry:bundle",),
+                            ),
+                        ),
+                        retention_files=(retained,),
+                    )
+                )
+
+    def test_retaining_unreached_bundle_suppresses_root_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            write(
+                entry_root / "retention.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-retention/v1",
+                        "records": [
+                            {
+                                "directory": "data/bundle",
+                                "id": "bundle",
+                                "membership": "all-descendants",
+                            }
+                        ],
+                    }
+                ),
+            )
+            retained = RETENTION.load_retention_file(
+                entry_root / "retention.json", entry_root=entry_root
+            )
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    retention_files=(retained,),
+                )
+            )
+
+            self.assertNotIn(bundle, result.orphan.orphaned)
+            self.assertTrue(
+                all(
+                    not path.startswith(bundle + "/")
+                    for path in result.orphan.orphaned
+                )
+            )
+
+    def test_repeated_bundle_members_share_one_root_node(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "model", "e001.md:eid:model", (model,)
+                        ),
+                        GRAPH.EvidenceConnection(
+                            "e001", "metrics", "e001.md:eid:metrics", (metrics,)
+                        ),
+                    ),
+                )
+            )
+
+            self.assertEqual(
+                sum(
+                    node.kind == "material" and node.identity == bundle
+                    for node in result.nodes
+                ),
+                1,
+            )
+            self.assertEqual(
+                {
+                    edge.source.identity
+                    for edge in result.edges
+                    if edge.kind == "membership" and edge.target.identity == bundle
+                },
+                {model, metrics},
+            )
+
     def test_evidence_closure_connects_exact_output_not_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))

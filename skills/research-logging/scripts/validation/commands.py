@@ -1205,7 +1205,7 @@ def _named_input(
         _fail(error.code, context.document, error.observed)
     resource = resolved.resource
     return MaterialRelationship(
-        resource.material_identity,
+        resolved.path,
         "input",
         "named-input",
         target or resource.name,

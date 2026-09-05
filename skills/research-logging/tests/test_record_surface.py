@@ -118,6 +118,23 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("Never create, inspect, or edit the registry", ordinary)
         self.assertIn("Never create,\ninspect, or edit that registry", ordinary)
 
+    def test_atomic_bundle_guidance_stays_in_focused_references(self) -> None:
+        commands = reference("file-entry-commands.md")
+        data = reference("file-data-index.md")
+        evidence = reference("file-presented-evidence.md")
+
+        self.assertIn("owns the complete directory", commands)
+        self.assertIn("register that generated\ndirectory once", data)
+        self.assertIn("Do not register the member separately", evidence)
+        for internal in (
+            "MaterialCollection",
+            "DirectoryProducerIndex",
+            "directory-sha256-v1",
+        ):
+            self.assertNotIn(internal, commands)
+            self.assertNotIn(internal, data)
+            self.assertNotIn(internal, evidence)
+
     def test_every_reference_has_an_operation_route(self) -> None:
         pending = list(REFERENCE_PATTERN.findall((SKILL / "SKILL.md").read_text()))
         reached: set[str] = set()

@@ -67,7 +67,9 @@ def resolve_output_support(
             entry_root=entry_root,
             project_root=project_root,
         )
-        return ResolvedOutputSupport(material, key, path, support.outputs.get(key))
+        return ResolvedOutputSupport(
+            path.as_posix(), key, path, support.outputs.get(key)
+        )
     return ResolvedOutputSupport(material, key, material_path, None)
 
 

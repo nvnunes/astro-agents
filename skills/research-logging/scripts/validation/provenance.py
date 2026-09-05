@@ -658,16 +658,27 @@ def _validate_output_directories(
     ]
     for collection in directories:
         root = _collection_root(producer, collection)
-        conflicts = [
+        conflicts = {
             match.producer.identity
             for match in directory_producers.lookup(root.as_posix())
-            if match.producer.identity != producer.identity and match.member_output
-        ]
+            if (
+                match.producer.identity == producer.identity
+                and match.overlapping_directory
+            )
+            or (
+                match.producer.identity != producer.identity
+                and (
+                    match.exact_directory
+                    or match.member_output
+                    or match.overlapping_directory
+                )
+            )
+        }
         if conflicts:
             _fail(
                 "collection.output_directory.shared",
                 root.as_posix(),
-                {"owners": [producer.identity, *conflicts]},
+                {"owners": sorted({producer.identity, *conflicts})},
             )
 
 

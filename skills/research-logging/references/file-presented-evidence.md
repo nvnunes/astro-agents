@@ -82,6 +82,11 @@ of retained `text` output. Use a complete `<name>` token for a file or
 `<directory-name>/member` for one exact directory member. A bare directory,
 raw path, URI, or cross-entry shorthand is not an evidence source.
 
+For a member of a generated output-directory bundle, keep the evidence source
+on that exact member. Do not register the member separately: validation uses
+the bundle's recursive fingerprint and directory-level output support for
+Provenance while preserving the member-level presentation association.
+
 ## Advanced Definition Routing
 
 When the intended presentation clearly needs one of the forms below, or the

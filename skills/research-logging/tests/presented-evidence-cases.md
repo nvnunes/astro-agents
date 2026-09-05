@@ -317,6 +317,13 @@ Record preserves the command and invokes `pyrun` with
 The runner declaration may also identify positional or whole-directory input
 and output roles and infers kind from the registered input or completed output.
 
+Given one `pyrun` invocation that produces a complete model directory, Record
+uses that leaf directory as its output boundary. If a later command or evidence
+record consumes the result, Record registers the generated directory once and
+uses `<bundle>` for the whole directory or `<bundle>/member` for one exact file.
+It does not register each member or let another invocation write inside the
+owned directory.
+
 Given several non-`pyrun` commands in one fence, an annotation uses `command-N`
 to select only the command that needs it. Commands without annotations require
 no empty placeholder. Validation does not inspect script internals to infer a
@@ -467,6 +474,17 @@ Given a recorded command connected to evidence, visible exact output arguments
 and deterministic collections enter the material graph. Script internals are
 irrelevant. An ambiguous output directory or unsupported collection
 relationship fails until research-owned metadata makes the relationship exact.
+
+Given evidence sourced from one exact member of a generated output-directory
+bundle, validation associates the presentation only with that member and uses
+the bundle's recursive fingerprint and directory-level output support for
+Provenance. The reached member covers the bundle for Hygiene without claiming
+that sibling files were consumed or presented.
+
+Given an unreached generated output-directory bundle, validation reports one
+orphan Hygiene finding at the declared root rather than one finding per member.
+Given an unmatched directory-output support record, it likewise reports only
+the root and suppresses descendant orphan findings.
 
 Given a locally accessible file outside the validated log and consumed by an
 active recorded workflow, validation treats it as an origin of the current log

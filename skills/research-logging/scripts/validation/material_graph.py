@@ -19,6 +19,7 @@ from .entry_materials import (
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
+from .provenance import DirectoryProducerIndex, build_directory_producer_index
 from .pyrun_outputs import PYRUN_OUTPUTS_BACKUP_RE
 from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
 
@@ -84,6 +85,14 @@ class InputRegistrySurface:
 
 
 @dataclass(frozen=True)
+class _AtomicOutputBundle:
+    """One unambiguous generated output-directory ownership boundary."""
+
+    root: str
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class OrphanResult:
     """Independent connected, retained, and residual material classes."""
 
@@ -115,6 +124,7 @@ class MaterialGraphRequest:
     invocations: Sequence[Invocation]
     retention_files: Sequence[RetentionFile]
     input_registries: Sequence[InputRegistrySurface] = ()
+    directory_producers: DirectoryProducerIndex | None = None
 
 
 @dataclass
@@ -122,6 +132,7 @@ class _GraphState:
     roots: Mapping[str, tuple[Path, ...]]
     invocations: Sequence[Invocation]
     outputs: Mapping[str, tuple[Invocation, ...]]
+    bundles_by_material: Mapping[str, _AtomicOutputBundle]
     nodes: set[GraphNode]
     edges: set[GraphEdge]
     connected: set[str]
@@ -134,16 +145,22 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     """Compose the evidence closure, then classify entry-owned material."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
-    state = _GraphState(
-        _connection_roots(roots),
+    bundles = _atomic_output_bundles(
         request.invocations,
-        _output_index(request.invocations),
-        set(),
-        set(),
-        set(),
-        [],
-        set(),
-        set(),
+        request.input_registries,
+        request.directory_producers,
+    )
+    state = _GraphState(
+        roots=_connection_roots(roots),
+        invocations=request.invocations,
+        outputs=_output_index(request.invocations),
+        bundles_by_material=_bundle_material_index(bundles),
+        nodes=set(),
+        edges=set(),
+        connected=set(),
+        dependencies=[],
+        expanded_invocations=set(),
+        visiting=set(),
     )
     graph_started = time.perf_counter()
     _add_evidence(request.evidence, state)
@@ -160,7 +177,9 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         request.invocations,
         request.evidence,
     )
-    orphan = _orphan_result(inventory, state.connected, retained, unused_names)
+    orphan = _orphan_result(
+        inventory, state.connected, retained, unused_names, bundles
+    )
     orphan_seconds = time.perf_counter() - orphan_started
 
     currentness_started = time.perf_counter()
@@ -201,7 +220,7 @@ def _add_evidence(
             origin = raw in connection.origin_materials
             material = _material_node(state.nodes, raw)
             state.edges.add(GraphEdge("evidence-source", record, material))
-            _connect_local(state.connected, material.identity, state.roots)
+            _connect_material(material, state)
             if not origin:
                 _trace_material(material.identity, None, state, depth=0)
         state.dependencies.append(_evidence_projection(connection))
@@ -235,7 +254,7 @@ def _trace_material(
     command = _node(state.nodes, "invocation", producer.identity)
     output = _material_node(state.nodes, material)
     state.edges.add(GraphEdge("output", command, output))
-    _connect_local(state.connected, material, state.roots)
+    _connect_material(output, state)
     if producer.identity in state.expanded_invocations:
         return
     state.expanded_invocations.add(producer.identity)
@@ -243,7 +262,7 @@ def _trace_material(
     if producer.script is not None and producer.script_identity is not None:
         script = _material_node(state.nodes, producer.script)
         state.edges.add(GraphEdge("script", command, script))
-        _connect_local(state.connected, script.identity, state.roots)
+        _connect_material(script, state)
     for relationship in producer.inputs:
         _add_reached_input(relationship, producer, command, state, depth=depth)
     state.visiting.remove(producer.identity)
@@ -266,7 +285,7 @@ def _add_reached_input(
     )
     state.edges.add(GraphEdge("input", material, command))
     if resource is None or resource.kind != "git-repository":
-        _connect_local(state.connected, material.identity, state.roots)
+        _connect_material(material, state)
     if resource is not None:
         declaration = _node(
             state.nodes,
@@ -336,14 +355,83 @@ def _output_index(
     return {path: tuple(values) for path, values in result.items()}
 
 
+def _atomic_output_bundles(
+    invocations: Sequence[Invocation],
+    surfaces: Sequence[InputRegistrySurface],
+    directory_producers: DirectoryProducerIndex | None,
+) -> tuple[_AtomicOutputBundle, ...]:
+    """Derive unambiguous atomic roots from existing authored contracts."""
+
+    generated_directories = {
+        resource.material_identity
+        for surface in surfaces
+        for resource in surface.data_file.inputs
+        if resource.kind == "directory"
+        and not resource.origin
+        and resource.fingerprint.algorithm == "directory-sha256-v1"
+    }
+    if directory_producers is None:
+        directory_producers = build_directory_producer_index(invocations)
+    bundles: list[_AtomicOutputBundle] = []
+    for invocation in invocations:
+        if not invocation.via_pyrun:
+            continue
+        for collection in invocation.collections:
+            if (
+                collection.direction != "output"
+                or collection.mechanism != "directory"
+                or collection.root is None
+                or collection.root not in generated_directories
+            ):
+                continue
+            matches = directory_producers.lookup(collection.root)
+            exact = tuple(match for match in matches if match.exact_directory)
+            if (
+                len(exact) != 1
+                or exact[0].producer.identity != invocation.identity
+                or any(
+                    match.overlapping_directory
+                    or (
+                        match.producer.identity != invocation.identity
+                        and (match.exact_directory or match.member_output)
+                    )
+                    for match in matches
+                )
+            ):
+                continue
+            bundles.append(
+                _AtomicOutputBundle(collection.root, tuple(collection.members))
+            )
+    return tuple(sorted(bundles, key=lambda bundle: bundle.root))
+
+
+def _bundle_material_index(
+    bundles: Sequence[_AtomicOutputBundle],
+) -> Mapping[str, _AtomicOutputBundle]:
+    result: dict[str, _AtomicOutputBundle] = {}
+    for bundle in bundles:
+        for material in (bundle.root, *bundle.members):
+            result[material] = bundle
+    return result
+
+
 def _orphan_result(
     inventory: set[str],
     connected: set[str],
     retained: set[str],
     unused_names: set[str],
+    bundles: Sequence[_AtomicOutputBundle],
 ) -> OrphanResult:
-    orphaned = inventory - connected - retained
+    orphaned = _atomic_orphans(
+        inventory - connected - retained,
+        inventory,
+        bundles,
+    )
     orphan_projection = {
+        "atomic_output_bundles": [
+            {"members": list(bundle.members), "root": bundle.root}
+            for bundle in bundles
+        ],
         "connected": sorted(inventory & connected),
         "declared_retained": sorted(retained),
         "inventory": sorted(inventory),
@@ -360,6 +448,21 @@ def _orphan_result(
     )
 
 
+def _atomic_orphans(
+    orphaned: set[str],
+    inventory: set[str],
+    bundles: Sequence[_AtomicOutputBundle],
+) -> set[str]:
+    result = set(orphaned)
+    for bundle in bundles:
+        eligible = set(bundle.members) & inventory
+        if not eligible & result:
+            continue
+        result.difference_update(eligible)
+        result.add(bundle.root)
+    return result
+
+
 def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
     node = GraphNode(kind, identity)
     nodes.add(node)
@@ -371,6 +474,20 @@ def _material_node(
 ) -> GraphNode:
     identity = Path(value).resolve().as_posix() if path_based else value
     return _node(nodes, "material", identity)
+
+
+def _connect_material(material: GraphNode, state: _GraphState) -> None:
+    """Connect one exact material and its atomic bundle ownership boundary."""
+
+    _connect_local(state.connected, material.identity, state.roots)
+    bundle = state.bundles_by_material.get(material.identity)
+    if bundle is None:
+        return
+    for member in bundle.members:
+        _connect_local(state.connected, member, state.roots)
+    bundle_node = _material_node(state.nodes, bundle.root)
+    if material != bundle_node:
+        state.edges.add(GraphEdge("membership", material, bundle_node))
 
 
 def _connect_local(

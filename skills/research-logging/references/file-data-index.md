@@ -79,6 +79,13 @@ command logs, and images remain absent unless they later become material
 inputs. A directly presented historical non-`pyrun` artifact may need an
 explicit origin declaration; a directly presented generated artifact does not.
 
+When one `pyrun` invocation owns an output directory, register that generated
+directory once rather than registering its files separately. Use `<name>` when
+a later command consumes the whole bundle and `<name>/member` when a command or
+evidence record consumes one exact file. The member remains exact, while the
+directory's complete recursive fingerprint and producer establish its identity
+and Provenance.
+
 If an action fails because existing research-owned state is malformed or
 legacy, report the exact failure and stop. A failed Record command does not
 authorize Repair or direct registry editing.

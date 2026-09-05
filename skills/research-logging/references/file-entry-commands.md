@@ -80,6 +80,12 @@ traversal are invalid. A collection may use a directory path value. A retained
 command log may instead use an explicit shell capture target. A retained
 manifest is an ordinary named file input and never expands other relationships.
 
+Treat one `pyrun` output directory as one artifact only when that invocation
+owns the complete directory. Use a leaf directory for one model and an
+enclosing study directory only when one invocation produces the complete
+study. Do not also declare its members as separate outputs or let another
+invocation write inside the owned directory.
+
 Make evidence-relevant input and output relationships mechanically visible.
 Prefer a natural option name whose complete leading or trailing token is
 `input` or `output`, such as `--input-data`, `--catalog-input`,

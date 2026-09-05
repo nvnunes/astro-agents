@@ -127,7 +127,7 @@ class ValidationCliTests(unittest.TestCase):
                 self.assertNotIn("record", result)
                 self.assertEqual(
                     result["generated"]["mechanical"],
-                    (summary.with_suffix("") / "validation/mechanical.json")
+                    (summary.with_suffix("") / "validation/results.json")
                     .resolve()
                     .as_posix(),
                 )

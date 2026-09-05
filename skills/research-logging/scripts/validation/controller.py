@@ -170,7 +170,7 @@ def _run_validation(
             }
             mechanical_changed = report_identity != mechanical_digest
             if mechanical_changed:
-                outputs["validation/mechanical.json"] = mechanical
+                outputs["validation/results.json"] = mechanical
             published_identities = publish_validation_outputs_locked(
                 log_root,
                 outputs,
@@ -185,11 +185,11 @@ def _run_validation(
             )
             if mechanical_changed:
                 fingerprint_cache.remember_regular_file(
-                    log_root / "validation" / "mechanical.json",
+                    log_root / "validation" / "results.json",
                     digest=mechanical_digest,
                     expected_size=len(mechanical),
                     expected_identity=published_identities[
-                        "validation/mechanical.json"
+                        "validation/results.json"
                     ],
                 )
             promoted = validation_cache.finish_published_run(
@@ -212,7 +212,7 @@ def _run_validation(
 def _current_report_identity(
     log_root: Path, fingerprint_cache: FingerprintCache
 ) -> str | None:
-    path = log_root / "validation" / "mechanical.json"
+    path = log_root / "validation" / "results.json"
     if path.is_symlink() or not path.is_file():
         return None
     try:
@@ -258,7 +258,7 @@ def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
         if (log_root / relative).is_symlink() or (log_root / relative).exists()
     ]
     report = log_root / "validation.md"
-    if report.is_file() and not (log_root / "validation/mechanical.json").is_file():
+    if report.is_file() and not (log_root / "validation/results.json").is_file():
         try:
             with report.open("rb") as handle:
                 raw_prefix = handle.read(1024 * 1024 + 1)

@@ -729,7 +729,7 @@ class LogEvidenceTests(unittest.TestCase):
             logical, entry = fixture(Path(directory))
             generated = (
                 logical / "validation.md",
-                logical / "validation" / "mechanical.json",
+                logical / "validation" / "results.json",
             )
             generated[0].write_text("existing report\n", encoding="utf-8")
             generated[1].parent.mkdir()
@@ -1055,7 +1055,7 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
             logical, entry = fixture(Path(directory))
             generated = (
                 logical / "validation.md",
-                logical / "validation" / "mechanical.json",
+                logical / "validation" / "results.json",
             )
             generated[0].write_text("existing report\n", encoding="utf-8")
             generated[1].parent.mkdir()

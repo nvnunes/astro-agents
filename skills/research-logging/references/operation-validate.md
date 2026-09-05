@@ -95,7 +95,7 @@ Report according to the returned status:
   Use the human report's unique-artifact counts for Provenance; the
   machine-readable scope aggregate remains a count of internal checks.
   When publication occurred, point any later repair operation to
-  `validation/mechanical.json` for machine-readable details and
+  `validation/results.json` for machine-readable details and
   `validation.md` for the human projection. A dry run publishes neither file.
   A published CLI result is deliberately compact; read those generated files
   instead of expecting every check to be repeated on standard output. An
@@ -104,7 +104,7 @@ Report according to the returned status:
 - For `unsupported_metadata`, report every path in `observed.paths` and state
   that no mechanical evaluation or generated file was published. Stop and
   request separate user authorization to archive or remove those generated
-  paths. Do not point to `validation/mechanical.json` or `validation.md` as the
+  paths. Do not point to `validation/results.json` or `validation.md` as the
   result of this invocation, and do not route the blocker to Record.
 - For `incomplete`, report the unavailable required observations from the
   returned record and state that no new per-log generated bundle was

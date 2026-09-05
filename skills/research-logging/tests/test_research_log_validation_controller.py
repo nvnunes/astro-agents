@@ -345,7 +345,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
             log_root = summary.with_suffix("")
             record = json.loads(
-                (log_root / "validation" / "mechanical.json").read_text()
+                (log_root / "validation" / "results.json").read_text()
             )
             cache_path = _cache_path(summary)
             report = (log_root / "validation.md").read_text()
@@ -378,7 +378,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     for path in (log_root / "validation").rglob("*")
                     if path.is_file()
                 ),
-                ["mechanical.json"],
+                ["results.json"],
             )
             cache_names = {path.name for path in (log_root / ".cache").iterdir()}
             self.assertIn(VALIDATION_CACHE.CACHE_FILENAME, cache_names)
@@ -481,7 +481,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertIn("evidence.json.schema_invalid", failures)
             self.assertTrue(result["published"])
             self.assertTrue(
-                (summary.with_suffix("") / "validation/mechanical.json").is_file()
+                (summary.with_suffix("") / "validation/results.json").is_file()
             )
 
     def test_invalid_date_is_an_operational_error(self) -> None:
@@ -545,11 +545,11 @@ class MechanicalControllerTests(unittest.TestCase):
             first = CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
-            mechanical_before = (log_root / "validation/mechanical.json").stat()
+            mechanical_before = (log_root / "validation/results.json").stat()
 
             with (
                 mock.patch.object(
@@ -578,7 +578,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(second["metrics"]["source_evaluations"], 0)
             self.assertEqual(second["metrics"]["fingerprint_cache_file_hashes"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
-            mechanical_after = (log_root / "validation/mechanical.json").stat()
+            mechanical_after = (log_root / "validation/results.json").stat()
             self.assertEqual(
                 (
                     mechanical_after.st_ino,
@@ -733,7 +733,7 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = summary.with_suffix("")
             self.assertTrue(result["published"])
             self.assertEqual(result["metrics"]["legacy_cache_cleanup_failures"], 1)
-            self.assertTrue((log_root / "validation/mechanical.json").is_file())
+            self.assertTrue((log_root / "validation/results.json").is_file())
             self.assertTrue((log_root / "validation.md").is_file())
 
     def test_symlinked_legacy_cache_directory_is_rejected_before_writing(
@@ -754,7 +754,7 @@ class MechanicalControllerTests(unittest.TestCase):
             ):
                 CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            self.assertFalse((log_root / "validation/mechanical.json").exists())
+            self.assertFalse((log_root / "validation/results.json").exists())
 
     def test_completed_run_drops_obsolete_selection_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -852,7 +852,7 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
                 _cache_path(summary),
             )
@@ -942,7 +942,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 self.assertEqual(result["code"], "validation.unsupported_metadata")
                 self.assertEqual(result["observed"]["paths"], [relative])
                 self.assertEqual(path.read_bytes(), before)
-                self.assertFalse((log_root / "validation/mechanical.json").exists())
+                self.assertFalse((log_root / "validation/results.json").exists())
 
     def test_unrecognized_validation_file_does_not_trigger_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -974,7 +974,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "unsupported_metadata")
             self.assertEqual(result["observed"]["paths"], ["validation.md"])
             self.assertEqual(report.read_bytes(), before)
-            self.assertFalse((log_root / "validation/mechanical.json").exists())
+            self.assertFalse((log_root / "validation/results.json").exists())
 
     def test_unsupported_transaction_state_is_reported_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -989,7 +989,7 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             write(transaction, "{}\n")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -1018,7 +1018,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 ["validation/.cache/upgrade-transactions"],
             )
             self.assertFalse(
-                (summary.with_suffix("") / "validation/mechanical.json").exists()
+                (summary.with_suffix("") / "validation/results.json").exists()
             )
 
     def test_summary_symlink_is_rejected_before_evaluation(self) -> None:
@@ -1036,7 +1036,7 @@ class MechanicalControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
             old = {
-                "validation/mechanical.json": b"old record\n",
+                "validation/results.json": b"old record\n",
                 "validation.md": b"old report\n",
             }
             for relative, payload in old.items():
@@ -1067,7 +1067,7 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_publication_snapshots_prior_files_without_whole_file_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
-            prior = log_root / "validation/mechanical.json"
+            prior = log_root / "validation/results.json"
             write(prior, "old record\n")
 
             with mock.patch.object(
@@ -1077,7 +1077,7 @@ class MechanicalControllerTests(unittest.TestCase):
             ):
                 RECORDS.publish_validation_outputs(
                     log_root,
-                    {"validation/mechanical.json": b"new record\n"},
+                    {"validation/results.json": b"new record\n"},
                 )
 
             self.assertEqual(prior.read_text(encoding="utf-8"), "new record\n")
@@ -1086,7 +1086,7 @@ class MechanicalControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
             log_root.mkdir()
-            relative = "validation/mechanical.json"
+            relative = "validation/results.json"
             with OPERATION_STATE.operation_lock(
                 log_root, "log.lock", mode="exclusive"
             ):
@@ -1103,7 +1103,7 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_incomplete_rollback_is_reported_truthfully(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
-            path = log_root / "validation/mechanical.json"
+            path = log_root / "validation/results.json"
             write(path, "old record\n")
 
             with (
@@ -1123,7 +1123,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 ):
                     RECORDS.publish_validation_outputs(
                         log_root,
-                        {"validation/mechanical.json": b"new record\n"},
+                        {"validation/results.json": b"new record\n"},
                     )
 
     def test_log_lock_rejects_a_second_validation_writer(self) -> None:
@@ -1139,9 +1139,9 @@ class MechanicalControllerTests(unittest.TestCase):
                 ):
                     RECORDS.publish_validation_outputs(
                         log_root,
-                        {"validation/mechanical.json": b"new record\n"},
+                        {"validation/results.json": b"new record\n"},
                     )
-            self.assertFalse((log_root / "validation/mechanical.json").exists())
+            self.assertFalse((log_root / "validation/results.json").exists())
 
     def test_controller_holds_log_lock_through_evaluation_and_promotion(
         self,
@@ -1261,7 +1261,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
             log_root = summary.with_suffix("")
             self.assertTrue(result["published"])
-            self.assertTrue((log_root / "validation/mechanical.json").is_file())
+            self.assertTrue((log_root / "validation/results.json").is_file())
             self.assertTrue((log_root / "validation.md").is_file())
 
     def test_symlinked_publication_directory_is_rejected(self) -> None:
@@ -1279,10 +1279,10 @@ class MechanicalControllerTests(unittest.TestCase):
             ):
                 RECORDS.publish_validation_outputs(
                     log_root,
-                    {"validation/mechanical.json": b"new record\n"},
+                    {"validation/results.json": b"new record\n"},
                 )
 
-            self.assertFalse((external / "mechanical.json").exists())
+            self.assertFalse((external / "results.json").exists())
 
     def test_engine_operational_error_preserves_prior_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1292,7 +1292,7 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -1314,7 +1314,7 @@ class MechanicalControllerTests(unittest.TestCase):
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -1352,7 +1352,7 @@ class MechanicalControllerTests(unittest.TestCase):
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}
@@ -1375,7 +1375,7 @@ class MechanicalControllerTests(unittest.TestCase):
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (
-                log_root / "validation/mechanical.json",
+                log_root / "validation/results.json",
                 log_root / "validation.md",
             )
             before = {path: path.read_bytes() for path in tracked}

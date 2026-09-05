@@ -8,7 +8,7 @@ support state; validation reads it but never writes or repairs it.
 
 Mechanical Validate may create or update only these generated paths:
 
-- `<log>/validation/mechanical.json`;
+- `<log>/validation/results.json`;
 - `<log>/validation.md`;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
   shared-memory companions;
@@ -16,7 +16,7 @@ Mechanical Validate may create or update only these generated paths:
 - `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
   and shared-memory companions.
 
-`validation/mechanical.json` is the authoritative machine-readable result.
+`validation/results.json` is the authoritative machine-readable result.
 `validation.md` is its human projection and also carries the independent
 Reproduction section. Mechanical Validate preserves any existing
 `validation/reproduction.json`; reproduction is a separate operation.

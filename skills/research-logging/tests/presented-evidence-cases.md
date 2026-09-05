@@ -461,7 +461,7 @@ material. A later, separately authorized Repair operation resolves the issue
 before Validate is rerun.
 
 Given complete findings, the CLI exits zero and publishes
-`validation/mechanical.json`, its disposable cache, and `validation.md`.
+`validation/results.json`, its disposable cache, and `validation.md`.
 Given an unavailable required observation, it returns `incomplete`, exits
 nonzero, and leaves the prior completed bundle unchanged. Dry-run always writes
 nothing.

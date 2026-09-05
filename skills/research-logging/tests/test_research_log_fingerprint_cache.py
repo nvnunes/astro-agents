@@ -540,7 +540,7 @@ class FingerprintCacheTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            report = root / "validation" / "mechanical.json"
+            report = root / "validation" / "results.json"
             payload = b'{"schema":"fixture"}\n'
             write(report, payload.decode())
             digest = hashlib.sha256(payload).hexdigest()
@@ -571,7 +571,7 @@ class FingerprintCacheTests(unittest.TestCase):
     def test_remember_regular_file_rejects_wrong_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            report = root / "mechanical.json"
+            report = root / "remembered.json"
             write(report, "{}\n")
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
@@ -587,7 +587,7 @@ class FingerprintCacheTests(unittest.TestCase):
     def test_remember_regular_file_rejects_a_same_size_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            report = root / "mechanical.json"
+            report = root / "remembered.json"
             write(report, "old\n")
             published_identity = FILESYSTEM.file_identity(report.lstat())
             replacement = root / "replacement.json"

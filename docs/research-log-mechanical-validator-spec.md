@@ -1971,7 +1971,7 @@ relative to the maintained-log root:
 - `validation-state`; and
 - `.research-log-validation.lock`.
 
-When no active `validation/mechanical.json` exists, the preflight also treats
+When no active `validation/results.json` exists, the preflight also treats
 `validation.md` as unsupported generated state if its bounded prefix contains
 the `| Entry | Date | Checked | Reproducibility |` table header or the
 `## Status Summary` marker. It does not parse any unsupported JSON, shard,
@@ -3076,7 +3076,7 @@ Each eligible standalone file or atomic generated output directory is
 connected, declared-retained, or orphaned. An exact bundle-member edge remains
 member-specific in the evidence and command graph, but it connects the complete
 bundle membership for ownership and orphan classification.
-`validation/mechanical.json` records authoritative artifact-level orphan
+`validation/results.json` records authoritative artifact-level orphan
 checks. An unused data item produces one `orphan.input.unused` check; unused
 declarations are reported separately and do not inflate artifact counts.
 
@@ -3103,7 +3103,7 @@ the graph still identifies its current producer.
 
 `validation.md` reports one Hygiene finding count that combines orphan
 artifacts, unmatched outputs, and unused input declarations. Their distinct
-machine-readable checks remain in `validation/mechanical.json` for repair.
+machine-readable checks remain in `validation/results.json` for repair.
 Machine-readable orphan metadata may group maximal all-orphan directories
 below, but never equal to, the owning entry root. Starting with each child
 directory, collapse the highest directory whose every eligible file is
@@ -3554,7 +3554,7 @@ in `Current Versions` and contains:
   generated reports.
 
 The published CLI envelope does not duplicate the complete generated record on
-standard output. `validation/mechanical.json` owns those checks. An unpublished
+standard output. `validation/results.json` owns those checks. An unpublished
 dry-run or incomplete evaluation retains the complete validation-result record
 in its result because no replacement bundle was installed. An
 unsupported-metadata envelope contains
@@ -3576,7 +3576,7 @@ publishing either the result or the rebuilt cache.
 A completed published evaluation owns exactly these active generated paths:
 
 ```text
-<log>/validation/mechanical.json
+<log>/validation/results.json
 <log>/validation/reproduction.json  # when reproduction publishes it
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
@@ -3597,7 +3597,7 @@ writable evaluation also owns the shared generated SQLite paths:
 <project>/.cache/research-log-fingerprints.sqlite3-shm
 ```
 
-`validation/mechanical.json` is authoritative and uses the mechanical-record
+`validation/results.json` is authoritative and uses the mechanical-record
 schema listed in `Current Versions`. Its exact top-level fields are `schema`,
 `summary`, `rules_version`, `result_date`, `completion`, `checks`, and
 `scopes`. Checks are unique and sorted by `identity`; each contains
@@ -3613,7 +3613,7 @@ Versions`. It has independent `check_comparison` and `evidence_selections`
 components.
 `check_comparison` retains only passing dependency-bearing checks, with the
 rules version, exact dependency projection, strict serialized check, and exact
-SHA-256 identity of the authoritative `validation/mechanical.json` from which
+SHA-256 identity of the authoritative `validation/results.json` from which
 the baseline was built. `evidence_selections` retains strict serialized
 successful `SelectionResult` values keyed by strong source content identity,
 source profile, canonical locator identity, and locator-evaluator version.
@@ -3674,7 +3674,7 @@ Hygiene finding count. Structure projects machine scope `conformance`, and
 Hygiene projects machine scope `orphan`; neither display label changes the
 machine schema. Hygiene combines orphan artifacts, unmatched output records,
 and unused input declarations; their distinct checks remain authoritative in
-`mechanical.json`. Human detail may collapse maximal
+`results.json`. Human detail may collapse maximal
 all-orphan directories for discussion. The section contains every non-Hygiene
 non-passing check grouped by entry with its status, identity, subject, and
 dependencies. Failed and unavailable checks additionally show their code,

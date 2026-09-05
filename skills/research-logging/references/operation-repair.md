@@ -16,7 +16,7 @@ definition mode, not Repair.
 - Begin with the requested log, finding, and affected files. Do not expand the
   task to other findings or nearby cleanup.
 - For a published validation finding, read its exact check in
-  `validation/mechanical.json` and use `validation.md` only as the human
+  `validation/results.json` and use `validation.md` only as the human
   projection. Treat both as read-only generated state.
 - Inspect the affected research-owned files and only enough surrounding log
   state to establish the intended relationship.

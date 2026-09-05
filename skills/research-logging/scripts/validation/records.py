@@ -19,7 +19,7 @@ LEGACY_CACHE_FILES = (
 PUBLISHABLE_PATHS = frozenset(
     {
         "validation.md",
-        "validation/mechanical.json",
+        "validation/results.json",
         "validation/reproduction.json",
     }
 )

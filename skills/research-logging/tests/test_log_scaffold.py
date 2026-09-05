@@ -353,7 +353,7 @@ class LogAddTests(unittest.TestCase):
             summary.write_text(customized, encoding="utf-8")
             generated = {
                 logical / "validation.md": b"human\n",
-                logical / "validation" / "mechanical.json": b"machine\n",
+                logical / "validation" / "results.json": b"machine\n",
             }
             for path, value in generated.items():
                 path.parent.mkdir(parents=True, exist_ok=True)

@@ -53,7 +53,7 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     return {
         "generated": {
             "human": (log_root / "validation.md").as_posix(),
-            "mechanical": (log_root / "validation/mechanical.json").as_posix(),
+            "mechanical": (log_root / "validation/results.json").as_posix(),
         },
         "metrics": result.get("metrics", {}),
         "published": True,

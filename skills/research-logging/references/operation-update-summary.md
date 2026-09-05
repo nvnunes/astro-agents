@@ -16,10 +16,10 @@ guidance.
 ## Behavior
 
 Update the canonical `<log>.md` file with the normal repository editing tools.
-Research and validation are assumed not to modify the same log concurrently.
-The validator atomically replaces only generated records under the repository
-validation lock; ordinary research summary edits need no second lock or
-optimistic publication protocol.
+The validator atomically replaces only generated records while holding the
+canonical log lock. Direct summary editing remains outside the maintained CLI
+lock hierarchy, so do not intentionally edit the same log during validation;
+the validator's final snapshot check rejects an overlapping raw edit.
 
 - Read the relevant entry documents before changing summary claims.
 - Preserve researcher-defined topic organization and framing. Normalize

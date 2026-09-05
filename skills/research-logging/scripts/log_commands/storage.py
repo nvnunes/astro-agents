@@ -36,17 +36,28 @@ class PublicationError(OSError):
 
 @contextmanager
 def entry_lock(entry: EntryContext) -> Iterator[None]:
-    """Hold the stable entry lock without first acquiring the log lock."""
+    """Hold the shared log lock, then one stable entry lock exclusively."""
 
-    with _lock(entry.log, f"entry-{entry.id}.lock"):
+    with operation_lock(entry.log.root, "log.lock", mode="shared"):
+        require_mutation_ready(entry.log.root, entry_id=entry.id)
+        with entry_lock_under_log(entry):
+            yield
+
+
+@contextmanager
+def entry_lock_under_log(entry: EntryContext) -> Iterator[None]:
+    """Hold one entry lock while the caller already owns the log lock."""
+
+    with operation_lock(entry.log.root, f"entry-{entry.id}.lock"):
         yield
 
 
 @contextmanager
 def log_lock(log: LogContext) -> Iterator[None]:
-    """Hold the canonical log mutation lock."""
+    """Hold the canonical log lock exclusively."""
 
-    with _lock(log, "log.lock"):
+    with operation_lock(log.root, "log.lock", mode="exclusive"):
+        require_mutation_ready(log.root)
         yield
 
 
@@ -73,14 +84,7 @@ def log_and_entry_locks(
     with ExitStack() as stack:
         stack.enter_context(log_lock(log))
         for entry in selected:
-            stack.enter_context(entry_lock(entry))
-        yield
-
-
-@contextmanager
-def _lock(log: LogContext, name: str) -> Iterator[None]:
-    with operation_lock(log.root, name):
-        require_mutation_ready(log.root)
+            stack.enter_context(entry_lock_under_log(entry))
         yield
 
 

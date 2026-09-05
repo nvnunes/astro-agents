@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 MAX_SNAPSHOT_FILES = 1_000_000
 REORGANIZE_RESIDUE = "reorganize-residue"
 REGISTRY_RESIDUE = "registry-residue"
-REPAIR_RESIDUES = (REORGANIZE_RESIDUE, REGISTRY_RESIDUE)
+REGISTRY_RESIDUE_PREFIX = "registry-residue-"
+LockMode = Literal["shared", "exclusive"]
+
+
+class OperationLockError(OSError):
+    """One maintained operation could not acquire its canonical lock."""
+
+    code = "operation.lock.conflict"
 
 
 def operation_directory(log_root: Path) -> Path:
@@ -21,6 +29,8 @@ def operation_directory(log_root: Path) -> Path:
 
 
 def _prepare_operation_directory(log_root: Path) -> Path:
+    if log_root.is_symlink() or not log_root.is_dir():
+        raise OSError(f"operation root must be a regular directory: {log_root}")
     cache = log_root.resolve() / ".cache"
     if cache.is_symlink() or cache.exists() and not cache.is_dir():
         raise OSError(f"operation cache must be a regular directory: {cache}")
@@ -40,26 +50,42 @@ def _open_lock(path: Path, *, create: bool) -> int:
 
 
 @contextmanager
-def operation_lock(log_root: Path, name: str) -> Iterator[None]:
-    """Hold one stable generated operation lock."""
+def operation_lock(
+    log_root: Path, name: str, *, mode: LockMode = "exclusive"
+) -> Iterator[None]:
+    """Hold one stable generated operation lock without waiting."""
 
     if Path(name).name != name or not name.endswith(".lock"):
         raise ValueError(f"invalid operation lock name: {name}")
+    if mode not in {"shared", "exclusive"}:
+        raise ValueError(f"invalid operation lock mode: {mode}")
     directory = _prepare_operation_directory(log_root)
-    with os.fdopen(_open_lock(directory / name, create=True), "r+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    path = directory / name
+    with os.fdopen(_open_lock(path, create=True), "r+b") as handle:
+        operation = fcntl.LOCK_SH if mode == "shared" else fcntl.LOCK_EX
+        try:
+            fcntl.flock(handle.fileno(), operation | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise OperationLockError(
+                f"research-log operation is active: {path}"
+            ) from error
         try:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def require_mutation_ready(log_root: Path) -> None:
+def require_mutation_ready(log_root: Path, *, entry_id: str | None = None) -> None:
     """Refuse mutation while recognized hard-crash residue remains."""
 
     directory = operation_directory(log_root)
-    for name in REPAIR_RESIDUES:
-        path = directory / name
+    paths = [directory / REORGANIZE_RESIDUE, directory / REGISTRY_RESIDUE]
+    if entry_id is None:
+        if directory.is_dir():
+            paths.extend(sorted(directory.glob(f"{REGISTRY_RESIDUE_PREFIX}*")))
+    else:
+        paths.append(directory / f"{REGISTRY_RESIDUE_PREFIX}{entry_id}")
+    for path in paths:
         if path.exists() or path.is_symlink():
             raise OSError(f"research-log mutation requires Repair: {path}")
 
@@ -74,12 +100,14 @@ def begin_reorganization(log_root: Path) -> Path:
     )
 
 
-def begin_registry_transaction(log_root: Path) -> Path:
+def begin_registry_transaction(log_root: Path, entry_id: str) -> Path:
     """Guard one multi-file authored-registry publication until completion."""
 
+    if not re.fullmatch(r"e[0-9]{3}", entry_id):
+        raise ValueError(f"invalid stable entry ID: {entry_id}")
     return _begin_residue(
         log_root,
-        REGISTRY_RESIDUE,
+        f"{REGISTRY_RESIDUE_PREFIX}{entry_id}",
         "explicit Repair required after interrupted registry publication\n",
     )
 
@@ -105,36 +133,6 @@ def finish_guarded_publication(path: Path) -> None:
 
     path.unlink()
     _sync_directory(path.parent)
-
-
-def mutation_active(log_root: Path) -> bool:
-    """Return whether any existing operation lock is currently held."""
-
-    directory = operation_directory(log_root)
-    if directory.is_symlink():
-        raise OSError(f"operation state must not be a symlink: {directory}")
-    if not directory.exists():
-        return False
-    if not directory.is_dir():
-        raise OSError(f"operation state must be a regular directory: {directory}")
-    for name in REPAIR_RESIDUES:
-        residue = directory / name
-        if residue.exists() or residue.is_symlink():
-            return True
-    for path in sorted(directory.glob("*.lock")):
-        if path.is_symlink() or not path.is_file():
-            raise OSError(f"operation lock must be a regular file: {path}")
-        with os.fdopen(_open_lock(path, create=False), "r+b") as handle:
-            acquired = False
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except BlockingIOError:
-                return True
-            finally:
-                if acquired:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    return False
 
 
 def _sync_directory(path: Path) -> None:

@@ -13,13 +13,12 @@ from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
-from .operation_state import mutation_active, research_snapshot
+from .operation_state import operation_lock, require_mutation_ready, research_snapshot
 from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
     remove_legacy_validation_cache,
     validate_legacy_validation_cache_paths,
-    validation_lock,
 )
 from .report import compose_validation_report
 from .validation_cache import ValidationCache, ValidationCacheError
@@ -53,6 +52,10 @@ UNSUPPORTED_REPORT_MARKERS = (
 class ValidationControllerError(RuntimeError):
     """Raised when the validation operation cannot complete."""
 
+    def __init__(self, message: str, *, code: str = "validation.failed"):
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class ValidationRequest:
@@ -78,36 +81,40 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         raise ValidationControllerError(
             f"summary must not be a symlink: {request.summary}"
         )
-    summary = request.summary.resolve()
-    _validate_request(summary)
-    unsupported = _unsupported_metadata_state(summary)
-    if unsupported is not None:
-        return unsupported
-    result_date = _result_date(request.result_date)
-    log_root = summary.with_suffix("")
+    requested_summary = request.summary.absolute()
+    requested_log_root = requested_summary.with_suffix("")
     try:
-        validate_legacy_validation_cache_paths(log_root)
-        if request.publish:
-            with validation_lock(log_root):
-                return _run_validation(
-                    request,
-                    summary,
-                    log_root,
-                    result_date,
+        with operation_lock(
+            requested_log_root, "log.lock", mode="exclusive"
+        ):
+            require_mutation_ready(requested_log_root)
+            summary = requested_summary.resolve()
+            _validate_request(summary)
+            unsupported = _unsupported_metadata_state(summary)
+            if unsupported is not None:
+                return unsupported
+            result_date = _result_date(request.result_date)
+            log_root = summary.with_suffix("")
+            if log_root != requested_log_root.resolve():
+                raise ValidationControllerError(
+                    "research-log root changed while acquiring its operation lock"
                 )
-        return _run_validation(
-            request,
-            summary,
-            log_root,
-            result_date,
-        )
+            validate_legacy_validation_cache_paths(log_root)
+            return _run_validation(
+                request,
+                summary,
+                log_root,
+                result_date,
+            )
     except (
         FingerprintCacheError,
         OSError,
         RecordPublicationError,
         ValidationCacheError,
     ) as error:
-        raise ValidationControllerError(str(error)) from error
+        raise ValidationControllerError(
+            str(error), code=str(getattr(error, "code", "validation.failed"))
+        ) from error
 
 
 def _run_validation(
@@ -292,10 +299,6 @@ def _require_publication_state(
     unchanged_report_sha256: str | None,
 ) -> None:
     _require_unsupported_metadata_clear(summary)
-    if mutation_active(summary.with_suffix("")):
-        raise ValidationControllerError(
-            "research-log mutation is active during validation publication"
-        )
     if (
         starting_snapshot is not None
         and research_snapshot(summary) != starting_snapshot

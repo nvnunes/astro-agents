@@ -106,7 +106,9 @@ def run_validate(
             for summary in summaries
         ]
     except (ValidationControllerError, ValueError) as error:
-        raise ActionError("validation.failed", str(error)) from error
+        raise ActionError(
+            str(getattr(error, "code", "validation.failed")), str(error)
+        ) from error
     if root is None:
         print(json.dumps(results[0], ensure_ascii=False, sort_keys=True))
     else:

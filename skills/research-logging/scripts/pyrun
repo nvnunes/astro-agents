@@ -29,6 +29,7 @@ from research_log_data import (
     resolve_input_token,
 )
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
+from validation.operation_state import OperationLockError
 from validation.pyrun_contract import (
     PyrunContractError,
     automatic_option_role,
@@ -599,6 +600,8 @@ def main(argv: list[str]) -> int:
             return returncode
     except PyrunOutputsError as error:
         raise SystemExit(f"pyrun: {error}") from error
+    except OperationLockError as error:
+        raise SystemExit(f"pyrun: operation conflict: {error}") from error
     except OSError as error:
         raise SystemExit(f"pyrun: operation state unavailable: {error}") from error
 

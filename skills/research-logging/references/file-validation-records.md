@@ -12,7 +12,7 @@ Mechanical Validate may create or update only these generated paths:
 - `<log>/validation.md`;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
   shared-memory companions;
-- `<log>/.cache/research-log-validation.lock`; and
+- `<log>/.cache/research-log-operations/log.lock`; and
 - `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
   and shared-memory companions.
 
@@ -24,8 +24,9 @@ Reproduction section. Mechanical Validate preserves any existing
 The cache files are disposable generated acceleration state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every
 `.cache/` directory in source control and research-log discovery. `--dry-run`
-writes no generated path, while `--recompute` bypasses existing validation and
-fingerprint reuse for that invocation.
+publishes no result or cache changes beyond the generated coordination lock,
+while `--recompute` bypasses existing validation and fingerprint reuse for
+that invocation.
 
 ## Research Boundary
 
@@ -45,9 +46,12 @@ Validation never adds, removes, or rewrites this line.
 
 ## Publication Boundary
 
-A writable completed evaluation publishes a coherent generated bundle under
-the validation lock. An incomplete evaluation or publication failure does not
-replace the prior completed bundle. A dry run publishes nothing.
+A writable completed evaluation publishes a coherent generated bundle while
+holding the canonical log lock exclusively. Dry-run validation holds that same
+lock for its complete read-only lifecycle. An incomplete evaluation or
+publication failure does not replace the prior completed bundle. A dry run
+publishes nothing. If another maintained operation owns a conflicting lock,
+stop and retry after that operation completes.
 
 Do not edit generated records by hand. Report unsupported generated metadata
 and request separate authorization before archiving it outside the active log

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -362,6 +363,103 @@ print(json.dumps({{
 
 
 class LogLockTests(unittest.TestCase):
+    def test_exclusive_log_lock_rejects_entry_tools_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry = fixture(root)
+            source = entry / "data" / "new.txt"
+            source.write_text("new\n", encoding="utf-8")
+            script = entry / "scripts" / "noop.py"
+            script.write_text("pass\n", encoding="utf-8")
+            operation_dir = logical / ".cache" / "research-log-operations"
+            operation_dir.mkdir(parents=True)
+            lock = operation_dir / "log.lock"
+            tracked = (
+                logical.with_suffix(".md"),
+                entry / "e001.md",
+                entry / "data.json",
+            )
+            before = {
+                path: path.read_bytes()
+                for path in tracked
+            }
+
+            with lock.open("a+b") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                authoring = run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "new",
+                    "data/new.txt",
+                )
+                publishing = run(root, "validate", "--path", str(logical))
+                dry_run = run(
+                    root, "validate", "--path", str(logical), "--dry-run"
+                )
+                runner = subprocess.run(
+                    [sys.executable, str(PYRUN), "scripts/noop.py"],
+                    cwd=entry,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+            for result in (authoring, publishing, dry_run):
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("operation", result.stderr)
+            self.assertEqual(runner.returncode, 1, runner.stderr)
+            self.assertIn("operation conflict", runner.stderr)
+            self.assertEqual(
+                {
+                    path: path.read_bytes()
+                    for path in tracked
+                },
+                before,
+            )
+            self.assertFalse((logical / "validation.md").exists())
+
+    def test_process_termination_releases_operation_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _ = fixture(Path(directory))
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(LOG.parent)
+            code = """
+import sys
+from pathlib import Path
+from validation.operation_state import operation_lock
+with operation_lock(Path(sys.argv[1]), 'log.lock'):
+    print('ready', flush=True)
+    sys.stdin.readline()
+"""
+            holder = subprocess.Popen(
+                [sys.executable, "-u", "-c", code, str(logical)],
+                text=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+            )
+            self.assertIsNotNone(holder.stdout)
+            self.assertEqual(holder.stdout.readline().strip(), "ready")
+            holder.terminate()
+            holder.communicate(timeout=2)
+            acquired = subprocess.run(
+                [sys.executable, "-u", "-c", code, str(logical)],
+                input="\n",
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=2,
+                check=False,
+            )
+            self.assertEqual(acquired.returncode, 0, acquired.stderr)
+            self.assertEqual(acquired.stdout.strip(), "ready")
+
     def test_entry_lock_excludes_same_entry_but_not_distinct_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, _ = fixture(Path(directory))
@@ -408,7 +506,7 @@ with operation_lock(Path(sys.argv[1]), sys.argv[2]):
                 check=False,
             )
             self.assertEqual(distinct.stdout.strip(), "acquired", distinct.stderr)
-            same = subprocess.Popen(
+            same = subprocess.run(
                 [
                     sys.executable,
                     "-u",
@@ -418,20 +516,17 @@ with operation_lock(Path(sys.argv[1]), sys.argv[2]):
                     "entry-e001.lock",
                 ],
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 env=environment,
+                timeout=2,
+                check=False,
             )
-            try:
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    same.communicate(timeout=0.2)
-            finally:
-                self.assertIsNotNone(holder.stdin)
-                holder.stdin.write("\n")
-                holder.stdin.flush()
-                holder.communicate(timeout=2)
-            stdout, stderr = same.communicate(timeout=2)
-            self.assertEqual(stdout.strip(), "acquired", stderr)
+            self.assertNotEqual(same.returncode, 0)
+            self.assertIn("research-log operation is active", same.stderr)
+            self.assertIsNotNone(holder.stdin)
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.communicate(timeout=2)
 
 
 class LogEvidenceTests(unittest.TestCase):

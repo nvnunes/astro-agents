@@ -453,15 +453,21 @@ from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument('--results')
 a = p.parse_args()
-lock = Path.cwd().parents[1] / '.cache/research-log-operations/entry-e001.lock'
-with lock.open('a+b') as handle:
+operations = Path.cwd().parents[1] / '.cache/research-log-operations'
+states = []
+for name in ('log.lock', 'entry-e001.lock'):
+    lock = operations / name
+    handle = lock.open('a+b')
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        state = 'locked'
-    else:
-        state = 'unlocked'
-Path(a.results).write_text(state, encoding='utf-8')
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            states.append('locked')
+        else:
+            states.append('unlocked')
+    finally:
+        handle.close()
+Path(a.results).write_text(','.join(states), encoding='utf-8')
 """,
                 encoding="utf-8",
             )
@@ -483,7 +489,7 @@ Path(a.results).write_text(state, encoding='utf-8')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 (entry / "data/lock-state.txt").read_text(encoding="utf-8"),
-                "locked",
+                "locked,locked",
             )
 
     def test_other_roles_publish_support_without_entering_signature(self) -> None:

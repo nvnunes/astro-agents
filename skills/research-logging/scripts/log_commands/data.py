@@ -262,7 +262,7 @@ def rename(
             updates = {candidate.path: candidate.canonical_json()}
             if evidence is not None:
                 updates[evidence.path] = evidence.canonical_json()
-            residue = begin_registry_transaction(entry.log.root)
+            residue = begin_registry_transaction(entry.log.root, entry.id)
             try:
                 atomic_write_texts(updates)
             except PublicationError as error:

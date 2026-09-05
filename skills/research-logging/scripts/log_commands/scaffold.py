@@ -22,7 +22,7 @@ from .storage import (
     atomic_create_text,
     atomic_write_text,
     create_symlink,
-    entry_lock,
+    entry_lock_under_log,
     log_creation_lock,
     log_lock,
     sync_directory,
@@ -155,7 +155,7 @@ def add_entry(log: LogContext, arguments: AddArguments) -> ActionResult:
         paths = tuple(
             path.as_posix() for path in (entry_root, document, runner, log.summary)
         )
-        with entry_lock(EntryContext(log, entry_id, entry_root)):
+        with entry_lock_under_log(EntryContext(log, entry_id, entry_root)):
             if arguments.dry_run:
                 return _result("add", "dry-run", True, paths)
             _publish_entry(log, planned)

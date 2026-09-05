@@ -578,8 +578,23 @@ class LogScaffoldConcurrencyTests(unittest.TestCase):
                 for command in commands
             ]
             results = [process.communicate(timeout=5) for process in processes]
-            self.assertEqual([process.returncode for process in processes], [0, 0])
+            self.assertEqual(
+                sorted(process.returncode for process in processes), [0, 2]
+            )
             self.assertTrue(all(stdout for stdout, _ in results))
+            failed = next(
+                command
+                for command, process in zip(commands, processes, strict=True)
+                if process.returncode == 2
+            )
+            retried = subprocess.run(
+                failed,
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(retried.returncode, 0, retried.stderr)
             folders = sorted(path.name for path in (logical / "entries").iterdir())
             self.assertEqual(len(folders), 2)
             self.assertEqual({name.split("-")[3] for name in folders}, {"e001", "e002"})

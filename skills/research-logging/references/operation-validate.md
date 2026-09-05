@@ -3,7 +3,8 @@
 Use this operation for independent mechanical validation of one or more
 maintained research logs. Run Validate as a separate operation after Record.
 It is read-only for research-owned material but normally writes generated
-validation state; use `--dry-run` for an entirely non-writing evaluation. The
+validation state; use `--dry-run` to publish no result or cache changes beyond
+the generated coordination lock. The
 same agent may invoke it, but while validating it must not edit or repair
 research-owned material. A research-owned finding requires a later, separately
 authorized Repair operation. `unsupported_metadata` is instead a
@@ -81,7 +82,9 @@ Interpret `status` as follows:
 
 The first three statuses exit zero because the requested evaluation or
 preflight completed. `incomplete` exits nonzero. A tool failure also exits
-nonzero and prints a precise error to standard error.
+nonzero and prints a precise error to standard error. If a conflicting
+research operation owns the log lock, stop and retry after it completes; do
+not work around the lock or alter generated state.
 
 ## Report
 

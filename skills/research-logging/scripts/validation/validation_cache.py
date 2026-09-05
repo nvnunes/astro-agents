@@ -22,7 +22,6 @@ from .selection_codec import SelectionCodecError, decode_selection, encode_selec
 from .sqlite_support import is_sqlite_corruption
 
 CACHE_FILENAME = "research-log-validation.sqlite3"
-LOCK_FILENAME = "research-log-validation.lock"
 CACHE_SCHEMA_VERSION = 1
 CHECK_COMPARISON_VERSION = 1
 EVIDENCE_SELECTION_VERSION = 1
@@ -875,7 +874,6 @@ __all__ = [
     "CACHE_SCHEMA_VERSION",
     "CHECK_COMPARISON_VERSION",
     "EVIDENCE_SELECTION_VERSION",
-    "LOCK_FILENAME",
     "MAX_SELECTION_BYTES",
     "MAX_SELECTION_CACHE_BYTES",
     "CheckComparisonEntry",

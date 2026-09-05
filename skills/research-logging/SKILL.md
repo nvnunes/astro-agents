@@ -79,5 +79,7 @@ state does not start Repair without an explicit correction request.
   and authored prose as research-owned. Research operations never edit
   generated validation files; Validate reads research files and writes
   only the generated files defined in `references/file-validation-records.md`.
+- If a maintained log command reports `operation.lock.conflict`, stop and
+  retry after the conflicting operation completes; do not bypass its lock.
 - Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.

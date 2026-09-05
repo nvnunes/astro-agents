@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import stat
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
 from .filesystem import FileIdentity, file_identity
-from .validation_cache import LOCK_FILENAME
+from .operation_state import operation_lock, require_mutation_ready
 
 LEGACY_CACHE_FILES = (
     "validation/.cache/mechanical.json",
@@ -29,37 +27,6 @@ PUBLISHABLE_PATHS = frozenset(
 
 class RecordPublicationError(RuntimeError):
     """Raised when generated validation state cannot be published safely."""
-
-
-@contextmanager
-def validation_lock(log_root: Path) -> Iterator[None]:
-    """Hold one log's nonblocking generated-state publication lock."""
-
-    log_root = log_root.resolve()
-    lock_path = log_root / ".cache" / LOCK_FILENAME
-    current = log_root
-    for part in (".cache", LOCK_FILENAME):
-        current /= part
-        if current.is_symlink():
-            raise RecordPublicationError(
-                f"validation publication path must not contain a symlink: {current}"
-            )
-    if lock_path.exists() and not lock_path.is_file():
-        raise RecordPublicationError(
-            f"validation lock must be a regular file: {lock_path}"
-        )
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RecordPublicationError(
-                f"another validation writer owns {lock_path}"
-            ) from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -238,7 +205,8 @@ def publish_validation_outputs(
     """
 
     log_root = log_root.resolve()
-    with validation_lock(log_root):
+    with operation_lock(log_root, "log.lock", mode="exclusive"):
+        require_mutation_ready(log_root)
         publish_validation_outputs_locked(
             log_root,
             outputs,

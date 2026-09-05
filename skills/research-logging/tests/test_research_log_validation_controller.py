@@ -381,10 +381,9 @@ class MechanicalControllerTests(unittest.TestCase):
                 ["mechanical.json"],
             )
             cache_names = {path.name for path in (log_root / ".cache").iterdir()}
-            self.assertTrue(
-                {VALIDATION_CACHE.CACHE_FILENAME, VALIDATION_CACHE.LOCK_FILENAME}
-                <= cache_names
-            )
+            self.assertIn(VALIDATION_CACHE.CACHE_FILENAME, cache_names)
+            self.assertNotIn("research-log-validation.lock", cache_names)
+            self.assertIn("research-log-operations", cache_names)
 
     def test_findings_are_complete_and_grouped_without_passing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1086,8 +1085,11 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_locked_publication_returns_exact_installed_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
+            log_root.mkdir()
             relative = "validation/mechanical.json"
-            with RECORDS.validation_lock(log_root):
+            with OPERATION_STATE.operation_lock(
+                log_root, "log.lock", mode="exclusive"
+            ):
                 identities = RECORDS.publish_validation_outputs_locked(
                     log_root,
                     {relative: b"new record\n"},
@@ -1124,13 +1126,16 @@ class MechanicalControllerTests(unittest.TestCase):
                         {"validation/mechanical.json": b"new record\n"},
                     )
 
-    def test_publication_lock_rejects_a_second_writer(self) -> None:
+    def test_log_lock_rejects_a_second_validation_writer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
-            with RECORDS.validation_lock(log_root):
+            log_root.mkdir()
+            with OPERATION_STATE.operation_lock(
+                log_root, "log.lock", mode="exclusive"
+            ):
                 with self.assertRaisesRegex(
-                    RECORDS.RecordPublicationError,
-                    "another validation writer",
+                    OPERATION_STATE.OperationLockError,
+                    "research-log operation is active",
                 ):
                     RECORDS.publish_validation_outputs(
                         log_root,
@@ -1138,7 +1143,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     )
             self.assertFalse((log_root / "validation/mechanical.json").exists())
 
-    def test_controller_holds_writer_lock_through_evaluation_and_promotion(
+    def test_controller_holds_log_lock_through_evaluation_and_promotion(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1149,17 +1154,23 @@ class MechanicalControllerTests(unittest.TestCase):
 
             def evaluate_while_locked(*args: object, **kwargs: object):
                 with self.assertRaisesRegex(
-                    RECORDS.RecordPublicationError, "another validation writer"
+                    OPERATION_STATE.OperationLockError,
+                    "research-log operation is active",
                 ):
-                    with RECORDS.validation_lock(log_root):
+                    with OPERATION_STATE.operation_lock(
+                        log_root, "log.lock", mode="exclusive"
+                    ):
                         pass
                 return original_evaluate(*args, **kwargs)
 
             def finish_while_locked(cache: object, *args: object, **kwargs: object):
                 with self.assertRaisesRegex(
-                    RECORDS.RecordPublicationError, "another validation writer"
+                    OPERATION_STATE.OperationLockError,
+                    "research-log operation is active",
                 ):
-                    with RECORDS.validation_lock(log_root):
+                    with OPERATION_STATE.operation_lock(
+                        log_root, "log.lock", mode="exclusive"
+                    ):
                         pass
                 return original_finish(cache, *args, **kwargs)
 
@@ -1181,6 +1192,57 @@ class MechanicalControllerTests(unittest.TestCase):
                 )
 
             self.assertTrue(result["published"])
+
+    def test_controller_acquires_log_lock_before_preflight_in_both_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            log_root = summary.with_suffix("")
+            original = CONTROLLER._validate_request
+
+            def preflight_while_locked(selected: Path) -> None:
+                with self.assertRaisesRegex(
+                    OPERATION_STATE.OperationLockError,
+                    "research-log operation is active",
+                ):
+                    with OPERATION_STATE.operation_lock(
+                        log_root, "log.lock", mode="exclusive"
+                    ):
+                        pass
+                original(selected)
+
+            for publish in (False, True):
+                with self.subTest(publish=publish), mock.patch.object(
+                    CONTROLLER,
+                    "_validate_request",
+                    side_effect=preflight_while_locked,
+                ):
+                    result = CONTROLLER.validate(
+                        CONTROLLER.ValidationRequest(
+                            summary,
+                            result_date="2026-08-29",
+                            publish=publish,
+                        )
+                    )
+                self.assertEqual(result["published"], publish)
+
+    def test_validation_locks_are_independent_between_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "first").mkdir()
+            (root / "second").mkdir()
+            first, _ = _log(root / "first")
+            second, _ = _log(root / "second")
+            with OPERATION_STATE.operation_lock(
+                first.with_suffix(""), "log.lock", mode="exclusive"
+            ):
+                result = CONTROLLER.validate(
+                    CONTROLLER.ValidationRequest(
+                        second,
+                        result_date="2026-08-29",
+                        publish=False,
+                    )
+                )
+            self.assertFalse(result["published"])
 
     def test_post_publication_cache_failure_preserves_authoritative_bundle(
         self,
@@ -1295,10 +1357,12 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             before = {path: path.read_bytes() for path in tracked}
 
-            with OPERATION_STATE.operation_lock(log_root, "entry-e001.lock"):
+            with OPERATION_STATE.operation_lock(
+                log_root, "log.lock", mode="shared"
+            ), OPERATION_STATE.operation_lock(log_root, "entry-e001.lock"):
                 with self.assertRaisesRegex(
                     CONTROLLER.ValidationControllerError,
-                    "mutation is active",
+                    "research-log operation is active",
                 ):
                     CONTROLLER.validate(request)
 

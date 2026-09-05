@@ -1500,7 +1500,7 @@ print(json.dumps({{
                 from log_commands.context import resolve_entry, resolve_log
                 from log_commands.storage import PublicationError
                 from validation.operation_state import (
-                    REGISTRY_RESIDUE,
+                    REGISTRY_RESIDUE_PREFIX,
                     operation_directory,
                 )
 
@@ -1523,7 +1523,10 @@ print(json.dumps({{
                         dry_run=False,
                     )
                 self.assertTrue(
-                    (operation_directory(logical) / REGISTRY_RESIDUE).is_file()
+                    (
+                        operation_directory(logical)
+                        / f"{REGISTRY_RESIDUE_PREFIX}e001"
+                    ).is_file()
                 )
                 blocked = run(entry, "data", "refresh", *common, "source")
                 self.assertEqual(blocked.returncode, 2)
@@ -1567,7 +1570,7 @@ print(json.dumps({{
             logical, first = scaffold(Path(directory))
             second = add_entry(logical, date="2026-09-05", slug="second")
             entries = ((first, "e001"), (second, "e002"))
-            processes: list[subprocess.Popen[str]] = []
+            processes: list[tuple[subprocess.Popen[str], Path, str, str]] = []
             environment = os.environ.copy()
             environment.pop("PYTHONHOME", None)
             for entry, entry_id in entries:
@@ -1575,32 +1578,57 @@ print(json.dumps({{
                     target = entry / "data" / f"{suffix}.txt"
                     target.write_text(f"{entry_id}-{suffix}\n", encoding="utf-8")
                     processes.append(
-                        subprocess.Popen(
-                            [
-                                sys.executable,
-                                str(LOG),
-                                "data",
-                                "add-origin",
-                                "--path",
-                                str(logical),
-                                "--entry",
-                                entry_id,
-                                suffix,
-                                f"data/{suffix}.txt",
-                            ],
-                            cwd=entry,
-                            text=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            env=environment,
+                        (
+                            subprocess.Popen(
+                                [
+                                    sys.executable,
+                                    str(LOG),
+                                    "data",
+                                    "add-origin",
+                                    "--path",
+                                    str(logical),
+                                    "--entry",
+                                    entry_id,
+                                    suffix,
+                                    f"data/{suffix}.txt",
+                                ],
+                                cwd=entry,
+                                text=True,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                env=environment,
+                            ),
+                            entry,
+                            entry_id,
+                            suffix,
                         )
                     )
-            outputs = [process.communicate(timeout=20) for process in processes]
-            self.assertEqual(
-                [process.returncode for process in processes],
-                [0, 0, 0, 0],
-                outputs,
-            )
+            outputs = [
+                process.communicate(timeout=20)
+                for process, _, _, _ in processes
+            ]
+            for entry_id in ("e001", "e002"):
+                returncodes = sorted(
+                    process.returncode
+                    for process, _, observed_id, _ in processes
+                    if observed_id == entry_id
+                )
+                self.assertIn(returncodes, ([0, 0], [0, 2]), outputs)
+            for process, entry, entry_id, suffix in processes:
+                if process.returncode == 0:
+                    continue
+                retried = run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    entry_id,
+                    suffix,
+                    f"data/{suffix}.txt",
+                )
+                self.assertEqual(retried.returncode, 0, retried.stderr)
             self.assertEqual(
                 [[item["name"] for item in data_inputs(entry)] for entry, _ in entries],
                 [["one", "two"], ["one", "two"]],

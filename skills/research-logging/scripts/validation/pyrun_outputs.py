@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import json
 import os
 import re
 import stat
 import tempfile
-from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, NoReturn, cast
+from typing import Any, Mapping, NoReturn, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
@@ -321,39 +318,14 @@ def output_target_path(
     return root.joinpath(*PurePosixPath(key).parts)
 
 
-def update_pyrun_outputs(
-    entry_root: Path,
-    updates: Mapping[str, OutputSupport],
-    *,
-    project_root: Path | None = None,
-) -> PyrunOutputsFile:
-    """Atomically replace support for only the supplied output identities."""
-
-    return _update_pyrun_outputs(
-        entry_root, updates, project_root=project_root, lock_held=False
-    )
-
-
 def update_pyrun_outputs_locked(
     entry_root: Path,
     updates: Mapping[str, OutputSupport],
     *,
     project_root: Path | None = None,
 ) -> PyrunOutputsFile:
-    """Update output support while the shared stable entry lock is held."""
+    """Atomically update support under the caller-owned canonical entry lock."""
 
-    return _update_pyrun_outputs(
-        entry_root, updates, project_root=project_root, lock_held=True
-    )
-
-
-def _update_pyrun_outputs(
-    entry_root: Path,
-    updates: Mapping[str, OutputSupport],
-    *,
-    project_root: Path | None,
-    lock_held: bool,
-) -> PyrunOutputsFile:
     root = entry_root.resolve()
     path = root / PYRUN_OUTPUTS_FILENAME
     normalized = {
@@ -368,22 +340,19 @@ def _update_pyrun_outputs(
     if len(normalized) != len(updates):
         _invalid(path, {"reason": "duplicate_output"})
     try:
-        with nullcontext() if lock_held else _outputs_lock(path):
-            current = (
-                load_pyrun_outputs(
-                    path, entry_root=root, project_root=project_root
-                )
-                if path.exists()
-                else empty_pyrun_outputs(root)
+        current = (
+            load_pyrun_outputs(
+                path, entry_root=root, project_root=project_root
             )
-            outputs = dict(current.outputs)
-            outputs.update(normalized)
-            result = PyrunOutputsFile(path, root, outputs)
-            serialized = _validated_serialization(
-                result, project_root=project_root
-            )
-            _atomic_write(path, serialized)
-            return result
+            if path.exists()
+            else empty_pyrun_outputs(root)
+        )
+        outputs = dict(current.outputs)
+        outputs.update(normalized)
+        result = PyrunOutputsFile(path, root, outputs)
+        serialized = _validated_serialization(result, project_root=project_root)
+        _atomic_write(path, serialized)
+        return result
     except OSError as error:
         raise PyrunOutputsError(
             "pyrun.outputs.unavailable",
@@ -519,18 +488,6 @@ def _decode_fingerprint(
         )
     except DataContractError as error:
         _invalid(subject, {"fingerprint": value, "reason": error.code})
-
-
-@contextmanager
-def _outputs_lock(path: Path) -> Iterator[None]:
-    identity = hashlib.sha256(str(path.resolve()).encode()).hexdigest()
-    lock = Path(tempfile.gettempdir()) / f"pyrun-outputs-{identity}.lock"
-    with lock.open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_write(path: Path, text: str) -> None:

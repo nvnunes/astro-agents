@@ -19,7 +19,7 @@ from .entry_materials import (
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
-from .provenance import DirectoryProducerIndex, build_directory_producer_index
+from .provenance import ProducerIndex, build_producer_index
 from .pyrun_outputs import PYRUN_OUTPUTS_BACKUP_RE
 from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
 
@@ -124,7 +124,7 @@ class MaterialGraphRequest:
     invocations: Sequence[Invocation]
     retention_files: Sequence[RetentionFile]
     input_registries: Sequence[InputRegistrySurface] = ()
-    directory_producers: DirectoryProducerIndex | None = None
+    producer_index: ProducerIndex | None = None
 
 
 @dataclass
@@ -145,15 +145,18 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     """Compose the evidence closure, then classify entry-owned material."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
+    producer_index = request.producer_index or build_producer_index(
+        request.invocations
+    )
     bundles = _atomic_output_bundles(
         request.invocations,
         request.input_registries,
-        request.directory_producers,
+        producer_index,
     )
     state = _GraphState(
         roots=_connection_roots(roots),
         invocations=request.invocations,
-        outputs=_output_index(request.invocations),
+        outputs=producer_index.outputs,
         bundles_by_material=_bundle_material_index(bundles),
         nodes=set(),
         edges=set(),
@@ -345,20 +348,10 @@ def _reached_prior_producer(
     return owner
 
 
-def _output_index(
-    invocations: Sequence[Invocation],
-) -> dict[str, tuple[Invocation, ...]]:
-    result: dict[str, list[Invocation]] = {}
-    for invocation in invocations:
-        for output in invocation.outputs:
-            result.setdefault(output.path, []).append(invocation)
-    return {path: tuple(values) for path, values in result.items()}
-
-
 def _atomic_output_bundles(
     invocations: Sequence[Invocation],
     surfaces: Sequence[InputRegistrySurface],
-    directory_producers: DirectoryProducerIndex | None,
+    producer_index: ProducerIndex,
 ) -> tuple[_AtomicOutputBundle, ...]:
     """Derive unambiguous atomic roots from existing authored contracts."""
 
@@ -370,8 +363,6 @@ def _atomic_output_bundles(
         and not resource.origin
         and resource.fingerprint.algorithm == "directory-sha256-v1"
     }
-    if directory_producers is None:
-        directory_producers = build_directory_producer_index(invocations)
     bundles: list[_AtomicOutputBundle] = []
     for invocation in invocations:
         for collection in invocation.collections:
@@ -382,7 +373,7 @@ def _atomic_output_bundles(
                 or collection.root not in generated_directories
             ):
                 continue
-            matches = directory_producers.lookup(collection.root)
+            matches = producer_index.lookup(collection.root)
             exact = tuple(match for match in matches if match.exact_directory)
             if (
                 len(exact) != 1

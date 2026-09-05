@@ -20,6 +20,8 @@ COMPLETED_STATUSES = frozenset(
     {"complete_clear", "complete_findings", "unsupported_metadata"}
 )
 CLI_RESULT_SCHEMA = "research-log-validation-cli-result/1"
+BATCH_RESULT_SCHEMA = "research-log-validation-batch-result/1"
+MAX_FAILURE_MESSAGE_BYTES = 2_048
 
 
 def evaluate_validation(
@@ -87,41 +89,73 @@ def run_validate(
 ) -> int:
     """Validate one resolved log or every log beneath an explicit root."""
 
-    try:
-        summaries: Sequence[Path]
-        if root is not None:
-            discovered = discover_summaries(root)
-            summaries = tuple(
-                Path(value) for value in cast(Sequence[str], discovered["summaries"])
-            )
-        else:
-            summaries = (resolve_log(path).summary,)
-        results = [
-            evaluate_validation(
+    if root is None:
+        try:
+            summary = resolve_log(path).summary
+            result = evaluate_validation(
                 summary,
                 result_date=result_date,
                 dry_run=dry_run,
                 recompute=recompute,
             )
-            for summary in summaries
-        ]
-    except (ValidationControllerError, ValueError) as error:
-        raise ActionError(
-            str(getattr(error, "code", "validation.failed")), str(error)
-        ) from error
-    if root is None:
-        print(json.dumps(results[0], ensure_ascii=False, sort_keys=True))
-    else:
-        print(
-            json.dumps(
-                {
-                    "results": results,
-                    "root": root.resolve().as_posix(),
-                    "schema": "research-log-validation-batch-result/1",
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        except (ValidationControllerError, ValueError) as error:
+            raise ActionError(
+                str(getattr(error, "code", "validation.failed")), str(error)
+            ) from error
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if str(result.get("status")) in COMPLETED_STATUSES else 3
+
+    try:
+        discovered = discover_summaries(root)
+        summaries: Sequence[Path] = tuple(
+            Path(value) for value in cast(Sequence[str], discovered["summaries"])
         )
+    except ValueError as error:
+        raise ActionError("discovery.failed", str(error)) from error
+
+    results: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+    for summary in summaries:
+        try:
+            results.append(
+                evaluate_validation(
+                    summary,
+                    result_date=result_date,
+                    dry_run=dry_run,
+                    recompute=recompute,
+                )
+            )
+        except (ValidationControllerError, ValueError) as error:
+            failures.append(
+                {
+                    "code": str(getattr(error, "code", "validation.failed")),
+                    "message": _bounded_failure_message(error),
+                    "summary": summary.resolve().as_posix(),
+                }
+            )
+    print(
+        json.dumps(
+            {
+                "failures": failures,
+                "results": results,
+                "root": root.resolve().as_posix(),
+                "schema": BATCH_RESULT_SCHEMA,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     statuses = {str(result.get("status")) for result in results}
-    return 0 if statuses <= COMPLETED_STATUSES else 3
+    return 0 if not failures and statuses <= COMPLETED_STATUSES else 3
+
+
+def _bounded_failure_message(error: Exception) -> str:
+    """Return one UTF-8-safe operational message within the batch bound."""
+
+    encoded = str(error).encode("utf-8")
+    if len(encoded) <= MAX_FAILURE_MESSAGE_BYTES:
+        return str(error)
+    suffix = b"..."
+    return encoded[: MAX_FAILURE_MESSAGE_BYTES - len(suffix)].decode(
+        "utf-8", errors="ignore"
+    ) + suffix.decode()

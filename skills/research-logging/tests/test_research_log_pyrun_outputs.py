@@ -4,18 +4,21 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
+from typing import Mapping
 
 import validation.pyrun_outputs as PYRUN_OUTPUTS
 from research_log_data import Fingerprint
 from research_log_validation_test_support import mock, unittest, write
+from validation.operation_state import operation_lock
 from validation.pyrun_outputs import (
     OutputSupport,
     PyrunOutputsError,
+    PyrunOutputsFile,
     ScriptSupport,
     load_pyrun_outputs,
     output_target_path,
     portable_output_path,
-    update_pyrun_outputs,
+    update_pyrun_outputs_locked,
 )
 
 
@@ -23,7 +26,26 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _update_outputs(
+    entry: Path,
+    updates: Mapping[str, OutputSupport],
+    *,
+    project_root: Path | None = None,
+) -> PyrunOutputsFile:
+    """Exercise output publication under the canonical lock hierarchy."""
+
+    log_root = entry.parent
+    with operation_lock(log_root, "log.lock", mode="shared"):
+        with operation_lock(log_root, f"entry-{entry.name}.lock"):
+            return update_pyrun_outputs_locked(
+                entry, updates, project_root=project_root
+            )
+
+
 class PyrunOutputsContractTests(unittest.TestCase):
+    def test_module_exposes_only_the_caller_locked_update_path(self) -> None:
+        self.assertFalse(hasattr(PYRUN_OUTPUTS, "update_pyrun_outputs"))
+
     def test_project_output_key_is_portable_and_resolves_to_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -97,7 +119,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 (),
             )
 
-            result = update_pyrun_outputs(entry, {"data/output.csv": record})
+            result = _update_outputs(entry, {"data/output.csv": record})
 
             raw = json.loads(result.path.read_text())
             self.assertEqual(list(raw["outputs"]), ["data/output.csv"])
@@ -121,7 +143,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 (),
             )
 
-            written = update_pyrun_outputs(entry, {"data/output.csv": record})
+            written = _update_outputs(entry, {"data/output.csv": record})
 
             loaded = load_pyrun_outputs(written.path, entry_root=entry)
             self.assertEqual(
@@ -147,7 +169,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ("--mode", "old"),
                 (),
             )
-            update_pyrun_outputs(
+            _update_outputs(
                 entry,
                 {"data/first.csv": first, "data/second.csv": second},
             )
@@ -162,7 +184,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 (),
             )
 
-            result = update_pyrun_outputs(
+            result = _update_outputs(
                 entry,
                 {"data/first.csv": replacement},
             )
@@ -229,7 +251,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 ("--mode", "valid"),
                 (),
             )
-            path = update_pyrun_outputs(entry, {"data/output.csv": valid}).path
+            path = _update_outputs(entry, {"data/output.csv": valid}).path
             before = path.read_bytes()
             invalid = OutputSupport(
                 True,
@@ -240,7 +262,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(PyrunOutputsError, "pyrun.outputs.invalid"):
-                update_pyrun_outputs(entry, {"data/output.csv": invalid})
+                _update_outputs(entry, {"data/output.csv": invalid})
 
             self.assertEqual(path.read_bytes(), before)
 
@@ -266,7 +288,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
                     with self.assertRaisesRegex(
                         PyrunOutputsError, "pyrun.outputs.invalid"
                     ):
-                        update_pyrun_outputs(entry, {"data/output.csv": record})
+                        _update_outputs(entry, {"data/output.csv": record})
                     self.assertEqual(path.read_bytes(), before)
 
     def test_writer_enforces_merged_output_and_serialized_size_limits(self) -> None:
@@ -280,19 +302,19 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 (),
                 (),
             )
-            path = update_pyrun_outputs(entry, {"data/first.csv": record}).path
+            path = _update_outputs(entry, {"data/first.csv": record}).path
             before = path.read_bytes()
 
             with mock.patch.object(PYRUN_OUTPUTS, "MAX_OUTPUTS", 1):
                 with self.assertRaisesRegex(PyrunOutputsError, "pyrun.outputs.invalid"):
-                    update_pyrun_outputs(entry, {"data/second.csv": record})
+                    _update_outputs(entry, {"data/second.csv": record})
             self.assertEqual(path.read_bytes(), before)
 
             size_entry = Path(directory) / "size-entry"
             size_entry.mkdir()
             with mock.patch.object(PYRUN_OUTPUTS, "MAX_FILE_BYTES", 1):
                 with self.assertRaisesRegex(PyrunOutputsError, "pyrun.outputs.invalid"):
-                    update_pyrun_outputs(size_entry, {"data/first.csv": record})
+                    _update_outputs(size_entry, {"data/first.csv": record})
             self.assertFalse((size_entry / "pyrun-outputs.json").exists())
 
 

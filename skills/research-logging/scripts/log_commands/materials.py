@@ -28,8 +28,9 @@ from validation.output_support import (
     resolve_output_support,
 )
 from validation.provenance import (
+    ProducerIndex,
     ProvenanceResult,
-    build_directory_producer_index,
+    build_producer_index,
     evaluate_provenance,
     require_declared_producer,
 )
@@ -55,6 +56,9 @@ class LogMaterials:
     input_names: Mapping[Path, frozenset[str]]
     failures: Mapping[Path, tuple[CommandDiscoveryFailure, ...]]
     _support: dict[str, PyrunOutputsFile] = field(default_factory=dict)
+    _producer_index: ProducerIndex | None = field(
+        default=None, init=False, repr=False
+    )
 
     def confirmed(self, invocation: Invocation, material: str) -> bool:
         """Return confirmed support using the validator's exact output identity."""
@@ -112,6 +116,7 @@ class LogMaterials:
                     self.invocations,
                     producer_validator=validate,
                     confirmed_record=self.confirmed,
+                    producer_index=self._index(),
                 )
         except FingerprintCacheError as error:
             raise ActionError(
@@ -128,11 +133,10 @@ class LogMaterials:
     def require_pending_generated(self, resource: InputResource) -> Invocation:
         """Require one producer while leaving absent execution proof pending."""
 
-        directory_producers = build_directory_producer_index(self.invocations)
         producer = require_declared_producer(
             resource.canonical_target,
             self.invocations,
-            directory_producers=directory_producers,
+            producer_index=self._index(),
         )
         root = self._root(producer)
         resolved = resolve_output_support(
@@ -231,6 +235,13 @@ class LogMaterials:
         )
         self._support[owner] = support
         return support
+
+    def _index(self) -> ProducerIndex:
+        """Return the one producer index for this inspected command state."""
+
+        if self._producer_index is None:
+            self._producer_index = build_producer_index(self.invocations)
+        return self._producer_index
 
 
 def inspect_log_materials(

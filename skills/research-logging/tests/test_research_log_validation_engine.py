@@ -521,14 +521,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertEqual(provenance.failure.code, "provenance.output.missing")
 
-    def test_validation_builds_one_directory_producer_index(self) -> None:
+    def test_validation_builds_one_shared_producer_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            builder = ENGINE.build_directory_producer_index
+            builder = ENGINE.build_producer_index
 
             with mock.patch.object(
                 ENGINE,
-                "build_directory_producer_index",
+                "build_producer_index",
                 wraps=builder,
             ) as indexed:
                 _evaluate(summary)

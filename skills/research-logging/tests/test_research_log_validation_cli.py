@@ -150,6 +150,66 @@ class ValidationCliTests(unittest.TestCase):
             self.assertFalse(result["published"])
             self.assertIn("record", result)
 
+    def test_root_validation_reports_failures_and_continues_in_both_orders(
+        self,
+    ) -> None:
+        for bad_name, good_name in (("a-bad", "z-good"), ("z-bad", "a-good")):
+            for dry_run in (False, True):
+                with (
+                    self.subTest(bad_name=bad_name, dry_run=dry_run),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    (root / bad_name).mkdir()
+                    (root / good_name).mkdir()
+                    bad_summary, _ = mechanical_log(root / bad_name)
+                    good_summary, _ = mechanical_log(root / good_name)
+                    (root / bad_name / ".git").rmdir()
+                    arguments = [
+                        "validate",
+                        "--root",
+                        str(root),
+                        "--date",
+                        "2026-08-29",
+                    ]
+                    if dry_run:
+                        arguments.append("--dry-run")
+
+                    completed = run_log(root, *arguments)
+
+                    self.assertEqual(completed.returncode, 3, completed.stderr)
+                    self.assertEqual(completed.stderr, "")
+                    payload = json.loads(completed.stdout)
+                    self.assertEqual(
+                        payload["schema"], "research-log-validation-batch-result/1"
+                    )
+                    self.assertEqual(len(payload["results"]), 1)
+                    self.assertEqual(
+                        payload["results"][0]["summary"],
+                        good_summary.resolve().as_posix(),
+                    )
+                    self.assertEqual(
+                        payload["failures"],
+                        [
+                            {
+                                "code": "validation.failed",
+                                "message": (
+                                    "could not resolve project root from Git "
+                                    f"metadata: {bad_summary.resolve()}"
+                                ),
+                                "summary": bad_summary.resolve().as_posix(),
+                            }
+                        ],
+                    )
+                    self.assertEqual(
+                        (
+                            good_summary.with_suffix("")
+                            / "validation"
+                            / "results.json"
+                        ).is_file(),
+                        not dry_run,
+                    )
+
     def test_executable_tool_error_is_nonzero_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

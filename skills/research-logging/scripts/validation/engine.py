@@ -97,8 +97,8 @@ from .output_support import (
 )
 from .presentation import require_artifact_source_association
 from .provenance import (
-    DirectoryProducerIndex,
-    build_directory_producer_index,
+    ProducerIndex,
+    build_producer_index,
     evaluate_provenance,
     require_origin_boundary,
 )
@@ -194,7 +194,7 @@ class _ScanState:
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
-    directory_producers: DirectoryProducerIndex | None = None
+    producer_index: ProducerIndex | None = None
     command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
     command_blocker_candidates: (
         tuple[tuple[Path, bool, tuple[str, ...]], ...] | None
@@ -305,7 +305,7 @@ def _scan(
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
-        state.directory_producers = build_directory_producer_index(state.invocations)
+        state.producer_index = build_producer_index(state.invocations)
         _load_output_support(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
@@ -1459,7 +1459,7 @@ def _record_provenance(
                     confirmed_record=lambda invocation, output: (
                         _has_confirmed_output_record(invocation, output, state)
                     ),
-                    directory_producers=state.directory_producers,
+                    producer_index=state.producer_index,
                 )
                 dependencies.append(
                     {"kind": "origin", "material": material.path.as_posix()}
@@ -1474,7 +1474,7 @@ def _record_provenance(
                 confirmed_record=lambda invocation, output: (
                     _has_confirmed_output_record(invocation, output, state)
                 ),
-                directory_producers=state.directory_producers,
+                producer_index=state.producer_index,
             )
             dependencies.append(
                 {
@@ -1568,14 +1568,14 @@ def _require_complete_summary_references(
 
 
 def _compose_graph(state: _ScanState) -> None:
-    assert state.directory_producers is not None
+    assert state.producer_index is not None
     request = MaterialGraphRequest(
         entry_roots={entry.id: entry.root for entry in state.entries},
         evidence=_graph_evidence_connections(state),
         invocations=state.invocations,
         retention_files=_unique_retention_files(state.entries),
         input_registries=_input_registry_surfaces(state),
-        directory_producers=state.directory_producers,
+        producer_index=state.producer_index,
     )
     try:
         state.graph = compose_material_graph(request)

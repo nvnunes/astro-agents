@@ -3346,6 +3346,10 @@ spelling. Omission is allowed only when the working directory resolves exactly
 one maintained log. `validate --root` validates every summary returned by the
 same bounded discovery contract and emits the batch-result schema. It is the
 only all-log validation spelling; an omitted `--path` never means all logs.
+The batch result contains a `results` array for completed per-log results and a
+`failures` array whose items contain the affected summary, stable error code,
+and bounded message. One log's operational failure does not skip later logs or
+discard earlier results; any batch failure makes the command exit nonzero.
 `--date` defaults to the local calendar date and, when present, must be one
 exact ISO date.
 The nearest enclosing non-symlink `.git` file or directory defines the project

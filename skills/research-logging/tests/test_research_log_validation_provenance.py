@@ -74,7 +74,7 @@ def _invocation(
 
 
 class ProvenanceLineageTests(unittest.TestCase):
-    def test_directory_producer_index_preserves_overlap_and_sequence(self) -> None:
+    def test_producer_index_preserves_outputs_overlap_and_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             origin_root = root / "origin"
@@ -90,7 +90,10 @@ class ProvenanceLineageTests(unittest.TestCase):
                 _invocation("parent", 3, directories=(parent,)),
                 _invocation("unrelated", 4, directories=(unrelated,)),
             )
-            index = PROVENANCE.build_directory_producer_index(invocations)
+            index = PROVENANCE.build_producer_index(invocations)
+
+            self.assertEqual(index.outputs[member], (invocations[0],))
+            self.assertEqual(index.by_identity["exact"], invocations[1])
 
             matches = index.lookup(origin_root.as_posix())
             self.assertEqual(
@@ -213,7 +216,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 ),
             )
             invocations = (invocation, second)
-            index = PROVENANCE.build_directory_producer_index(invocations)
+            index = PROVENANCE.build_producer_index(invocations)
 
             with mock.patch.object(
                 PROVENANCE.Path,
@@ -226,7 +229,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                         resource,
                         invocations,
                         confirmed_record=lambda *_: False,
-                        directory_producers=index,
+                        producer_index=index,
                     )
                     with self.assertRaisesRegex(
                         PROVENANCE.ProvenanceV2Error,
@@ -237,7 +240,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                             resource,
                             invocations,
                             confirmed_record=lambda *_: True,
-                            directory_producers=index,
+                            producer_index=index,
                         )
                     self.assertEqual(
                         caught.exception.observed["producers"],

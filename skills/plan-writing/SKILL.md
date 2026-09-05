@@ -9,4 +9,6 @@ Use this skill for planning documents and task sequencing.
 
 Pair with `$technical-writing` for common prose discipline, then read `references/plan.md` for plan structure and scope rules.
 
-Make the goal, phases, dependencies, decisions, risks, and verification path clear enough that another agent or engineer can execute without inventing missing choices. Keep plans distinct from architecture docs: plans organize work; architecture docs own durable design.
+Plan the smallest coherent body of work that achieves the requested outcome. Include requested tasks and necessary dependencies; do not turn adjacent possibilities into planned or deferred work.
+
+Preserve the detail needed to execute and verify that scope. Keep durable architecture in its owning docs.

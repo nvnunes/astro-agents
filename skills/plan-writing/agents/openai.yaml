@@ -1,4 +1,4 @@
 interface:
   display_name: "Plan Writing"
   short_description: "Write and revise planning documents"
-  default_prompt: "Use $plan-writing to turn this work into a clear implementation plan."
+  default_prompt: "Use $plan-writing to develop or refine a scoped, actionable plan for this work."

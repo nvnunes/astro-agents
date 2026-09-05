@@ -54,8 +54,8 @@ It uses the same canonical discovery contract as
 `<skill>/scripts/log discover --root <project-root>` and returns one bounded
 batch result. Its `report` field is the finished Markdown comparison for every
 completed evaluation. Present that table unchanged; do not open generated
-reports to reconstruct its counts. Report any `failures`, `incomplete`, or
-`unsupported_metadata` results separately according to their status below.
+reports to reconstruct its counts. It omits operational failures and
+non-completed results; handle both under Report below.
 Do not build the log set with filename globs, and do not exclude a candidate
 because its basename is `validation.md`; discovery recognizes maintained
 summaries by their stable navigation line and sibling log root, so generated
@@ -80,19 +80,24 @@ Interpret `status` as follows:
 - `incomplete`: a required mechanical observation was unavailable, so no new
   generated bundle was published.
 
-The first three statuses exit zero because the requested evaluation or
-preflight completed. `incomplete` exits nonzero. A tool failure also exits
-nonzero and prints a precise error to standard error. If a conflicting
-research operation owns the log lock, stop and retry after it completes; do
-not work around the lock or alter generated state.
+For one-log validation, the first three statuses exit zero because the
+requested evaluation or preflight completed; `incomplete` exits nonzero. A
+`--root` batch exits nonzero when `failures` is non-empty or any result is
+`incomplete`, even though standard error can be empty. A top-level tool failure
+that prevents a structured result also exits nonzero and prints a precise error
+to standard error. If a conflicting research operation owns the log lock, stop
+and retry after it completes; do not work around the lock or alter generated
+state.
 
 ## Report
 
 Report according to the returned status:
 
 - For `--root`, present the returned `report` table without recalculating or
-  reformatting its cells. Then report any result omitted from that table using
-  the applicable rule below.
+  reformatting its cells. For each item in `failures`, report its `summary`,
+  `code`, and `message` from the structured batch result on standard output;
+  these items have no `status`. Then report every `incomplete` or
+  `unsupported_metadata` item in `results` using the applicable rule below.
 - For a one-log `complete_clear` or `complete_findings` result, report whether
   publication
   occurred, counts by mechanical scope and status, and each non-passing check.
@@ -114,8 +119,9 @@ Report according to the returned status:
   returned record and state that no new per-log generated bundle was
   published. A writable run may have retained completed project-level
   fingerprint observations and independently completed bounded selections;
-  neither becomes a new comparison baseline. For a tool failure, report the
-  precise operational error from standard error.
+  neither becomes a new comparison baseline.
+- When an invocation returns no structured result, report the precise
+  operational error from standard error.
 
 Do not invent item-specific repair guidance. A separately authorized Repair
 operation resolves a reported research-owned condition from its exact target

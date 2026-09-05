@@ -91,11 +91,14 @@ Provenance while preserving the member-level presentation association.
 
 When the intended presentation clearly needs one of the forms below, or the
 common action reports `evidence.common.unsupported`, do not edit the registry
-or start Repair. Read exactly one matching reference:
+or start Repair. Choose first by presentation family and read exactly one
+matching reference. For a statistic, use its transformation and source count
+to choose between the first two routes:
 
-- complex source selection or multiple sources:
+- a one-source statistic whose only advanced need is source selection:
   `references/record-evidence-definition-sources.md`;
-- a compound or otherwise advanced numerical presentation:
+- a compound or otherwise advanced numerical presentation, including every
+  statistic that consumes several sources:
   `references/record-evidence-definition-numeric.md`;
 - a direct table needing explicit column formatting:
   `references/record-evidence-definition-direct-tables.md`;

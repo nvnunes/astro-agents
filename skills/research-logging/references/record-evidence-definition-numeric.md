@@ -20,11 +20,40 @@ Use `evidence update` for an existing ID. The temporary file is a bounded
 regular non-symlink UTF-8 JSON object with exactly `sources` and
 `transformation`; the CLI never modifies or retains it.
 
+## Source Shape
+
+Use 1–8 ordered source objects. Each source item has exactly `source` and
+`locator`; array position assigns transformation inputs starting at zero. A
+source is one complete file token from the owning entry's `data.json`; a
+directory token must include one exact member. Direct paths, remote targets,
+bare directory tokens, and cross-entry shorthand are invalid.
+
+A locator is a non-empty object containing only applicable keys:
+
+- `path`: an exact path made from string keys, non-negative indexes,
+  `{"slice":[start,stop]}`, or `{"all":true}`;
+- `select`: a non-empty ordered array of relative paths;
+- `where`: non-empty `eq` or `in` conditions combined with AND;
+- `identity`: paths forming a unique scalar tuple for every matched record;
+- `property`: a supported structural property;
+- `text`: exact line selection by `contains` and optional `occurrence`; and
+- `expect`: optional exact `matches`, `items`, `shape`, or `identities`.
+
+`text` is mutually exclusive with the other selection keys except `expect`.
+Use `parse:"integer"` or `parse:"decimal"` in a condition only when comparing
+a complete lexical string numerically. Expectations assert retained structure;
+they never select or reorder it. Supported value containers are bounded CSV,
+TSV, JSON, NPZ, HDF5/MATLAB 7.3, and UTF-8 text.
+
+Locator identities are limited to 8 KiB, selections to 10,000 items, record
+scans to 100,000 records, text and JSON sources to 64 MiB, and binary
+materialization to 64 MiB per member and 512 MiB total. Stop and retain a
+smaller purpose-built source when the intended selection exceeds a bound.
+
 ## Numeric Shape
 
-Each source item has exactly `source` and `locator`. `sources[0]` is input `0`,
-and its selected values are items `0`, `1`, and so on. Every selected item must
-be consumed exactly once.
+`sources[0]` is input `0`, and its selected values are items `0`, `1`, and so
+on. Every selected item across every source must be consumed exactly once.
 
 Use `"transformation": null` only when one selected primitive already has the
 exact presented type and canonical spelling. Otherwise use one closed form:

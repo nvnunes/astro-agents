@@ -1,8 +1,10 @@
 # Advanced Evidence Sources
 
-Use this file only when common evidence arguments cannot express the required
-source selection or the presentation consumes several retained sources. This
-definition mode writes `evidence.json`; do not edit that registry directly.
+Use this file only when common evidence arguments cannot express the source
+selection for an otherwise simple one-source statistic. This route does not
+cover statistics that consume several sources or need an advanced numerical
+transformation. This definition mode writes `evidence.json`; do not edit that
+registry directly.
 
 ## Workflow
 
@@ -33,12 +35,10 @@ must contain exactly `sources` and `transformation`.
 }
 ```
 
-Use 1–8 sources for a statistic, one for an output, one for a direct or
-structured table, and 1–32 for a summary table. Array order assigns
-transformation inputs starting at zero. A source is one complete file token
-from the owning entry's `data.json`; a directory token must include one exact
-member. Direct paths, remote targets, bare directory tokens, and cross-entry
-shorthand are invalid.
+Use exactly one source for this focused route. A source is one complete file
+token from the owning entry's `data.json`; a directory token must include one
+exact member. Direct paths, remote targets, bare directory tokens, and
+cross-entry shorthand are invalid.
 
 A locator is a non-empty object containing only applicable keys:
 
@@ -61,6 +61,12 @@ and UTF-8 text. Locator identities are limited to 8 KiB, selections to 10,000
 items, record scans to 100,000 records, text and JSON sources to 64 MiB, and
 binary materialization to 64 MiB per member and 512 MiB total. Stop and retain
 a smaller purpose-built source when the intended selection exceeds a bound.
+
+Use `"transformation": null` when the selected primitive already has the exact
+presented type and canonical spelling. Use the closed `percentage` form when
+the selected proportion is intentionally presented as a percentage. If the
+statistic needs explicit numeric rendering, scaling, a range, uncertainty, an
+interval, a tuple, or several sources, use the advanced numeric route instead.
 
 ## Example
 

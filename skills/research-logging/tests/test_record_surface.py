@@ -87,6 +87,9 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertNotIn(
             "references/file-summary", reference("operation-record-content.md")
         )
+        cases = CASES.read_text(encoding="utf-8")
+        self.assertIn("lets `log add` own naming", cases)
+        self.assertNotIn("loads naming and entry-structure guidance", cases)
 
     def test_ordinary_record_does_not_route_to_registry_grammars(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -152,6 +155,8 @@ class RecordSurfaceTests(unittest.TestCase):
 
     def test_advanced_evidence_cases_route_to_one_focused_definition(self) -> None:
         presented = reference("file-presented-evidence.md")
+        sources = reference("record-evidence-definition-sources.md")
+        numeric = reference("record-evidence-definition-numeric.md")
         routed = (
             "record-evidence-definition-sources.md",
             "record-evidence-definition-numeric.md",
@@ -163,8 +168,31 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("evidence.common.unsupported", presented)
         for name in routed:
             self.assertEqual(presented.count(f"references/{name}"), 1)
+        self.assertIn("use its transformation and source count", presented)
+        self.assertIn("one-source statistic", sources)
+        self.assertIn("consume several sources", sources)
+        self.assertNotIn("record-evidence-definition-numeric", sources)
+        self.assertIn("Use 1–8 ordered source objects", numeric)
+        for locator_key in (
+            "`path`",
+            "`select`",
+            "`where`",
+            "`identity`",
+            "`property`",
+            "`text`",
+            "`expect`",
+        ):
+            self.assertIn(locator_key, numeric)
         self.assertNotIn("references/operation-repair.md", presented)
         self.assertNotIn("references/operation-reorganize.md", presented)
+
+    def test_behavior_cases_match_current_artifact_evidence_contract(self) -> None:
+        cases = CASES.read_text(encoding="utf-8")
+        self.assertIn("follows the common\nwhole-artifact workflow", cases)
+        self.assertIn("one stable marker and one evidence record", cases)
+        self.assertNotIn("receives no evidence record or\nmarker", cases)
+        self.assertIn("loads exactly one definition", cases)
+        self.assertNotIn("loads locator guidance", cases)
 
     def test_failed_record_stops_without_exceptional_operation_routing(self) -> None:
         content = reference("operation-record-content.md")
@@ -207,8 +235,17 @@ class RecordSurfaceTests(unittest.TestCase):
         records = reference("file-validation-records.md")
         self.assertIn("Its `report` field is the finished Markdown", validate)
         self.assertIn("without recalculating or\n  reformatting", validate)
+        self.assertIn("each item in `failures`", validate)
+        self.assertIn("`summary`,\n  `code`, and `message`", validate)
+        self.assertIn("standard error can be empty", validate)
+        self.assertIn("items have no `status`", validate)
+        self.assertIn("returns no structured result", validate)
         self.assertIn(
             "includes the finished Markdown comparison table",
+            CASES.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "a nonzero batch may have\nempty standard error",
             CASES.read_text(encoding="utf-8"),
         )
         self.assertFalse(

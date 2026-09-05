@@ -123,9 +123,11 @@ those triggers, not merely because the entry contains older evidence.
 
 A presented computational result loads the core presented-evidence guidance
 together with each script, command, or input-registry reference required by its
-actual workflow. An entry evidence source also loads locator guidance. A
-non-identity statistic or output loads transformation guidance, while a table
-loads transformation and table guidance.
+actual workflow. The common evidence path loads no definition reference. An
+unsupported advanced case loads exactly one definition selected by presentation
+family: source selection for an otherwise simple one-source statistic, numeric
+for every compound or multi-source statistic, the matching table family for a
+table, or output for retained text.
 
 A summary reference or whole-artifact evidence record does not load locator,
 transformation, or table guidance merely because another item in the entry uses
@@ -141,8 +143,9 @@ without label, writing, reference-operation, or computational guidance. It also
 loads reference-operation guidance when lookup or metadata verification is
 needed.
 
-A new entry loads naming and entry-structure guidance in addition to the
-references triggered by its content. Leaf references do not cause additional
+A new entry uses the focused new-entry route and lets `log add` own naming,
+identity allocation, and scaffold structure. It then loads only the references
+triggered by the recorded content. Leaf references do not cause additional
 references to load.
 
 Before completion, Record reapplies the routing map only to material changed or
@@ -355,9 +358,10 @@ Record puts one stable `eid` marker immediately before the table and adds one
 `table` record that identifies every source, locator, and transformation. A new
 derived column without a retained source is not acceptable.
 
-An image embed or artifact link under `Results:` receives no evidence record or
-marker. Its target must resolve directly through a recorded command; an
-evidence record or input declaration cannot repair an unresolved target.
+An image embed or artifact link under `Results:` follows the common
+whole-artifact workflow: Record adds one stable marker and one evidence record
+using its exact source token. The source target must match the marked target;
+an evidence record or input declaration cannot repair an unresolved target.
 
 ## Summary
 
@@ -451,8 +455,10 @@ specification, validation completes through code without agent judgment.
 Given `log validate --root` returns completed evaluations for several logs,
 the CLI includes the finished Markdown comparison table in `report`. The agent
 presents that table unchanged and does not open generated reports or
-recalculate its cells. It reports operational failures and non-completed
-statuses separately from their returned records.
+recalculate its cells. For every item in `failures`, it reports the returned
+`summary`, `code`, and `message` from standard output; a nonzero batch may have
+empty standard error. It reports `incomplete` and `unsupported_metadata`
+results separately according to their statuses.
 
 Given a supported presentation that differs from its selected source through an
 approved percentage, rounding, notation, unit, interval, tuple, uncertainty, or

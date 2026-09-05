@@ -202,16 +202,18 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("split-entry documents plausibly match", existing)
         self.assertIn("split across several documents", cases)
 
-    def test_multilog_reporting_is_loaded_only_from_validate(self) -> None:
+    def test_multilog_reporting_is_owned_by_the_validation_tool(self) -> None:
         validate = reference("operation-validate.md")
-        report = reference("operation-validate-multilog-report.md")
         records = reference("file-validation-records.md")
-        self.assertEqual(
-            validate.count("references/operation-validate-multilog-report.md"), 1
+        self.assertIn("Its `report` field is the finished Markdown", validate)
+        self.assertIn("without recalculating or\n  reformatting", validate)
+        self.assertIn(
+            "includes the finished Markdown comparison table",
+            CASES.read_text(encoding="utf-8"),
         )
-        self.assertIn("Do not load that reporting\ncontract for one-log", validate)
-        self.assertNotIn("When summarizing several", validate)
-        self.assertIn("| Research log | Structure Failures", report)
+        self.assertFalse(
+            (REFERENCES / "operation-validate-multilog-report.md").exists()
+        )
         for implementation_detail in (
             "check_comparison",
             "SelectionResult",

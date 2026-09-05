@@ -336,6 +336,15 @@ class LogValidationRouteTests(unittest.TestCase):
                 batch_payload["schema"], "research-log-validation-batch-result/1"
             )
             self.assertEqual(batch_payload["failures"], [])
+            self.assertIn(
+                "| Research log | Structure Failures | Evidence Failures |",
+                batch_payload["report"],
+            )
+            self.assertIn(
+                f"[Study](<{logical.with_suffix('.md').resolve()}>)",
+                batch_payload["report"],
+            )
+            self.assertIn("Not published", batch_payload["report"])
 
     def test_validation_does_not_load_mutation_families(self) -> None:
         script_root = LOG.parent

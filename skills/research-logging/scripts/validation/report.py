@@ -6,6 +6,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from .mechanical_results import (
     CheckScope,
@@ -15,6 +16,28 @@ from .mechanical_results import (
 )
 
 ENTRY_RE = re.compile(r"(?<![A-Za-z0-9])(e[0-9]+[a-z]?)(?![A-Za-z0-9])", re.I)
+
+
+@dataclass(frozen=True)
+class ValidationBatchReportRow:
+    """One completed per-log result prepared for the batch summary table."""
+
+    title: str
+    summary: str
+    human_report: str
+    mechanical_report: str
+    published: bool
+    record: MechanicalGeneratedRecord
+
+
+@dataclass(frozen=True)
+class _ScopeProjection:
+    scope: CheckScope
+    label: str
+    unit: str
+    status: CheckStatus | None
+    counts: Mapping[str, int]
+    total: int
 
 
 def compose_validation_report(
@@ -43,43 +66,20 @@ def compose_validation_report(
         "Not applicable | Total |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for scope in record.scopes:
-        counts = scope.counts
-        total = scope.checks
-        unit = "checks"
-        label = scope.scope.value
-        if scope.scope is CheckScope.CONFORMANCE:
-            label = "structure"
-        elif scope.scope is CheckScope.PROVENANCE:
-            counts = provenance_artifact_counts(record)
-            total = sum(counts.values())
-            unit = "artifacts"
-        elif scope.scope is CheckScope.ORPHAN:
-            counts = hygiene_finding_counts(record)
-            total = sum(counts.values())
-            unit = "findings"
-            label = "hygiene"
-        if total:
-            status = (
-                _provenance_status_from_counts(counts)
-                if scope.scope is CheckScope.PROVENANCE
-                else _status_from_counts(counts)
-            )
-            displayed_status = f"`{status.value}`"
-        else:
-            displayed_status = ""
+    for scope in _scope_projections(record):
+        displayed_status = f"`{scope.status.value}`" if scope.status else ""
         lines.append(
             "| "
             + " | ".join(
                 (
-                    label,
-                    unit,
+                    scope.label,
+                    scope.unit,
                     displayed_status,
-                    str(counts[CheckStatus.PASS.value]),
-                    str(counts[CheckStatus.FAIL.value]),
-                    str(counts[CheckStatus.UNAVAILABLE.value]),
-                    str(counts[CheckStatus.NOT_APPLICABLE.value]),
-                    str(total),
+                    str(scope.counts[CheckStatus.PASS.value]),
+                    str(scope.counts[CheckStatus.FAIL.value]),
+                    str(scope.counts[CheckStatus.UNAVAILABLE.value]),
+                    str(scope.counts[CheckStatus.NOT_APPLICABLE.value]),
+                    str(scope.total),
                 )
             )
             + " |"
@@ -112,6 +112,140 @@ def compose_validation_report(
     else:
         lines.append(reproduction_section.strip())
     return "\n".join(lines).rstrip() + "\n"
+
+
+def compose_validation_batch_report(
+    rows: Sequence[ValidationBatchReportRow],
+) -> str:
+    """Render one ready-to-present comparison of completed per-log results."""
+
+    lines = [
+        "Structure Failures and Evidence Failures report failing mechanical "
+        "checks. Provenance reports failed and unconfirmed unique starting "
+        "artifacts. Hygiene Issues is the total number of orphan artifacts, "
+        "unmatched outputs, and unused input declarations.",
+        "",
+        "| Research log | Structure Failures | Evidence Failures | Provenance | "
+        "Hygiene Issues | Reports |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for row in rows:
+        projections = {
+            projection.scope: projection
+            for projection in _scope_projections(row.record)
+        }
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _markdown_link(row.title, row.summary),
+                    _failure_cell(projections[CheckScope.CONFORMANCE]),
+                    _evidence_cell(projections[CheckScope.EVIDENCE]),
+                    _provenance_cell(
+                        projections[CheckScope.PROVENANCE], row.record
+                    ),
+                    str(projections[CheckScope.ORPHAN].total),
+                    (
+                        _markdown_link("Human", row.human_report)
+                        + " · "
+                        + _markdown_link("JSON", row.mechanical_report)
+                        if row.published
+                        else "Not published"
+                    ),
+                )
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _scope_projections(
+    record: MechanicalGeneratedRecord,
+) -> tuple[_ScopeProjection, ...]:
+    """Project machine scopes once for every human report surface."""
+
+    projections: list[_ScopeProjection] = []
+    for scope in record.scopes:
+        counts = scope.counts
+        total = scope.checks
+        unit = "checks"
+        label = scope.scope.value
+        if scope.scope is CheckScope.CONFORMANCE:
+            label = "structure"
+        elif scope.scope is CheckScope.PROVENANCE:
+            counts = provenance_artifact_counts(record)
+            total = sum(counts.values())
+            unit = "artifacts"
+        elif scope.scope is CheckScope.ORPHAN:
+            counts = hygiene_finding_counts(record)
+            total = sum(counts.values())
+            unit = "findings"
+            label = "hygiene"
+        status = None
+        if total:
+            status = (
+                _provenance_status_from_counts(counts)
+                if scope.scope is CheckScope.PROVENANCE
+                else _status_from_counts(counts)
+            )
+        projections.append(
+            _ScopeProjection(scope.scope, label, unit, status, counts, total)
+        )
+    return tuple(projections)
+
+
+def _failure_cell(scope: _ScopeProjection) -> str:
+    applicable = (
+        scope.counts[CheckStatus.PASS.value]
+        + scope.counts[CheckStatus.FAIL.value]
+    )
+    if not applicable:
+        return ""
+    failures = scope.counts[CheckStatus.FAIL.value]
+    return str(failures) if failures else "None"
+
+
+def _evidence_cell(scope: _ScopeProjection) -> str:
+    applicable = (
+        scope.counts[CheckStatus.PASS.value]
+        + scope.counts[CheckStatus.FAIL.value]
+    )
+    if not applicable:
+        return ""
+    failures = scope.counts[CheckStatus.FAIL.value]
+    return f"{failures}/{applicable}" if failures else "None"
+
+
+def _provenance_cell(
+    scope: _ScopeProjection, record: MechanicalGeneratedRecord
+) -> str:
+    machine_scope = next(
+        value for value in record.scopes if value.scope is CheckScope.PROVENANCE
+    )
+    if not machine_scope.checks:
+        return ""
+    values: list[str] = []
+    failed = scope.counts[CheckStatus.FAIL.value]
+    unconfirmed = scope.counts[CheckStatus.UNAVAILABLE.value]
+    if failed:
+        values.append(f"{failed} failed")
+    if unconfirmed:
+        values.append(f"{unconfirmed} unconfirmed")
+    if values:
+        return " · ".join(values)
+    if machine_scope.status is CheckStatus.FAIL:
+        return "scope findings"
+    return "None"
+
+
+def _markdown_link(label: str, target: str) -> str:
+    label = (
+        label.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+    return f"[{label}](<{target}>)"
 
 
 def provenance_artifact_counts(

@@ -188,6 +188,16 @@ class ValidationCliTests(unittest.TestCase):
                         payload["results"][0]["summary"],
                         good_summary.resolve().as_posix(),
                     )
+                    self.assertIn(
+                        f"[Study](<{good_summary.resolve()}>)",
+                        payload["report"],
+                    )
+                    self.assertNotIn(
+                        bad_summary.resolve().as_posix(), payload["report"]
+                    )
+                    self.assertEqual(
+                        "Not published" in payload["report"], dry_run
+                    )
                     self.assertEqual(
                         payload["failures"],
                         [

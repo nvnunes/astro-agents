@@ -52,14 +52,14 @@ For repo-wide or multi-log validation, run the bounded all-log operation:
 
 It uses the same canonical discovery contract as
 `<skill>/scripts/log discover --root <project-root>` and returns one bounded
-batch result. Do not build the set with filename globs, and do not exclude a
-candidate because its basename is `validation.md`; discovery recognizes
-maintained summaries by their stable navigation line and sibling log root, so
-generated reports are not candidates.
-
-When reporting several completed logs, read
-`references/operation-validate-multilog-report.md`. Do not load that reporting
-contract for one-log validation.
+batch result. Its `report` field is the finished Markdown comparison for every
+completed evaluation. Present that table unchanged; do not open generated
+reports to reconstruct its counts. Report any `failures`, `incomplete`, or
+`unsupported_metadata` results separately according to their status below.
+Do not build the log set with filename globs, and do not exclude a candidate
+because its basename is `validation.md`; discovery recognizes maintained
+summaries by their stable navigation line and sibling log root, so generated
+reports are not candidates.
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use `--recompute` when
@@ -90,7 +90,11 @@ not work around the lock or alter generated state.
 
 Report according to the returned status:
 
-- For `complete_clear` or `complete_findings`, report whether publication
+- For `--root`, present the returned `report` table without recalculating or
+  reformatting its cells. Then report any result omitted from that table using
+  the applicable rule below.
+- For a one-log `complete_clear` or `complete_findings` result, report whether
+  publication
   occurred, counts by mechanical scope and status, and each non-passing check.
   Use the human report's unique-artifact counts for Provenance; the
   machine-readable scope aggregate remains a count of internal checks.

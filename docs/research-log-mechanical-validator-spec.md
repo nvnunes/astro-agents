@@ -3348,8 +3348,11 @@ same bounded discovery contract and emits the batch-result schema. It is the
 only all-log validation spelling; an omitted `--path` never means all logs.
 The batch result contains a `results` array for completed per-log results and a
 `failures` array whose items contain the affected summary, stable error code,
-and bounded message. One log's operational failure does not skip later logs or
-discard earlier results; any batch failure makes the command exit nonzero.
+and bounded message. Its `report` field contains the complete ready-to-present
+Markdown comparison table for `complete_clear` and `complete_findings` results;
+dry-run rows state that reports were not published. One log's operational
+failure does not skip later logs or discard earlier results; any batch failure
+makes the command exit nonzero.
 `--date` defaults to the local calendar date and, when present, must be one
 exact ISO date.
 The nearest enclosing non-symlink `.git` file or directory defines the project
@@ -3700,6 +3703,9 @@ artifact takes precedence over an unconfirmed status for both an individual
 artifact and the human row's aggregate status. Other `not_applicable` checks
 remain visible in detailed and machine-readable results but are omitted from
 multi-log summary cells; they are not abbreviated as N/A.
+The batch CLI composes the multi-log table directly from the same scope
+projection used by each human report. Agents do not parse generated reports or
+recalculate these cells.
 
 Validation acquires the canonical exclusive
 `<log>/.cache/research-log-operations/log.lock` before opening the per-log

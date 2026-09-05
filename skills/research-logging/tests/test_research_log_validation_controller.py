@@ -129,6 +129,100 @@ class MechanicalControllerTests(unittest.TestCase):
             report,
         )
 
+    def test_batch_report_composes_ready_to_present_shared_scope_counts(
+        self,
+    ) -> None:
+        failed_artifact = "/project/data/failed.csv"
+        unconfirmed_artifact = "/project/data/unconfirmed.csv"
+        checks = (
+            RESULTS.MechanicalCheck(
+                "conformance:log",
+                RESULTS.CheckScope.CONFORMANCE,
+                RESULTS.CheckStatus.FAIL,
+                "summary",
+                failure=RESULTS.FailurePayload(
+                    "summary.invalid", "summary", {}, "Summary"
+                ),
+            ),
+            RESULTS.MechanicalCheck(
+                "evidence:e001:pass",
+                RESULTS.CheckScope.EVIDENCE,
+                RESULTS.CheckStatus.PASS,
+                "pass",
+            ),
+            RESULTS.MechanicalCheck(
+                "evidence:e001:fail",
+                RESULTS.CheckScope.EVIDENCE,
+                RESULTS.CheckStatus.FAIL,
+                "fail",
+                failure=RESULTS.FailurePayload(
+                    "evidence.invalid", "fail", {}, "Evidence"
+                ),
+            ),
+            RESULTS.MechanicalCheck(
+                "provenance:e001:failed",
+                RESULTS.CheckScope.PROVENANCE,
+                RESULTS.CheckStatus.FAIL,
+                failed_artifact,
+                ({"artifacts": [failed_artifact]},),
+                RESULTS.FailurePayload(
+                    "producer.missing",
+                    failed_artifact,
+                    {},
+                    "Provenance",
+                ),
+            ),
+            RESULTS.MechanicalCheck(
+                "provenance:e001:unconfirmed",
+                RESULTS.CheckScope.PROVENANCE,
+                RESULTS.CheckStatus.FAIL,
+                unconfirmed_artifact,
+                ({"artifacts": [unconfirmed_artifact]},),
+                RESULTS.FailurePayload(
+                    "provenance.output.unconfirmed",
+                    unconfirmed_artifact,
+                    {},
+                    "Provenance",
+                ),
+            ),
+            *(
+                RESULTS.MechanicalCheck(
+                    f"orphan:e001:{number}",
+                    RESULTS.CheckScope.ORPHAN,
+                    RESULTS.CheckStatus.FAIL,
+                    f"orphan-{number}",
+                    failure=RESULTS.FailurePayload(
+                        "orphan.output",
+                        f"orphan-{number}",
+                        {},
+                        "Hygiene",
+                    ),
+                )
+                for number in range(2)
+            ),
+        )
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md", "test-rules", "2026-08-30", checks
+        )
+        row = REPORT.ValidationBatchReportRow(
+            "Study | One",
+            "/project/docs/study.md",
+            "/project/docs/study/validation.md",
+            "/project/docs/study/validation/results.json",
+            True,
+            record,
+        )
+
+        report = REPORT.compose_validation_batch_report((row,))
+
+        self.assertIn(
+            "| [Study \\| One](</project/docs/study.md>) | 1 | 1/2 | "
+            "1 failed · 1 unconfirmed | 2 | "
+            "[Human](</project/docs/study/validation.md>) · "
+            "[JSON](</project/docs/study/validation/results.json>) |",
+            report,
+        )
+
     def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:
         artifact = "/project/data/migrated.csv"
         record = RESULTS.MechanicalGeneratedRecord.build(

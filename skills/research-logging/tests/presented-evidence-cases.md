@@ -448,6 +448,12 @@ Given current evidence whose source, locator, transformation, presentation
 marker, command relationship, and retained-material graph satisfy the
 specification, validation completes through code without agent judgment.
 
+Given `log validate --root` returns completed evaluations for several logs,
+the CLI includes the finished Markdown comparison table in `report`. The agent
+presents that table unchanged and does not open generated reports or
+recalculate its cells. It reports operational failures and non-completed
+statuses separately from their returned records.
+
 Given a supported presentation that differs from its selected source through an
 approved percentage, rounding, notation, unit, interval, tuple, uncertainty, or
 table transformation, validation applies the declared deterministic form.

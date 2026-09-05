@@ -896,7 +896,9 @@ the logical log path:
 ```
 
 Use `<skill>/scripts/log validate --root <project-root>` for every maintained
-log returned by canonical bounded discovery beneath one project.
+log returned by canonical bounded discovery beneath one project. The returned
+batch result includes a ready-to-present Markdown comparison table; the agent
+does not recalculate its counts from generated reports.
 
 A mechanical evaluation reports either that no findings were found or that one
 or more findings need attention. A preliminary validator-state check may

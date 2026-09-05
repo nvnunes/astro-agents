@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence, cast
 
@@ -11,7 +12,12 @@ from validation.controller import (
     ValidationRequest,
     validate,
 )
-from validation.discovery import discover_summaries
+from validation.discovery import MAX_HEADER_CHARACTERS, discover_summaries
+from validation.mechanical_results import MechanicalGeneratedRecord
+from validation.report import (
+    ValidationBatchReportRow,
+    compose_validation_batch_report,
+)
 
 from .context import resolve_log
 from .model import ActionError
@@ -24,6 +30,12 @@ BATCH_RESULT_SCHEMA = "research-log-validation-batch-result/1"
 MAX_FAILURE_MESSAGE_BYTES = 2_048
 
 
+@dataclass(frozen=True)
+class _ValidationOutcome:
+    result: dict[str, object]
+    record: MechanicalGeneratedRecord | None
+
+
 def evaluate_validation(
     summary: Path,
     *,
@@ -33,6 +45,23 @@ def evaluate_validation(
 ) -> dict[str, object]:
     """Return the bounded public result for one validation request."""
 
+    return _evaluate_validation(
+        summary,
+        result_date=result_date,
+        dry_run=dry_run,
+        recompute=recompute,
+    ).result
+
+
+def _evaluate_validation(
+    summary: Path,
+    *,
+    result_date: str | None,
+    dry_run: bool,
+    recompute: bool,
+) -> _ValidationOutcome:
+    """Retain the generated record long enough to compose batch reporting."""
+
     result = validate(
         ValidationRequest(
             summary,
@@ -41,7 +70,13 @@ def evaluate_validation(
             recompute=recompute,
         )
     )
-    return _public_result(result)
+    raw_record = result.get("record")
+    record = (
+        MechanicalGeneratedRecord.from_dict(raw_record)
+        if isinstance(raw_record, dict)
+        else None
+    )
+    return _ValidationOutcome(_public_result(result), record)
 
 
 def _public_result(result: dict[str, object]) -> dict[str, object]:
@@ -115,17 +150,35 @@ def run_validate(
 
     results: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
+    report_rows: list[ValidationBatchReportRow] = []
     for summary in summaries:
         try:
-            results.append(
-                evaluate_validation(
-                    summary,
-                    result_date=result_date,
-                    dry_run=dry_run,
-                    recompute=recompute,
-                )
+            title = _summary_title(summary)
+            outcome = _evaluate_validation(
+                summary,
+                result_date=result_date,
+                dry_run=dry_run,
+                recompute=recompute,
             )
-        except (ValidationControllerError, ValueError) as error:
+            results.append(outcome.result)
+            if outcome.record is not None and str(outcome.result.get("status")) in {
+                "complete_clear",
+                "complete_findings",
+            }:
+                log_root = summary.with_suffix("")
+                report_rows.append(
+                    ValidationBatchReportRow(
+                        title,
+                        summary.resolve().as_posix(),
+                        (log_root / "validation.md").resolve().as_posix(),
+                        (
+                            log_root / "validation" / "results.json"
+                        ).resolve().as_posix(),
+                        bool(outcome.result.get("published")),
+                        outcome.record,
+                    )
+                )
+        except (OSError, UnicodeError, ValidationControllerError, ValueError) as error:
             failures.append(
                 {
                     "code": str(getattr(error, "code", "validation.failed")),
@@ -137,6 +190,7 @@ def run_validate(
         json.dumps(
             {
                 "failures": failures,
+                "report": compose_validation_batch_report(report_rows),
                 "results": results,
                 "root": root.resolve().as_posix(),
                 "schema": BATCH_RESULT_SCHEMA,
@@ -159,3 +213,16 @@ def _bounded_failure_message(error: Exception) -> str:
     return encoded[: MAX_FAILURE_MESSAGE_BYTES - len(suffix)].decode(
         "utf-8", errors="ignore"
     ) + suffix.decode()
+
+
+def _summary_title(summary: Path) -> str:
+    """Read the discovery-bounded maintained-summary title."""
+
+    with summary.open(encoding="utf-8") as handle:
+        line = handle.readline(MAX_HEADER_CHARACTERS + 1)
+    if len(line) > MAX_HEADER_CHARACTERS or not line.startswith("# "):
+        raise ValueError(f"maintained summary has no bounded title: {summary}")
+    title = line[2:].strip()
+    if not title:
+        raise ValueError(f"maintained summary has an empty title: {summary}")
+    return title

@@ -17,8 +17,6 @@ from .operation_state import operation_lock, require_mutation_ready, research_sn
 from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
-    remove_legacy_validation_cache,
-    validate_legacy_validation_cache_paths,
 )
 from .report import compose_validation_report
 from .validation_cache import ValidationCache, ValidationCacheError
@@ -99,7 +97,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 raise ValidationControllerError(
                     "research-log root changed while acquiring its operation lock"
                 )
-            validate_legacy_validation_cache_paths(log_root)
             return _run_validation(
                 request,
                 summary,
@@ -192,19 +189,15 @@ def _run_validation(
                         "validation/results.json"
                     ],
                 )
-            promoted = validation_cache.finish_published_run(
+            validation_cache.finish_published_run(
                 record.checks,
                 rules_version=RULES_VERSION,
                 report_sha256=mechanical_digest,
-            )
-            cleanup_failures = (
-                remove_legacy_validation_cache(log_root) if promoted else ()
             )
             metrics = {
                 **evaluation.metrics,
                 **fingerprint_cache.metrics.as_dict(),
                 **validation_cache.metrics.as_dict(),
-                "legacy_cache_cleanup_failures": len(cleanup_failures),
             }
             return _completed_result(record, metrics, published=True)
 

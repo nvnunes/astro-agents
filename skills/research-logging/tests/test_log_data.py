@@ -9,20 +9,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from research_log_cli_test_support import run_log
+
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 
 
 def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    return subprocess.run(
-        [sys.executable, str(LOG), *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
+    return run_log(cwd, *arguments)
 
 
 def run_pyrun(entry: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -133,17 +126,13 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class LogDataTests(unittest.TestCase):
-    def test_help_is_progressive_and_data_implementation_is_lazy(self) -> None:
-        top = run(Path.cwd(), "--help")
+    def test_help_is_progressive(self) -> None:
         family = run(Path.cwd(), "data", "--help")
         action = run(Path.cwd(), "data", "add-origin", "--help")
         generated = run(Path.cwd(), "data", "add-generated", "--help")
-        self.assertEqual(top.returncode, 0, top.stderr)
         self.assertEqual(family.returncode, 0, family.stderr)
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertEqual(generated.returncode, 0, generated.stderr)
-        self.assertIn("data", top.stdout)
-        self.assertNotIn("--identity", top.stdout)
         self.assertIn("add-origin", family.stdout)
         self.assertNotIn("--identity", family.stdout)
         self.assertIn("--identity", action.stdout)
@@ -152,35 +141,6 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("logical log base", action.stdout)
         self.assertNotIn("--pending-confirmation", action.stdout)
         self.assertIn("--pending-confirmation", generated.stdout)
-
-        script_root = LOG.parent
-        code = f"""
-import json
-import sys
-sys.path.insert(0, {str(script_root)!r})
-from log_commands.dispatcher import main
-for arguments in (["data", "--help"], ["data", "add-origin", "--help"]):
-    try:
-        main(arguments)
-    except SystemExit as error:
-        assert error.code == 0
-print(json.dumps({{
-    "data": "log_commands.data" in sys.modules,
-    "materials": "log_commands.materials" in sys.modules,
-    "validation": "validation.engine" in sys.modules,
-}}))
-"""
-        inspected = subprocess.run(
-            [sys.executable, "-c", code],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(inspected.returncode, 0, inspected.stderr)
-        self.assertEqual(
-            json.loads(inspected.stdout.splitlines()[-1]),
-            {"data": False, "materials": False, "validation": False},
-        )
 
     def test_add_origin_infers_kind_normalizes_and_lists_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

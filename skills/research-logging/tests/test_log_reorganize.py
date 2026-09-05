@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from research_log_cli_test_support import run_log
+
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 SCRIPT_ROOT = LOG.parent
 sys.path.insert(0, str(SCRIPT_ROOT))
@@ -28,16 +30,7 @@ from validation.operation_state import (  # noqa: E402
 
 
 def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    return subprocess.run(
-        [sys.executable, str(LOG), *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
+    return run_log(cwd, *arguments)
 
 
 def create_log(root: Path, count: int = 2) -> tuple[Path, list[Path]]:
@@ -79,45 +72,13 @@ def sha256(path: Path) -> str:
 
 class ReorganizeHelpTests(unittest.TestCase):
     def test_help_is_progressive_and_transfer_has_no_support_retirement(self) -> None:
-        top = run(Path.cwd(), "--help")
         family = run(Path.cwd(), "reorganize", "--help")
         transfer = run(Path.cwd(), "reorganize", "transfer", "--help")
-        self.assertEqual(top.returncode, 0, top.stderr)
-        self.assertIn("reorganize", top.stdout)
-        self.assertNotIn("--from-entry", top.stdout)
         self.assertIn("transfer", family.stdout)
         self.assertNotIn("--from-entry", family.stdout)
         self.assertIn("--from-entry", transfer.stdout)
         self.assertNotIn("retire", transfer.stdout)
         self.assertNotIn("pyrun", transfer.stdout)
-
-    def test_help_does_not_import_reorganize_implementations(self) -> None:
-        code = f"""
-import json
-import sys
-sys.path.insert(0, {str(SCRIPT_ROOT)!r})
-from log_commands.dispatcher import main
-for arguments in (["reorganize", "--help"], ["reorganize", "transfer", "--help"]):
-    try:
-        main(arguments)
-    except SystemExit as error:
-        assert error.code == 0
-print(json.dumps({{
-    "identity": "log_commands.reorganize" in sys.modules,
-    "transfer": "log_commands.reorganize_transfer" in sys.modules,
-}}))
-"""
-        completed = subprocess.run(
-            [sys.executable, "-c", code],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(
-            json.loads(completed.stdout.splitlines()[-1]),
-            {"identity": False, "transfer": False},
-        )
 
 
 class StorageTransactionTests(unittest.TestCase):

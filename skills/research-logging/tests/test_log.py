@@ -11,21 +11,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from research_log_cli_test_support import run_log, run_log_process
+
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
 
 
 def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    return subprocess.run(
-        [sys.executable, str(LOG), *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
+    return run_log(cwd, *arguments)
 
 
 def digest(path: Path) -> str:
@@ -128,7 +121,17 @@ class LogHelpAndContextTests(unittest.TestCase):
     def test_progressive_help_lists_only_current_depth(self) -> None:
         top = run(Path.cwd(), "--help")
         self.assertEqual(top.returncode, 0, top.stderr)
-        self.assertIn("evidence", top.stdout)
+        for family_name in (
+            "add",
+            "data",
+            "discover",
+            "evidence",
+            "init",
+            "reorganize",
+            "retention",
+            "validate",
+        ):
+            self.assertIn(family_name, top.stdout)
         self.assertNotIn("--source", top.stdout)
 
         family = run(Path.cwd(), "evidence", "--help")
@@ -166,7 +169,16 @@ import json
 import sys
 sys.path.insert(0, {str(script_root)!r})
 from log_commands.dispatcher import main
-for arguments in ([\"evidence\", \"--help\"], [\"evidence\", \"add\", \"--help\"]):
+for arguments in (
+    [\"evidence\", \"--help\"],
+    [\"evidence\", \"add\", \"--help\"],
+    [\"data\", \"--help\"],
+    [\"data\", \"add-origin\", \"--help\"],
+    [\"reorganize\", \"--help\"],
+    [\"reorganize\", \"transfer\", \"--help\"],
+    [\"init\", \"--help\"],
+    [\"add\", \"--help\"],
+):
     try:
         main(arguments)
     except SystemExit as error:
@@ -174,7 +186,13 @@ for arguments in ([\"evidence\", \"--help\"], [\"evidence\", \"add\", \"--help\"
 print(json.dumps({{
     \"evidence\": \"log_commands.evidence\" in sys.modules,
     \"retention\": \"log_commands.retention\" in sys.modules,
+    \"data\": \"log_commands.data\" in sys.modules,
+    \"materials\": \"log_commands.materials\" in sys.modules,
+    \"reorganize\": \"log_commands.reorganize\" in sys.modules,
+    \"transfer\": \"log_commands.reorganize_transfer\" in sys.modules,
+    \"scaffold\": \"log_commands.scaffold\" in sys.modules,
     \"validation\": \"validation.controller\" in sys.modules,
+    \"validation_engine\": \"validation.engine\" in sys.modules,
     \"numpy\": \"numpy\" in sys.modules,
 }}))
 """
@@ -187,7 +205,13 @@ print(json.dumps({{
             {
                 "evidence": False,
                 "retention": False,
+                "data": False,
+                "materials": False,
+                "reorganize": False,
+                "transfer": False,
+                "scaffold": False,
                 "validation": False,
+                "validation_engine": False,
                 "numpy": False,
             },
         )
@@ -286,7 +310,7 @@ print(json.dumps({{
                 )
                 executable.chmod(0o755)
 
-            result = run(
+            result = run_log_process(
                 caller,
                 "retention",
                 "list",
@@ -396,7 +420,7 @@ class LogLockTests(unittest.TestCase):
 
             with lock.open("a+b") as handle:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                authoring = run(
+                authoring = run_log_process(
                     entry,
                     "data",
                     "add-origin",
@@ -407,8 +431,10 @@ class LogLockTests(unittest.TestCase):
                     "new",
                     "data/new.txt",
                 )
-                publishing = run(root, "validate", "--path", str(logical))
-                dry_run = run(
+                publishing = run_log_process(
+                    root, "validate", "--path", str(logical)
+                )
+                dry_run = run_log_process(
                     root, "validate", "--path", str(logical), "--dry-run"
                 )
                 runner = subprocess.run(

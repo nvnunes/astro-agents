@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import os
 import stat
 import tempfile
@@ -12,10 +11,6 @@ from pathlib import Path, PurePosixPath
 from .filesystem import FileIdentity, file_identity
 from .operation_state import operation_lock, require_mutation_ready
 
-LEGACY_CACHE_FILES = (
-    "validation/.cache/mechanical.json",
-    "validation/.cache/lock",
-)
 PUBLISHABLE_PATHS = frozenset(
     {
         "validation.md",
@@ -244,48 +239,3 @@ def publish_validation_outputs_locked(
                 _publication_failure_message(exc, rollback_errors)
             ) from exc
     return published
-
-
-def remove_legacy_validation_cache(log_root: Path) -> tuple[str, ...]:
-    """Remove known superseded cache files without affecting publication."""
-
-    log_root = log_root.resolve()
-    errors: list[str] = []
-    try:
-        validate_legacy_validation_cache_paths(log_root)
-    except RecordPublicationError as error:
-        return (str(error),)
-    for relative in LEGACY_CACHE_FILES:
-        pure = PurePosixPath(relative)
-        path = log_root.joinpath(*pure.parts)
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as error:
-            errors.append(f"{path}: {error}")
-    directory = log_root / "validation" / ".cache"
-    try:
-        directory.rmdir()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        if error.errno != errno.ENOTEMPTY:
-            errors.append(f"{directory}: {error}")
-    return tuple(errors)
-
-
-def validate_legacy_validation_cache_paths(log_root: Path) -> None:
-    """Reject symlinks before inspecting or cleaning known legacy cache paths."""
-
-    log_root = log_root.resolve()
-    for relative in LEGACY_CACHE_FILES:
-        current = log_root
-        for part in PurePosixPath(relative).parts:
-            current /= part
-            if current.is_symlink():
-                raise RecordPublicationError(
-                    f"legacy cache path must not contain a symlink: {current}"
-                )
-        if current.exists() and not current.is_file():
-            raise RecordPublicationError(
-                f"legacy cache path must be a regular file: {current}"
-            )

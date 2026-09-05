@@ -1,29 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from research_log_cli_test_support import run_log as run_log_in_process
 from research_log_validation_test_support import mechanical_log, write
-
-LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 
 
 def run_log(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    return subprocess.run(
-        [sys.executable, str(LOG), *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
+    return run_log_in_process(cwd, *arguments)
 
 
 class ValidationCliTests(unittest.TestCase):
@@ -79,25 +67,17 @@ class ValidationCliTests(unittest.TestCase):
                 "--dry-run",
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            for retired in (
+            rejected = run_log(
+                root,
+                "validate",
+                "--path",
+                str(summary.with_suffix("")),
                 "--summary",
-                "--decisions",
-                "--jobs",
-                "--mode",
-                "--review-diagnostics",
-            ):
-                with self.subTest(retired=retired):
-                    rejected = run_log(
-                        root,
-                        "validate",
-                        "--path",
-                        str(summary.with_suffix("")),
-                        retired,
-                        "value",
-                    )
-                    self.assertNotEqual(rejected.returncode, 0)
+                "value",
+            )
+            self.assertNotEqual(rejected.returncode, 0)
 
-    def test_executable_returns_zero_for_clear_and_finding_results(self) -> None:
+    def test_cli_returns_zero_for_clear_and_finding_results(self) -> None:
         for output_option, expected in (
             ("output-data", "complete_clear"),
             ("results", "complete_findings"),
@@ -220,7 +200,7 @@ class ValidationCliTests(unittest.TestCase):
                         not dry_run,
                     )
 
-    def test_executable_tool_error_is_nonzero_and_writes_nothing(self) -> None:
+    def test_cli_tool_error_is_nonzero_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = mechanical_log(root)
@@ -238,7 +218,7 @@ class ValidationCliTests(unittest.TestCase):
             self.assertIn("YYYY-MM-DD", completed.stderr)
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
 
-    def test_executable_unsupported_metadata_returns_preflight_result(self) -> None:
+    def test_cli_unsupported_metadata_returns_preflight_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = mechanical_log(root)

@@ -448,7 +448,6 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertGreaterEqual(
                 result["metrics"]["validation_cache_sqlite_writes"], 4
             )
-            self.assertEqual(result["metrics"]["legacy_cache_cleanup_failures"], 0)
             self.assertEqual(record["schema"], "research-log-mechanical/1")
             self.assertTrue(cache_path.is_file())
             with closing(sqlite3.connect(cache_path)) as connection:
@@ -747,108 +746,6 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertTrue(
                 (Path(directory) / ".cache/research-log-fingerprints.sqlite3").is_file()
             )
-
-    def test_legacy_json_cache_is_ignored_then_removed_after_cutover(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = _log(root)
-            entry_root = entry.parent
-            catalog = entry_root / "inputs" / "catalog.csv"
-            write(catalog, "id\n1\n")
-            data_path = entry_root / "data.json"
-            payload = json.loads(data_path.read_text())
-            payload["inputs"] = [
-                {
-                    "name": "catalog",
-                    "kind": "file",
-                    "location": "inputs/catalog.csv",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
-                    },
-                    "origin": True,
-                }
-            ]
-            write(data_path, json.dumps(payload) + "\n")
-            resource = DATA.load_data_file(data_path, entry_root=entry_root).inputs[0]
-            observation = DATA.verify_fingerprint(resource)
-            assert observation is not None
-            legacy_cache = {
-                "artifact_identities": {},
-                "checks": {},
-                "input_observations": {
-                    DATA.fingerprint_observation_key(resource): (
-                        DATA.fingerprint_observation_record(resource, observation)
-                    )
-                },
-                "rules_version": ENGINE.RULES_VERSION,
-                "schema": "research-log-mechanical-cache/5",
-            }
-            cache_path = summary.with_suffix("") / "validation/.cache/mechanical.json"
-            write(cache_path, json.dumps(legacy_cache) + "\n")
-
-            result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-            )
-
-            self.assertGreater(result["metrics"]["fingerprint_cache_file_hashes"], 0)
-            self.assertFalse(cache_path.exists())
-            self.assertTrue(_cache_path(summary).is_file())
-
-    def test_legacy_cutover_preserves_unknown_cache_contents(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            legacy_root = summary.with_suffix("") / "validation" / ".cache"
-            write(legacy_root / "mechanical.json", "legacy\n")
-            write(legacy_root / "lock", "")
-            write(legacy_root / "unknown.txt", "preserve\n")
-
-            result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-            )
-
-            self.assertTrue(result["published"])
-            self.assertFalse((legacy_root / "mechanical.json").exists())
-            self.assertFalse((legacy_root / "lock").exists())
-            self.assertEqual((legacy_root / "unknown.txt").read_text(), "preserve\n")
-
-    def test_legacy_cleanup_failure_is_non_authoritative_diagnostic(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            with mock.patch.object(
-                CONTROLLER,
-                "remove_legacy_validation_cache",
-                return_value=("fixture cleanup failure",),
-            ):
-                result = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-                )
-
-            log_root = summary.with_suffix("")
-            self.assertTrue(result["published"])
-            self.assertEqual(result["metrics"]["legacy_cache_cleanup_failures"], 1)
-            self.assertTrue((log_root / "validation/results.json").is_file())
-            self.assertTrue((log_root / "validation.md").is_file())
-
-    def test_symlinked_legacy_cache_directory_is_rejected_before_writing(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _ = _log(root)
-            log_root = summary.with_suffix("")
-            external = root / "external"
-            external.mkdir()
-            validation = log_root / "validation"
-            validation.mkdir()
-            (validation / ".cache").symlink_to(external, target_is_directory=True)
-
-            with self.assertRaisesRegex(
-                CONTROLLER.ValidationControllerError, "must not contain a symlink"
-            ):
-                CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-
-            self.assertFalse((log_root / "validation/results.json").exists())
 
     def test_completed_run_drops_obsolete_selection_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

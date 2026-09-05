@@ -446,6 +446,74 @@ class MaterialGraphTests(unittest.TestCase):
                 },
                 {model, metrics},
             )
+            self.assertEqual(result.metrics["graph_bundle_expansions"], 1)
+
+    def test_directory_lineage_uses_one_indexed_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry_root, data_file, invocations, final = _bundle_consumer_surface(
+                Path(directory), "<bundle>"
+            )
+
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "final", "e001.md:eid:final", (final,)
+                        ),
+                    ),
+                )
+            )
+
+            self.assertEqual(result.metrics["graph_directory_producer_lookups"], 1)
+
+    def test_repeated_evidence_material_reuses_graph_path_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _bundle_surface(Path(directory))
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            single_evidence = (
+                GRAPH.EvidenceConnection(
+                    "e001", "model-0", "e001.md:eid:model-0", (model,)
+                ),
+            )
+            repeated_evidence = tuple(
+                GRAPH.EvidenceConnection(
+                    "e001",
+                    f"model-{index}",
+                    f"e001.md:eid:model-{index}",
+                    (model,),
+                )
+                for index in range(20)
+            )
+
+            single = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=single_evidence,
+                )
+            )
+            repeated = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=repeated_evidence,
+                )
+            )
+
+            self.assertEqual(repeated.metrics["graph_bundle_expansions"], 1)
+            self.assertEqual(
+                repeated.metrics["graph_material_canonicalizations"],
+                single.metrics["graph_material_canonicalizations"],
+            )
+            self.assertEqual(
+                repeated.metrics["graph_local_material_classifications"],
+                single.metrics["graph_local_material_classifications"],
+            )
 
     def test_evidence_closure_connects_exact_output_not_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

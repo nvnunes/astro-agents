@@ -1570,6 +1570,33 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evidence.dependencies,
             )
 
+    def test_repeated_evidence_source_reuses_provenance_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            duplicate = json.loads(json.dumps(evidence["records"][0]))
+            duplicate["id"] = "success-rate-copy"
+            evidence["records"].append(duplicate)
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8")
+                + "\nThe copied rate was `67.6%`"
+                "<!-- eid:success-rate-copy -->.\n",
+            )
+
+            with mock.patch.object(
+                ENGINE,
+                "evaluate_provenance",
+                wraps=ENGINE.evaluate_provenance,
+            ) as evaluate:
+                evaluation = _evaluate(summary)
+
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(evaluation.metrics["provenance_traversals"], 1)
+            self.assertEqual(evaluation.metrics["provenance_traversals_reused"], 1)
+
     def test_generated_evidence_input_rejects_an_origin_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

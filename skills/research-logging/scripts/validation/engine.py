@@ -99,6 +99,7 @@ from .output_support import (
 from .presentation import require_artifact_source_association
 from .provenance import (
     ProducerIndex,
+    ProvenanceResult,
     build_producer_index,
     evaluate_provenance,
     require_origin_boundary,
@@ -211,6 +212,7 @@ class _ScanState:
     provenance_observations: dict[str, tuple[str, Fingerprint]] = field(
         default_factory=dict
     )
+    provenance_results: dict[str, ProvenanceResult] = field(default_factory=dict)
     output_file_observations: dict[str, str] = field(default_factory=dict)
     selection_cache: dict[tuple[str, str], SelectionResult] = field(
         default_factory=dict
@@ -240,6 +242,8 @@ class _ScanState:
     source_opens: int = 0
     source_payload_reads: int = 0
     input_fingerprints_reused: int = 0
+    provenance_traversals: int = 0
+    provenance_traversals_reused: int = 0
     selection_serialized_bytes: int = 0
     selection_serialized_max_bytes: int = 0
     selection_serialized_by_profile: dict[str, dict[str, int]] = field(
@@ -361,6 +365,8 @@ def _scan(
         "selection_serialized_by_profile": state.selection_serialized_by_profile,
         "input_observations": len(state.input_observations),
         "input_fingerprints_reused": state.input_fingerprints_reused,
+        "provenance_traversals": state.provenance_traversals,
+        "provenance_traversals_reused": state.provenance_traversals_reused,
         **(
             state.fingerprint_cache.metrics.as_dict()
             if state.fingerprint_cache is not None
@@ -1466,17 +1472,24 @@ def _record_provenance(
                     {"kind": "origin", "material": material.path.as_posix()}
                 )
                 continue
-            result = evaluate_provenance(
-                material.path,
-                state.invocations,
-                producer_validator=lambda invocation, output: (
-                    _validate_output_support(invocation, output, state)
-                ),
-                confirmed_record=lambda invocation, output: (
-                    _has_confirmed_output_record(invocation, output, state)
-                ),
-                producer_index=state.producer_index,
-            )
+            material_identity = material.path.as_posix()
+            result = state.provenance_results.get(material_identity)
+            if result is None:
+                state.provenance_traversals += 1
+                result = evaluate_provenance(
+                    material.path,
+                    state.invocations,
+                    producer_validator=lambda invocation, output: (
+                        _validate_output_support(invocation, output, state)
+                    ),
+                    confirmed_record=lambda invocation, output: (
+                        _has_confirmed_output_record(invocation, output, state)
+                    ),
+                    producer_index=state.producer_index,
+                )
+                state.provenance_results[material_identity] = result
+            else:
+                state.provenance_traversals_reused += 1
             dependencies.append(
                 {
                     "dependency_projection": result.dependency_projection,

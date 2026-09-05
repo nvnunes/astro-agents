@@ -131,15 +131,21 @@ class MaterialGraphRequest:
 @dataclass
 class _GraphState:
     roots: Mapping[str, tuple[Path, ...]]
-    invocations: Sequence[Invocation]
+    producer_index: ProducerIndex
     outputs: Mapping[str, tuple[Invocation, ...]]
     bundles_by_material: Mapping[str, _AtomicOutputBundle]
     nodes: set[GraphNode]
     edges: set[GraphEdge]
     connected: set[str]
     dependencies: list[object]
+    canonical_materials: dict[str, str]
+    material_nodes: dict[tuple[str, bool], GraphNode]
+    local_materials: dict[str, bool]
+    directory_producers: dict[tuple[str, int], Invocation | None]
+    expanded_bundles: set[str]
     expanded_invocations: set[str]
     visiting: set[str]
+    directory_producer_lookups: int = 0
 
 
 def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult:
@@ -156,13 +162,18 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     )
     state = _GraphState(
         roots=_connection_roots(roots),
-        invocations=request.invocations,
+        producer_index=producer_index,
         outputs=producer_index.outputs,
         bundles_by_material=_bundle_material_index(bundles),
         nodes=set(),
         edges=set(),
         connected=set(),
         dependencies=[],
+        canonical_materials={},
+        material_nodes={},
+        local_materials={},
+        directory_producers={},
+        expanded_bundles=set(),
         expanded_invocations=set(),
         visiting=set(),
     )
@@ -204,6 +215,10 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
         {
             "currentness_seconds": currentness_seconds,
             "graph_seconds": graph_seconds,
+            "graph_bundle_expansions": len(state.expanded_bundles),
+            "graph_directory_producer_lookups": state.directory_producer_lookups,
+            "graph_local_material_classifications": len(state.local_materials),
+            "graph_material_canonicalizations": len(state.canonical_materials),
             "orphan_seconds": orphan_seconds,
             "inventory_files": len(inventory),
             "orphan_artifacts": len(orphan.orphaned),
@@ -222,7 +237,7 @@ def _add_evidence(
         state.edges.add(GraphEdge("presentation", record, presentation))
         for raw in connection.materials:
             origin = raw in connection.origin_materials
-            material = _material_node(state.nodes, raw)
+            material = _material_node(state, raw)
             state.edges.add(GraphEdge("evidence-source", record, material))
             _connect_material(material, state)
             if not origin:
@@ -256,7 +271,7 @@ def _trace_material(
     if producer.identity in state.visiting:
         return
     command = _node(state.nodes, "invocation", producer.identity)
-    output = _material_node(state.nodes, material)
+    output = _material_node(state, material)
     state.edges.add(GraphEdge("output", command, output))
     _connect_material(output, state)
     if producer.identity in state.expanded_invocations:
@@ -264,7 +279,7 @@ def _trace_material(
     state.expanded_invocations.add(producer.identity)
     state.visiting.add(producer.identity)
     if producer.script is not None and producer.script_identity is not None:
-        script = _material_node(state.nodes, producer.script)
+        script = _material_node(state, producer.script)
         state.edges.add(GraphEdge("script", command, script))
         _connect_material(script, state)
     for relationship in producer.inputs:
@@ -283,7 +298,7 @@ def _add_reached_input(
 ) -> None:
     resource = relationship.input_resource
     material = _material_node(
-        state.nodes,
+        state,
         relationship.path,
         path_based=resource is None or resource.kind != "git-repository",
     )
@@ -318,33 +333,27 @@ def _reached_prior_producer(
             if invocation.sequence < consumer.sequence
         )
         return earlier[0] if len(earlier) == 1 else None
-    root = Path(resource.canonical_target).resolve()
-    earlier_invocations = tuple(
-        invocation
-        for invocation in state.invocations
-        if invocation.sequence < consumer.sequence
-    )
-    exact = tuple(
-        invocation
-        for invocation in earlier_invocations
-        if any(
-            collection.direction == "output"
-            and collection.mechanism == "directory"
-            and collection.root is not None
-            and Path(collection.root).resolve() == root
-            for collection in invocation.collections
+    key = (resource.canonical_target, consumer.sequence)
+    if key not in state.directory_producers:
+        state.directory_producer_lookups += 1
+        matches = state.producer_index.lookup(
+            resource.canonical_target,
+            before_sequence=consumer.sequence,
         )
-    )
-    if len(exact) != 1:
-        return None
-    owner = exact[0]
-    conflicts = {
-        invocation.identity
-        for invocation in earlier_invocations
-        if invocation.identity != owner.identity
-        and any(_within(Path(output.path), root) for output in invocation.outputs)
-    }
-    if conflicts or owner not in state.outputs.get(relationship.path, ()):
+        exact = tuple(match.producer for match in matches if match.exact_directory)
+        exact_ids = {invocation.identity for invocation in exact}
+        producers_within = {
+            match.producer.identity for match in matches if match.member_output
+        }
+        overlapping = {
+            match.producer.identity for match in matches if match.overlapping_directory
+        }
+        conflicts = (producers_within - exact_ids) | overlapping
+        state.directory_producers[key] = (
+            exact[0] if len(exact) == 1 and not conflicts else None
+        )
+    owner = state.directory_producers[key]
+    if owner is None or owner not in state.outputs.get(relationship.path, ()):
         return None
     return owner
 
@@ -452,34 +461,57 @@ def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
 
 
 def _material_node(
-    nodes: set[GraphNode], value: str, *, path_based: bool = True
+    state: _GraphState, value: str, *, path_based: bool = True
 ) -> GraphNode:
-    identity = Path(value).resolve().as_posix() if path_based else value
-    return _node(nodes, "material", identity)
+    """Return one validation-scoped material node with bounded canonicalization."""
+
+    key = (value, path_based)
+    node = state.material_nodes.get(key)
+    if node is not None:
+        return node
+    identity = _canonical_material(value, state) if path_based else value
+    node = _node(state.nodes, "material", identity)
+    state.material_nodes[key] = node
+    return node
 
 
 def _connect_material(material: GraphNode, state: _GraphState) -> None:
     """Connect one exact material and its atomic bundle ownership boundary."""
 
-    _connect_local(state.connected, material.identity, state.roots)
+    _connect_local(material.identity, state)
     bundle = state.bundles_by_material.get(material.identity)
     if bundle is None:
         return
-    for member in bundle.members:
-        _connect_local(state.connected, member, state.roots)
-    bundle_node = _material_node(state.nodes, bundle.root)
+    if bundle.root not in state.expanded_bundles:
+        state.expanded_bundles.add(bundle.root)
+        for member in bundle.members:
+            _connect_local(member, state)
+    bundle_node = _material_node(state, bundle.root)
     if material != bundle_node:
         state.edges.add(GraphEdge("membership", material, bundle_node))
 
 
-def _connect_local(
-    connected: set[str], material: str, roots: Mapping[str, tuple[Path, ...]]
-) -> None:
-    path = Path(material)
-    if any(
-        _within(path, root) for owned_roots in roots.values() for root in owned_roots
-    ):
-        connected.add(path.resolve().as_posix())
+def _connect_local(material: str, state: _GraphState) -> None:
+    canonical = _canonical_material(material, state)
+    local = state.local_materials.get(canonical)
+    if local is None:
+        path = Path(canonical)
+        local = any(
+            _within(path, root)
+            for owned_roots in state.roots.values()
+            for root in owned_roots
+        )
+        state.local_materials[canonical] = local
+    if local:
+        state.connected.add(canonical)
+
+
+def _canonical_material(material: str, state: _GraphState) -> str:
+    canonical = state.canonical_materials.get(material)
+    if canonical is None:
+        canonical = Path(material).resolve().as_posix()
+        state.canonical_materials[material] = canonical
+    return canonical
 
 
 def _connection_roots(roots: Mapping[str, Path]) -> dict[str, tuple[Path, ...]]:
@@ -737,7 +769,7 @@ def _bound_graph(nodes: set[GraphNode], edges: set[GraphEdge]) -> None:
 
 def _within(path: Path, root: Path) -> bool:
     try:
-        path.resolve().relative_to(root.resolve())
+        path.relative_to(root)
     except ValueError:
         return False
     return True

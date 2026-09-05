@@ -86,8 +86,10 @@ artifact is absent as a Provenance failure and every output record absent from
 the current graph as a Hygiene finding. Recorded `pyrun` command surfaces,
 exact path and named-input connections, `pyrun` output support, and observed
 retained material establish Provenance without an authored lineage graph.
-Resolved script bytes are part of the output-support signature, but script
-internals do not establish material associations.
+Resolved script bytes are part of the output-support signature. New execution
+records also retain the bounded log-local Python source files actually loaded
+by `pyrun`; validator currentness and graph semantics for those observations
+are defined separately from command discovery.
 
 The complete specification owns:
 
@@ -2801,9 +2803,11 @@ record for a declared output that is absent.
 `pyrun` also accepts repeatable `--env NAME=value` runner options before the
 required `--` separator. It normalizes them by name into the persisted
 execution signature and child environment. Duplicate names, malformed names,
-and the runner-managed names `MPLCONFIGDIR` and `XDG_CACHE_HOME` are invalid.
-Each run receives fresh temporary directories for those two managed values.
-Script filenames receive no provenance classification.
+and runner-managed names are invalid. Each run receives fresh temporary
+directories for `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and its private Python code
+observer state. The observer's private environment is not part of the
+execution signature. Script filenames receive no command-argument provenance
+classification.
 
 The exact entry-local `data` and `images` directories are shared artifact-tree
 roots, not material artifacts or collections. An unclassified argument that
@@ -2853,6 +2857,16 @@ non-file at the current path is invalid and is not quarantined.
           "algorithm": "sha256",
           "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
+      },
+      "code": {
+        "scripts/study_helpers.py": {
+          "algorithm": "sha256",
+          "digest": "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+        },
+        "<log>/shared/plotting.py": {
+          "algorithm": "sha256",
+          "digest": "23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01"
+        }
       }
     }
   }
@@ -2864,7 +2878,8 @@ canonical identities: normalized entry-relative paths beneath `data/` or
 `images/`, or normalized `<project>/...` paths for outputs elsewhere beneath
 the current Git project. Two spellings that resolve to the same entry-local
 target have the entry-relative key. Each record has
-exactly `confirmed`, `fingerprint`, `script`, `parameters`, and `inputs`.
+exactly `confirmed`, `fingerprint`, `script`, `parameters`, `inputs`, and
+`code`.
 `script.path` is the script argument passed to `pyrun`, not an inferred command
 or command ID. `parameters` is the exact ordered argument tail after the script,
 except that capture options and normalized `--env` options, their values, and
@@ -2874,13 +2889,76 @@ are excluded from this vector. Their separator is also excluded when neither a
 capture nor environment option is present. `inputs` maps
 every directly consumed `data.json` name to
 the fingerprint used by the run. Fingerprints use the same closed local
-fingerprint forms as `data.json`.
+fingerprint forms as `data.json`. `code` maps at most 256 unique canonical
+Python source identities to exact `sha256` file fingerprints. A path beneath
+the command's entry is entry-relative. Every other eligible path is relative
+to the maintained log and begins `<log>/`. A logical path through a symlink
+beneath the log remains in that form rather than expanding to the symlink's
+physical target. Paths are normalized, bounded, and end in `.py`.
+
+The directly executed `script.path` is not duplicated in `code`. Every other
+eligible regular Python source file actually loaded in the observed process
+tree is included as a whole-file dependency. This includes direct, transitive,
+conditional, and dynamic imports that execute, loaded package files, and a
+Python descendant's entry-point file. Repeated imports and aliases are
+deduplicated by resolved file identity while retaining one canonical logical
+path. Every output from one invocation receives the same complete `code`
+mapping. An empty mapping records that the observed execution loaded no
+eligible helper.
+
+During the staged code-dependency cutover, the reader also accepts the exact
+legacy record shape without `code`. It preserves that omission when reading,
+projecting, or rewriting the record and applies the previous validation
+behavior. Missing `code` is not interpreted as an observed empty mapping. New
+successful `pyrun` executions always write `code`; this compatibility is
+removed only after every maintained record has migrated. During this
+compatibility stage, validation decodes the new field but does not yet use it
+for output currentness, graph edges, or Hygiene conclusions.
+
+#### Python Code Observation
+
+`pyrun` installs a temporary import observer before user code starts. It wraps
+ordinary filesystem source loaders without changing their search and preserves
+any existing downstream `sitecustomize`. The observer records only regular
+`.py` files whose logical loaded path lies beneath the current maintained log.
+Entry-owned, log-shared, and sibling-entry code is eligible. Code in another
+log, project code outside the current log, installed packages, standard-library
+files, environments, caches, generated bytecode, and non-Python child code is
+outside this observation.
+
+The private observer context is inherited by ordinary Python descendants,
+including interpreters reached through a shell, `subprocess`, multiprocessing
+spawn, and multiprocessing fork. A fork resets process-local collection state.
+Each interpreter deduplicates paths in memory and publishes one process-specific
+temporary trace at normal exit. A forked interpreter may refresh its trace when
+it first sees a new eligible path because it may not run normal exit handlers.
+The root interpreter must publish a complete trace. Completed descendant traces
+are consolidated after the command exits; an unfinished detached descendant is
+outside the completed execution observation. A descendant that uses isolated
+startup or replaces the inherited environment likewise receives no unsupported
+completeness claim.
+
+Traces retain logical and resolved paths plus import-time filesystem identity;
+they do not hash source content. After successful execution, `pyrun` requires
+each logical path, symlink resolution, and file identity to remain unchanged,
+then observes each unique resolved helper once through the project fingerprint
+cache. It does not hash a helper again for each child or output. A changed,
+missing, malformed, excessive, or unavailable observation prevents all output
+support publication. Temporary observer files are removed with the run and are
+not research-log state.
+
+One interpreter trace contains at most 257 paths so the primary script can be
+excluded before enforcing the 256-item `code` bound. One run accepts at most
+4,096 process traces and 1 MiB per trace. The observer performs no function
+tracing, process polling, open-file polling, post-execution source-tree scan,
+or ordinary static import discovery.
 
 `pyrun` records its current working entry root, resolves the command through
 that entry's `data.json`, and publishes output records only after the process
 succeeds, the script and every direct input still have their pre-execution
-identities, and every output can be observed completely. Publication
-replaces only records for outputs produced by that invocation and preserves
+identities, code observation completes, and every output can be observed
+completely. Publication replaces only records for outputs produced by that
+invocation and preserves
 records for other output keys. It is atomic under an entry-specific lock.
 Failed execution, capture, observation, or publication confirms no record.
 

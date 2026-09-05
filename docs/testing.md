@@ -56,6 +56,15 @@ command/input-registry guidance that affects `pyrun`, also run:
 ./.conda/bin/python -m unittest skills/research-logging/tests/test_pyrun.py
 ```
 
+When changing the persisted `pyrun-outputs.json` shape, also run its focused
+contract tests:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest discover \
+  -s skills/research-logging/tests -p 'test_research_log_pyrun_outputs.py'
+```
+
 When changing research-log section classification, evidence presentation, or
 validation behavior, also run:
 
@@ -70,6 +79,7 @@ linting only the main validator:
 ```bash
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \
+  skills/research-logging/scripts/pyrun_code_observer.py \
   skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/log_commands/*.py \
   skills/research-logging/scripts/validation/*.py

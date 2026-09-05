@@ -127,14 +127,26 @@ class PyrunResolutionTests(unittest.TestCase):
     def test_environment_options_are_normalized_into_the_signature(self) -> None:
         first = PYRUN_MODULE.parse_pyrun_arguments(
             [
-                "--env", "OMP_NUM_THREADS=2", "--env", "CUDA_VISIBLE_DEVICES=0",
-                "--", "scripts/model.py", "--mode", "exact",
+                "--env",
+                "OMP_NUM_THREADS=2",
+                "--env",
+                "CUDA_VISIBLE_DEVICES=0",
+                "--",
+                "scripts/model.py",
+                "--mode",
+                "exact",
             ]
         )
         second = PYRUN_MODULE.parse_pyrun_arguments(
             [
-                "--env", "CUDA_VISIBLE_DEVICES=0", "--env", "OMP_NUM_THREADS=2",
-                "--", "scripts/model.py", "--mode", "exact",
+                "--env",
+                "CUDA_VISIBLE_DEVICES=0",
+                "--env",
+                "OMP_NUM_THREADS=2",
+                "--",
+                "scripts/model.py",
+                "--mode",
+                "exact",
             ]
         )
 
@@ -143,8 +155,13 @@ class PyrunResolutionTests(unittest.TestCase):
         self.assertEqual(
             first.parameters,
             (
-                "--env", "CUDA_VISIBLE_DEVICES=0", "--env", "OMP_NUM_THREADS=2",
-                "--", "--mode", "exact",
+                "--env",
+                "CUDA_VISIBLE_DEVICES=0",
+                "--env",
+                "OMP_NUM_THREADS=2",
+                "--",
+                "--mode",
+                "exact",
             ),
         )
 
@@ -153,12 +170,19 @@ class PyrunResolutionTests(unittest.TestCase):
             ["--env", "missing", "--", "scripts/model.py"],
             ["--env", "MODE=one", "--env", "MODE=two", "--", "scripts/model.py"],
             ["--env", "MPLCONFIGDIR=/tmp/custom", "--", "scripts/model.py"],
+            [
+                "--env",
+                "PYRUN_CODE_TRACE_DIRECTORY=/tmp/custom",
+                "--",
+                "scripts/model.py",
+            ],
             ["--env", "XDG_CACHE_HOME=/tmp/custom", "--", "scripts/model.py"],
             ["--env", "MODE=one", "scripts/model.py"],
         )
         for arguments in cases:
-            with self.subTest(arguments=arguments), self.assertRaises(
-                PYRUN_MODULE.PyrunContractError
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaises(PYRUN_MODULE.PyrunContractError),
             ):
                 PYRUN_MODULE.parse_pyrun_arguments(arguments)
 
@@ -420,8 +444,14 @@ class PyrunOutputSupportTests(unittest.TestCase):
 
             result = run(
                 [
-                    sys.executable, str(PYRUN), "--env", "MODE=exact",
-                    "--other-outputs", "@1", "--", "scripts/environment.py",
+                    sys.executable,
+                    str(PYRUN),
+                    "--env",
+                    "MODE=exact",
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/environment.py",
                     "data/environment.json",
                 ],
                 cwd=entry,
@@ -601,9 +631,7 @@ target.mkdir()
             record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
                 "data/results"
             ]
-            self.assertEqual(
-                record["fingerprint"]["algorithm"], "directory-sha256-v1"
-            )
+            self.assertEqual(record["fingerprint"]["algorithm"], "directory-sha256-v1")
 
     def test_absent_other_output_publishes_no_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -703,6 +731,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             self.assertEqual(record["script"]["path"], "scripts/build.py")
             self.assertEqual(record["parameters"], command[3:])
             self.assertEqual(set(record["inputs"]), {"input_csv"})
+            self.assertEqual(record["code"], {})
             self.assertEqual(
                 record["fingerprint"]["digest"],
                 digest(entry / "data/output.csv"),
@@ -712,6 +741,455 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             failed = run([*command, "--fail"], cwd=entry)
             self.assertEqual(failed.returncode, 3)
             self.assertEqual((entry / "pyrun-outputs.json").read_bytes(), before)
+
+    def test_records_only_loaded_direct_transitive_and_dynamic_helpers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/transitive_helper.py").write_text(
+                "VALUE = 'transitive'\n", encoding="utf-8"
+            )
+            (entry / "scripts/direct_helper.py").write_text(
+                "from transitive_helper import VALUE\n", encoding="utf-8"
+            )
+            (entry / "scripts/dynamic_helper.py").write_text(
+                "VALUE = 'dynamic'\n", encoding="utf-8"
+            )
+            (entry / "scripts/not_loaded.py").write_text(
+                "VALUE = 'absent'\n", encoding="utf-8"
+            )
+            (entry / "scripts/build_code.py").write_text(
+                "import importlib\n"
+                "from pathlib import Path\n"
+                "import direct_helper as first\n"
+                "import direct_helper as second\n"
+                "dynamic = importlib.import_module('dynamic_helper')\n"
+                "Path('data/code.txt').write_text(first.VALUE + dynamic.VALUE)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_code.py",
+                    "--output-data",
+                    "data/code.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/code.txt"
+            ]
+            self.assertEqual(
+                record["code"],
+                {
+                    name: {"algorithm": "sha256", "digest": digest(entry / name)}
+                    for name in (
+                        "scripts/direct_helper.py",
+                        "scripts/dynamic_helper.py",
+                        "scripts/transitive_helper.py",
+                    )
+                },
+            )
+
+    def test_records_log_sibling_and_logical_symlink_helpers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            log = entry.parents[1]
+            sibling = log / "entries/2026-05-02-e002-sibling"
+            sibling.mkdir()
+            (log / "shared_helper.py").write_text("VALUE = 'shared'\n")
+            (sibling / "sibling_helper.py").write_text("VALUE = 'sibling'\n")
+            storage = root / "relocated"
+            storage.mkdir()
+            (storage / "linked_helper.py").write_text("VALUE = 'linked'\n")
+            (log / "linked").symlink_to(storage, target_is_directory=True)
+            (entry / "scripts/build_scoped.py").write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "log = Path.cwd().parents[1]\n"
+                "sys.path.insert(0, str(log))\n"
+                "import shared_helper\n"
+                f"sys.path.insert(0, str(log / 'entries/{sibling.name}'))\n"
+                "import sibling_helper\n"
+                "sys.path.insert(0, str(log / 'linked'))\n"
+                "import linked_helper\n"
+                "Path('data/scoped.txt').write_text("
+                "shared_helper.VALUE + sibling_helper.VALUE + linked_helper.VALUE)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_scoped.py",
+                    "--output-data",
+                    "data/scoped.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            code = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/scoped.txt"
+            ]["code"]
+            self.assertEqual(
+                set(code),
+                {
+                    "<log>/shared_helper.py",
+                    f"<log>/entries/{sibling.name}/sibling_helper.py",
+                    "<log>/linked/linked_helper.py",
+                },
+            )
+            self.assertEqual(
+                code["<log>/linked/linked_helper.py"]["digest"],
+                digest(storage / "linked_helper.py"),
+            )
+
+    def test_records_python_child_entry_points_and_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/child_helper.py").write_text(
+                "VALUE = 'child'\n", encoding="utf-8"
+            )
+            (entry / "scripts/child.py").write_text(
+                "import child_helper\n", encoding="utf-8"
+            )
+            (entry / "scripts/build_children.py").write_text(
+                "import os, subprocess, sys\n"
+                "from pathlib import Path\n"
+                "child = str(Path('scripts/child.py').resolve())\n"
+                "subprocess.run([sys.executable, child], check=True)\n"
+                "environment = dict(os.environ, PYTHON=sys.executable, CHILD=child)\n"
+                "subprocess.run(['sh', '-c', '\"$PYTHON\" \"$CHILD\"'], "
+                "env=environment, check=True)\n"
+                "Path('data/children.txt').write_text('done')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_children.py",
+                    "--output-data",
+                    "data/children.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            code = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/children.txt"
+            ]["code"]
+            self.assertEqual(set(code), {"scripts/child.py", "scripts/child_helper.py"})
+
+    def test_records_spawn_and_fork_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/process_helper.py").write_text(
+                "VALUE = 'process'\n", encoding="utf-8"
+            )
+            (entry / "scripts/process_worker.py").write_text(
+                "def load():\n    import process_helper\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/build_process.py").write_text(
+                "import multiprocessing\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "from process_worker import load\n"
+                "if __name__ == '__main__':\n"
+                "    process = multiprocessing.get_context(sys.argv[1]).Process("
+                "target=load)\n"
+                "    process.start(); process.join()\n"
+                "    if process.exitcode:\n        raise SystemExit(process.exitcode)\n"
+                "    Path(sys.argv[2]).write_text('done')\n",
+                encoding="utf-8",
+            )
+            methods = set(__import__("multiprocessing").get_all_start_methods())
+            for method in ("spawn", "fork"):
+                if method not in methods:
+                    continue
+                with self.subTest(method=method):
+                    output = f"data/{method}.txt"
+                    result = run(
+                        [
+                            sys.executable,
+                            str(PYRUN),
+                            "--other-outputs",
+                            "@2",
+                            "--",
+                            "scripts/build_process.py",
+                            method,
+                            output,
+                        ],
+                        cwd=entry,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    code = json.loads((entry / "pyrun-outputs.json").read_text())[
+                        "outputs"
+                    ][output]["code"]
+                    self.assertEqual(
+                        set(code),
+                        {"scripts/process_helper.py", "scripts/process_worker.py"},
+                    )
+
+    def test_changed_loaded_helper_publishes_no_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            helper = entry / "scripts/changing_helper.py"
+            helper.write_text("VALUE = 'before'\n", encoding="utf-8")
+            (entry / "scripts/change_code.py").write_text(
+                "from pathlib import Path\n"
+                "import changing_helper\n"
+                "Path('data/changed.txt').write_text('done')\n"
+                "Path('scripts/changing_helper.py').write_text("
+                "\"VALUE = 'after'\\n\")\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/change_code.py",
+                    "--output-data",
+                    "data/changed.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("loaded code changed during execution", result.stderr)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_missing_root_trace_publishes_no_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/skip_shutdown.py").write_text(
+                "import os\n"
+                "from pathlib import Path\n"
+                "Path('data/skip.txt').write_text('done')\n"
+                "os._exit(0)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/skip_shutdown.py",
+                    "--output-data",
+                    "data/skip.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("root Python process left no complete trace", result.stderr)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_excessive_loaded_code_publishes_no_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            for index in range(PYRUN_MODULE.MAX_CODE_PATHS + 1):
+                (entry / f"scripts/helper_{index}.py").write_text(
+                    f"VALUE = {index}\n", encoding="utf-8"
+                )
+            (entry / "scripts/build_excessive.py").write_text(
+                "import importlib\n"
+                "from pathlib import Path\n"
+                f"for index in range({PYRUN_MODULE.MAX_CODE_PATHS + 1}):\n"
+                "    importlib.import_module(f'helper_{index}')\n"
+                "Path('data/excessive.txt').write_text('done')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_excessive.py",
+                    "--output-data",
+                    "data/excessive.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("code_path_limit", result.stderr)
+            self.assertFalse((entry / "pyrun-outputs.json").exists())
+
+    def test_excludes_project_code_outside_the_current_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (root / "project_helper.py").write_text("VALUE = 'project'\n")
+            (entry / "scripts/build_external.py").write_text(
+                "import sys\n"
+                "from pathlib import Path\n"
+                "sys.path.insert(0, str(Path.cwd().parents[2]))\n"
+                "import project_helper\n"
+                "Path('data/external.txt').write_text(project_helper.VALUE)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_external.py",
+                    "--output-data",
+                    "data/external.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/external.txt"
+            ]
+            self.assertEqual(record["code"], {})
+
+    def test_preserves_an_existing_sitecustomize(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            startup = root / "startup"
+            startup.mkdir()
+            marker = root / "sitecustomize-loaded.txt"
+            (startup / "sitecustomize.py").write_text(
+                "import os\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['SITE_MARKER']).write_text('loaded')\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/check_sitecustomize.py").write_text(
+                "import sitecustomize\n"
+                "from pathlib import Path\n"
+                "Path('data/site.txt').write_text(sitecustomize.__file__)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--env",
+                    f"PYTHONPATH={startup}",
+                    "--env",
+                    f"SITE_MARKER={marker}",
+                    "--",
+                    "scripts/check_sitecustomize.py",
+                    "--output-data",
+                    "data/site.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(marker.read_text(), "loaded")
+            self.assertEqual(
+                Path((entry / "data/site.txt").read_text()).resolve(),
+                (startup / "sitecustomize.py").resolve(),
+            )
+
+    def test_many_short_children_share_one_deduplicated_code_map(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/shared_child_helper.py").write_text(
+                "VALUE = 'child'\n", encoding="utf-8"
+            )
+            (entry / "scripts/short_child.py").write_text(
+                "import shared_child_helper\n", encoding="utf-8"
+            )
+            (entry / "scripts/build_many_children.py").write_text(
+                "import subprocess, sys\n"
+                "from pathlib import Path\n"
+                "child = str(Path('scripts/short_child.py').resolve())\n"
+                "for _ in range(12):\n"
+                "    subprocess.run([sys.executable, child], check=True)\n"
+                "Path('data/first.txt').write_text('first')\n"
+                "Path('data/second.txt').write_text('second')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_many_children.py",
+                    "--output-first",
+                    "data/first.txt",
+                    "--output-second",
+                    "data/second.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
+            expected = {"scripts/shared_child_helper.py", "scripts/short_child.py"}
+            self.assertEqual(set(outputs["data/first.txt"]["code"]), expected)
+            self.assertEqual(
+                outputs["data/first.txt"]["code"],
+                outputs["data/second.txt"]["code"],
+            )
+
+    def test_isolated_and_detached_children_add_no_dependency_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/hidden_helper.py").write_text(
+                "VALUE = 'hidden'\n", encoding="utf-8"
+            )
+            (entry / "scripts/hidden_child.py").write_text(
+                "VALUE = 'isolated'\n", encoding="utf-8"
+            )
+            (entry / "scripts/detached_child.py").write_text(
+                "import time\ntime.sleep(0.2)\nimport hidden_helper\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/build_unobserved.py").write_text(
+                "import subprocess, sys\n"
+                "from pathlib import Path\n"
+                "subprocess.run([sys.executable, '-I', "
+                "'scripts/hidden_child.py'], check=True)\n"
+                "subprocess.Popen([sys.executable, 'scripts/detached_child.py'], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL, start_new_session=True)\n"
+                "Path('data/unobserved.txt').write_text('done')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_unobserved.py",
+                    "--output-data",
+                    "data/unobserved.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
+                "data/unobserved.txt"
+            ]
+            self.assertEqual(record["code"], {})
 
     def test_success_records_directory_output_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -744,9 +1222,7 @@ target.mkdir()
             payload = json.loads((entry / "pyrun-outputs.json").read_text())
             record = payload["outputs"]["data/trials"]
             self.assertIs(record["confirmed"], True)
-            self.assertEqual(
-                record["fingerprint"]["algorithm"], "directory-sha256-v1"
-            )
+            self.assertEqual(record["fingerprint"]["algorithm"], "directory-sha256-v1")
             self.assertEqual(record["parameters"], command[3:])
 
     def test_success_records_portable_project_file_and_directory_outputs(self) -> None:
@@ -932,9 +1408,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertEqual(combined.returncode, 0, combined.stderr)
             self.assertIn("out\n", combined.stdout)
             self.assertIn("err\n", combined.stdout)
-            self.assertEqual(
-                (entry / "data/combined.log").read_text(), combined.stdout
-            )
+            self.assertEqual((entry / "data/combined.log").read_text(), combined.stdout)
 
     def test_capture_contract_rejects_ambiguous_forms_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from pyrun_code_observer import MANAGED_ENVIRONMENT as PYRUN_CODE_ENVIRONMENT
+
 PYRUN_CAPTURE_STREAMS = {
     "--capture-stdout": "stdout",
     "--capture-stderr": "stderr",
@@ -16,7 +18,9 @@ PYRUN_ROLE_OPTIONS = {
     "--other-outputs": "output",
 }
 PYRUN_ENV_OPTION = "--env"
-PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"})
+PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
+    PYRUN_CODE_ENVIRONMENT
+)
 _OPTION_SELECTOR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _POSITIONAL_SELECTOR_RE = re.compile(r"@[1-9][0-9]*\Z")
 _ENVIRONMENT_RE = re.compile(
@@ -149,9 +153,7 @@ def split_argument_values(
                 options.append(OptionOccurrence(name, value))
                 index += 1
                 continue
-            if index + 1 < len(arguments) and not arguments[index + 1].startswith(
-                "-"
-            ):
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("-"):
                 options.append(
                     OptionOccurrence(token.lstrip("-"), arguments[index + 1])
                 )

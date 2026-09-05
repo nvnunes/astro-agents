@@ -15,8 +15,10 @@ from validation.pyrun_outputs import (
     PyrunOutputsError,
     PyrunOutputsFile,
     ScriptSupport,
+    code_target_path,
     load_pyrun_outputs,
     output_target_path,
+    portable_code_path,
     portable_output_path,
     update_pyrun_outputs_locked,
 )
@@ -105,6 +107,116 @@ class PyrunOutputsContractTests(unittest.TestCase):
                 "data/result.csv",
             )
 
+    def test_code_paths_have_entry_and_log_relative_canonical_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            entry = project / "docs/log/entries/entry"
+            helper = entry / "scripts/helper.py"
+            shared = project / "docs/log/shared/helper.py"
+            write(helper, "VALUE = 1\n")
+            write(shared, "VALUE = 2\n")
+
+            self.assertEqual(
+                portable_code_path(helper.resolve(), entry_root=entry),
+                "scripts/helper.py",
+            )
+            self.assertEqual(
+                portable_code_path(shared.resolve(), entry_root=entry),
+                "<log>/shared/helper.py",
+            )
+            self.assertEqual(
+                code_target_path("<log>/shared/helper.py", entry_root=entry),
+                shared,
+            )
+
+    def test_new_code_mapping_round_trips_while_legacy_shape_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "log/entries/entry"
+            write(entry / "scripts/helper.py", "VALUE = 1\n")
+            legacy = OutputSupport(
+                True,
+                Fingerprint("sha256", digest="a" * 64),
+                ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
+                (),
+                (),
+            )
+            current = OutputSupport(
+                True,
+                Fingerprint("sha256", digest="c" * 64),
+                ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="b" * 64)),
+                (),
+                (),
+                (("scripts/helper.py", Fingerprint("sha256", digest="d" * 64)),),
+            )
+
+            written = _update_outputs(
+                entry,
+                {"data/legacy.csv": legacy, "data/current.csv": current},
+            )
+            raw = json.loads(written.path.read_text())
+            self.assertNotIn("code", raw["outputs"]["data/legacy.csv"])
+            self.assertEqual(
+                raw["outputs"]["data/current.csv"]["code"],
+                {
+                    "scripts/helper.py": {
+                        "algorithm": "sha256",
+                        "digest": "d" * 64,
+                    }
+                },
+            )
+            loaded = load_pyrun_outputs(written.path, entry_root=entry)
+            self.assertIsNone(loaded.outputs["data/legacy.csv"].code)
+            self.assertEqual(loaded.outputs["data/current.csv"], current)
+
+    def test_code_mapping_rejects_noncanonical_non_python_and_oversized_forms(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "log/entries/entry"
+            entry.mkdir(parents=True)
+            base = {
+                "confirmed": True,
+                "fingerprint": {"algorithm": "sha256", "digest": "a" * 64},
+                "inputs": {},
+                "parameters": [],
+                "script": {
+                    "path": "scripts/run.py",
+                    "fingerprint": {"algorithm": "sha256", "digest": "b" * 64},
+                },
+            }
+            invalid = (
+                {"scripts/../helper.py": {"algorithm": "sha256", "digest": "c" * 64}},
+                {"scripts/helper.txt": {"algorithm": "sha256", "digest": "c" * 64}},
+                {
+                    "<log>/entries/entry/scripts/helper.py": {
+                        "algorithm": "sha256",
+                        "digest": "c" * 64,
+                    }
+                },
+                {
+                    f"scripts/helper{index}.py": {
+                        "algorithm": "sha256",
+                        "digest": "c" * 64,
+                    }
+                    for index in range(PYRUN_OUTPUTS.MAX_CODE_PATHS + 1)
+                },
+            )
+            for code in invalid:
+                with self.subTest(first=next(iter(code))):
+                    path = entry / "pyrun-outputs.json"
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "schema": "research-log-pyrun-outputs/v1",
+                                "outputs": {"data/output.csv": {**base, "code": code}},
+                            }
+                        )
+                    )
+                    with self.assertRaisesRegex(
+                        PyrunOutputsError, "pyrun.outputs.invalid"
+                    ):
+                        load_pyrun_outputs(path, entry_root=entry)
+
     def test_output_key_is_unique_portable_identity_and_not_repeated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "entry"
@@ -112,9 +224,7 @@ class PyrunOutputsContractTests(unittest.TestCase):
             record = OutputSupport(
                 True,
                 Fingerprint("sha256", digest=digest(b"value\n1\n")),
-                ScriptSupport(
-                    "scripts/run.py", Fingerprint("sha256", digest="a" * 64)
-                ),
+                ScriptSupport("scripts/run.py", Fingerprint("sha256", digest="a" * 64)),
                 ("--output-data", "data/output.csv"),
                 (),
             )

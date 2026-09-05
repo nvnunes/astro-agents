@@ -21,12 +21,15 @@ PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
 PYRUN_OUTPUTS_FILENAME = "pyrun-outputs.json"
 PYRUN_OUTPUTS_BACKUP_RE = re.compile(r"pyrun-outputs\.json(?:\.[2-9][0-9]*)?\.bak\Z")
 PROJECT_OUTPUT_PREFIX = "<project>/"
+LOG_CODE_PREFIX = "<log>/"
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUTS = 10_000
 MAX_INPUTS = 128
+MAX_CODE_PATHS = 256
 MAX_PARAMETERS = 4_096
 MAX_STRING_BYTES = 8 * 1024
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+
 
 class PyrunOutputsError(MechanicalContractError):
     """One exact output-support contract failure."""
@@ -52,15 +55,19 @@ class OutputSupport:
     script: ScriptSupport
     parameters: tuple[str, ...]
     inputs: tuple[tuple[str, Fingerprint], ...]
+    code: tuple[tuple[str, Fingerprint], ...] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "confirmed": self.confirmed,
             "fingerprint": self.fingerprint.as_dict(),
             "inputs": {name: value.as_dict() for name, value in self.inputs},
             "parameters": list(self.parameters),
             "script": self.script.as_dict(),
         }
+        if self.code is not None:
+            result["code"] = {name: value.as_dict() for name, value in self.code}
+        return result
 
 
 @dataclass(frozen=True)
@@ -80,9 +87,10 @@ class PyrunOutputsFile:
         }
 
     def serialized(self) -> str:
-        return json.dumps(
-            self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True
-        ) + "\n"
+        return (
+            json.dumps(self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
 
 
 def load_pyrun_outputs(
@@ -118,7 +126,9 @@ def load_pyrun_outputs(
         )
         if output != key:
             _invalid(path, {"output": key, "canonical": output})
-        outputs[key] = _decode_record(raw_record, f"{path}:outputs[{key!r}]")
+        outputs[key] = _decode_record(
+            raw_record, f"{path}:outputs[{key!r}]", entry_root=entry_root
+        )
     return PyrunOutputsFile(expected, entry_root.resolve(), outputs)
 
 
@@ -318,6 +328,65 @@ def output_target_path(
     return root.joinpath(*PurePosixPath(key).parts)
 
 
+def portable_code_path(value: str | Path, *, entry_root: Path) -> str:
+    """Return one canonical entry-relative or log-relative Python code identity."""
+
+    raw = value.as_posix() if isinstance(value, Path) else value
+    if not isinstance(raw, str) or not raw or len(raw.encode()) > MAX_STRING_BYTES:
+        _invalid("code", {"path": raw})
+    root = entry_root.resolve()
+    log = root.parent.parent
+    if Path(raw).is_absolute():
+        lexical = Path(os.path.abspath(raw))
+    elif raw.startswith(LOG_CODE_PREFIX):
+        suffix = raw.removeprefix(LOG_CODE_PREFIX)
+        lexical = log.joinpath(*_code_parts(raw, suffix))
+    else:
+        lexical = root.joinpath(*_code_parts(raw, raw))
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError:
+        try:
+            relative = lexical.relative_to(log)
+        except ValueError:
+            _invalid("code", {"path": raw, "reason": "outside_log"})
+        canonical = LOG_CODE_PREFIX + PurePosixPath(*relative.parts).as_posix()
+    else:
+        canonical = PurePosixPath(*relative.parts).as_posix()
+    if not canonical.endswith(".py"):
+        _invalid("code", {"path": raw, "reason": "not_python_source"})
+    if not Path(raw).is_absolute() and canonical != raw:
+        _invalid("code", {"path": raw, "canonical": canonical})
+    return canonical
+
+
+def code_target_path(value: str, *, entry_root: Path) -> Path:
+    """Resolve one canonical portable code identity without resolving symlinks."""
+
+    key = portable_code_path(value, entry_root=entry_root)
+    root = Path(os.path.abspath(entry_root))
+    if key.startswith(LOG_CODE_PREFIX):
+        return root.parent.parent.joinpath(
+            *PurePosixPath(key.removeprefix(LOG_CODE_PREFIX)).parts
+        )
+    return root.joinpath(*PurePosixPath(key).parts)
+
+
+def _code_parts(raw: str, suffix: str) -> tuple[str, ...]:
+    """Return safe lexical path parts for one portable code identity."""
+
+    parts = PurePosixPath(suffix).parts
+    if (
+        not suffix
+        or suffix.startswith("/")
+        or "\\" in suffix
+        or any(character in suffix for character in "<>")
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        _invalid("code", {"path": raw, "reason": "path_invalid"})
+    return parts
+
+
 def update_pyrun_outputs_locked(
     entry_root: Path,
     updates: Mapping[str, OutputSupport],
@@ -341,9 +410,7 @@ def update_pyrun_outputs_locked(
         _invalid(path, {"reason": "duplicate_output"})
     try:
         current = (
-            load_pyrun_outputs(
-                path, entry_root=root, project_root=project_root
-            )
+            load_pyrun_outputs(path, entry_root=root, project_root=project_root)
             if path.exists()
             else empty_pyrun_outputs(root)
         )
@@ -430,7 +497,11 @@ def _validated_serialization(
         )
         if canonical != key or not isinstance(record, OutputSupport):
             _invalid(value.path, {"output": key})
-        _decode_record(record.as_dict(), f"{value.path}:outputs[{key!r}]")
+        _decode_record(
+            record.as_dict(),
+            f"{value.path}:outputs[{key!r}]",
+            entry_root=value.entry_root,
+        )
     serialized = value.serialized()
     size = len(serialized.encode("utf-8"))
     if size > MAX_FILE_BYTES:
@@ -438,14 +509,16 @@ def _validated_serialization(
     return serialized
 
 
-def _decode_record(value: object, subject: str) -> OutputSupport:
-    required = {"confirmed", "fingerprint", "inputs", "parameters", "script"}
-    if not isinstance(value, Mapping) or set(value) != required:
+def _decode_record(value: object, subject: str, *, entry_root: Path) -> OutputSupport:
+    legacy = {"confirmed", "fingerprint", "inputs", "parameters", "script"}
+    current = legacy | {"code"}
+    if not isinstance(value, Mapping) or set(value) not in (legacy, current):
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
     confirmed = value.get("confirmed")
     parameters = value.get("parameters")
     inputs = value.get("inputs")
+    code = value.get("code")
     script = value.get("script")
     if not isinstance(confirmed, bool):
         _invalid(subject, {"confirmed": confirmed})
@@ -462,6 +535,9 @@ def _decode_record(value: object, subject: str) -> OutputSupport:
         if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
             _invalid(subject, {"input": name})
         decoded_inputs.append((name, _decode_fingerprint(fingerprint, subject)))
+    decoded_code = (
+        _decode_code(code, subject, entry_root=entry_root) if "code" in value else None
+    )
     if not isinstance(script, Mapping) or set(script) != {"path", "fingerprint"}:
         _invalid(subject, {"script": _fields(script)})
     script_path = script.get("path")
@@ -476,16 +552,35 @@ def _decode_record(value: object, subject: str) -> OutputSupport:
         ),
         tuple(cast(list[str], parameters)),
         tuple(sorted(decoded_inputs)),
+        tuple(sorted(decoded_code)) if decoded_code is not None else None,
     )
+
+
+def _decode_code(
+    value: object, subject: str, *, entry_root: Path
+) -> tuple[tuple[str, Fingerprint], ...]:
+    """Decode one bounded canonical code-fingerprint mapping."""
+
+    if not isinstance(value, Mapping) or len(value) > MAX_CODE_PATHS:
+        _invalid(subject, {"code": _fields(value)})
+    decoded: list[tuple[str, Fingerprint]] = []
+    for path, fingerprint in value.items():
+        if not isinstance(path, str):
+            _invalid(subject, {"code_path": path})
+        canonical = portable_code_path(path, entry_root=entry_root)
+        if canonical != path:
+            _invalid(subject, {"code_path": path, "canonical": canonical})
+        decoded.append(
+            (path, _decode_fingerprint(fingerprint, subject, file_only=True))
+        )
+    return tuple(sorted(decoded))
 
 
 def _decode_fingerprint(
     value: object, subject: str, *, file_only: bool = False
 ) -> Fingerprint:
     try:
-        return parse_fingerprint(
-            value, subject, kind="file" if file_only else None
-        )
+        return parse_fingerprint(value, subject, kind="file" if file_only else None)
     except DataContractError as error:
         _invalid(subject, {"fingerprint": value, "reason": error.code})
 

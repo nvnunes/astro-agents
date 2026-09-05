@@ -262,8 +262,9 @@ parser, mixed locator version, or CSV escaping in this host form.
 
 Maintenance note: Changes to the evidence-source or locator host contract must
 be reflected in
-[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md)
-and its public-CLI conformance tests.
+[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md),
+[Advanced Numeric Evidence](../skills/research-logging/references/record-evidence-definition-numeric.md),
+and their public-CLI conformance tests.
 
 ## Common Evaluation Contract
 
@@ -786,8 +787,9 @@ addition must be safe, bounded, non-executing, and unable to change dispatch or
 results for an existing profile.
 
 Maintenance note: Changes to an accepted source profile must be reflected in
-[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md)
-and its public-CLI conformance tests.
+[Advanced Evidence Sources](../skills/research-logging/references/record-evidence-definition-sources.md),
+[Advanced Numeric Evidence](../skills/research-logging/references/record-evidence-definition-numeric.md),
+and their public-CLI conformance tests.
 
 ### Indexed And Outside Sources
 
@@ -3721,13 +3723,6 @@ and makes later reuse conservative. Process termination is subject to the
 per-destination atomicity boundary; a later invocation must not interpret a
 partial bundle as current. `validation.md` is composed from the authoritative
 operation records under the same lock.
-
-The incompatible `validation/.cache/mechanical.json` and
-`validation/.cache/lock` paths are never read. After a successful
-comparison-baseline rebuild, validation removes only those known files and
-removes their directory only when empty. Unknown contents in that directory
-are preserved. The compatibility rules below govern each independently
-versioned surface.
 
 ### Command-Provenance And Hygiene Diagnostics
 

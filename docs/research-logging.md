@@ -346,10 +346,11 @@ experiment and its evidence in an experimental section; a separate synthesis
 may refer to it.
 
 Any other label combination is structurally invalid. Research-log review owns
-diagnosis and repair. Validation skips the entire invalid section, identifies
-the entry and heading, and records one structural failure so the skipped
-content cannot coexist with an all-clear validation result. It does not infer
-the intended section type or partially validate the section.
+diagnosis; a separately authorized Repair owns correction. Validation skips the
+entire invalid section, identifies the entry and heading, and records one
+structural failure so the skipped content cannot coexist with an all-clear
+validation result. It does not infer the intended section type or partially
+validate the section.
 
 ### Labels
 
@@ -392,7 +393,9 @@ Compare the retained baseline with the proposed correction.
 ```
 
 `Results:`
-The correction reduced median error from `0.292%` to `0.286%`.
+The correction reduced median error from
+`0.292%`<!-- eid:baseline-median-error --> to
+`0.286%`<!-- eid:trial-median-error -->.
 
 `Observations:`
 The effect is small but consistent across the retained cases.
@@ -498,8 +501,11 @@ For Python, use the entry-root `./pyrun` launcher. It uses
 the interpreter that runs `pyrun`. It also expands these path tokens:
 
 - `<project>`: project root;
-- `<log>`: research-log directory; and
-- `<name>`: one exact input in the owning entry-root `data.json`; and
+- `<log>`: research-log directory;
+- `<name>`: one exact file or directory input, or the local locator for a
+  pinned Git repository, in the owning entry-root `data.json`;
+- `<name:commit>`: the exact pinned commit paired with a registered Git
+  repository locator; and
 - `<directory-name>/member`: one exact member of a declared directory input.
 
 Data tokens occupy the complete input argument. Quote arguments containing
@@ -548,10 +554,10 @@ or Provenance.
 
 ### Input registry
 
-Use entry-root `data.json` for every file or directory consumed as a material
-input by a recorded command or evidence record. Each has one stable name,
-local location, strong fingerprint, and
-Boolean `origin`. An origin stops the Provenance chain at that artifact;
+Use entry-root `data.json` for every file, directory, or pinned Git repository
+consumed as a material input by a recorded command or evidence record. Each has
+one stable name, local location, strong identity, and Boolean `origin`. An
+origin stops the Provenance chain at that artifact or tracked commit snapshot;
 generated material continues to its unique earlier producer regardless of
 where the file is stored.
 
@@ -563,13 +569,21 @@ CLI:
   development_set /data/project/development.csv
 ```
 
-The CLI infers file versus directory, normalizes the target, fingerprints its
-current content, and records the explicit origin boundary. Raw command-input
-and evidence-source paths and URIs are invalid. Evidence sources use one
-complete `<name>` or
-`<directory-name>/member` token and must resolve to one local regular file. A
-generated output enters `data.json` when a later recorded command or evidence
-record consumes it. After its producer succeeds, register it with
+Without `--commit`, the CLI infers file versus directory, normalizes the target,
+fingerprints its current content, and records the explicit origin boundary.
+For source code identified by a repository commit, use the same action with
+`--commit <full-commit-hash>` and the repository root as the target. The path
+only locates an accessible repository; the full commit identifies the tracked
+snapshot. Every consuming `pyrun` command uses both `<name>` and
+`<name:commit>`. Register a live environment, dirty or untracked file,
+generated model, cache, build product, or submodule checkout separately when
+the command also consumes it.
+
+Raw command-input and evidence-source paths and URIs are invalid. Evidence
+sources use one complete `<name>` or `<directory-name>/member` token and must
+resolve to one local regular file. A generated output enters `data.json` when a
+later recorded command or evidence record consumes it. After its producer
+succeeds, register it with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
 <target>` so it traces to that current confirmed producer. `log data` is the
 sole ordinary author of `data.json`; do not edit the registry directly. Omit
@@ -616,9 +630,12 @@ remains unknown rather than repeating them for documentation.
 ### Origin inputs and references
 
 For an origin workflow input, record what it is and how it was used. Keep or
-materialize a locally accessible copy so validation can confirm its current
-bytes. Provenance stops at that declared artifact; scientific review, not
-mechanical validation, determines whether the source is trustworthy.
+materialize locally accessible files and directories so validation can confirm
+their current bytes. For a pinned Git repository, keep an accessible repository
+containing the declared commit; its path is only a locator, and the commit
+identifies the tracked source snapshot. Provenance stops at that declared
+artifact or commit; scientific review, not mechanical validation, determines
+whether the source is trustworthy.
 
 Use optional `<log>/refs.bib` for papers, documentation, and other cited
 sources. Verify new bibliographic details against an authoritative source and
@@ -849,11 +866,7 @@ Check the requested area against these questions:
   saved figures free of apparent quality problems, and later-used serialized
   files checked against their expected structure? For work completed
   elsewhere, does the record preserve the actual workflow and identify missing
-  material rather than replacing it with a cleaner reconstruction? Does
-  `data.json` contain all and only command and evidence inputs, use unique names
-  and targets, resolve every token, preserve fingerprints, and distinguish
-  explicit origins from generated inputs? Are intentional disconnected
-  artifacts declared only through `retention.json`?
+  material rather than replacing it with a cleaner reconstruction?
 - **Summary:** Is every substantive point supported by an entry? Does the
   summary describe current understanding, preserve the stable validation-report
   link, include explicit follow-ups, and end with the AI-use disclosure?
@@ -874,7 +887,8 @@ review.
 
 At a high level, validation checks four things:
 
-- the research log and its supporting metadata are structurally consistent;
+- the research log and its supporting metadata are structurally consistent,
+  including input declarations, origin boundaries, and intentional retention;
 - presented computational results match their declared retained sources;
 - generated evidence can be traced through confirmed current output and script
   fingerprints, exact ordered parameters, and direct-input fingerprints to
@@ -898,7 +912,10 @@ the logical log path:
 Use `<skill>/scripts/log validate --root <project-root>` for every maintained
 log returned by canonical bounded discovery beneath one project. The returned
 batch result includes a ready-to-present Markdown comparison table; the agent
-does not recalculate its counts from generated reports.
+does not recalculate its counts from generated reports. The table includes only
+completed evaluations; per-log operational failures, `incomplete` results, and
+`unsupported_metadata` results are reported separately, so a nonzero batch may
+still return a useful table.
 
 A mechanical evaluation reports either that no findings were found or that one
 or more findings need attention. A preliminary validator-state check may

@@ -67,6 +67,25 @@ class ValidationCliTests(unittest.TestCase):
                 "--dry-run",
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            for cache_flags in (
+                ("--recompute-validation",),
+                ("--recompute-fingerprints",),
+                ("--recompute-validation", "--recompute-fingerprints"),
+            ):
+                with self.subTest(cache_flags=cache_flags):
+                    separated = run_log(
+                        root,
+                        "validate",
+                        "--path",
+                        str(summary.with_suffix("")),
+                        "--date",
+                        "2026-08-29",
+                        "--dry-run",
+                        *cache_flags,
+                    )
+                    self.assertEqual(
+                        separated.returncode, 0, separated.stderr
+                    )
             rejected = run_log(
                 root,
                 "validate",

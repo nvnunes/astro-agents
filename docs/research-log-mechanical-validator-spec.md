@@ -3429,10 +3429,12 @@ The validation and discovery operations are:
 <skill>/scripts/log discover --root PROJECT
 
 <skill>/scripts/log validate --path LOG
-  [--date YYYY-MM-DD] [--recompute] [--dry-run]
+  [--date YYYY-MM-DD] [--recompute] [--recompute-validation]
+  [--recompute-fingerprints] [--dry-run]
 
 <skill>/scripts/log validate --root PROJECT
-  [--date YYYY-MM-DD] [--recompute] [--dry-run]
+  [--date YYYY-MM-DD] [--recompute] [--recompute-validation]
+  [--recompute-fingerprints] [--dry-run]
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
@@ -3462,16 +3464,17 @@ The nearest enclosing non-symlink `.git` file or directory defines the project
 root for project-relative identities and the shared fingerprint cache. Missing
 Git worktree metadata is an operational error; directory names do not determine
 project ownership.
-`--recompute` bypasses prior check comparison, cached source, script, and
-artifact identities, and project-level input observations for the invocation.
-The validator computes every check and rereads or rehashes every source and
-artifact needed by those checks. It does not change validation scope, rules,
-or the published result format. A writable recomputation commits stable input
-observations incrementally. A completed published recomputation replaces the
-per-log disposable cache with the newly computed checks and artifact
-identities. These are the only
-public standard-validation inputs; there is no mode, decisions, review,
-semantic, or reproduction input.
+`--recompute-validation` bypasses per-log check-comparison and
+evidence-selection reuse while retaining eligible project fingerprint reuse.
+`--recompute-fingerprints` bypasses project-level fingerprint reuse while
+retaining eligible per-log validation-cache reuse. The flags may be combined.
+`--recompute` is shorthand for both and preserves the complete
+cache-independent behavior: the validator computes every check and rereads or
+rehashes every source and artifact needed by those checks. None of these flags
+changes validation scope, rules, or the published result format. A writable
+run repopulates each bypassed cache as observations and completed validation
+state become available. These are the only public standard-validation inputs;
+there is no mode, decisions, review, semantic, or reproduction input.
 
 There is no alternate validation launcher or `--summary` compatibility
 spelling. All maintained callers use `scripts/log`.
@@ -3770,12 +3773,14 @@ Per-log cache absence, corruption, unsupported state, rejected rows, or I/O
 failure causes bounded ordinary evaluation and never changes a conclusion. A
 writable run rebuilds a corrupt cache. An unsupported future database or
 component version is preserved and bypassed; compatible older components are
-invalidated independently. A dry run opens existing per-log and project caches
-read-only and does not create, update, or garbage-collect state. `--recompute`
-bypasses check comparison, selection reuse, and project-level fingerprint
-reuse. A successful writable recomputation may repopulate both caches;
-`--recompute --dry-run` opens neither cache and leaves generated state
-byte-identical.
+invalidated independently. A dry run opens each eligible cache read-only and
+does not create, update, or garbage-collect state. `--recompute-validation`
+bypasses and, during a dry run, does not open the per-log cache.
+`--recompute-fingerprints` does the same for the project fingerprint cache.
+Each non-bypassed cache remains independently eligible for reuse. A successful
+writable run may repopulate each bypassed cache; combining the two flags or
+using `--recompute` bypasses both. A dry run that bypasses both opens neither
+cache and leaves generated state byte-identical.
 
 `validation.md` is a deterministic nonauthoritative projection. Its Mechanical
 Validation section contains completion, result date, check counts for

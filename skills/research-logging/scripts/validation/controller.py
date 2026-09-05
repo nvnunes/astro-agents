@@ -64,12 +64,16 @@ class ValidationRequest:
         result_date: Optional ISO calendar date for completed findings.
         publish: Whether to publish completed generated state.
         recompute: Whether to bypass all prior mechanical-cache reuse.
+        recompute_validation: Whether to bypass per-log validation-cache reuse.
+        recompute_fingerprints: Whether to bypass project fingerprint-cache reuse.
     """
 
     summary: Path
     result_date: str | None = None
     publish: bool = True
     recompute: bool = False
+    recompute_validation: bool = False
+    recompute_fingerprints: bool = False
 
 
 def validate(request: ValidationRequest) -> dict[str, Any]:
@@ -123,19 +127,21 @@ def _run_validation(
     """Evaluate under the caller-owned publication lifecycle."""
 
     starting_snapshot = research_snapshot(summary) if request.publish else None
+    recompute_validation = request.recompute or request.recompute_validation
+    recompute_fingerprints = request.recompute or request.recompute_fingerprints
     with FingerprintCache(
         project_root(summary),
         writable=request.publish,
-        reuse=not request.recompute,
+        reuse=not recompute_fingerprints,
     ) as fingerprint_cache:
         with ValidationCache(
             log_root,
             writable=request.publish,
-            reuse=not request.recompute,
+            reuse=not recompute_validation,
         ) as validation_cache:
             report_identity = (
                 None
-                if request.recompute
+                if recompute_validation
                 else _current_report_identity(log_root, fingerprint_cache)
             )
             prior_checks = validation_cache.load_check_comparison(

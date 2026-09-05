@@ -586,13 +586,22 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     parser.add_argument("--date")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--recompute", action="store_true")
+    parser.add_argument("--recompute-validation", action="store_true")
+    parser.add_argument("--recompute-fingerprints", action="store_true")
     args = parser.parse_args(arguments)
-    from .validation_adapter import run_validate
+    from .validation_adapter import ValidationOptions, run_validate
 
     return run_validate(
         path=args.path,
         root=args.root,
-        result_date=args.date,
-        dry_run=args.dry_run,
-        recompute=args.recompute,
+        options=ValidationOptions(
+            result_date=args.date,
+            dry_run=args.dry_run,
+            recompute_validation=(
+                args.recompute or args.recompute_validation
+            ),
+            recompute_fingerprints=(
+                args.recompute or args.recompute_fingerprints
+            ),
+        ),
     )

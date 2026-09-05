@@ -24,9 +24,10 @@ Reproduction section. Mechanical Validate preserves any existing
 The cache files are disposable generated acceleration state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every
 `.cache/` directory in source control and research-log discovery. `--dry-run`
-publishes no result or cache changes beyond the generated coordination lock,
-while `--recompute` bypasses existing validation and fingerprint reuse for
-that invocation.
+publishes no result or cache changes beyond the generated coordination lock.
+`--recompute-validation` bypasses per-log validation reuse,
+`--recompute-fingerprints` bypasses project fingerprint reuse, and
+`--recompute` remains shorthand for bypassing both during that invocation.
 
 ## Research Boundary
 

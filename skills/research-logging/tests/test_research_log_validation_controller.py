@@ -835,6 +835,53 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
 
+    def test_recompute_validation_reuses_project_fingerprints_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+
+            recomputed = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(
+                    summary,
+                    result_date="2026-08-29",
+                    recompute_validation=True,
+                )
+            )
+
+            self.assertEqual(recomputed["status"], "complete_clear")
+            self.assertEqual(recomputed["metrics"]["checks_unchanged"], 0)
+            self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
+            self.assertGreater(
+                recomputed["metrics"]["fingerprint_cache_file_reuses"], 0
+            )
+
+    def test_recompute_fingerprints_reuses_per_log_validation_cache_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            )
+
+            recomputed = CONTROLLER.validate(
+                CONTROLLER.ValidationRequest(
+                    summary,
+                    result_date="2026-08-29",
+                    recompute_fingerprints=True,
+                )
+            )
+
+            self.assertEqual(recomputed["status"], "complete_clear")
+            self.assertGreater(recomputed["metrics"]["checks_unchanged"], 0)
+            self.assertGreater(recomputed["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(
+                recomputed["metrics"]["fingerprint_cache_file_reuses"], 0
+            )
+            self.assertGreater(
+                recomputed["metrics"]["fingerprint_cache_file_hashes"], 0
+            )
+
     def test_recompute_dry_run_neither_reads_cache_nor_publishes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))

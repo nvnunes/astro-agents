@@ -36,38 +36,39 @@ class _ValidationOutcome:
     record: MechanicalGeneratedRecord | None
 
 
+@dataclass(frozen=True)
+class ValidationOptions:
+    """Cache and publication options shared by one validation selection."""
+
+    result_date: str | None = None
+    dry_run: bool = False
+    recompute_validation: bool = False
+    recompute_fingerprints: bool = False
+
+
 def evaluate_validation(
     summary: Path,
     *,
-    result_date: str | None = None,
-    dry_run: bool = False,
-    recompute: bool = False,
+    options: ValidationOptions = ValidationOptions(),
 ) -> dict[str, object]:
     """Return the bounded public result for one validation request."""
 
-    return _evaluate_validation(
-        summary,
-        result_date=result_date,
-        dry_run=dry_run,
-        recompute=recompute,
-    ).result
+    return _evaluate_validation(summary, options).result
 
 
 def _evaluate_validation(
     summary: Path,
-    *,
-    result_date: str | None,
-    dry_run: bool,
-    recompute: bool,
+    options: ValidationOptions,
 ) -> _ValidationOutcome:
     """Retain the generated record long enough to compose batch reporting."""
 
     result = validate(
         ValidationRequest(
             summary,
-            result_date=result_date,
-            publish=not dry_run,
-            recompute=recompute,
+            result_date=options.result_date,
+            publish=not options.dry_run,
+            recompute_validation=options.recompute_validation,
+            recompute_fingerprints=options.recompute_fingerprints,
         )
     )
     raw_record = result.get("record")
@@ -118,21 +119,14 @@ def run_validate(
     *,
     path: Path | None,
     root: Path | None,
-    result_date: str | None,
-    dry_run: bool,
-    recompute: bool,
+    options: ValidationOptions,
 ) -> int:
     """Validate one resolved log or every log beneath an explicit root."""
 
     if root is None:
         try:
             summary = resolve_log(path).summary
-            result = evaluate_validation(
-                summary,
-                result_date=result_date,
-                dry_run=dry_run,
-                recompute=recompute,
-            )
+            result = evaluate_validation(summary, options=options)
         except (ValidationControllerError, ValueError) as error:
             raise ActionError(
                 str(getattr(error, "code", "validation.failed")), str(error)
@@ -154,12 +148,7 @@ def run_validate(
     for summary in summaries:
         try:
             title = _summary_title(summary)
-            outcome = _evaluate_validation(
-                summary,
-                result_date=result_date,
-                dry_run=dry_run,
-                recompute=recompute,
-            )
+            outcome = _evaluate_validation(summary, options)
             results.append(outcome.result)
             if outcome.record is not None and str(outcome.result.get("status")) in {
                 "complete_clear",

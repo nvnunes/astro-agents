@@ -6,7 +6,7 @@ It is read-only for research-owned material but normally writes generated
 validation state; use `--dry-run` to publish no result or cache changes beyond
 the generated coordination lock. The
 same agent may invoke it, but while validating it must not edit or repair
-research-owned material. A research-owned finding requires a later, separately
+research-owned material. A research-log finding requires a later, separately
 authorized Repair operation. `unsupported_metadata` is instead a
 validation-state blocker: report its paths and stop. Before rerunning, ask the
 user to authorize a separate action that archives the reported generated paths
@@ -124,7 +124,7 @@ Report according to the returned status:
   operational error from standard error.
 
 Do not invent item-specific repair guidance. A separately authorized Repair
-operation resolves a reported research-owned condition from its exact target
+operation resolves a reported condition from its exact target
 and progressively loads only the applicable contract.
 
 Mechanical validation does not continue into semantic review or reproduction.

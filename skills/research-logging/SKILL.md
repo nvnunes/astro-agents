@@ -32,7 +32,7 @@ Choose the core operation:
 - Independent mechanical validation: read
   `references/operation-validate.md`. Validate is code-only and never becomes
   semantic review or reproduction. Those remain separate workflows.
-- Explicit correction of a named research-owned finding, malformed or legacy
+- Explicit correction of a named research-log finding, malformed or legacy
   state, transaction residue, or other identified log defect: read
   `references/operation-repair.md`. A failed authoring command or reported
   finding does not start Repair without a separate correction request.

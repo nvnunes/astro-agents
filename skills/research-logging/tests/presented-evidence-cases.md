@@ -224,12 +224,12 @@ corrected states are plausible, the agent asks which target and intended state
 the researcher authorizes. It does not infer Repair scope from proximity or
 conversation history.
 
-Given a parseable record with an intended correction expressible by an owning
-`log` action, Repair uses that action rather than editing the registry. Given a
-malformed research-owned registry that the action cannot parse, Repair reads
-only the applicable mechanical contract, directly corrects the named defect,
-and leaves unrelated records unchanged. A Markdown-only defect is corrected in
-the affected document without opening registry schemas that are not involved.
+Given an intended correction expressible by an owning `log` action, Repair uses
+that action rather than editing the record. When no owning action can safely
+express an explicitly authorized correction, Repair reads only the applicable
+mechanical contract, preserves the original state or backup, and edits only the
+affected non-validation Markdown or JSON. It leaves unrelated records
+unchanged and does not open registry schemas that are not involved.
 
 Given an explicitly identified retained generated target that must enter the
 input registry before reproduction, Repair uses `log data add-generated
@@ -240,9 +240,10 @@ continues to report unconfirmed Provenance until reproduction succeeds.
 
 Given recognized residue from an interrupted research-owned transaction,
 Repair follows its exact diagnostic and owning implementation contract. It
-does not treat unknown files as residue. Repair never edits generated
-validation state or `pyrun-outputs.json`; the final Validate invocation alone
-may replace generated reports.
+does not treat unknown files as residue or edit generated validation state.
+Reconstructed execution-support records remain `confirmed: false`; only
+successful owning execution may confirm them. The final Validate invocation
+alone may replace generated reports.
 
 ## Replace Boundary
 

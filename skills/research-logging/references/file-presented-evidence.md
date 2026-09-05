@@ -139,8 +139,8 @@ or artifact in the summary.
 ## Boundaries
 
 Retention records intent for disconnected material only; follow
-`references/file-retention.md` when needed. During Review, report apparent
+`references/file-retention.md` when needed. Mechanical validation reports
 evidence that lacks a supported presentation, marker, source, or successful
-authoring transaction. Mechanical validation checks exact association,
-selection, transformation, presentation, provenance, and orphan state; it
-never edits research-owned material.
+authoring transaction and checks exact association, selection, transformation,
+presentation, provenance, and orphan state. It never edits research-owned
+material.

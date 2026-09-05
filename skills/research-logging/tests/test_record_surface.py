@@ -6,9 +6,11 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
 REFERENCES = SKILL / "references"
+REVIEW_LENSES = REFERENCES / "review-lenses"
 PROJECT = SKILL.parents[1]
 CASES = SKILL / "tests" / "presented-evidence-cases.md"
-REFERENCE_PATTERN = re.compile(r"references/([A-Za-z0-9_.-]+\.md)")
+SEMANTIC_REVIEW_CASES = SKILL / "tests" / "semantic-review-cases.md"
+REFERENCE_PATTERN = re.compile(r"references/([A-Za-z0-9_./-]+\.md)")
 
 
 def reference(name: str) -> str:
@@ -78,6 +80,53 @@ class RecordSurfaceTests(unittest.TestCase):
                 continue
             text = route.read_text(encoding="utf-8")
             self.assertNotIn("references/operation-record", text, route.name)
+
+    def test_review_routes_through_catalog_to_focused_lens_prompts(self) -> None:
+        review = reference("operation-review.md")
+        catalog = (REVIEW_LENSES / "catalog.md").read_text(encoding="utf-8")
+
+        self.assertIn("Semantic Review is costly", review)
+        self.assertIn("references/review-lenses/catalog.md", review)
+        self.assertIn("four-option group-first menu", review)
+        self.assertIn("complete numbered lens catalog verbatim", review)
+        self.assertIn("After reporting, stop Review", review)
+
+        mapped = set(
+            re.findall(r"`(references/review-lenses/[a-z-]+\.md)`", catalog)
+        )
+        expected = {
+            f"references/review-lenses/{path.name}"
+            for path in REVIEW_LENSES.glob("*.md")
+            if path.name != "catalog.md"
+        }
+        self.assertEqual(len(expected), 19)
+        self.assertEqual(mapped, expected)
+        for raw in mapped:
+            self.assertNotIn(raw, review)
+
+        writing = (REVIEW_LENSES / "research-log-writing.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_writing = " ".join(writing.split())
+        self.assertIn("$science-writing", normalized_writing)
+        self.assertIn("do not silently add", normalized_writing)
+
+    def test_semantic_review_cases_cover_routing_and_authority(self) -> None:
+        cases = SEMANTIC_REVIEW_CASES.read_text(encoding="utf-8")
+        normalized_cases = " ".join(cases.split())
+
+        for expected in (
+            "does not start semantic Review",
+            "four-option group-first menu",
+            "nineteen-lens catalog",
+            "one material-first traversal",
+            "all nineteen lenses",
+            "does not execute a research command",
+            "the agent stops for researcher direction",
+            "assigns no aggregate group verdict",
+            "`$science-writing`",
+        ):
+            self.assertIn(expected, normalized_cases)
 
     def test_creation_routes_do_not_load_naming_or_summary_contracts(self) -> None:
         for route in ("operation-record-start.md", "operation-record-new.md"):
@@ -152,15 +201,18 @@ class RecordSurfaceTests(unittest.TestCase):
         pending = list(REFERENCE_PATTERN.findall((SKILL / "SKILL.md").read_text()))
         reached: set[str] = set()
         while pending:
-            name = pending.pop()
-            if name in reached:
+            relative = pending.pop()
+            if relative in reached:
                 continue
-            path = REFERENCES / name
-            self.assertTrue(path.is_file(), name)
-            reached.add(name)
+            path = REFERENCES / relative
+            self.assertTrue(path.is_file(), relative)
+            reached.add(relative)
             pending.extend(REFERENCE_PATTERN.findall(path.read_text(encoding="utf-8")))
 
-        all_references = {path.name for path in REFERENCES.glob("*.md")}
+        all_references = {
+            path.relative_to(REFERENCES).as_posix()
+            for path in REFERENCES.rglob("*.md")
+        }
         self.assertEqual(reached, all_references)
 
     def test_advanced_evidence_cases_route_to_one_focused_definition(self) -> None:

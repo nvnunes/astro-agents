@@ -1,8 +1,8 @@
 # Presented Evidence Cases
 
 Use these cases for focused review of research-logging Record, Replace, Update
-Summary, Repair, Reorganize, Review, and Validate behavior. They are not
-research evidence.
+Summary, Repair, Reorganize, and Validate behavior. Semantic Review cases live
+in `semantic-review-cases.md`. These cases are not research evidence.
 
 ## Integrated Record Workflow
 
@@ -291,10 +291,10 @@ links receive no evidence records or validation targets. A prose section contain
 no block labels and is also skipped.
 
 A section with `Findings:` plus `Steps:` or `Results:`, only one of `Steps:`
-and `Results:`, or another unsupported label combination is invalid. Review
-reports the structural problem. Validation skips the content, reports the entry
-and heading, and retains a failed structural target until a separate Repair
-operation corrects it.
+and `Results:`, or another unsupported label combination is invalid. Validation
+skips the content, reports the entry and heading, and retains a failed
+structural target until a separate Repair operation corrects it. A separately
+requested Research-Log Conformance review may diagnose the semantic misuse.
 
 ## Recorded Command Output
 
@@ -302,13 +302,12 @@ Given a Python command under `Steps:` whose retained output supports a `text`
 excerpt under `Results:`, Record captures that output through `pyrun`, puts one
 stable `eid` marker immediately before the fence, and adds one `output` record
 to entry-level `evidence.json` for the retained command log. Raw shell
-redirection or `tee` does not establish the required output support. Review
-checks the marker and record shape. Validation verifies the excerpt-to-log
-association.
+redirection or `tee` does not establish the required output support. Validation
+checks the marker and record shape and verifies the excerpt-to-log association.
 
 Given only a `text` excerpt under `Results:` with a statement that an agent
-copied terminal output, review reports that the recorded command did not retain
-the source output.
+copied terminal output, validation reports that the recorded command did not
+retain the source output.
 
 Given a command option such as `--output-summary-csv data/results.csv` or
 `--catalog-input data/catalog.csv`, the leading or trailing role token makes
@@ -338,7 +337,7 @@ missing relationship.
 
 Given "MSE was `0.184` for `seed=42`", the result expression is presented
 evidence only when one adjacent `eid` marker names its entry record; the visibly
-named parameter is not. Given "MSE was 0.184", review reports an apparent
+named parameter is not. Given "MSE was 0.184", validation reports an apparent
 unmarked result. Given a derived claim such as `14.3% lower`, Record requires
 that the derived value already exist in one retained artifact and adds one
 `statistic` record naming that artifact.
@@ -350,8 +349,10 @@ The table's evidence record does not exempt or absorb the prose statistic.
 ## Tables And Artifacts
 
 A Markdown table, image embed, or artifact link under `Results:` is presented
-evidence. The same form outside `Results:` is not a validation target; review
-reports it only when the content appears intended as evidence.
+evidence. The same form outside `Results:` is not a validation target. A
+separately requested Research-Log Conformance review may report semantic misuse
+of the section role without treating the form as mechanically presented
+evidence.
 
 A presented table may select columns, reorder rows, round values, and reformat
 Markdown from one or more retained sources through a supported table recipe.
@@ -369,9 +370,10 @@ an evidence record or input declaration cannot repair an unresolved target.
 A summary may contain a backticked numerical statistic already supported by
 exactly one entry record or exact numerical table cell. Update Summary places an
 adjacent hidden `ref` naming the entry and evidence ID, plus one-based row and
-column coordinates for a table cell. There is no summary evidence file. Review
-reports a summary table, image, generated-output fence, artifact link, newly
-calculated statistic, statistic without entry support, or malformed reference.
+column coordinates for a table cell. There is no summary evidence file.
+Validation reports a summary table, image, generated-output fence, artifact
+link, newly calculated statistic, statistic without entry support, or malformed
+reference.
 
 ## Source Locators
 
@@ -385,11 +387,11 @@ mapping keys, indexes, slices, or dataset components. Structural evidence uses
 only the supported `property` operation with its declared expectations.
 
 Given a retained log excerpt, the locator uses the supported exact text
-selection and occurrence. Every evidence source has a bounded locator. Review
-reports free-form selector prose, ambiguous or over-broad selection, and
-missing identity or cardinality constraints where the relationship can drift.
-Validation never deserializes pickle evidence and instead requires a retained
-safe producer summary.
+selection and occurrence. Every evidence source has a bounded locator.
+Validation reports free-form selector prose, ambiguous or over-broad selection,
+and missing identity or cardinality constraints where the relationship can
+drift. Validation never deserializes pickle evidence and instead requires a
+retained safe producer summary.
 
 ## Evidence Record Maintenance
 
@@ -406,12 +408,12 @@ transfer then updates the closed document association. It does not change the
 statistic, transformation, summary wording, or set of summary references
 without separate authority.
 
-Review reports missing, duplicate, extra, malformed, or structurally stale
+Validation reports missing, duplicate, extra, malformed, or structurally stale
 records, markers, and references. It checks ID uniqueness, kind values, source
-cardinality, and syntax but does not decide whether the evidence scientifically
-supports the prose. Validation resolves the source, locator, transformation,
-presentation, and provenance. Neither Review nor Validate edits an evidence
-record; an explicit correction of an identified defect routes to Repair.
+cardinality, and syntax, then resolves the source, locator, transformation,
+presentation, and provenance without deciding whether the evidence
+scientifically supports the prose. Validate does not edit an evidence record;
+an explicit correction of an identified defect routes to Repair.
 Removing superseded experimental work still requires Replace, and revising
 current synthesis still requires Update Summary. An ambiguous association is
 reported rather than guessed.
@@ -517,7 +519,7 @@ Mechanical validation never asks an agent to classify the orphan semantically.
 
 A `data.json` item consumed through `<input_data>` by a recorded command is
 valid. A generated file receives an item only when a later recorded command
-consumes it as input. Review reports an unused item, missing declaration,
+consumes it as input. Validation reports an unused item, missing declaration,
 unresolved token, fingerprint drift, conflicting boundary, or raw input path
 that should use `<name>`.
 

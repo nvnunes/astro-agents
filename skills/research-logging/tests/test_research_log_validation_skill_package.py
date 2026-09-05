@@ -19,7 +19,7 @@ class ResearchLogSkillPackageTests(unittest.TestCase):
     def test_runtime_guidance_has_only_declared_repository_dependency(self) -> None:
         paths = [
             SKILL_ROOT / "SKILL.md",
-            *sorted((SKILL_ROOT / "references").glob("*.md")),
+            *sorted((SKILL_ROOT / "references").rglob("*.md")),
         ]
 
         for path in paths:

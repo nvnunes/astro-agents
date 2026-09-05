@@ -1,111 +1,137 @@
 # Review Operation Instructions
 
-Use this file when the user asks to review a research log's structure,
-consistency, synthesis, or writing.
+Use this operation only when the researcher explicitly requests Review or
+clearly directs a semantic judgment represented by a named lens or review
+group. Semantic Review is costly. Never add it to Record, Replace, Update
+Summary, Repair, Reorganize, Validate, reproduction, or ordinary completion
+checks on your own initiative.
 
-`Review` is report-first and does not own log edits. Complete findings before
-any separately authorized correction. Route an explicit correction of a named
-defect through Repair, removal of superseded experimental work through Replace,
-summary synthesis through Update Summary, and a persistent review record
-through Record.
+Review is report-first and read-only with respect to the maintained research
+account. Report findings and stop. A later researcher instruction to address
+findings authorizes a new owning research operation; the same agent may switch
+roles and perform that work.
 
-## Scope
+## Select The Review
 
-Infer the focus from the request:
+Read `references/review-lenses/catalog.md`. Route the request by meaning rather
+than through a keyword table.
 
-- named passages or entries: review only those targets
-- writing or style: review prose and information organization
-- structure or consistency: review integrity and lifecycle conventions
-- an unqualified log review: combine writing and integrity checks
+- Apply explicitly named lenses or groups directly.
+- When natural wording maps clearly to one or more catalog descriptions, name
+  the selected lenses or group briefly and proceed without confirmation.
+- Select every concern clearly requested, but do not add adjacent lenses merely
+  because they could be useful.
+- Route “review the analysis,” “review the evidence,” and “review the record”
+  to Analysis Review, Evidence Review, and Record Review, respectively.
+- Route an explicit complete semantic review or request to review everything to
+  all three groups.
+- For an unqualified request such as “review this research log,” present the
+  catalog's four-option group-first menu and ask which option or options to use.
+- When a focused request remains ambiguous outside the named groups, present
+  the complete numbered lens catalog verbatim and ask which lenses to use.
 
-Load only the references needed for that focus.
+Treat `Validate`, `Review`, and `Reproduction` as strong operation signals, but
+interpret the complete request. Researchers need not say “mechanical” to mean
+Validate. Ask which operation they want when the intent remains unclear.
 
-## Review Checks
+After selection, read only the chosen files under
+`references/review-lenses/`. A named group expands to its constituent lens
+files. For Research-Log Writing, also apply `$science-writing`; keep its use
+bounded by the selected lens prompt.
 
-For writing, check `references/research-log-writing.md`,
-`references/file-entry-labels.md`, `references/file-summary.md`, and
-`references/file-summary-ai-use.md` as applicable. Look
-for evidence loss, status inflation, unsupported interpretation, stale
-synthesis, weak comparison structure, misplaced labels, invented validation,
-missing or empty summary-level AI use disclosures, disclosure wording changed
-without researcher direction, obsolete entry-level `AI Use:` labels,
-paragraph-heavy summaries where bullets would be clearer, avoidable
-meta-introductions, bullets that combine separable claims, unnecessary artifact
-inventories, indirect or redundant evidence presentation,
-artifact-management narration, resolved TODOs, obsolete provisional markers,
-non-retained material, and work-log narration unrelated to research evidence.
+## Resolve Target And Scope
 
-Classify every `##` entry section as experimental, synthesis, or prose under
-`file-entry-labels.md`. Report missing required labels, incompatible label
-mixtures, unsupported labels, experiments presented as synthesis or prose, and
-broader cross-source synthesis embedded in an experimental section rather than
-grounded in that section's `Results:`. Review owns these findings. A validation
-skip confirms only that the section was structurally ambiguous; it does not
-replace review or decide the intended repair.
+Resolve the review target separately from the lens selection. The target may be
+a passage, claim, evidence presentation, figure, table, script, artifact,
+entry, summary, complete log, or an explicitly named collection.
 
-For evidence presentation, apply
-`references/file-presented-evidence.md`, including its
-review boundary.
+- Apply findings only to the requested target.
+- Inspect supporting material only when a selected lens requires it.
+- Do not turn inspected context into a wider review.
+- Use the narrowest reasonable target when context resolves it. Ask when the
+  target has materially different plausible interpretations.
+- Report an incidental concern outside the target as an unreviewed,
+  out-of-scope note rather than expanding Review.
 
-Also check semantically that each substantive summary point is supported by an
-entry. Keep this review bounded to presentation and summary-to-entry support.
-Do not decide whether the method, evidence, interpretation, or conclusion is
-scientifically correct. Do not adjudicate presented-item equivalence or a
-complete provenance chain. Check only whether required commands, input
-references, artifacts, and evidence-association records are structurally
-present and correctly formatted; validation determines whether they establish
-the presented evidence and its provenance.
+## Conduct The Review
 
-For integrity, check the core shape in this skill's `SKILL.md` and the
-applicable `references/file-entry-naming.md`, `references/file-entry.md`,
-`references/file-summary.md`, `references/file-references.md`,
-`references/file-script.md`, `references/file-entry-commands.md`, and
-`references/file-data-index.md`. When retention exists, also read
-`references/file-retention.md`. Look for
-broken or stale links, unresolved citation keys, invalid entry paths or IDs,
-summary-entry inconsistency, unresolved `pyrun` or `data.json` references, and
-missing required provenance declarations.
+Build only the context required by the target and selected lenses. Reuse
+factual discovery across lenses without treating one lens's judgment as proof
+of another's.
 
-Do not require routine production checks to be narrated or run commands.
-Report only missing research-relevant methods, visible quality problems, and
-reconstruction limits supported by the record.
+- Organize work around the material. While an entry, claim, evidence item,
+  source, artifact, or script is in context, apply every selected lens for
+  which it is relevant.
+- Use another traversal only when a materially different unit, order, or body
+  of material requires one, such as external-source inspection, rendered-
+  presentation inspection, or code and dependency tracing.
+- Keep shared context ephemeral. Do not create a review cache, context packet,
+  ledger, status file, or log record.
+- Use read-only or disposable diagnostics only to inspect existing material.
+  Do not execute recorded research commands, vary research inputs or methods,
+  regenerate artifacts, or create new evidence.
+- Do not run Validate or reproduction as part of Review. Existing generated
+  reports may be read as context without inheriting their status.
+- Use external lookup only when the selected lens requires external material.
 
-Also look for:
+Require a fresh task only when the researcher requests or the report claims an
+independent review. Give that task the request, resolved target, selected lens
+prompts, current material, and neutral locators or access notes. Exclude prior
+semantic findings, expected conclusions, proposed corrections, and authoring
+discussion unless the requested target is comparison or adjudication of those
+materials.
 
-- entry-only code at log or project scope, or multi-entry code copied into entries
-- recorded commands broken by changes to log-level or project-level shared code
-- active-work Python commands that do not invoke `./pyrun` without a recorded,
-  researcher-approved symlink exception
-- missing or non-symlink entry-root `pyrun` for active-work Python commands
-  without that exception
-- copied or vendored `pyrun` files
-- project API choices that affect what the evidence establishes but are not recorded
-- interpreter fallback used despite a declared project environment without researcher approval
-- duplicate `data.json` names or targets, items unused by recorded `<name>`
-  tokens, missing input items, raw-path token bypasses, fingerprint drift,
-  conflicting origin boundaries, unresolved tokens, or raw absolute and
-  outside-entry input paths that should use `<name>`
-- active-work figures without a generating command in the document that presents them
-- active-work plot scripts that accept missing cases, non-finite values, or incompatible units
-- saved figures with evidence-affecting defects
-- serialized-input code that does not check its expected structure
-- runtime caches not covered by project ignore rules, including `__pycache__/`, `.pytest_cache/`, and `.ruff_cache/`
+## Preserve Authority Boundaries
+
+Review may conclude that the target has a problem under a selected lens. It may
+not decide which conclusion, interpretation, method, evidence selection,
+decision, or research direction the maintained account should accept.
 
 Treat direct existing decisions as researcher decisions unless explicitly
-marked proposed, provisional, or agent-generated. Pending validation alone does
-not make a researcher decision provisional. A structural review may recommend
-splitting when distinct topics impair retrieval or maintenance; length alone is
-not a reason. Report the recommendation without reorganizing the log unless the
-researcher separately requests or approves the change.
+marked proposed, provisional, or agent-generated. Do not invent evidence,
+results, uncertainty, references, decisions, or conclusions to fill a gap.
 
-## Output
+Review writing inside a research log through Research-Log Writing and its
+science-writing pairing. Use science-writing directly for scientific prose
+outside a research log. Use code-quality review for general software quality;
+use Implementation Fidelity only for correspondence between research code and
+the recorded method. Use reference work to find, acquire, register, or update
+references; Citation Support only judges an attribution.
 
-Return numbered findings ordered by importance. Distinguish direct violations
-from optional improvements. For each finding, cite the affected location,
-explain the applicable rule and why it matters, and suggest a corrective
-direction. If no material findings exist, say so and name any residual risk or
-unverified area.
+If a request explicitly spans separate review systems, apply each while keeping
+their criteria and findings distinct. Ask when a request such as “review this
+script” could reasonably mean code quality, Implementation Fidelity, Result
+Derivation, or Numerical Validity.
 
-During an authorized follow-on operation, preserve source wording unless the
-fix requires a specific rewrite. Do not omit, condense, paraphrase, or
-materially rewrite source content without explicit direction.
+## Report Findings
+
+Return one self-contained report that names the target, applied lenses and
+groups, whether requested independence was satisfied, and any non-obvious scope
+interpretation. A group is only a selection convenience; it receives no shared
+status or verdict.
+
+Use only these finding classes:
+
+- **Issue:** a supported problem requiring correction, a researcher decision,
+  or additional research.
+- **Improvement:** an optional change that would strengthen clarity,
+  usefulness, or robustness without correcting a demonstrated problem.
+- **Unverified:** a judgment that could not be completed because necessary
+  material, access, expertise, or scope was unavailable.
+
+Number findings by material consequence. Give each a compact heading containing
+the class, owning lens or lenses, title, and durable affected location. Follow
+with one readable description that identifies the support or absence, explains
+the reasoning and consequence, and ends with a short recommended action. Do not
+use separate `Basis`, `Consequence`, or similar field labels, and do not assign
+a universal severity.
+
+If no material issues are found, say that no material issues were found within
+the named target and applied lenses. List unverified areas and out-of-scope
+concerns separately. Do not report semantic `PASS`, approval, certification, or
+durable review status.
+
+After reporting, stop Review. Do not edit the log or begin a recommended action
+until the researcher instructs you to address findings. A later instruction
+authorizes only the findings and corrected state it identifies; ask when that
+scope remains ambiguous.

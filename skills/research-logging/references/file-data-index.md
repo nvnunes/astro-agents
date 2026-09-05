@@ -90,7 +90,7 @@ If an action fails because existing research-owned state is malformed or
 legacy, report the exact failure and stop. A failed Record command does not
 authorize Repair or direct registry editing.
 
-During Review, report missing declarations, raw-path bypasses, unused inputs,
-duplicate targets, cross-entry disagreement, changed bytes, remote-only
+Mechanical validation reports missing declarations, raw-path bypasses, unused
+inputs, duplicate targets, cross-entry disagreement, changed bytes, remote-only
 material, and origin boundaries that hide confirmed same-log producers. Do not
 refresh bytes or choose an origin boundary without researcher authority.

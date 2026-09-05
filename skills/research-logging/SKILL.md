@@ -27,8 +27,10 @@ Choose the core operation:
   material: read `references/operation-replace.md`.
 - Researcher-requested or approved updates to current understanding or
   follow-ups in the log summary: read `references/operation-update-summary.md`.
-- Research-log structure, consistency, synthesis, or writing review: read
-  `references/operation-review.md`.
+- Researcher-directed semantic review of a research log's analysis, evidence,
+  record, or a named review lens or group: read
+  `references/operation-review.md`. Semantic Review is costly; never initiate
+  it as part of another operation or as an ordinary completion check.
 - Independent mechanical validation: read
   `references/operation-validate.md`. Validate is code-only and never becomes
   semantic review or reproduction. Those remain separate workflows.
@@ -57,6 +59,12 @@ are requested, complete Record before Update Summary. If it is ambiguous
 between review and editing, report findings first and ask before applying fixes
 unless the requested correction is explicit; route an explicit correction of
 an identified defect through Repair.
+
+Treat `Validate`, `Review`, and `Reproduction` as strong indicators of the
+corresponding operation, but interpret the complete request and ask when the
+intended operation remains unclear. The researcher does not need to describe
+Validate as “mechanical.” Do not infer semantic Review from a request to check
+or verify work performed under another operation.
 
 Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded

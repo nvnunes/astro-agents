@@ -26,8 +26,8 @@ A research log uses seven core operations:
    longer intend to retain the superseded work in the active log.
 3. **Update Summary** when you want the current research state and follow-ups
    brought up to date.
-4. **Review** structure, presentation, associations, synthesis, and visible
-   evidentiary support.
+4. **Review** the analysis, evidence, or research record under a
+   researcher-selected semantic review group or focused lens.
 5. **Validate** mechanically that presented computational results match their
    declared sources, have visible provenance, and leave no unexplained retained
    material.
@@ -263,14 +263,18 @@ fixed validation-report link, and every generated validation file exactly.
 
 ### Review
 
-A review returns findings about the requested text, structure, evidence links,
-summary support, or whole log before making changes. Request fixes explicitly,
-either with the review or after reading its findings. Review checks whether the
-record is complete and internally consistent. It may report an apparent
-quality problem or a missing research-relevant method, but it does not require
-routine successful checks to be narrated, run research commands, or perform
-those checks. It does not decide whether the science is correct. A separately
-authorized correction of an identified defect is a Repair operation.
+Semantic review is an optional, researcher-directed operation. Because it can
+require substantial reading and judgment, agents do not add it to another
+operation or use it as an automatic completion check. You may request an
+Analysis Review, Evidence Review, Record Review, complete semantic review, or a
+more focused review lens. An unqualified request to review a log produces a
+short choice of review groups rather than silently starting a broad audit.
+
+Review returns findings before making changes. It may judge whether the
+requested method, evidence, claim, presentation, or record is sound, but it does
+not decide what the maintained account should accept. Request work on the
+findings explicitly after reading them; the agent can then switch to the
+appropriate research operation.
 
 ### Validate
 
@@ -345,12 +349,13 @@ an internal experiment or its supporting files are preserved, document that
 experiment and its evidence in an experimental section; a separate synthesis
 may refer to it.
 
-Any other label combination is structurally invalid. Research-log review owns
-diagnosis; a separately authorized Repair owns correction. Validation skips the
+Any other label combination is structurally invalid. Validation skips the
 entire invalid section, identifies the entry and heading, and records one
 structural failure so the skipped content cannot coexist with an all-clear
 validation result. It does not infer the intended section type or partially
-validate the section.
+validate the section. A separately requested Research-Log Conformance review
+may help explain the misuse; correction remains a separately requested
+operation.
 
 ### Labels
 
@@ -638,8 +643,8 @@ materialize locally accessible files and directories so validation can confirm
 their current bytes. For a pinned Git repository, keep an accessible repository
 containing the declared commit; its path is only a locator, and the commit
 identifies the tracked source snapshot. Provenance stops at that declared
-artifact or commit; scientific review, not mechanical validation, determines
-whether the source is trustworthy.
+artifact or commit; a researcher-directed Source Authority review, not
+validation, determines whether the source is trustworthy.
 
 Use optional `<log>/refs.bib` for papers, documentation, and other cited
 sources. Verify new bibliographic details against an authoritative source and
@@ -844,43 +849,42 @@ states `not_yet_run`. The report has no combined conclusion.
 
 ## Reviewing a research log
 
-Research-log review examines the record without executing its research
-workflows. It normally returns numbered findings ordered by importance, with
-the affected location, rule, consequence, and corrective action. Request fixes
-explicitly when you want them applied.
+Semantic review examines a research log without executing its workflows or
+changing the maintained account. It runs only when you request it; agents do
+not add it as a routine check of their own work.
 
-Check the requested area against these questions:
+Three broad review groups are available:
 
-- **Structure:** Are summary links, entry IDs, dates, folder names, citations,
-  and split-entry links complete and current?
-- **Section types:** Is every entry section clearly experimental, synthesis, or
-  prose, with the required and permitted labels?
-- **Writing:** Are evidence, observations, uncertainty, decisions,
-  proposals, and validation status kept distinct? Are comparisons organized by
-  question rather than run chronology? Does the entry avoid agent activity,
-  routine checks, housekeeping, and task progress that do not bear on the
-  research evidence?
-- **Evidence:** Can each presented statistic, table, command-output excerpt,
-  file, or image be traced to retained supporting material and its recorded
-  workflow? Report missing, ambiguous, or stale connections, but do not decide
-  whether the scientific claim is correct.
-- **Reconstructing the work:** For active investigations, do recorded commands
-  use the expected environment, `./pyrun`, named inputs, explicit settings, and
-  saved outputs? Are scripts in the right location, figure-generation code and
-  saved figures free of apparent quality problems, and later-used serialized
-  files checked against their expected structure? For work completed
-  elsewhere, does the record preserve the actual workflow and identify missing
-  material rather than replacing it with a cleaner reconstruction?
-- **Summary:** Is every substantive point supported by an entry? Does the
-  summary describe current understanding, preserve the stable validation-report
-  link, include explicit follow-ups, and end with the AI-use disclosure?
-- **References:** Do citation keys resolve to authoritative metadata in
-  `refs.bib`, and are references cited where they are used?
+1. **Analysis Review** asks whether the methods, implementation, result
+   derivations, statistical reasoning, and numerical work are sound.
+2. **Evidence Review** asks whether sources, evidence, claims, decisions, and
+   evidence presentations are trustworthy and adequately supported.
+3. **Record Review** asks whether the research record is current, consistent,
+   reconstructible, conforming, and clearly written.
 
-Review checks the structure and support of the record. Validation separately
-checks whether declared sources resolve, presented results match their sources,
-and the computational history is complete. You retain authority over methods,
-interpretation, conclusions, accepted synthesis, and research direction.
+You may request one or more groups, a complete semantic review, or a focused
+lens such as Citation Support, Evidence Selection, Summary Fidelity, or
+Presentation Consistency. If you ask only to review the log, the agent presents
+the three groups and an option to choose from the complete lens catalog.
+
+A review normally returns numbered Issues, Improvements, and Unverified points
+ordered by consequence. Each finding identifies its lens and durable location,
+explains the problem in readable prose, and recommends a bounded next action.
+The report does not assign a semantic pass or approval status.
+
+Research-Log Writing review applies the scientific prose discipline of the
+science-writing skill together with the log's own writing conventions. Review
+of scientific prose outside a research log belongs directly to science writing;
+general software-quality review remains separate from review of whether code
+faithfully implements a recorded research method.
+
+Review, validation, and reproduction remain separate. Validation uses code to
+check declared relationships and exact presentations; reproduction reruns
+recorded workflows; semantic review reads and judges the requested meaning or
+soundness. When the intended operation is unclear, the agent asks which you
+want. After a Review report, you retain authority over methods, interpretations,
+conclusions, decisions, accepted synthesis, and research direction. Ask
+explicitly when you want findings addressed.
 
 ## Validating a research log
 

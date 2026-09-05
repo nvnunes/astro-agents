@@ -138,9 +138,12 @@ The complete research-logging tool gate must cover:
   [Resource And Safety Bounds](research-log-mechanical-validator-spec.md#resource-and-safety-bounds)
   and [Dependency Projection And
   Currentness](research-log-mechanical-validator-spec.md#dependency-projection-and-currentness);
-- focused Record, Replace, Update Summary, Repair, Reorganize, Review, and
-  Validate behavior cases in
-  [`skills/research-logging/tests/presented-evidence-cases.md`](../skills/research-logging/tests/presented-evidence-cases.md).
+- focused Record, Replace, Update Summary, Repair, Reorganize, and Validate
+  behavior cases in
+  [`skills/research-logging/tests/presented-evidence-cases.md`](../skills/research-logging/tests/presented-evidence-cases.md); and
+- researcher-directed semantic Review routing, lens, composition, authority,
+  and neighboring-workflow cases in
+  [`skills/research-logging/tests/semantic-review-cases.md`](../skills/research-logging/tests/semantic-review-cases.md).
 
 Run the complete research-logging tool gate after any validator change. Use the
 focused controller, engine, evidence, command, locator, transformation,

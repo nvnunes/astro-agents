@@ -20,10 +20,11 @@ Classify every descriptive `##` section as exactly one of these forms:
   status information. Move substantive synthesis into a synthesis section and
   generated evidence into an experimental section.
 
-Any other label combination is structurally invalid. Research-log review owns
-diagnosis and repair. Validation skips the section, reports the entry and
-heading, and records an unresolved structural failure rather than guessing its
-type or partially validating it.
+Any other label combination is structurally invalid. Validation skips the
+section, reports the entry and heading, and records an unresolved structural
+failure rather than guessing its type or partially validating it. A separately
+requested Research-Log Conformance review may diagnose the semantic misuse;
+repair requires a separately authorized research operation.
 
 A synthesis may draw on retained experiments, cited external evidence, direct
 source inspection, or selected findings from discarded investigations. When

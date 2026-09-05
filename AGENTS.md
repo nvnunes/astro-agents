@@ -18,7 +18,3 @@ This file is the root working brief for the `astro-agents` project itself.
 
 ## Validation
 - When a task changes agent surface files in this project, consult `docs/testing.md` and run the required validation before treating the work as complete.
-
-## Temporary Files
-- Use the project-local `tmp/` directory for temporary files worth backing up or retaining after the current task.
-- Use `/private/tmp` for temporary files needed only during the current task and safe to delete when it ends.

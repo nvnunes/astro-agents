@@ -570,6 +570,67 @@ with operation_lock(Path(sys.argv[1]), sys.argv[2]):
 
 
 class LogEvidenceTests(unittest.TestCase):
+    def test_inline_diff_artifact_round_trip_and_content_association(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = fixture(Path(directory))
+            artifact = entry / "data" / "expanded.diff"
+            artifact.write_bytes(b"-old\r\n+new\r\n\r\n")
+            mismatch = entry / "data" / "mismatch.diff"
+            mismatch.write_text("-old\n+different\n", encoding="utf-8")
+            invalid = entry / "data" / "invalid.diff"
+            invalid.write_bytes(b"\xff\xfe")
+            add_input(entry, "expanded-diff", artifact)
+            add_input(entry, "mismatch-diff", mismatch)
+            add_input(entry, "invalid-diff", invalid)
+            document = entry / "e001.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Expanded comparison\n\n"
+                "`Background:`\n\nCompare the retained outputs.\n\n"
+                "`Steps:`\n\nCapture the complete diff.\n\n`Results:`\n\n"
+                "<!-- eid:expanded-diff -->\n"
+                "```diff\n-old\n+new\n\n```\n",
+                encoding="utf-8",
+            )
+            common = ("--path", str(logical), "--entry", "e001")
+            arguments = (
+                "evidence",
+                "add",
+                *common,
+                "--id",
+                "expanded-diff",
+                "--source",
+                "expanded-diff",
+            )
+
+            added = run(entry, *arguments)
+
+            self.assertEqual(added.returncode, 0, added.stderr)
+            record = json.loads((entry / "evidence.json").read_text())["records"][0]
+            self.assertEqual(record["kind"], "artifact")
+            self.assertEqual(
+                record["sources"],
+                [{"locator": None, "source": "<expanded-diff>"}],
+            )
+
+            for source, code in (
+                ("mismatch-diff", "association.artifact.content_mismatch"),
+                ("invalid-diff", "association.artifact.inline_source_invalid"),
+            ):
+                with self.subTest(source=source):
+                    failed = run(
+                        entry,
+                        "evidence",
+                        "update",
+                        *common,
+                        "--id",
+                        "expanded-diff",
+                        "--source",
+                        source,
+                    )
+                    self.assertEqual(failed.returncode, 2)
+                    self.assertIn(code, failed.stderr)
+
     def test_artifact_accepts_one_exact_registered_directory_member(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = fixture(Path(directory))

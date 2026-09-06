@@ -1,4 +1,4 @@
-"""Narrow provenance refresh for matched reproduction confirmations."""
+"""Targeted validation refreshes owned by reproduction publication."""
 
 from __future__ import annotations
 
@@ -36,6 +36,11 @@ from .output_support import (
     require_current_output_support,
     resolve_code_support,
     resolve_output_support,
+)
+from .presentation import (
+    artifact_evidence_dependencies,
+    find_entry_presentation,
+    require_artifact_source_association,
 )
 from .provenance import (
     ProducerIndex,
@@ -130,7 +135,7 @@ def refresh_promoted_provenance(
     *,
     result_date: str,
 ) -> MechanicalGeneratedRecord:
-    """Refresh only Provenance findings reached by promoted output material."""
+    """Refresh Evidence and Provenance reached by promoted output material."""
 
     summary = summary.resolve()
     if Path(prior.summary).resolve() != summary:
@@ -139,14 +144,14 @@ def refresh_promoted_provenance(
     if not affected:
         raise TargetedRefreshError("promotion has no output material")
     state = _load_refresh_state(summary, {})
-    replacements: dict[str, MechanicalCheck] = {}
-    for check in prior.checks:
-        if _direct_evidence_reaches(check, affected, state):
-            replacements[check.identity] = _refresh_evidence_check(check, state)
-        if _direct_check_reaches(check, affected, state):
-            replacements[check.identity] = _refresh_direct_check(
-                check, state, refresh_artifact_dependency=True
-            )
+    replacements, refreshed_artifacts = _promoted_evidence_replacements(
+        prior, affected, state
+    )
+    replacements.update(
+        _promoted_provenance_replacements(
+            prior, affected, state, replacements, refreshed_artifacts
+        )
+    )
     direct_ids = set(replacements)
     for check in prior.checks:
         evidence_dependency = _summary_evidence_dependency(check)
@@ -168,6 +173,53 @@ def refresh_promoted_provenance(
     return MechanicalGeneratedRecord.build(
         prior.summary, prior.rules_version, result_date, checks
     )
+
+
+def _promoted_evidence_replacements(
+    prior: MechanicalGeneratedRecord, affected: set[str], state: _RefreshState
+) -> tuple[dict[str, MechanicalCheck], set[str]]:
+    replacements: dict[str, MechanicalCheck] = {}
+    artifacts: set[str] = set()
+    for check in prior.checks:
+        if not _direct_evidence_reaches(check, affected, state):
+            continue
+        replacement, artifact = _refresh_evidence_check(check, state)
+        replacements[check.identity] = replacement
+        if artifact:
+            artifacts.add(check.identity)
+    return replacements, artifacts
+
+
+def _promoted_provenance_replacements(
+    prior: MechanicalGeneratedRecord,
+    affected: set[str],
+    state: _RefreshState,
+    evidence_replacements: Mapping[str, MechanicalCheck],
+    refreshed_artifacts: set[str],
+) -> dict[str, MechanicalCheck]:
+    replacements: dict[str, MechanicalCheck] = {}
+    for check in prior.checks:
+        if not _direct_check_reaches(check, affected, state):
+            continue
+        evidence_identity = check.identity.replace("provenance:", "evidence:", 1)
+        evidence = evidence_replacements.get(evidence_identity)
+        if (
+            evidence_identity in refreshed_artifacts
+            and evidence is not None
+            and evidence.status is not CheckStatus.PASS
+        ):
+            replacements[check.identity] = MechanicalCheck(
+                check.identity,
+                CheckScope.PROVENANCE,
+                CheckStatus.NOT_APPLICABLE,
+                check.identity,
+                ({"dependency": evidence_identity},),
+            )
+            continue
+        replacements[check.identity] = _refresh_direct_check(
+            check, state, refresh_artifact_dependency=True
+        )
+    return replacements
 
 
 def _direct_evidence_reaches(
@@ -192,13 +244,14 @@ def _direct_evidence_reaches(
 
 def _refresh_evidence_check(
     check: MechanicalCheck, state: _RefreshState
-) -> MechanicalCheck:
+) -> tuple[MechanicalCheck, bool]:
     parts = check.identity.split(":", 2)
     if len(parts) != 3:
         raise TargetedRefreshError(f"invalid evidence identity: {check.identity}")
     entry = state.entries.get(parts[1])
     if entry is None:
         raise TargetedRefreshError(f"unknown evidence entry: {check.identity}")
+    artifact = False
     try:
         evidence = load_evidence_file(
             entry.root / "evidence.json",
@@ -211,25 +264,40 @@ def _refresh_evidence_check(
                 f"evidence record is unavailable: {check.identity}"
             )
         record = records[0]
-        presentation, context = _prior_presentation(check)
+        artifact = record.kind == "artifact"
         materials = [
             resolve_input_token(source.source, entry.data) for source in record.sources
         ]
         if record.kind == "artifact":
-            return MechanicalCheck(
-                check.identity,
-                CheckScope.EVIDENCE,
-                CheckStatus.PASS,
-                check.identity,
-                (
-                    {
-                        "artifact": Path(materials[0].value).resolve().as_posix(),
-                        "presentation": (
-                            f"{presentation['document']}:{presentation['id']}"
-                        ),
-                    },
-                ),
+            item = find_entry_presentation(
+                entry.root, entry.root.parent.parent, record.id
             )
+            require_artifact_source_association(
+                item,
+                source_path=Path(materials[0].value),
+                log_root=entry.root.parent.parent,
+            )
+            return (
+                MechanicalCheck(
+                    check.identity,
+                    CheckScope.EVIDENCE,
+                    CheckStatus.PASS,
+                    check.identity,
+                    artifact_evidence_dependencies(
+                        record,
+                        item,
+                        (
+                            {
+                                "declaration": materials[0].resource.content_identity,
+                                "name": f"{entry.owner}:{materials[0].resource.name}",
+                                "path": Path(materials[0].value).resolve().as_posix(),
+                            },
+                        ),
+                    ),
+                ),
+                True,
+            )
+        presentation, context = _prior_presentation(check)
         selections = []
         for source, material in zip(record.sources, materials, strict=True):
             if source.locator is None:
@@ -267,17 +335,23 @@ def _refresh_evidence_check(
             {"selections": [item.dependency_projection for item in selections]},
             {"transformation": transformed.dependency_projection},
         )
-        return MechanicalCheck(
-            check.identity,
-            CheckScope.EVIDENCE,
-            CheckStatus.PASS,
-            check.identity,
-            dependencies,
+        return (
+            MechanicalCheck(
+                check.identity,
+                CheckScope.EVIDENCE,
+                CheckStatus.PASS,
+                check.identity,
+                dependencies,
+            ),
+            False,
         )
     except TargetedRefreshError:
         raise
     except (DataContractError, MechanicalContractError) as error:
-        return _failure_from_error(check.identity, CheckScope.EVIDENCE, error)
+        return (
+            _failure_from_error(check.identity, CheckScope.EVIDENCE, error),
+            artifact,
+        )
 
 
 def _prior_presentation(

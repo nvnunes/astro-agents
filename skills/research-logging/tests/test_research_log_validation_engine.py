@@ -19,6 +19,7 @@ RESULTS = importlib.import_module("validation.mechanical_results")
 LOCATOR = importlib.import_module("validation.locator")
 CACHE = importlib.import_module("validation.validation_cache")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
+PRESENTATION = importlib.import_module("validation.presentation")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -2482,8 +2483,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
                 .replace(
                     "The success rate was",
-                    "[Retained report](data/report.txt)"
-                    "<!-- eid:retained-report -->\n\nThe success rate was",
+                    "<!-- eid:retained-report -->\n"
+                    "```diff\nretained report\n```\n\nThe success rate was",
                 ),
             )
             data_path = entry.parent / "data.json"
@@ -2685,6 +2686,64 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(
                 check.failure.code, "association.artifact.source_mismatch"
             )
+
+    def test_inline_artifact_source_obeys_the_presentation_byte_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "<!-- eid:results-diff -->\n"
+                    "```diff\nsuccess_rate\n0.676\n```\n\nThe success rate was",
+                ),
+            )
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text())
+            evidence["records"].append(
+                {
+                    "id": "results-diff",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [{"source": "<results>", "locator": None}],
+                    "transformation": None,
+                }
+            )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            with mock.patch.object(PRESENTATION, "MAX_PRESENTATION_BYTES", 4):
+                evaluation = _evaluate(summary)
+
+            check = next(
+                item
+                for item in evaluation.result.checks
+                if item.identity == "evidence:e001:results-diff"
+            )
+            self.assertEqual(check.scope, RESULTS.CheckScope.CONFORMANCE)
+            assert check.failure is not None
+            self.assertEqual(check.failure.code, "association.resource.too_large")
+
+    def test_unmarked_diff_fence_requires_an_evidence_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "```diff\n-old\n+new\n```\n\nThe success rate was",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            failures = [
+                check.failure
+                for check in evaluation.result.checks
+                if check.failure is not None
+                and check.failure.code == "association.declaration_missing"
+            ]
+            self.assertTrue(failures)
+            self.assertEqual(failures[0].observed["kind"], "artifact")
 
     def test_unavailable_and_resource_limit_completion_is_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

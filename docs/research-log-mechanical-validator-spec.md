@@ -1793,7 +1793,7 @@ Evaluation uses this required default limit profile:
 | Transformation output value parts | 10,000 |
 | Transformation table cells | 10,000 |
 | Transformation units, table headings, and authored labels | 64 KiB UTF-8 total |
-| Associated presented item | 64 KiB UTF-8 |
+| Associated presented item | 1 MiB UTF-8 |
 | JSON or text bytes read | 64 MiB |
 | One binary member or dataset materialized | 64 MiB |
 | Binary materialization in one source evaluation | 512 MiB total |
@@ -2056,8 +2056,10 @@ It has exactly one source, a null locator, and a null transformation. Null
 locators are prohibited for every other record kind. The source resolves to
 one registered file or one exact member of a registered directory; a bare
 directory is invalid. The source registry fingerprint supplies complete
-artifact identity, so the evidence record does not duplicate a path or digest
-and validation does not open the artifact through a format-specific reader.
+artifact identity, so the evidence record does not duplicate a path or digest.
+Path-based artifact presentations do not open the artifact through a
+format-specific reader. An inline `diff` artifact uses only the bounded UTF-8
+reader and exact comparison defined below.
 
 `id` uses this grammar and is at most 96 ASCII characters:
 
@@ -2111,10 +2113,14 @@ Marker placement depends on `kind`:
   comment, label, or prose line may intervene before the first table row.
 - An `output` marker occupies the immediately preceding source line before the
   opening `text` fence. No blank, comment, label, or prose line may intervene.
-- An `artifact` marker immediately follows one eligible local Markdown link or
-  image embed on the same source line with no intervening characters. It binds
-  to that immediately preceding Markdown node, including when one line contains
-  several separately marked artifacts.
+- A path-based `artifact` marker immediately follows one eligible local
+  Markdown link or image embed on the same source line with no intervening
+  characters. It binds to that immediately preceding Markdown node, including
+  when one line contains several separately marked artifacts.
+- An inline-text `artifact` marker occupies the immediately preceding source
+  line before a fence whose info string is exactly `diff`. No blank, comment,
+  label, or prose line may intervene. No other fence info string, attributes,
+  or alternate spelling produces an inline artifact.
 
 One marker binds exactly one presented item. One presented item has exactly one
 marker. A marker ID must resolve to exactly one presentation record whose
@@ -2195,8 +2201,9 @@ fidelity to the entry remain Semantic Review concerns.
 The active association contract has this structural boundary:
 
 - entry statistics are eligible only in an experimental section;
-- entry tables, output blocks, and local artifact links or image embeds are
-  eligible only beneath that experimental section's `Results:` label;
+- entry tables, output blocks, local artifact links or image embeds, and inline
+  artifact `diff` fences are eligible only beneath that experimental section's
+  `Results:` label;
 - summary statistics are eligible only in the maintained summary; and
 - synthesis and prose entry sections contain no evidence-record targets.
 
@@ -2205,8 +2212,9 @@ its declared classifier version and classification result are association
 dependencies. A marker cannot override an ineligible context.
 
 Every eligible entry statistic, table, `text` output block, local artifact
-link, or local image embed must have one valid entry marker, and every eligible
-summary statistic must have one valid summary reference. A missing entry marker fails
+link, local image embed, or `diff` fence must have one valid entry marker, and
+every eligible summary statistic must have one valid summary reference. A
+missing entry marker fails
 `association.declaration_missing`; a missing summary reference fails
 `summary.reference.missing`. Other unmarked prose is not promoted to evidence
 by validation. Semantic Review may report an apparently evidential claim that
@@ -2215,11 +2223,22 @@ uses no supported presentation form.
 External links, fragment-only links, and Markdown-document links are not
 artifact evidence presentations. Summaries cannot present artifact evidence.
 
-For an artifact record, validation normalizes the marked Markdown target
-relative to its document and independently resolves the source token through
-`data.json`. Both must identify the same canonical artifact path before
-fingerprint, content, or Provenance evaluation. A different path fails
+For a path-based artifact record, validation normalizes the marked Markdown
+target relative to its document and independently resolves the source token
+through `data.json`. Both must identify the same canonical artifact path before
+fingerprint or Provenance evaluation. A different path fails
 `association.artifact.source_mismatch` even when its bytes are identical.
+
+For an inline-text artifact record, the source token must resolve to one
+regular UTF-8 file. Validation reads no more than the associated-presentation
+bound and compares its complete contents with the complete `diff` fence
+payload. Both values normalize CRLF and CR to LF and remove exactly one
+terminal LF for Markdown's structural fence separation. No other whitespace,
+line, Unicode, diff syntax, or content normalization occurs. Different
+normalized contents fail `association.artifact.content_mismatch` as Evidence;
+invalid UTF-8 or a non-regular source fails
+`association.artifact.inline_source_invalid` as Evidence. An unstable or
+temporarily unreadable source is unavailable rather than a mismatch.
 
 ### Evidence Source And Transformation Cardinality
 
@@ -2233,7 +2252,7 @@ Cardinality is closed by presentation kind:
 
 | Kind or table mode | Source objects | Additional requirement |
 | --- | ---: | --- |
-| `artifact` | 1 | The source and marked Markdown target resolve to the same complete artifact. |
+| `artifact` | 1 | A link or image resolves to the same path as the source, or an inline `diff` payload equals the complete UTF-8 source. |
 | `statistic` | 1–8 | The transformation produces exactly one supported non-table form. |
 | `output` | 1 | The locator selects exactly one string and identity or `form:"text"` produces the complete block payload. |
 | `table` / `direct` | 1 | The selected table and recipe satisfy direct-table one-to-one rules. |
@@ -2253,6 +2272,10 @@ a locator or transformation and cannot be consumed by summary evidence.
 Association comparison consumes the canonical presentation result returned by
 the transformation subcontract. It performs no new rounding, normalization,
 unit inference, tolerance, phrase matching, or semantic inspection.
+
+Inline artifact comparison is the closed exception that applies only the
+structural line-ending and terminal-line-ending normalization stated above; it
+does not use the locator or transformation language.
 
 For a statistic:
 
@@ -2345,10 +2368,12 @@ One association outcome depends on:
 4. declared document identity and marker binding;
 5. section-classifier version, eligible-context classification, and applicable
    `Results:` boundary;
-6. canonical parsed statistic, table, or output model;
+6. canonical parsed statistic, table, output, or artifact presentation model,
+   including the artifact presentation form and inline format when applicable;
 7. ordered resolved-source identities;
 8. locator and expectation projections;
-9. transformation projection and accepted surface spellings; and
+9. transformation projection and accepted surface spellings, or the complete
+   normalized inline artifact source and payload association; and
 10. for a summary, the exact reference fields, referenced entry-record
     identity, successful canonical presentation projection, and any table-cell
     coordinate.
@@ -2392,6 +2417,9 @@ codes are:
 | `association.document_mismatch` | evidence | The evidence record and marker do not identify the same permitted document. |
 | `association.kind_mismatch` | evidence | Declared and observed presentation kinds differ. |
 | `association.artifact.source_mismatch` | evidence | A marked artifact target and its one source token resolve to different canonical paths. |
+| `association.artifact.content_mismatch` | evidence | An inline artifact payload differs from the complete normalized UTF-8 source. |
+| `association.artifact.inline_source_invalid` | evidence | An inline artifact source is not one regular UTF-8 file. |
+| `association.artifact.inline_source_unavailable` | evidence | An inline artifact source could not be read reliably, so the check is unavailable. |
 | `association.context_invalid` | conformance | The presentation is outside its permitted section or label. |
 | `association.source_cardinality` | evidence | The source count violates its kind or table mode. |
 | `association.presentation.syntax_invalid` | conformance | The marked Markdown item is outside the closed structural parser. |
@@ -2421,7 +2449,8 @@ The active evidence-record and association profile permits at most:
 - 512 bytes in a document path;
 - 32 source objects in one record;
 - 8 MiB in one `evidence.json` file;
-- 1 MiB of source Markdown for one marked table or output block; and
+- 1 MiB of source Markdown for one marked table, output block, or inline
+  artifact and 1 MiB in the inline artifact source file; and
 - the stricter locator and transformation bounds already defined by this
   specification.
 
@@ -3615,11 +3644,12 @@ never modifies, retains, copies, or removes the definition. `--dry-run`
 performs the complete source observation, evaluation, presentation comparison,
 candidate build, and mutation preflight without writing the registry.
 
-When the unique marker belongs to an artifact link or image embed, common mode
-accepts one `--source` and no selection or conversion arguments. It infers the
-closed artifact record, requires the marked target and source token to resolve
-to the same canonical path, verifies the registered fingerprint, and publishes
-through the ordinary evidence lifecycle without loading an artifact reader.
+When the unique marker belongs to an artifact link, image embed, or inline
+`diff` fence, common mode accepts one `--source` and no selection or conversion
+arguments. It infers the closed artifact record, requires the path-based target
+or inline contents to match the source token under the applicable association
+rule, verifies the registered fingerprint, and publishes through the ordinary
+evidence lifecycle without loading a format-specific artifact reader.
 
 The explicit single-log Reorganize operations are:
 
@@ -3861,6 +3891,17 @@ scope aggregates through the ordinary generated-record contract. Any command,
 material, support, or dependency inconsistency aborts the refresh. This service
 never evaluates Structure, Evidence, Hygiene, or unrelated Provenance checks,
 never writes a file itself, and is not a general validation mode.
+
+The reproduction promotion transaction may also request the bounded targeted
+refresh of Evidence checks whose resolved source is a promoted artifact. It
+re-evaluates the current record, marker, presentation context, and source
+association without scanning unrelated evidence. For an inline artifact this
+includes rereading the bounded UTF-8 source and comparing the complete
+normalized contents with the complete current `diff` payload. The refreshed
+check uses the same dependency projection and result as ordinary complete
+validation. A content discrepancy becomes the same Evidence finding and makes
+that artifact's Provenance check dependent on it; an operational inconsistency
+that prevents coherent targeted evaluation aborts publication.
 
 In the human Provenance artifact count, a
 `provenance.output.unconfirmed` check projects as unavailable rather than as a

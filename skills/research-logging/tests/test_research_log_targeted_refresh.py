@@ -42,6 +42,28 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            entry.write_text(
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was",
+                    "<!-- eid:results-diff -->\n"
+                    "```diff\nsuccess_rate\n0.676\n```\n\nThe success rate was",
+                ),
+                encoding="utf-8",
+            )
+            evidence_path = entry.parent / "evidence.json"
+            evidence_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence_payload["records"].append(
+                {
+                    "id": "results-diff",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [{"source": "<results>", "locator": None}],
+                    "transformation": None,
+                }
+            )
+            evidence_path.write_text(
+                json.dumps(evidence_payload, indent=2) + "\n", encoding="utf-8"
+            )
             legacy_path = entry.parent / "pyrun-outputs.json"
             legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
             legacy["outputs"]["data/results.csv"]["confirmed"] = False
@@ -154,6 +176,13 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             results_path = entry_root / "data" / "results.csv"
             results_path.write_text(
                 "success_rate,note\n0.676,promoted\n", encoding="utf-8"
+            )
+            entry.write_text(
+                entry.read_text(encoding="utf-8").replace(
+                    "```diff\nsuccess_rate\n0.676\n```",
+                    "```diff\nsuccess_rate,note\n0.676,promoted\n```",
+                ),
+                encoding="utf-8",
             )
             promoted_fingerprint = Fingerprint(
                 "sha256",

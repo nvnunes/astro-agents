@@ -360,6 +360,7 @@ class EvidenceAssociationTests(unittest.TestCase):
             "`Steps:`\n\nRun the experiment.\n\n"
             "`Results:`\n\n"
             "| Result | Value |\n| --- | ---: |\n| candidate | 1 |\n\n"
+            "```diff\n-old\n+new\n```\n\n"
             "`Observations:`\n\n"
             "```text\ncontext only\n```\n\n"
             "| Observation | Value |\n| --- | ---: |\n| contextual | 2 |\n"
@@ -369,7 +370,7 @@ class EvidenceAssociationTests(unittest.TestCase):
 
         self.assertEqual(
             [(candidate.kind, candidate.line) for candidate in candidates],
-            [("table", 9)],
+            [("table", 9), ("artifact", 13)],
         )
 
     def test_entry_markers_bind_all_three_presentation_kinds(self) -> None:
@@ -430,6 +431,8 @@ class EvidenceAssociationTests(unittest.TestCase):
                     context_valid=True,
                     section_classification=item.section_classification,
                     under_results=item.under_results,
+                    presentation_form=item.presentation_form,
+                    presentation_format=item.presentation_format,
                 )
                 for item in EVIDENCE.index_entry_presentations(
                     document.read_text(encoding="utf-8"),
@@ -529,6 +532,8 @@ class EvidenceAssociationTests(unittest.TestCase):
             '[table](<data/result.csv> "download")<!-- eid:result-table -->.\n'
             "[navigation](notes.md) [external](https://example.com/a.csv)\n"
             "```text\n[not an artifact](data/inside.csv)\n```\n"
+            "<!-- eid:expanded-diff -->\n"
+            "```diff\n-old\n+new\n```\n"
         )
 
         artifacts = tuple(
@@ -540,17 +545,26 @@ class EvidenceAssociationTests(unittest.TestCase):
             if item.kind == "artifact"
         )
 
-        self.assertEqual(len(artifacts), 2)
+        self.assertEqual(len(artifacts), 3)
         self.assertEqual(
             [artifact.value for artifact in artifacts],
             [
                 "entries/images/result map.png",
                 "entries/2026-08-28-e001-study/data/result.csv",
+                "-old\n+new",
             ],
         )
         self.assertEqual(
             [artifact.id for artifact in artifacts],
-            ["result-map", "result-table"],
+            ["result-map", "result-table", "expanded-diff"],
+        )
+        self.assertEqual(
+            [artifact.presentation_form for artifact in artifacts],
+            ["image", "link", "inline-text"],
+        )
+        self.assertEqual(
+            [artifact.presentation_format for artifact in artifacts],
+            [None, None, "diff"],
         )
 
 

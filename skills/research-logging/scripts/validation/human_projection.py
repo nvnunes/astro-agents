@@ -100,6 +100,21 @@ class FindingGroup:
 
 
 CATALOG: Mapping[str, FindingPresentation] = {
+    "association.artifact.content_mismatch": FindingPresentation(
+        "Inline Artifact Mismatch",
+        "The inline artifact presentation differs from its declared source.",
+        "record",
+    ),
+    "association.artifact.inline_source_invalid": FindingPresentation(
+        "Invalid Inline Artifact Source",
+        "The declared inline artifact source is not a regular UTF-8 file.",
+        "path",
+    ),
+    "association.artifact.inline_source_unavailable": FindingPresentation(
+        "Inline Artifact Source Unavailable",
+        "The declared inline artifact source could not be read reliably.",
+        "path",
+    ),
     "association.artifact.source_mismatch": FindingPresentation(
         "Evidence Source Mismatch",
         "The presented artifact does not match its declared evidence source.",

@@ -30,13 +30,30 @@ output, or whole artifact. Do not include the value in the ID.
   | Candidate | 0.286% |
   ```
 
-- Put an artifact marker immediately after its local Markdown link or image
-  embed on the same source line, with no intervening characters:
+- Put a linked artifact marker immediately after its local Markdown link or
+  image embed on the same source line, with no intervening characters:
 
   ```markdown
   ![Residual map](images/residual-map.png)<!-- eid:residual-map -->
   [Download results](data/results.csv)<!-- eid:results-download -->
   ```
+
+- To present the complete contents of a retained UTF-8 diff artifact inline,
+  put its marker on the source line immediately before a fence whose info
+  string is exactly `diff`:
+
+  ````markdown
+  <!-- eid:v11-v12-expanded-diff -->
+  ```diff
+  -old value
+  +new value
+  ```
+  ````
+
+  The complete fenced payload must match the complete source file after only
+  CRLF or CR line endings are normalized to LF and one terminal LF is removed
+  from each side for Markdown's structural fence separation. Do not trim
+  whitespace or omit output. Other fenced formats are not inline artifacts.
 
 The marker is exactly `<!-- eid:descriptive-id -->`. Keep names, connective
 wording, and parameters outside a marked statistic's code span.
@@ -65,7 +82,8 @@ wording, and parameters outside a marked statistic's code span.
    is intentionally presented as a percentage, and `--scale` only for a
    researcher-authorized scientific scale conversion.
    For a whole artifact, pass only its one source token; the action recognizes
-   the marked link or image and rejects selection or conversion arguments.
+   the marked link, image, or inline `diff` fence and rejects selection or
+   conversion arguments.
 4. Require the command to succeed. It resolves and fingerprints the source,
    infers the document and evidence kind from the unique marker, records exact
    selection expectations, checks the presentation, and publishes the complete
@@ -75,10 +93,11 @@ Invoke dependent authoring actions separately. Read each bounded result and
 stop at the first failure instead of sending the next action in the same shell
 invocation.
 
-This common path covers whole artifacts, one-source identity statistics, inferred scalar
-rendering and units, fractional percentages, explicit scaling, direct tables
-whose selected source already has the presented shape, and one selected line
-of retained `text` output. Use a complete `<name>` token for a file or
+This common path covers linked and inline whole artifacts, one-source identity
+statistics, inferred scalar rendering and units, fractional percentages,
+explicit scaling, direct tables whose selected source already has the
+presented shape, and one selected line of retained `text` output. Use a
+complete `<name>` token for a file or
 `<directory-name>/member` for one exact directory member. A bare directory,
 raw path, URI, or cross-entry shorthand is not an evidence source.
 

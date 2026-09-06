@@ -100,7 +100,10 @@ from .output_support import (
     resolve_code_support,
     resolve_output_support,
 )
-from .presentation import require_artifact_source_association
+from .presentation import (
+    artifact_evidence_dependencies,
+    require_artifact_source_association,
+)
 from .provenance import (
     ProducerIndex,
     ProvenanceResult,
@@ -1425,11 +1428,16 @@ def _evaluate_record(
         evidence = _pass_check(
             identity,
             CheckScope.EVIDENCE,
-            dependencies=(
-                {
-                    "artifact": materials[0].path.as_posix(),
-                    "presentation": f"{item.document}:{item.id}",
-                },
+            dependencies=artifact_evidence_dependencies(
+                record,
+                item,
+                (
+                    {
+                        "declaration": materials[0].resource.content_identity,
+                        "name": materials[0].input_name,
+                        "path": materials[0].path.as_posix(),
+                    },
+                ),
             ),
         )
         return _RecordOutcome(

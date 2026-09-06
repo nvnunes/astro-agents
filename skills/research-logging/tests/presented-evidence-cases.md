@@ -43,6 +43,20 @@ independently. Given a source token that resolves to a different path from the
 marked target, even with identical bytes, the authoring action fails and Record
 does not edit `evidence.json` or substitute a plausible source.
 
+Given a complete retained UTF-8 diff presented inline under experimental
+`Results:`, Record puts one stable marker immediately before the exact `diff`
+fence and invokes common `log evidence add` with the artifact's one source
+token. The action records `kind:"artifact"` without a locator or
+transformation. It accepts CRLF, CR, and one terminal line-ending difference
+only through the closed Markdown normalization rule; any other content
+difference, invalid UTF-8, non-regular source, or size-limit violation fails
+without publishing the evidence record.
+
+Given an unmarked `diff` fence under experimental `Results:`, Validate reports
+presented evidence missing an EID. A marked `diff` fence whose source is
+reachable through the artifact graph participates in ordinary Provenance and
+Hygiene exactly like a linked whole artifact.
+
 Given a changed analysis stage that consumes a serialized intermediate, Record
 reloads the intermediate and checks its expected structure. It records shape,
 row count, or schema only when that information helps explain, reuse, or assess

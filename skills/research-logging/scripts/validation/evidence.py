@@ -173,6 +173,8 @@ class PresentedItem:
     context_valid: bool
     section_classification: str
     under_results: bool
+    presentation_form: str
+    presentation_format: str | None
 
 
 @dataclass(frozen=True)
@@ -485,6 +487,8 @@ def _presentations_on_line(
                 context_valid=experimental,
                 section_classification=context.classification,
                 under_results=context.under_results,
+                presentation_form="inline-code",
+                presentation_format=None,
             )
         )
     consumed = {
@@ -511,6 +515,10 @@ def _presentations_on_line(
                     context_valid=True,
                     section_classification=context.classification,
                     under_results=True,
+                    presentation_form=(
+                        "image" if link.group("image") is not None else "link"
+                    ),
+                    presentation_format=None,
                 )
             )
             consumed.add((number, link.end()))
@@ -556,22 +564,32 @@ def _block_presentation(
             context_valid=context.context_valid,
             section_classification=context.section_classification,
             under_results=context.under_results,
+            presentation_form="table",
+            presentation_format="markdown",
         )
     fence = FENCE_RE.fullmatch(lines[number])
-    if fence is None or fence.group("info") != "text":
+    if fence is None or fence.group("info") not in {"diff", "text"}:
         return None
-    payload, _ = _text_fence(lines, number, fence.group("fence"))
+    fence_format = fence.group("info")
+    payload, _ = _text_fence(
+        lines,
+        number,
+        fence.group("fence"),
+        subject=f"{fence_format} fence",
+    )
     _require_presentation_bound(payload, f"{context.document}:{number + 1}")
     return PresentedItem(
         id=record_id,
         document=context.document,
-        kind="output",
+        kind="artifact" if fence_format == "diff" else "output",
         value=payload,
         line=number + 1,
         section=context.section,
         context_valid=context.context_valid,
         section_classification=context.section_classification,
         under_results=context.under_results,
+        presentation_form="inline-text",
+        presentation_format=fence_format,
     )
 
 
@@ -631,8 +649,13 @@ def index_entry_presentation_candidates(
         if not fenced[index] and _looks_like_table(lines, index):
             candidates.append(PresentationCandidate("table", index + 1))
         fence = FENCE_RE.fullmatch(line)
-        if fence is not None and fence.group("info") == "text":
-            candidates.append(PresentationCandidate("output", index + 1))
+        if fence is not None and fence.group("info") in {"diff", "text"}:
+            candidates.append(
+                PresentationCandidate(
+                    "artifact" if fence.group("info") == "diff" else "output",
+                    index + 1,
+                )
+            )
     return tuple(candidates)
 
 
@@ -1124,7 +1147,9 @@ def _table_block(lines: Sequence[str], index: int) -> tuple[str, int]:
     return "\n".join(block), index
 
 
-def _text_fence(lines: Sequence[str], index: int, fence: str) -> tuple[str, int]:
+def _text_fence(
+    lines: Sequence[str], index: int, fence: str, *, subject: str = "text fence"
+) -> tuple[str, int]:
     payload: list[str] = []
     index += 1
     while index < len(lines) and lines[index] != fence:
@@ -1133,7 +1158,7 @@ def _text_fence(lines: Sequence[str], index: int, fence: str) -> tuple[str, int]
     if index == len(lines):
         _fail(
             "association.presentation.syntax_invalid",
-            "text fence",
+            subject,
             {"closed": False},
             "Strict Presentation Parsing And Comparison",
         )

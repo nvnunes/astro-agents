@@ -47,6 +47,7 @@ from .context import (
     EntryContext,
     LogContext,
     parse_entry_directory_name,
+    resolve_entry,
     resolve_project_root,
 )
 from .model import ActionError
@@ -173,7 +174,7 @@ def plan_reproduction(
                     resolved.resource, current, state, consumer=None, depth=0
                 )
     _apply_cycle_and_dependency_failures(state)
-    prior = _load_prior_results(log, state.authority_paths)
+    prior = _load_prior_results(log)
     ordered = _select_and_order(state, prior)
     plan = _project_plan(
         state,
@@ -781,7 +782,7 @@ def _admit_validation(
 
 
 def _load_prior_results(
-    log: LogContext, authority_paths: set[Path]
+    log: LogContext,
 ) -> dict[tuple[str, str], Mapping[str, object]]:
     path = log.root / "reproduction" / "results.json"
     if not path.exists() and not path.is_symlink():
@@ -790,7 +791,6 @@ def _load_prior_results(
         raise ActionError(
             "reproduction.results.invalid", f"invalid result path: {path}"
         )
-    authority_paths.add(path)
     try:
         raw = path.read_bytes()
         if len(raw) > RESULT_MAX_BYTES:
@@ -859,12 +859,26 @@ def _require_existing_locks_available(
 def _recheck_plan_sources(plan: ReproductionPlan, state: _PlanningState) -> None:
     """Recheck every accepted byte and material immediately before return."""
 
-    _recheck_authority_files(plan, state)
-    _recheck_validation_result(plan, state)
+    verify_reproduction_snapshot(state.log, plan)
+
+
+def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> None:
+    """Require exact agreement with every source accepted by one plan."""
+
+    project_root = resolve_project_root(log.root)
+    _recheck_authority_files(plan, project_root)
+    _recheck_validation_result(plan, log)
+    _recheck_executions(plan, log, project_root)
     _recheck_materials(plan)
+    digest, _ = research_source_projection(log.summary)
+    expected = plan.validation_snapshot.get("source_projection_digest")
+    if not isinstance(expected, str) or digest != expected:
+        raise ActionError(
+            "reproduction.source.changed", "validated research source changed"
+        )
 
 
-def _recheck_authority_files(plan: ReproductionPlan, state: _PlanningState) -> None:
+def _recheck_authority_files(plan: ReproductionPlan, project_root: Path) -> None:
     """Require every loaded authority file to retain its exact bytes."""
 
     for item in cast(
@@ -878,22 +892,58 @@ def _recheck_authority_files(plan: ReproductionPlan, state: _PlanningState) -> N
             )
         path = Path(raw_path)
         if not path.is_absolute():
-            path = state.project_root / path
+            path = project_root / path
         if _digest(path) != expected:
             raise ActionError(
                 "reproduction.source.changed", f"authority file changed: {raw_path}"
             )
 
 
-def _recheck_validation_result(plan: ReproductionPlan, state: _PlanningState) -> None:
+def _recheck_validation_result(plan: ReproductionPlan, log: LogContext) -> None:
     """Require the admitted validation result to retain its exact bytes."""
 
     result_path = plan.validation_snapshot["result_path"]
     result_digest = plan.validation_snapshot["result_digest"]
     if not isinstance(result_path, str) or not isinstance(result_digest, str):
         raise ActionError("reproduction.source.invalid", "invalid validation snapshot")
-    if _digest(state.log.root / result_path) != result_digest:
+    if _digest(log.root / result_path) != result_digest:
         raise ActionError("reproduction.source.changed", "validation result changed")
+
+
+def _recheck_executions(
+    plan: ReproductionPlan, log: LogContext, project_root: Path
+) -> None:
+    loaded: dict[str, PyrunFile] = {}
+    values = cast(
+        Sequence[Mapping[str, object]], plan.source_snapshot["executions"]
+    )
+    for value in values:
+        entry_id = value.get("entry")
+        identity = value.get("execution_id")
+        expected = value.get("digest")
+        if not all(isinstance(item, str) for item in (entry_id, identity, expected)):
+            raise ActionError(
+                "reproduction.source.invalid", "invalid execution snapshot"
+            )
+        assert isinstance(entry_id, str)
+        assert isinstance(identity, str)
+        assert isinstance(expected, str)
+        if entry_id not in loaded:
+            entry = resolve_entry(log, entry_id)
+            loaded[entry_id] = load_pyrun_state(
+                entry.root / "pyrun.json",
+                entry_root=entry.root,
+                project_root=project_root,
+            )
+        execution = loaded[entry_id].executions.get(identity)
+        if (
+            execution is None
+            or canonical_record_digest(execution.as_dict()) != expected
+        ):
+            raise ActionError(
+                "reproduction.source.changed",
+                f"execution recipe changed: {entry_id}:{identity}",
+            )
 
 
 def _recheck_materials(plan: ReproductionPlan) -> None:

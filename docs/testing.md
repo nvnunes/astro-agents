@@ -127,6 +127,29 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 
 This focused command supplements rather than replaces the complete tool gate.
 
+For reproduction execution and process-lifecycle development, run the focused
+controlled-fixture suite outside any enclosing process-observation sandbox:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_log_reproduction_execution.py
+```
+
+On macOS, explicitly exercise the production Seatbelt profile as a separate
+host-confinement smoke test:
+
+```bash
+REPRODUCTION_SANDBOX_TEST=1 \
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills.research-logging/tests/test_log_reproduction_execution.py
+```
+
+These tests use only generated projects and synthetic workers. The enabled
+host test must prove both network denial and retained-boundary write denial.
+It never executes a maintained research recipe.
+
 The complexity check is a ratchet over explicitly recorded complexity debt. It
 allows refactoring to reduce findings, but rejects a new complex function, a
 higher complexity score, or growth in the total advisory finding count.

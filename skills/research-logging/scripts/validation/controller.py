@@ -91,9 +91,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
     requested_summary = request.summary.absolute()
     requested_log_root = requested_summary.with_suffix("")
     try:
-        with operation_lock(
-            requested_log_root, "log.lock", mode="exclusive"
-        ):
+        with operation_lock(requested_log_root, "log.lock", mode="exclusive"):
             require_mutation_ready(requested_log_root)
             summary = requested_summary.resolve()
             _validate_request(summary)
@@ -221,7 +219,12 @@ def _run_validation(
                 **fingerprint_cache.metrics.as_dict(),
                 **validation_cache.metrics.as_dict(),
             }
-            return _completed_result(record, metrics, published=True)
+            return _completed_result(
+                record,
+                metrics,
+                published=True,
+                report_context=report_context,
+            )
 
 
 def _current_report_identity(

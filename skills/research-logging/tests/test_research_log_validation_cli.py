@@ -215,9 +215,7 @@ class ValidationCliTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         (
-                            good_summary.with_suffix("")
-                            / "validation"
-                            / "results.json"
+                            good_summary.with_suffix("") / "validation" / "results.json"
                         ).is_file(),
                         not dry_run,
                     )

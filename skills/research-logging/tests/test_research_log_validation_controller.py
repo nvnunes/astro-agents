@@ -423,9 +423,7 @@ class MechanicalControllerTests(unittest.TestCase):
             )
 
             log_root = summary.with_suffix("")
-            record = json.loads(
-                (log_root / "validation" / "results.json").read_text()
-            )
+            record = json.loads((log_root / "validation" / "results.json").read_text())
             cache_path = _cache_path(summary)
             report = (log_root / "validation.md").read_text()
             self.assertEqual(result["status"], "complete_clear")
@@ -536,6 +534,7 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "complete_clear")
             self.assertFalse(result["published"])
+            self.assertIn("Report: Not published.", result["report"])
             self.assertFalse((summary.with_suffix("") / "validation").exists())
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
             self.assertFalse((Path(directory) / ".cache").exists())
@@ -1109,9 +1108,7 @@ class MechanicalControllerTests(unittest.TestCase):
             log_root = Path(directory) / "log"
             log_root.mkdir()
             relative = "validation/results.json"
-            with OPERATION_STATE.operation_lock(
-                log_root, "log.lock", mode="exclusive"
-            ):
+            with OPERATION_STATE.operation_lock(log_root, "log.lock", mode="exclusive"):
                 identities = RECORDS.publish_validation_outputs_locked(
                     log_root,
                     {relative: b"new record\n"},
@@ -1152,9 +1149,7 @@ class MechanicalControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log_root = Path(directory) / "log"
             log_root.mkdir()
-            with OPERATION_STATE.operation_lock(
-                log_root, "log.lock", mode="exclusive"
-            ):
+            with OPERATION_STATE.operation_lock(log_root, "log.lock", mode="exclusive"):
                 with self.assertRaisesRegex(
                     OPERATION_STATE.OperationLockError,
                     "research-log operation is active",
@@ -1233,10 +1228,13 @@ class MechanicalControllerTests(unittest.TestCase):
                 original(selected)
 
             for publish in (False, True):
-                with self.subTest(publish=publish), mock.patch.object(
-                    CONTROLLER,
-                    "_validate_request",
-                    side_effect=preflight_while_locked,
+                with (
+                    self.subTest(publish=publish),
+                    mock.patch.object(
+                        CONTROLLER,
+                        "_validate_request",
+                        side_effect=preflight_while_locked,
+                    ),
                 ):
                     result = CONTROLLER.validate(
                         CONTROLLER.ValidationRequest(
@@ -1379,9 +1377,10 @@ class MechanicalControllerTests(unittest.TestCase):
             )
             before = {path: path.read_bytes() for path in tracked}
 
-            with OPERATION_STATE.operation_lock(
-                log_root, "log.lock", mode="shared"
-            ), OPERATION_STATE.operation_lock(log_root, "entry-e001.lock"):
+            with (
+                OPERATION_STATE.operation_lock(log_root, "log.lock", mode="shared"),
+                OPERATION_STATE.operation_lock(log_root, "entry-e001.lock"),
+            ):
                 with self.assertRaisesRegex(
                     CONTROLLER.ValidationControllerError,
                     "research-log operation is active",

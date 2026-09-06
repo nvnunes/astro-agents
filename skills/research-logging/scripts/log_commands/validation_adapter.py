@@ -194,9 +194,12 @@ def _bounded_failure_message(error: Exception) -> str:
     if len(encoded) <= MAX_FAILURE_MESSAGE_BYTES:
         return str(error)
     suffix = b"..."
-    return encoded[: MAX_FAILURE_MESSAGE_BYTES - len(suffix)].decode(
-        "utf-8", errors="ignore"
-    ) + suffix.decode()
+    return (
+        encoded[: MAX_FAILURE_MESSAGE_BYTES - len(suffix)].decode(
+            "utf-8", errors="ignore"
+        )
+        + suffix.decode()
+    )
 
 
 def _summary_title(summary: Path) -> str:

@@ -363,9 +363,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     _mutation_argument(rename)
     rename.add_argument("old_name")
     rename.add_argument("new_name")
-    refresh = actions.add_parser(
-        "refresh", help="Record an intentional byte change"
-    )
+    refresh = actions.add_parser("refresh", help="Record an intentional byte change")
     _entry_arguments(refresh)
     _mutation_argument(refresh)
     refresh.add_argument("name")
@@ -415,9 +413,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
             ),
         )
     if args.action == "rename":
-        return data.rename(
-            entry, args.old_name, args.new_name, dry_run=args.dry_run
-        )
+        return data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
     if args.action == "refresh":
         return data.refresh(entry, args.name, dry_run=args.dry_run)
     if args.action == "remove":

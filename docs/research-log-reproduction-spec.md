@@ -621,7 +621,7 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-slow] [--dry-run]
+log reproduce --path LOG [--entry ENTRY] [--include-slow] [--recheck] [--dry-run]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
@@ -694,6 +694,29 @@ an artifact outcome.
 boundary and traverses their upstream closure. Scope is immutable after run
 acceptance. The CLI must not prompt to widen it.
 
+### Selection Policy
+
+Incremental selection is the default. It selects only new, unconfirmed,
+failed, stale, and dependency-affected eligible executions. A current result
+otherwise satisfies its artifact case without new execution work.
+
+`--recheck` selects every eligible execution in the current evidence-relevant
+closure under the chosen entry-or-log target and slow policy, including
+executions whose artifact results are already current. It preserves execution
+grouping, dependency order, target boundaries, retained boundaries, and
+artifact-level result identity. It does not bypass validation admission,
+repair a graph failure, or make an otherwise ineligible case runnable.
+
+Slow inclusion and selection policy are independent. `--recheck` alone stops
+at verified retained slow boundaries. `--recheck --include-slow` also selects
+eligible slow executions. Neither flag implies the other.
+
+Recheck is a launch-time planning input. The emitted plan records the exact
+selected cases and executions and is the durable authority for execution and
+resume. Plan, run, status, and cumulative-result JSON therefore gain no
+selection-policy field, schema version, or migration. Commands that consume an
+accepted run or only query published state do not accept `--recheck`.
+
 ### Failures And Ordering
 
 Missing or multiple producers, invalid boundaries, resource-limit violations,
@@ -705,9 +728,10 @@ reason `dependency_failed`.
 
 The planner groups cases by execution ID, schedules each execution once in a
 deterministic dependency order, and preserves artifact-level result identity.
-It selects all and only new, failed, stale, and dependency-affected current
-cases required by the target. It must not infer a reduced plan from prior
-matches when a current dependency invalidates them.
+Its default incremental policy selects all and only new, unconfirmed, failed,
+stale, and dependency-affected current cases required by the target. It must
+not infer a reduced plan from prior matches when a current dependency
+invalidates them.
 
 Graph node, edge, depth, execution, and projection limits are fixed and
 code-owned in [Fixed Resource Bounds](#fixed-resource-bounds). Exceeding a
@@ -717,7 +741,8 @@ graph.
 ### Dry Run
 
 `--dry-run` applies the same admission, discovery, graph construction, slow
-policy, selection, and safety preflight as a real launch. It emits one
+policy, incremental-or-recheck selection, and safety preflight as a real
+launch. It emits one
 deterministic `research-log-reproduction-plan/1` projection with exactly
 `schema`, `summary`, `target`, `include_slow`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.

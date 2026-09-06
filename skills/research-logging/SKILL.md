@@ -31,9 +31,11 @@ Choose the core operation:
   record, or a named review lens or group: read
   `references/operation-review.md`. Semantic Review is costly; never initiate
   it as part of another operation or as an ordinary completion check.
-- Independent mechanical validation: read
-  `references/operation-validate.md`. Validate is code-only and never becomes
-  semantic review or reproduction. Those remain separate workflows.
+- Independent mechanical validation, or researcher-requested read-only
+  investigation of named mechanical-validation findings: read
+  `references/operation-validate.md`. The validation run is code-only; neither
+  path becomes semantic review or reproduction. Those remain separate
+  workflows.
 - Explicit correction of a named research-log finding, malformed or legacy
   state, transaction residue, or other identified log defect: read
   `references/operation-repair.md`. A failed authoring command or reported
@@ -68,6 +70,10 @@ log as ambiguous and ask whether the researcher wants Validate, Review, or
 Reproduction. A specific semantic question may route to Review by its meaning.
 Do not infer semantic Review from a request to check or verify work performed
 under another operation.
+
+A request to inspect, explain, triage, or determine the cause of named
+mechanical-validation findings routes to Validate's read-only diagnosis path,
+not Review or Repair. It does not authorize a validation rerun or correction.
 
 Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded

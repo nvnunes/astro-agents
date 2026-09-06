@@ -1,18 +1,20 @@
 # Validate Operation Instructions
 
 Use this operation for independent mechanical validation of one or more
-maintained research logs. Run Validate as a separate operation after Record.
-It is read-only for research-owned material but normally writes generated
-validation state; use `--dry-run` to publish no result or cache changes beyond
-the generated coordination lock. The
-same agent may invoke it, but while validating it must not edit or repair
-research-owned material. A research-log finding requires a later, separately
-authorized Repair operation. `unsupported_metadata` is instead a
-validation-state blocker: report its paths and stop. Before rerunning, ask the
-user to authorize a separate action that archives the reported generated paths
-outside the active log or removes them. Do not route that status to Record or
-resolve it during Validate. Successful execution or inspection during Record
-is not validation.
+maintained research logs and for researcher-requested read-only diagnosis of
+named mechanical-validation findings. Run Validate as a separate operation
+after Record. A validation run is read-only for research-owned material but
+normally writes generated validation state; use `--dry-run` to publish no
+result or cache changes beyond the generated coordination lock. A diagnosis
+does not rerun validation unless the researcher separately requests it. The
+same agent may perform either path, but must not edit or repair research-owned
+material. A research-log finding requires a later, separately authorized
+Repair operation. `unsupported_metadata` is instead a validation-state
+blocker: report its paths and stop. Before rerunning, ask the user to authorize
+a separate action that archives the reported generated paths outside the
+active log or removes them. Do not route that status to Record or resolve it
+during Validate. Successful execution or inspection during Record is not
+validation.
 
 Read `references/file-validation-records.md` before invoking the canonical
 tool.
@@ -111,6 +113,35 @@ error.
 Do not invent item-specific repair guidance. A separately authorized Repair
 operation resolves a reported condition from its exact target
 and progressively loads only the applicable contract.
+
+## Diagnose Named Findings
+
+When the researcher asks to inspect, explain, triage, or determine the cause of
+a named mechanical finding or bounded finding group, keep the work within
+Validate and do not rerun validation unless requested.
+
+For published findings, locate only the relevant bounded group:
+
+```text
+<skill>/scripts/log findings list --path <log> [--entry <entry>] [--subject <subject>]
+```
+
+Then retrieve each selected complete check needed to explain the shared cause:
+
+```text
+<skill>/scripts/log findings show --path <log> --id <check-id>
+```
+
+Use exact entry or subject filters and inspect only the affected research files
+and enough surrounding metadata or recorded commands to explain the
+deterministic failed relationship. Do not parse generated validation files,
+inspect script internals, execute research commands, make semantic judgments,
+or select Review lenses. Report the mechanical cause and affected scope in
+plain language without Review finding classes or independence statements.
+
+Diagnosis is read-only. Do not apply a correction or choose among plausible
+repairs. Begin Repair only after the researcher explicitly asks to correct the
+finding.
 
 Mechanical validation does not continue into semantic review or reproduction.
 Those are separate workflows with separate ownership and are not implemented

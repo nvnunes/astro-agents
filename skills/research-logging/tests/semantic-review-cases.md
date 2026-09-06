@@ -46,6 +46,12 @@ asks whether the researcher wants Validate, Review, or Reproduction. Given a
 specific semantic question beginning with “check” or “verify,” it may instead
 route by meaning to the matching Review lenses.
 
+Given “look into the 92 Provenance artifact issues” in the context of completed
+mechanical validation, the agent routes to Validate's read-only diagnosis path.
+It does not select Workflow Reconstructibility, Research-Log Conformance, or any
+other semantic lens merely because diagnosis requires reading commands,
+artifacts, or research metadata.
+
 Given a maintained `<log>.md` target, the complete log includes that summary
 and its sibling `<log>/` tree. The agent discovers the tree independently of
 summary navigation, then loads only the material required by the selected

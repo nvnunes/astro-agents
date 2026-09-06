@@ -130,9 +130,23 @@ class RecordSurfaceTests(unittest.TestCase):
             "verifies feasible arithmetic",
             "apparently evidential prose",
             "does not repeat recognizable missing-marker",
+            "Validate's read-only diagnosis path",
             "`$science-writing`",
         ):
             self.assertIn(expected, normalized_cases)
+
+    def test_validate_owns_read_only_mechanical_finding_diagnosis(self) -> None:
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        validate = reference("operation-validate.md")
+        review = reference("operation-review.md")
+        cases = CASES.read_text(encoding="utf-8")
+
+        self.assertIn("named mechanical-validation findings", skill)
+        self.assertIn("## Diagnose Named Findings", validate)
+        self.assertIn("log findings list", validate)
+        self.assertIn("Do not apply a correction", validate)
+        self.assertIn("Do not select review lenses", review)
+        self.assertIn("does not rerun validation", cases)
 
     def test_creation_routes_do_not_load_naming_or_summary_contracts(self) -> None:
         for route in ("operation-record-start.md", "operation-record-new.md"):

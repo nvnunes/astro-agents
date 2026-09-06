@@ -209,8 +209,11 @@ finding, the agent enters Repair, reads that check and the affected files, and
 loads only the contract needed to establish the intended valid state. It does
 not fix other findings from the same report.
 
-Given a completed validation report followed only by a request to explain its
-findings, Validate remains report-only and does not load Repair. A later
+Given a completed validation report followed by a request to inspect, explain,
+triage, or determine the cause of named findings, Validate enters its read-only
+diagnosis path. It queries only the bounded published checks and affected
+research material, does not rerun validation, select semantic Review lenses, or
+load Repair, and reports the mechanical cause in plain language. A later
 explicit request to correct a named finding starts Repair as a separate
 operation and finishes by invoking the public Validate path.
 

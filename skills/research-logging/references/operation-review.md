@@ -6,6 +6,11 @@ group. Semantic Review is costly. Never add it to Record, Replace, Update
 Summary, Repair, Reorganize, Validate, reproduction, or ordinary completion
 checks on your own initiative.
 
+Do not select review lenses for a request to inspect, explain, triage, or
+determine the cause of named mechanical-validation findings. Route that work
+to Validate's read-only diagnosis path even when it requires inspecting
+commands, artifacts, or research metadata.
+
 Review is report-first and read-only with respect to the maintained research
 account. Report findings and stop. A later researcher instruction to address
 findings authorizes a new owning research operation; the same agent may switch

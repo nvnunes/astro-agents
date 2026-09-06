@@ -21,6 +21,7 @@ from validation.pyrun_outputs import (
     OutputSupport,
     PyrunOutputsFile,
     ScriptSupport,
+    load_pyrun_outputs,
 )
 from validation.pyrun_state import load_pyrun_state
 
@@ -304,6 +305,61 @@ class PyrunMigrationTests(unittest.TestCase):
             self.assertFalse(second["confirmed"])
             self.assertEqual(
                 plan.record["counts"]["migrated_legacy_groups"], 2
+            )
+
+    def test_role_repair_resolves_symlinked_artifact_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, entry = _role_repair_fixture(root)
+            physical = root / "output/logs/study/e001/data"
+            physical.parent.mkdir(parents=True)
+            (entry / "data").rename(physical)
+            (entry / "data").symlink_to(physical, target_is_directory=True)
+
+            plan = build_migration_plan(root)
+
+            target = next(
+                value
+                for path, value in plan.updates
+                if path == (entry / "pyrun.json").resolve()
+            )
+            assert target is not None
+            executions = tuple(json.loads(target)["executions"].values())
+            second = next(
+                item
+                for item in executions
+                if item["recipe"]["script"] == "scripts/second.py"
+            )
+            self.assertEqual(second["recipe"]["inputs"], ["shared"])
+            self.assertEqual(
+                second["recipe"]["outputs"], {"data/second.csv": "file"}
+            )
+
+    def test_retirement_accepts_one_covering_directory_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log, entry, _ = _fixture(root)
+            state = load_pyrun_outputs(
+                entry / "pyrun-outputs.json",
+                entry_root=entry,
+                project_root=root,
+            )
+            group = migration._LegacyGroup(
+                migration.EntryContext(
+                    migration.LogContext(root / "docs/study.md", log),
+                    "e001",
+                    entry,
+                ),
+                "signature",
+                "migration-covered-member",
+                "scripts/old.py",
+                (("data/bundle/member.csv", state.outputs["data/old.csv"]),),
+            )
+
+            migration._verify_retirement(
+                group,
+                {(entry / "data/bundle").resolve(): {(entry, "execution")}},
+                root,
             )
 
     def test_cli_exposes_write_free_project_migration(self) -> None:

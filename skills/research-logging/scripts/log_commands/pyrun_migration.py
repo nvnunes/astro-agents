@@ -577,7 +577,7 @@ def _require_unique_output_owners(
                 entry_root=candidate.entry.root,
                 project_root=project_root,
                 authored=True,
-            ).absolute()
+            ).resolve()
             owners.append((target, key))
     owners.sort(key=lambda item: item[0].as_posix())
     for index, (left, left_owner) in enumerate(owners):
@@ -695,14 +695,14 @@ def _moved_legacy_outputs(
             entry_root=group.entry.root,
             project_root=project_root,
             authored=True,
-        ).absolute(): output
+        ).resolve(): output
         for output in group.outputs
     }
     for name in added:
         resource = resources.get(name)
         if resource is None or resource.origin:
             return None
-        target = Path(resource.canonical_target).absolute()
+        target = Path(resource.canonical_target).resolve()
         output = group_targets.get(target)
         owners = output_owners.get(target, set())
         if output is None or len(owners) != 1 or candidate_key in owners:
@@ -757,7 +757,7 @@ def _output_owner_index(
                 entry_root=candidate.entry.root,
                 project_root=project_root,
                 authored=True,
-            ).absolute()
+            ).resolve()
             owners[target].add((candidate.entry.root, candidate.identity))
     return owners
 
@@ -773,8 +773,14 @@ def _verify_retirement(
             entry_root=group.entry.root,
             project_root=project_root,
             authored=True,
-        ).absolute()
-        if len(owners.get(target, set())) != 1:
+        ).resolve()
+        covering = {
+            owner
+            for owned_path, path_owners in owners.items()
+            if target == owned_path or _within(target, owned_path)
+            for owner in path_owners
+        }
+        if len(covering) != 1:
             raise ActionError(
                 "pyrun.migration.retirement_orphans_output",
                 f"{group.case_id}: {output}",

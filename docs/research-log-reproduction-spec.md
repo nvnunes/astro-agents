@@ -19,12 +19,12 @@ runtime contract. It does not teach researchers how to use the workflow;
 `docs/research-logging.md` and `skills/research-logging/` own that guidance.
 
 The Phase 1 contract and the final Phase 2 resource bounds are complete. The
-bounds derive from the 2026-09-06 post-authoring-Phase-7 current-corpus audit
-and are recorded in [Fixed Resource Bounds](#fixed-resource-bounds). The
-compact completed-model format uses the existing exact directory profile with
-opaque-byte, JSON, and table member dispatch. It requires no new comparison
-family, non-exact equality, or change to execution identity, authority, or
-graph traversal.
+bounds are fixed versioned contract values recorded in
+[Fixed Resource Bounds](#fixed-resource-bounds), not descriptions of the live
+corpus. The compact completed-model format uses the existing exact directory
+profile with opaque-byte, JSON, and table member dispatch. It requires no new
+comparison family, non-exact equality, or change to execution identity,
+authority, or graph traversal.
 
 The key words **must**, **must not**, **should**, and **may** describe normative
 requirements.
@@ -85,11 +85,9 @@ CLI settings. A decoder rejects an over-limit durable file. Planning,
 execution, comparison, and publication fail explicitly on an over-limit
 operation; they never truncate, sample, or silently narrow it.
 
-The current-corpus audit measured 942 expanded recipes, with maxima of 349
-recipes per log, 81 per entry, 122 parameters, 40 direct inputs, 40 outputs,
-25 participating code paths, dependency depth 8, 155 members in one retained
-output directory, a 1.35 MiB legacy entry state file, and a 295.4 MiB regular
-output. The initial bounds deliberately leave substantial growth headroom.
+The initial limits were selected with measured retained-corpus headroom. They
+remain unchanged as the corpus evolves; revisions follow the explicit process
+in [Compatibility And Evolution](#compatibility-and-evolution).
 
 ### Execution State And Serialization
 
@@ -1460,6 +1458,5 @@ specification where validation-owned schemas or services change and must keep
 the ownership boundary explicit rather than duplicating those contracts here.
 
 Before the affected implementation begins, freeze the exact result and status
-JSON fixtures. The final post-authoring-Phase-7 audit-derived bounds and
-comparison dispatch are already inserted. The reproduction plan owns the
-remaining implementation gates.
+JSON fixtures. The fixed initial bounds and comparison dispatch are already
+inserted. The reproduction plan owns the remaining implementation gates.

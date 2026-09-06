@@ -4,9 +4,9 @@
 
 Status: active implementation specification. The reproduction implementation,
 metadata migration, bounded maintained-log evaluation, and cutover are
-complete. Phase 9 recheck support, Phase 10 validation hardening, the separately
-planned orphan-hygiene cleanup, and full maintained-corpus operation remain
-gated by the reproduction plan.
+complete. Phase 9 recheck support is also complete. Phase 10 validation
+hardening, the separately planned orphan-hygiene cleanup, and full
+maintained-corpus operation remain gated by the reproduction plan.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable

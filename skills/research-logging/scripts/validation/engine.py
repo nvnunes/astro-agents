@@ -116,6 +116,11 @@ from .pyrun_outputs import (
     output_target_path,
     portable_output_path,
 )
+from .pyrun_state import (
+    PYRUN_FILENAME,
+    legacy_output_projection,
+    load_pyrun_state,
+)
 from .retention import RetentionFile, load_retention_file
 from .selection_codec import encode_selection
 from .transformation import (
@@ -898,35 +903,71 @@ def _load_output_support(state: _ScanState) -> None:
         owners.setdefault(_material_owner(entry, state), entry.root)
     for owner, root in sorted(owners.items()):
         path = root / "pyrun-outputs.json"
-        if not path.exists():
+        current = root / PYRUN_FILENAME
+        if (path.exists() or path.is_symlink()) and (
+            current.exists() or current.is_symlink()
+        ):
+            error = EngineV2Error(
+                "pyrun.state.conflict",
+                str(root),
+                {"reason": "multiple_execution_state_formats"},
+                "Pyrun Execution State",
+            )
+            state.output_record_errors[owner] = error
+            state.checks.append(
+                _error_check(
+                    f"entry:{owner}:pyrun",
+                    CheckScope.PROVENANCE,
+                    error,
+                )
+            )
+            continue
+        selected = current if current.exists() or current.is_symlink() else path
+        if not selected.exists() and not selected.is_symlink():
             state.output_files[owner] = empty_pyrun_outputs(root)
             continue
         try:
             if state.fingerprint_cache is not None:
-                observation = state.fingerprint_cache.observe_regular_file(path)
+                observation = state.fingerprint_cache.observe_regular_file(selected)
             else:
                 with FingerprintCache(
                     state.project_root, writable=False, reuse=False
                 ) as direct_cache:
-                    observation = direct_cache.observe_regular_file(path)
+                    observation = direct_cache.observe_regular_file(selected)
             digest = observation.fingerprint.digest
             if digest is None:
                 _fail(
-                    "pyrun.outputs.unavailable",
-                    str(path),
+                    "pyrun.state.unavailable",
+                    str(selected),
                     {"reason": "missing_digest"},
                 )
-            state.output_file_observations[path.resolve().as_posix()] = digest
-            state.output_files[owner] = load_pyrun_outputs(
-                path,
-                entry_root=root,
-                project_root=state.project_root,
-            )
+            state.output_file_observations[selected.resolve().as_posix()] = digest
+            if selected == current:
+                execution_state = load_pyrun_state(
+                    current,
+                    entry_root=root,
+                    project_root=state.project_root,
+                )
+                state.output_files[owner] = legacy_output_projection(
+                    execution_state,
+                    tuple(
+                        invocation
+                        for invocation in state.invocations
+                        if invocation.material_owner == owner
+                    ),
+                    project_root=state.project_root,
+                )
+            else:
+                state.output_files[owner] = load_pyrun_outputs(
+                    path,
+                    entry_root=root,
+                    project_root=state.project_root,
+                )
         except MechanicalContractError as error:
             state.output_record_errors[owner] = error
             state.checks.append(
                 _error_check(
-                    f"entry:{owner}:pyrun-outputs",
+                    f"entry:{owner}:pyrun",
                     CheckScope.PROVENANCE,
                     error,
                 )

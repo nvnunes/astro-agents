@@ -519,6 +519,32 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The output-support registry could not be read.",
         "path",
     ),
+    "pyrun.state.conflict": FindingPresentation(
+        "Conflicting Execution State",
+        "More than one execution-state format exists for the entry.",
+        "path",
+    ),
+    "pyrun.state.invalid": FindingPresentation(
+        "Invalid Execution State",
+        "The execution-state registry does not satisfy its schema or ownership "
+        "contract.",
+        "path",
+    ),
+    "pyrun.state.quarantine_failed": FindingPresentation(
+        "Execution-State Quarantine Failed",
+        "Invalid execution state could not be moved aside safely.",
+        "path",
+    ),
+    "pyrun.state.quarantined": FindingPresentation(
+        "Execution State Quarantined",
+        "Invalid execution state was moved aside and requires Repair review.",
+        "path",
+    ),
+    "pyrun.state.unavailable": FindingPresentation(
+        "Execution State Unavailable",
+        "The execution-state registry could not be read.",
+        "path",
+    ),
     "retention.declaration.invalid": FindingPresentation(
         "Invalid Retention Declaration",
         "The retention record does not satisfy the retention contract.",

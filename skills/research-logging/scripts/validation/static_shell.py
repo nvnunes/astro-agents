@@ -45,6 +45,7 @@ class StaticCommand:
     text: str
     projection: tuple[str, ...] = ()
     tokens: tuple[StaticToken, ...] = ()
+    authored_group: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -203,7 +204,14 @@ def _expand_block(
         if loop_depth == 0 and (current.scalars or current.arrays):
             raise ValueError("static assignments may be used only inside loops")
         concrete = _substitute(line, current)
-        items.append(_command(concrete, (*projection, *_projection(current)), budget))
+        items.append(
+            _command(
+                concrete,
+                (*projection, *_projection(current)),
+                budget,
+                source=line,
+            )
+        )
         index += 1
     return tuple(items), current
 
@@ -401,11 +409,21 @@ def _array(match: re.Match[str], bindings: _Bindings) -> str:
     return shlex.join(bindings.arrays[name])
 
 
-def _command(text: str, projection: tuple[str, ...], budget: _Budget) -> StaticCommand:
+def _command(
+    text: str,
+    projection: tuple[str, ...],
+    budget: _Budget,
+    *,
+    source: str | None = None,
+) -> StaticCommand:
     tokens = budget.tokenize(text)
     if not tokens:
         raise ValueError("empty shell invocation")
-    return StaticCommand(text, projection, tokens)
+    group = (
+        *(item for item in projection if item.startswith("loop:")),
+        f"command:{source or text}",
+    )
+    return StaticCommand(text, projection, tokens, group)
 
 
 def _substitution_failure(line: str) -> str | None:

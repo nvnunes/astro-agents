@@ -742,6 +742,9 @@ class MaterialGraphTests(unittest.TestCase):
                 entry_root / "pyrun-outputs.json.bak",
                 entry_root / "pyrun-outputs.json.2.bak",
                 entry_root / "pyrun-outputs.json.25.bak",
+                entry_root / "pyrun.json.bak",
+                entry_root / "pyrun.json.2.bak",
+                entry_root / "pyrun.json.25.bak",
             )
             for path in ignored:
                 write(path, "malformed recovery bytes\n")

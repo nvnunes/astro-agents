@@ -36,9 +36,15 @@ from validation.presentation import (
     require_artifact_source_association,
 )
 from validation.pyrun_outputs import (
-    PyrunOutputsFile,
     load_pyrun_outputs,
+    output_target_path,
     without_output_support,
+)
+from validation.pyrun_state import (
+    PYRUN_FILENAME,
+    PyrunFile,
+    load_pyrun_state,
+    without_executions,
 )
 from validation.retention import (
     MAX_RETENTION_FILE_BYTES,
@@ -67,6 +73,14 @@ class _SourceState:
 class _TransferPlan:
     selections: Mapping[str, frozenset[str]]
     maps: Mapping[str, Mapping[str, str]]
+
+
+@dataclass(frozen=True)
+class _SupportUpdate:
+    """One execution-state replacement within the registry transaction."""
+
+    path: Path
+    text: str | None
 
 
 def transfer_registries(
@@ -105,7 +119,7 @@ def transfer_registries(
             updates.pop(source.root / name, None)
             updates.pop(destination.root / name, None)
     if support_update is not None:
-        updates[support_update.path] = support_update.serialized()
+        updates[support_update.path] = support_update.text
     changed = any(
         value is None or not path.exists() or path.read_text(encoding="utf-8") != value
         for path, value in updates.items()
@@ -506,29 +520,38 @@ def _retired_support(
     destination: EntryContext,
     state: _SourceState,
     plan: _TransferPlan,
-) -> tuple[PyrunOutputsFile | None, tuple[dict[str, object], ...]]:
+) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
     if source == destination:
         return None, ()
     path = source.root / "pyrun-outputs.json"
-    if not path.exists() and not path.is_symlink():
+    current = source.root / PYRUN_FILENAME
+    if (path.exists() or path.is_symlink()) and (
+        current.exists() or current.is_symlink()
+    ):
+        raise ActionError(
+            "pyrun.state.conflict", f"both execution-state formats exist: {source.root}"
+        )
+    if (
+        not path.exists()
+        and not path.is_symlink()
+        and not current.exists()
+        and not current.is_symlink()
+    ):
         return None, ()
     project_root = resolve_project_root(source.log.root)
+    selected_paths = _selected_transfer_paths(state, plan)
+    if current.exists() or current.is_symlink():
+        return _retired_execution_state(
+            source,
+            destination,
+            current,
+            selected_paths=selected_paths,
+            project_root=project_root,
+        )
     support = load_pyrun_outputs(
         path,
         entry_root=source.root,
         project_root=project_root,
-    )
-    selected_paths = set(plan.maps["path"])
-    selected_paths.update(
-        item.location
-        for item in (state.data.inputs if state.data is not None else ())
-        if item.name in plan.selections["data"]
-    )
-    selected_paths.update(
-        path
-        for record in state.retention
-        if record.id in plan.selections["retention"]
-        for path in (*record.paths, *((record.directory,) if record.directory else ()))
     )
     retire = tuple(sorted(set(support.outputs) & selected_paths))
     selected_targets = {
@@ -564,7 +587,79 @@ def _retired_support(
         }
         for output in retire
     )
-    return result, reruns
+    return _SupportUpdate(result.path, result.serialized()), reruns
+
+
+def _selected_transfer_paths(
+    state: _SourceState, plan: _TransferPlan
+) -> set[str]:
+    """Return every selected entry-relative material target."""
+
+    selected = set(plan.maps["path"])
+    selected.update(
+        item.location
+        for item in (state.data.inputs if state.data is not None else ())
+        if item.name in plan.selections["data"]
+    )
+    selected.update(
+        path
+        for record in state.retention
+        if record.id in plan.selections["retention"]
+        for path in (*record.paths, *((record.directory,) if record.directory else ()))
+    )
+    return selected
+
+
+def _retired_execution_state(
+    source: EntryContext,
+    destination: EntryContext,
+    path: Path,
+    *,
+    selected_paths: set[str],
+    project_root: Path,
+) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
+    """Retire only complete executions whose full output set was transferred."""
+
+    state = load_pyrun_state(
+        path, entry_root=source.root, project_root=project_root
+    )
+    selected: list[str] = []
+    reruns: list[dict[str, object]] = []
+    for identity, execution in state.executions.items():
+        outputs = set(dict(execution.recipe.outputs))
+        if not outputs & selected_paths:
+            continue
+        if not outputs <= selected_paths:
+            raise ActionError(
+                "reorganize.transfer.support_ambiguous",
+                f"transfer selects only part of execution {identity}",
+            )
+        for output in outputs:
+            if output_target_path(
+                output,
+                entry_root=source.root,
+                project_root=project_root,
+                authored=True,
+            ).exists():
+                raise ActionError("reorganize.transfer.support_still_current", output)
+        selected.append(identity)
+        reruns.append(
+            {
+                "entry": destination.id,
+                "execution_id": identity,
+                "parameters": list(execution.recipe.parameters),
+                "script": execution.recipe.script,
+            }
+        )
+    if not selected:
+        return None, ()
+    result: PyrunFile = without_executions(
+        source.root, tuple(selected), project_root=project_root
+    )
+    return (
+        _SupportUpdate(result.path, result.serialized() if result.executions else None),
+        tuple(reruns),
+    )
 
 
 def _require_selection(arguments: TransferArguments, same_entry: bool) -> None:

@@ -159,6 +159,10 @@ class Invocation:
     collections: tuple[MaterialCollection, ...]
     candidates: tuple[str, ...]
     material_owner: str
+    recipe_parameters: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...] = ()
+    slow: bool = False
+    authored_group: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,6 +193,10 @@ class _ParsedCommand:
     capture_outputs: tuple[tuple[str, str], ...]
     runner_roles: Mapping[str, str]
     static_projection: tuple[str, ...] = ()
+    recipe_parameters: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...] = ()
+    slow: bool = False
+    authored_group: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -480,7 +488,13 @@ def _parse_static_item(
         return commands, []
     _require_command_bound(item.text)
     try:
-        return [_parse_command(item.tokens, item.projection)], []
+        return [
+            _parse_command(
+                item.tokens,
+                item.projection,
+                authored_group=item.authored_group,
+            )
+        ], []
     except ValueError as exc:
         return [None], [str(exc)]
 
@@ -496,7 +510,10 @@ def _require_command_bound(segment: str) -> None:
 
 
 def _parse_command(
-    parsed_tokens: Sequence[StaticToken], static_projection: tuple[str, ...] = ()
+    parsed_tokens: Sequence[StaticToken],
+    static_projection: tuple[str, ...] = (),
+    *,
+    authored_group: tuple[str, ...] = (),
 ) -> _ParsedCommand:
     tokens = tuple(token.value for token in parsed_tokens)
     if not tokens:
@@ -514,7 +531,15 @@ def _parse_command(
     if Path(tokens[0]).name != "pyrun":
         raise ValueError("shell commands must invoke pyrun directly")
     ordinary = list(tokens)
-    script_index, parameters, capture_outputs, runner_roles = _pyrun_layout(
+    (
+        script_index,
+        parameters,
+        capture_outputs,
+        runner_roles,
+        recipe_parameters,
+        environment,
+        slow,
+    ) = _pyrun_layout(
         ordinary, executable_index
     )
     argument_start = script_index + 1
@@ -529,6 +554,10 @@ def _parse_command(
         capture_outputs,
         runner_roles,
         static_projection,
+        recipe_parameters,
+        environment,
+        slow,
+        authored_group,
     )
 
 
@@ -539,6 +568,9 @@ def _pyrun_layout(
     tuple[str, ...],
     tuple[tuple[str, str], ...],
     Mapping[str, str],
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+    bool,
 ]:
     """Resolve the script, signature, captures, and explicit material roles."""
 
@@ -551,6 +583,9 @@ def _pyrun_layout(
         layout.parameters,
         captures,
         dict(layout.roles),
+        layout.recipe_parameters,
+        layout.environment,
+        layout.slow,
     )
 
 
@@ -613,6 +648,10 @@ def _build_invocation(
         collections,
         candidates,
         _material_owner(context),
+        command.recipe_parameters,
+        command.environment,
+        command.slow,
+        command.authored_group,
     )
 
 

@@ -15,7 +15,7 @@ RESULTS = importlib.import_module("validation.mechanical_results")
 
 class HumanProjectionTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(HUMAN.CATALOG), 113)
+        self.assertEqual(len(HUMAN.CATALOG), 118)
         prefixes = {code.split(".", 1)[0] for code in HUMAN.CATALOG}
         candidates = set()
         scripts = Path(__file__).parents[1] / "scripts" / "validation"

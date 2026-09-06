@@ -123,6 +123,37 @@ def add_directory_input(entry: Path, name: str, directory: Path) -> None:
     )
 
 
+def execution_records(entry: Path) -> dict[str, dict[str, object]]:
+    """Return the execution map published by one test entry."""
+
+    return json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))[
+        "executions"
+    ]
+
+
+def execution_for_output(entry: Path, output: str) -> dict[str, object]:
+    """Return the unique current execution that owns one output."""
+
+    matches = [
+        record
+        for record in execution_records(entry).values()
+        if output in record["recipe"]["outputs"]
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one owner for {output}, found {len(matches)}")
+    return matches[0]
+
+
+def recorded_outputs(entry: Path) -> set[str]:
+    """Return every output identity owned by current execution state."""
+
+    return {
+        output
+        for record in execution_records(entry).values()
+        for output in record["recipe"]["outputs"]
+    }
+
+
 class PyrunResolutionTests(unittest.TestCase):
     def test_environment_options_are_normalized_into_the_signature(self) -> None:
         first = PYRUN_MODULE.parse_pyrun_arguments(
@@ -258,6 +289,25 @@ class PyrunResolutionTests(unittest.TestCase):
                 "data/results.csv",
             ),
         )
+        self.assertEqual(
+            layout.recipe_parameters,
+            ("--results", "data/results.csv"),
+        )
+
+    def test_slow_is_policy_outside_recipe_parameters(self) -> None:
+        layout = PYRUN_MODULE.parse_pyrun_arguments(
+            ["--slow", "--", "scripts/model.py", "--mode", "exact"]
+        )
+
+        self.assertTrue(layout.slow)
+        self.assertEqual(layout.recipe_parameters, ("--mode", "exact"))
+        self.assertEqual(layout.parameters, ("--mode", "exact"))
+        for arguments in (
+            ["--slow", "scripts/model.py"],
+            ["--slow", "--slow", "--", "scripts/model.py"],
+        ):
+            with self.assertRaises(PYRUN_MODULE.PyrunContractError):
+                PYRUN_MODULE.parse_pyrun_arguments(arguments)
 
     def test_resolves_project_log_file_directory_and_member_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -358,11 +408,9 @@ class PyrunResolutionTests(unittest.TestCase):
                 (entry / "data" / "repository.json").read_text(encoding="utf-8")
             )
             self.assertEqual(generated, {"repository": str(root), "commit": commit})
-            support = json.loads(
-                (entry / "pyrun-outputs.json").read_text(encoding="utf-8")
-            )["outputs"]["data/repository.json"]
+            support = execution_for_output(entry, "data/repository.json")
             self.assertEqual(
-                support["inputs"],
+                support["observed"]["inputs"],
                 {"source-repository": resource.fingerprint.as_dict()},
             )
 
@@ -470,6 +518,89 @@ class PyrunOutputSupportTests(unittest.TestCase):
             )
             self.assertFalse(Path(observed["MPLCONFIGDIR"]).exists())
             self.assertFalse(Path(observed["XDG_CACHE_HOME"]).exists())
+            record = execution_for_output(entry, "data/environment.json")
+            self.assertEqual(record["recipe"]["environment"], {"MODE": "exact"})
+
+    def test_slow_policy_does_not_change_execution_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build_slow.py").write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[2]).write_text(sys.argv[1], encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            tail = [
+                "scripts/build_slow.py",
+                "value",
+                "data/slow.txt",
+            ]
+
+            ordinary = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "@2",
+                    "--",
+                    *tail,
+                ],
+                cwd=entry,
+            )
+            self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
+            identity = next(iter(execution_records(entry)))
+            self.assertFalse(execution_records(entry)[identity]["slow"])
+
+            marked = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--slow",
+                    "--other-outputs",
+                    "@2",
+                    "--",
+                    *tail,
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+            self.assertEqual(set(execution_records(entry)), {identity})
+            self.assertTrue(execution_records(entry)[identity]["slow"])
+            self.assertRegex(
+                execution_records(entry)[identity]["last_run_at"],
+                r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+            )
+
+    def test_overlapping_recipe_replaces_prior_execution_in_full(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/build_many.py").write_text(
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "p=argparse.ArgumentParser()\n"
+                "p.add_argument('--output-file', action='append', default=[])\n"
+                "a=p.parse_args()\n"
+                "for value in a.output_file: Path(value).write_text(value)\n",
+                encoding="utf-8",
+            )
+
+            for outputs in (
+                ("data/first.txt", "data/shared.txt"),
+                ("data/shared.txt", "data/third.txt"),
+            ):
+                command = [sys.executable, str(PYRUN), "scripts/build_many.py"]
+                for output in outputs:
+                    command.extend(("--output-file", output))
+                result = run(command, cwd=entry)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertEqual(
+                recorded_outputs(entry), {"data/shared.txt", "data/third.txt"}
+            )
+            self.assertEqual(len(execution_records(entry)), 1)
 
     def test_execution_and_output_publication_hold_the_stable_entry_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -554,14 +685,12 @@ open(a.results, 'wb').write(open(a.catalog, 'rb').read())
             result = run(command, cwd=entry)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/results.csv"
-            ]
+            record = execution_for_output(entry, "data/results.csv")
             self.assertEqual(
-                record["parameters"],
+                record["recipe"]["parameters"],
                 ["--catalog", "<input_csv>", "--results", "data/results.csv"],
             )
-            self.assertEqual(set(record["inputs"]), {"input_csv"})
+            self.assertEqual(set(record["observed"]["inputs"]), {"input_csv"})
 
     def test_other_role_overrides_a_misleading_automatic_role(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -597,8 +726,7 @@ open(a.result, 'wb').write(open(a.output_source, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
-            self.assertEqual(set(outputs), {"data/result.csv"})
+            self.assertEqual(recorded_outputs(entry), {"data/result.csv"})
 
     def test_other_output_can_select_a_positional_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -628,12 +756,13 @@ target.mkdir()
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/results"
-            ]
-            self.assertEqual(record["fingerprint"]["algorithm"], "directory-sha256-v1")
+            record = execution_for_output(entry, "data/results")
+            self.assertEqual(
+                record["observed"]["outputs"]["data/results"]["algorithm"],
+                "directory-sha256-v1",
+            )
 
-    def test_absent_other_output_publishes_no_record(self) -> None:
+    def test_absent_other_output_fails_without_publishing_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -652,8 +781,9 @@ target.mkdir()
                 cwd=entry,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("declared output is missing", result.stderr)
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_other_role_contract_rejects_invalid_forms_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -692,7 +822,7 @@ target.mkdir()
                 with self.subTest(arguments=arguments):
                     result = run([sys.executable, str(PYRUN), *arguments], cwd=entry)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+                    self.assertFalse((entry / "pyrun.json").exists())
 
     def test_success_records_exact_output_support_and_failed_run_does_not(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -724,23 +854,23 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             result = run(command, cwd=entry)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            payload = json.loads((entry / "pyrun-outputs.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun-outputs/v1")
-            record = payload["outputs"]["data/output.csv"]
+            payload = json.loads((entry / "pyrun.json").read_text())
+            self.assertEqual(payload["schema"], "research-log-pyrun/v1")
+            record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["confirmed"], True)
-            self.assertEqual(record["script"]["path"], "scripts/build.py")
-            self.assertEqual(record["parameters"], command[3:])
-            self.assertEqual(set(record["inputs"]), {"input_csv"})
-            self.assertEqual(record["code"], {})
+            self.assertEqual(record["recipe"]["script"], "scripts/build.py")
+            self.assertEqual(record["recipe"]["parameters"], command[3:])
+            self.assertEqual(set(record["observed"]["inputs"]), {"input_csv"})
+            self.assertEqual(record["observed"]["code"], {})
             self.assertEqual(
-                record["fingerprint"]["digest"],
+                record["observed"]["outputs"]["data/output.csv"]["digest"],
                 digest(entry / "data/output.csv"),
             )
 
-            before = (entry / "pyrun-outputs.json").read_bytes()
+            before = (entry / "pyrun.json").read_bytes()
             failed = run([*command, "--fail"], cwd=entry)
             self.assertEqual(failed.returncode, 3)
-            self.assertEqual((entry / "pyrun-outputs.json").read_bytes(), before)
+            self.assertEqual((entry / "pyrun.json").read_bytes(), before)
 
     def test_records_only_loaded_direct_transitive_and_dynamic_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -780,11 +910,9 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/code.txt"
-            ]
+            record = execution_for_output(entry, "data/code.txt")
             self.assertEqual(
-                record["code"],
+                record["observed"]["code"],
                 {
                     name: {"algorithm": "sha256", "digest": digest(entry / name)}
                     for name in (
@@ -835,9 +963,9 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/scoped.txt"
-            ]["code"]
+            code = execution_for_output(entry, "data/scoped.txt")["observed"][
+                "code"
+            ]
             self.assertEqual(
                 set(code),
                 {
@@ -885,9 +1013,9 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/children.txt"
-            ]["code"]
+            code = execution_for_output(entry, "data/children.txt")["observed"][
+                "code"
+            ]
             self.assertEqual(set(code), {"scripts/child.py", "scripts/child_helper.py"})
 
     def test_records_spawn_and_fork_imports(self) -> None:
@@ -934,9 +1062,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                         cwd=entry,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    code = json.loads((entry / "pyrun-outputs.json").read_text())[
-                        "outputs"
-                    ][output]["code"]
+                    code = execution_for_output(entry, output)["observed"]["code"]
                     self.assertEqual(
                         set(code),
                         {"scripts/process_helper.py", "scripts/process_worker.py"},
@@ -970,7 +1096,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("loaded code changed during execution", result.stderr)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_missing_root_trace_publishes_no_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -997,7 +1123,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("root Python process left no complete trace", result.stderr)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_excessive_loaded_code_publishes_no_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1029,7 +1155,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("code_path_limit", result.stderr)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_excludes_project_code_outside_the_current_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1057,10 +1183,8 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/external.txt"
-            ]
-            self.assertEqual(record["code"], {})
+            record = execution_for_output(entry, "data/external.txt")
+            self.assertEqual(record["observed"]["code"], {})
 
     def test_preserves_an_existing_sitecustomize(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1140,12 +1264,12 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
+            record = execution_for_output(entry, "data/first.txt")
             expected = {"scripts/shared_child_helper.py", "scripts/short_child.py"}
-            self.assertEqual(set(outputs["data/first.txt"]["code"]), expected)
+            self.assertEqual(set(record["observed"]["code"]), expected)
             self.assertEqual(
-                outputs["data/first.txt"]["code"],
-                outputs["data/second.txt"]["code"],
+                execution_for_output(entry, "data/first.txt"),
+                execution_for_output(entry, "data/second.txt"),
             )
 
     def test_isolated_and_detached_children_add_no_dependency_claim(self) -> None:
@@ -1186,10 +1310,8 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            record = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"][
-                "data/unobserved.txt"
-            ]
-            self.assertEqual(record["code"], {})
+            record = execution_for_output(entry, "data/unobserved.txt")
+            self.assertEqual(record["observed"]["code"], {})
 
     def test_success_records_directory_output_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1219,11 +1341,13 @@ target.mkdir()
             result = run(command, cwd=entry)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            payload = json.loads((entry / "pyrun-outputs.json").read_text())
-            record = payload["outputs"]["data/trials"]
+            record = execution_for_output(entry, "data/trials")
             self.assertIs(record["confirmed"], True)
-            self.assertEqual(record["fingerprint"]["algorithm"], "directory-sha256-v1")
-            self.assertEqual(record["parameters"], command[3:])
+            self.assertEqual(
+                record["observed"]["outputs"]["data/trials"]["algorithm"],
+                "directory-sha256-v1",
+            )
+            self.assertEqual(record["recipe"]["parameters"], command[3:])
 
     def test_success_records_portable_project_file_and_directory_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1259,15 +1383,20 @@ target.mkdir(parents=True)
             result = run(command, cwd=entry)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            payload = json.loads((entry / "pyrun-outputs.json").read_text())
-            file_record = payload["outputs"]["<project>/artifacts/result.csv"]
-            directory_record = payload["outputs"]["<project>/artifacts/trials"]
-            self.assertEqual(file_record["fingerprint"]["algorithm"], "sha256")
+            record = execution_for_output(entry, "<project>/artifacts/result.csv")
             self.assertEqual(
-                directory_record["fingerprint"]["algorithm"],
+                record["observed"]["outputs"]["<project>/artifacts/result.csv"][
+                    "algorithm"
+                ],
+                "sha256",
+            )
+            self.assertEqual(
+                record["observed"]["outputs"]["<project>/artifacts/trials"][
+                    "algorithm"
+                ],
                 "directory-sha256-v1",
             )
-            self.assertEqual(file_record["parameters"], command[3:])
+            self.assertEqual(record["recipe"]["parameters"], command[3:])
 
     def test_project_outputs_reject_nonportable_and_escaping_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1303,7 +1432,7 @@ target.mkdir(parents=True)
                         cwd=entry,
                     )
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+                    self.assertFalse((entry / "pyrun.json").exists())
 
     def test_duplicate_entry_and_project_spellings_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1361,7 +1490,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("data.fingerprint.mismatch", result.stderr)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_capture_options_mirror_and_record_stream_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1391,8 +1520,9 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertEqual(separate.stderr, "err\n")
             self.assertEqual((entry / "data/out.log").read_text(), "out\n")
             self.assertEqual((entry / "data/err.log").read_text(), "err\n")
-            outputs = json.loads((entry / "pyrun-outputs.json").read_text())["outputs"]
-            self.assertEqual(set(outputs), {"data/err.log", "data/out.log"})
+            self.assertEqual(
+                recorded_outputs(entry), {"data/err.log", "data/out.log"}
+            )
 
             combined = run(
                 [
@@ -1445,7 +1575,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
                 with self.subTest(arguments=arguments):
                     result = run([sys.executable, str(PYRUN), *arguments], cwd=entry)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse((entry / "pyrun-outputs.json").exists())
+                    self.assertFalse((entry / "pyrun.json").exists())
 
     def test_closed_mirror_does_not_stop_capture_or_deadlock_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1485,7 +1615,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertNotEqual(returncode, 0)
             self.assertIn("stream mirror failed", stderr)
             self.assertEqual((entry / "data/run.log").stat().st_size, byte_count)
-            self.assertFalse((entry / "pyrun-outputs.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_capture_write_failure_still_drains_the_source(self) -> None:
         class FailingCapture(io.BytesIO):
@@ -1524,6 +1654,27 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_execution_state_blocks_execution_before_cutover(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            legacy = entry / "pyrun-outputs.json"
+            legacy.write_text("{}\n", encoding="utf-8")
+            script = entry / "scripts/write.py"
+            script.write_text(
+                "from pathlib import Path\nPath('data/ran.txt').write_text('ran')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [sys.executable, str(PYRUN), "scripts/write.py"], cwd=entry
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires execution-state migration", result.stderr)
+            self.assertFalse((entry / "data/ran.txt").exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), "{}\n")
 
 
 class PyrunRuntimeTests(unittest.TestCase):

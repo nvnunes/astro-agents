@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterable
 
@@ -45,14 +46,20 @@ from validation.pyrun_contract import (
     split_argument_values,
 )
 from validation.pyrun_outputs import (
-    OutputSupport,
     PyrunOutputsError,
-    ScriptSupport,
     output_target_path,
     portable_code_path,
     portable_output_path,
-    quarantine_invalid_pyrun_outputs,
-    update_pyrun_outputs_locked,
+)
+from validation.pyrun_state import (
+    ExecutionRecipe,
+    ObservedExecution,
+    PyrunStateError,
+    ordinary_execution,
+    portable_script_path,
+    publish_execution_locked,
+    quarantine_invalid_pyrun_state,
+    validate_output_paths,
 )
 
 RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
@@ -63,7 +70,7 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun [--env NAME=value] [--other-inputs <selectors>] "
+        "       pyrun [--slow] [--env NAME=value] [--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
@@ -205,6 +212,7 @@ def _execution_layout(
     dict[str, str],
     dict[str, str],
     dict[str, str],
+    bool,
 ]:
     """Return the shared runner layout used to execute and publish support."""
 
@@ -215,10 +223,11 @@ def _execution_layout(
     return (
         layout.script,
         layout.script_arguments,
-        layout.parameters,
+        layout.recipe_parameters,
         dict(layout.captures),
         dict(layout.roles),
         dict(layout.environment),
+        layout.slow,
     )
 
 
@@ -487,7 +496,7 @@ def _record_stream_error(
 
 def _observe_output(
     path: Path, expected_kind: str | None, fingerprint_cache: FingerprintCache
-) -> Fingerprint:
+) -> tuple[str, Fingerprint]:
     """Observe a captured file or the completed kind of an ordinary output."""
 
     kind = expected_kind or ("directory" if path.is_dir() else "file")
@@ -499,7 +508,7 @@ def _observe_output(
         )
     except (DataContractError, FingerprintCacheError) as error:
         raise SystemExit(f"pyrun: could not observe output {path}: {error}") from error
-    return observation.fingerprint
+    return kind, observation.fingerprint
 
 
 def _observe_code(
@@ -588,15 +597,28 @@ def main(argv: list[str]) -> int:
             entry_lock(operation_entry),
             FingerprintCache(root, writable=True) as fingerprint_cache,
         ):
-            quarantine_invalid_pyrun_outputs(entry, project_root=root)
+            quarantine_invalid_pyrun_state(entry, project_root=root)
+            legacy_state = entry / "pyrun-outputs.json"
+            if legacy_state.exists() or legacy_state.is_symlink():
+                raise SystemExit(
+                    "pyrun: legacy pyrun-outputs.json requires execution-state "
+                    "migration before another run"
+                )
             data = _load_data(entry)
-            script_argument, script_args, parameters, captures, roles, explicit_env = (
-                _execution_layout(argv)
-            )
+            (
+                script_argument,
+                script_args,
+                parameters,
+                captures,
+                roles,
+                explicit_env,
+                slow,
+            ) = _execution_layout(argv)
             _require_declared_input_tokens(script_args, roles, data)
             verified: set[str] = set()
             observed_inputs: dict[str, Fingerprint] = {}
             resolved_script = _reserved_tokens(script_argument, root, log)
+            script_identity = portable_script_path(script_argument, entry_root=entry)
             script_path = (
                 Path(resolved_script)
                 if Path(resolved_script).is_absolute()
@@ -625,6 +647,10 @@ def main(argv: list[str]) -> int:
             output_paths = _declared_outputs(
                 script_args, captures, roles, entry, root, log
             )
+            if output_paths:
+                validate_output_paths(
+                    tuple(output_paths), entry_root=entry, project_root=root
+                )
             capture_paths = _capture_paths(captures, entry, root, log)
             with tempfile.TemporaryDirectory(prefix="pyrun-") as temporary:
                 environment, trace_directory = prepare_environment(
@@ -666,31 +692,56 @@ def main(argv: list[str]) -> int:
                         raise SystemExit(
                             f"pyrun: input {name!r} changed during execution"
                         )
-            script_support = ScriptSupport(
-                script_argument, script_observation.fingerprint
-            )
             code_support = _observe_code(
                 traces,
                 entry=entry,
                 script_path=script_path,
                 fingerprint_cache=fingerprint_cache,
             )
-            records: dict[str, OutputSupport] = {}
+            observed_outputs: dict[str, Fingerprint] = {}
+            output_kinds: dict[str, str] = {}
             for key, (path, kind) in output_paths.items():
                 if not path.exists():
-                    continue
-                records[key] = OutputSupport(
-                    True,
-                    _observe_output(path, kind, fingerprint_cache),
-                    script_support,
+                    raise SystemExit(f"pyrun: declared output is missing: {key}")
+                output_kind, fingerprint = _observe_output(
+                    path, kind, fingerprint_cache
+                )
+                output_kinds[key] = output_kind
+                observed_outputs[key] = fingerprint
+            if observed_outputs:
+                recipe = ExecutionRecipe(
+                    script_identity,
                     parameters,
+                    tuple(sorted(explicit_env.items())),
+                    tuple(sorted(observed_inputs)),
+                    tuple(sorted(output_kinds.items())),
+                )
+                observed = ObservedExecution(
+                    script_observation.fingerprint,
                     tuple(sorted(observed_inputs.items())),
                     code_support,
+                    tuple(sorted(observed_outputs.items())),
                 )
-            if records:
-                update_pyrun_outputs_locked(entry, records, project_root=root)
+                completed_at = (
+                    datetime.now(timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                publish_execution_locked(
+                    entry,
+                    ordinary_execution(
+                        recipe,
+                        observed,
+                        slow=slow,
+                        last_run_at=completed_at,
+                    ),
+                    project_root=root,
+                )
             return returncode
     except PyrunOutputsError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+    except PyrunStateError as error:
         raise SystemExit(f"pyrun: {error}") from error
     except OperationLockError as error:
         raise SystemExit(f"pyrun: operation conflict: {error}") from error

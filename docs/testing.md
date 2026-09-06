@@ -65,6 +65,17 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   -s skills/research-logging/tests -p 'test_research_log_pyrun_outputs.py'
 ```
 
+During the execution-state migration, retain that legacy gate for the migration
+reader. When changing the current `pyrun.json` contract or lifecycle, also run:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_pyrun_state.py \
+  skills/research-logging/tests/test_log_pyrun.py \
+  skills/research-logging/tests/test_pyrun.py
+```
+
 When changing research-log section classification, evidence presentation, or
 validation behavior, also run:
 

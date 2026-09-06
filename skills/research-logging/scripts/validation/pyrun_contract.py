@@ -18,6 +18,7 @@ PYRUN_ROLE_OPTIONS = {
     "--other-outputs": "output",
 }
 PYRUN_ENV_OPTION = "--env"
+PYRUN_SLOW_OPTION = "--slow"
 PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
     PYRUN_CODE_ENVIRONMENT
 )
@@ -51,6 +52,8 @@ class PyrunLayout:
     captures: tuple[tuple[str, str], ...]
     roles: tuple[tuple[str, str], ...]
     environment: tuple[tuple[str, str], ...]
+    recipe_parameters: tuple[str, ...]
+    slow: bool
 
 
 @dataclass
@@ -59,6 +62,7 @@ class _RunnerState:
     declarations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     environment: dict[str, str] = field(default_factory=dict)
     signature_prefix: list[str] = field(default_factory=list)
+    slow: bool = False
 
 
 def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
@@ -72,12 +76,13 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
 
     index = 0
     state = _RunnerState()
-    runner_options = (
-        PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys() | {PYRUN_ENV_OPTION}
-    )
+    runner_options = PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys() | {
+        PYRUN_ENV_OPTION,
+        PYRUN_SLOW_OPTION,
+    }
     while index < len(arguments) and arguments[index] in runner_options:
         index = _consume_runner_option(arguments, index, state)
-    if state.captures or state.declarations or state.environment:
+    if state.captures or state.declarations or state.environment or state.slow:
         if index >= len(arguments) or arguments[index] != "--":
             raise PyrunContractError("runner options require -- before the script")
         _validate_captures(state.captures)
@@ -102,6 +107,8 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         tuple(state.captures),
         roles,
         tuple(sorted(state.environment.items())),
+        script_arguments,
+        state.slow,
     )
 
 
@@ -109,6 +116,11 @@ def _consume_runner_option(
     arguments: Sequence[str], index: int, state: _RunnerState
 ) -> int:
     option = arguments[index]
+    if option == PYRUN_SLOW_OPTION:
+        if state.slow:
+            raise PyrunContractError("duplicate --slow declaration")
+        state.slow = True
+        return index + 1
     if index + 1 >= len(arguments):
         raise PyrunContractError(f"{option} lacks target")
     target = arguments[index + 1]

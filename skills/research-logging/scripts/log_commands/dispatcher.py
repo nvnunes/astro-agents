@@ -29,12 +29,13 @@ FAMILIES = (
     "evidence",
     "findings",
     "init",
+    "pyrun",
     "reorganize",
     "retention",
     "validate",
 )
 AUTHORING_FAMILIES = frozenset(
-    {"add", "data", "evidence", "init", "reorganize", "retention"}
+    {"add", "data", "evidence", "init", "pyrun", "reorganize", "retention"}
 )
 
 
@@ -57,7 +58,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _top_parser().error(f"unknown task family: {family}")
     selected_task = (
         f"{family}.{arguments[0]}"
-        if family in {"data", "evidence", "reorganize", "retention"} and arguments
+        if family in {"data", "evidence", "pyrun", "reorganize", "retention"}
+        and arguments
         else family
     )
     try:
@@ -73,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "data": _dispatch_data,
             "evidence": _dispatch_evidence,
             "init": _dispatch_init,
+            "pyrun": _dispatch_pyrun,
             "reorganize": _dispatch_reorganize,
             "retention": _dispatch_retention,
         }
@@ -419,6 +422,27 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     if args.action == "remove":
         return data.remove(entry, args.name, dry_run=args.dry_run)
     return data.list_inputs(entry)
+
+
+def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:
+    parser = _AuthoringParser(prog="log pyrun")
+    actions = parser.add_subparsers(dest="action", required=True)
+    update = actions.add_parser(
+        "update", help="Apply one Markdown-first execution policy change"
+    )
+    _entry_arguments(update)
+    update.add_argument("--execution-id", required=True)
+    policy = update.add_mutually_exclusive_group(required=True)
+    policy.add_argument("--slow", action="store_true")
+    policy.add_argument("--no-slow", action="store_true")
+    args = parser.parse_args(arguments)
+    from . import pyrun_policy
+
+    return pyrun_policy.update_slow(
+        resolve_entry(resolve_log(args.path), args.entry),
+        execution_id_value=args.execution_id,
+        slow=args.slow,
+    )
 
 
 def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:

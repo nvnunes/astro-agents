@@ -1084,10 +1084,17 @@ class LogDataTests(unittest.TestCase):
                 "data/generated.csv",
             )
             self.assertEqual(executed.returncode, 0, executed.stderr)
-            support_path = entry / "pyrun-outputs.json"
+            support_path = entry / "pyrun.json"
             support = json.loads(support_path.read_text(encoding="utf-8"))
-            support["outputs"]["data/generated.csv"]["confirmed"] = False
-            support_path.write_text(json.dumps(support) + "\n", encoding="utf-8")
+            execution_id = next(iter(support["executions"]))
+            support["executions"][execution_id]["confirmed"] = False
+            support_path.write_text(
+                json.dumps(
+                    support, ensure_ascii=False, indent=2, sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             unconfirmed = run(
                 entry,
                 "data",
@@ -1111,8 +1118,14 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(pending.returncode, 0, pending.stderr)
             self.assertEqual(len(data_inputs(entry)), 1)
-            support["outputs"]["data/generated.csv"]["confirmed"] = True
-            support_path.write_text(json.dumps(support) + "\n", encoding="utf-8")
+            support["executions"][execution_id]["confirmed"] = True
+            support_path.write_text(
+                json.dumps(
+                    support, ensure_ascii=False, indent=2, sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (entry / "data" / "generated.csv").write_text(
                 "value\nchanged\n", encoding="utf-8"
             )

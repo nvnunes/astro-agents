@@ -2154,7 +2154,7 @@ class LogRetentionTests(unittest.TestCase):
 
 
 class PyrunQuarantineTests(unittest.TestCase):
-    def test_malformed_output_support_is_preserved_and_execution_stops(self) -> None:
+    def test_malformed_execution_state_is_preserved_and_execution_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry = fixture(Path(directory))
             script = entry / "scripts" / "run.py"
@@ -2163,7 +2163,7 @@ class PyrunQuarantineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             malformed = b'{"broken":'
-            (entry / "pyrun-outputs.json").write_bytes(malformed)
+            (entry / "pyrun.json").write_bytes(malformed)
 
             result = subprocess.run(
                 [sys.executable, str(PYRUN), "scripts/run.py"],
@@ -2174,11 +2174,9 @@ class PyrunQuarantineTests(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("pyrun.outputs.quarantined", result.stderr)
-            self.assertEqual((entry / "pyrun-outputs.json.bak").read_bytes(), malformed)
-            self.assertEqual(
-                json.loads((entry / "pyrun-outputs.json").read_text())["outputs"], {}
-            )
+            self.assertIn("pyrun.state.quarantined", result.stderr)
+            self.assertEqual((entry / "pyrun.json.bak").read_bytes(), malformed)
+            self.assertFalse((entry / "pyrun.json").exists())
             self.assertFalse((entry / "data" / "executed").exists())
 
     def test_quarantine_uses_first_unused_numbered_backup(self) -> None:
@@ -2187,9 +2185,9 @@ class PyrunQuarantineTests(unittest.TestCase):
             script = entry / "scripts" / "run.py"
             script.write_text("raise SystemExit('must not run')\n", encoding="utf-8")
             malformed = b"not-json\n"
-            (entry / "pyrun-outputs.json").write_bytes(malformed)
-            (entry / "pyrun-outputs.json.bak").write_bytes(b"first")
-            (entry / "pyrun-outputs.json.2.bak").write_bytes(b"second")
+            (entry / "pyrun.json").write_bytes(malformed)
+            (entry / "pyrun.json.bak").write_bytes(b"first")
+            (entry / "pyrun.json.2.bak").write_bytes(b"second")
 
             result = subprocess.run(
                 [sys.executable, str(PYRUN), "scripts/run.py"],
@@ -2201,14 +2199,14 @@ class PyrunQuarantineTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertEqual(
-                (entry / "pyrun-outputs.json.3.bak").read_bytes(), malformed
+                (entry / "pyrun.json.3.bak").read_bytes(), malformed
             )
-            self.assertEqual((entry / "pyrun-outputs.json.bak").read_bytes(), b"first")
+            self.assertEqual((entry / "pyrun.json.bak").read_bytes(), b"first")
             self.assertEqual(
-                (entry / "pyrun-outputs.json.2.bak").read_bytes(), b"second"
+                (entry / "pyrun.json.2.bak").read_bytes(), b"second"
             )
 
-    def test_unsafe_output_support_path_is_not_quarantined(self) -> None:
+    def test_unsafe_execution_state_path_is_not_quarantined(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _, entry = fixture(root)
@@ -2220,7 +2218,7 @@ class PyrunQuarantineTests(unittest.TestCase):
             )
             external = root / "external.json"
             external.write_bytes(b"not-json")
-            current = entry / "pyrun-outputs.json"
+            current = entry / "pyrun.json"
             current.symlink_to(external)
 
             result = subprocess.run(
@@ -2232,9 +2230,9 @@ class PyrunQuarantineTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 1)
-            self.assertIn("pyrun.outputs.invalid", result.stderr)
+            self.assertIn("pyrun.state.invalid", result.stderr)
             self.assertTrue(current.is_symlink())
-            self.assertFalse((entry / "pyrun-outputs.json.bak").exists())
+            self.assertFalse((entry / "pyrun.json.bak").exists())
             self.assertFalse((entry / "data/executed").exists())
 
 

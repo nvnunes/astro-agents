@@ -39,6 +39,11 @@ from validation.pyrun_outputs import (
     empty_pyrun_outputs,
     load_pyrun_outputs,
 )
+from validation.pyrun_state import (
+    PYRUN_FILENAME,
+    legacy_output_projection,
+    load_pyrun_state,
+)
 
 from .context import LogContext, resolve_project_root
 from .model import ActionError
@@ -224,15 +229,36 @@ class LogMaterials:
         if support is not None:
             return support
         path = root / "pyrun-outputs.json"
-        support = (
-            load_pyrun_outputs(
+        current = root / PYRUN_FILENAME
+        if (path.exists() or path.is_symlink()) and (
+            current.exists() or current.is_symlink()
+        ):
+            raise ActionError(
+                "pyrun.state.conflict", f"both execution-state formats exist: {root}"
+            )
+        if current.exists() or current.is_symlink():
+            state = load_pyrun_state(
+                current,
+                entry_root=root,
+                project_root=self.project_root,
+            )
+            support = legacy_output_projection(
+                state,
+                tuple(
+                    invocation
+                    for invocation in self.invocations
+                    if invocation.material_owner == owner
+                ),
+                project_root=self.project_root,
+            )
+        elif path.exists() or path.is_symlink():
+            support = load_pyrun_outputs(
                 path,
                 entry_root=root,
                 project_root=self.project_root,
             )
-            if path.exists() or path.is_symlink()
-            else empty_pyrun_outputs(root)
-        )
+        else:
+            support = empty_pyrun_outputs(root)
         self._support[owner] = support
         return support
 

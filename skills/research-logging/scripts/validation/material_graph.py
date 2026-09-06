@@ -21,6 +21,7 @@ from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
 from .provenance import ProducerIndex, build_producer_index
 from .pyrun_outputs import PYRUN_OUTPUTS_BACKUP_RE
+from .pyrun_state import PYRUN_BACKUP_RE
 from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
 
 MAX_GRAPH_NODES = 1_000_000
@@ -36,6 +37,7 @@ IGNORED_FILE_NAMES = frozenset(
         "data.json",
         "evidence.json",
         "pyrun",
+        "pyrun.json",
         "pyrun-outputs.json",
         "retention.json",
     }
@@ -614,7 +616,10 @@ def _excluded(relative: Path) -> bool:
         or relative.name in IGNORED_FILE_NAMES
         or (
             len(relative.parts) == 1
-            and PYRUN_OUTPUTS_BACKUP_RE.fullmatch(relative.name) is not None
+            and (
+                PYRUN_OUTPUTS_BACKUP_RE.fullmatch(relative.name) is not None
+                or PYRUN_BACKUP_RE.fullmatch(relative.name) is not None
+            )
         )
         or (bool(relative.parts) and relative.parts[0] == "tmp")
         or any(part in RUNTIME_CACHE_DIRECTORY_NAMES for part in relative.parts)

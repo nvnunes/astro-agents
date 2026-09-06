@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from research_log_cli_test_support import run_log
+from research_log_data import Fingerprint
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 SCRIPT_ROOT = LOG.parent
@@ -26,6 +27,16 @@ from validation.operation_state import (  # noqa: E402
     begin_reorganization,
     finish_guarded_publication,
     operation_directory,
+)
+from validation.pyrun_state import (  # noqa: E402
+    PYRUN_ENVIRONMENT_PROFILE,
+    PYRUN_EXECUTION_CONTRACT,
+    PYRUN_RUNNER,
+    ExecutionRecipe,
+    ObservedExecution,
+    PyrunExecution,
+    PyrunFile,
+    execution_id,
 )
 
 
@@ -68,6 +79,38 @@ def result(process: subprocess.CompletedProcess[str]) -> dict[str, object]:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
+    """Write one complete multi-output execution and return its stable ID."""
+
+    recipe = ExecutionRecipe(
+        "scripts/make.py",
+        tuple(value for output in outputs for value in ("--output", output)),
+        (),
+        (),
+        tuple((output, "file") for output in outputs),
+    )
+    fingerprint = Fingerprint("sha256", digest="a" * 64)
+    execution = PyrunExecution(
+        True,
+        False,
+        "2030-01-01T00:00:00Z",
+        PYRUN_RUNNER,
+        PYRUN_ENVIRONMENT_PROFILE,
+        PYRUN_EXECUTION_CONTRACT,
+        recipe,
+        ObservedExecution(
+            fingerprint,
+            (),
+            (),
+            tuple((output, fingerprint) for output in outputs),
+        ),
+    )
+    identity = execution_id(recipe)
+    state = PyrunFile(entry / "pyrun.json", entry, {identity: execution})
+    (entry / "pyrun.json").write_text(state.serialized(), encoding="utf-8")
+    return identity
 
 
 class ReorganizeHelpTests(unittest.TestCase):
@@ -591,6 +634,84 @@ class ReorganizeIdentityTests(unittest.TestCase):
 
 
 class ReorganizeTransferTests(unittest.TestCase):
+    def test_transfer_retires_only_one_complete_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            data = source / "data"
+            data.mkdir()
+            outputs = ("data/first.txt", "data/second.txt")
+            for name, output in zip(("first", "second"), outputs, strict=True):
+                (source / output).write_text(name + "\n", encoding="utf-8")
+                registered = run(
+                    root,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    name,
+                    output,
+                )
+                self.assertEqual(registered.returncode, 0, registered.stderr)
+            script = source / "scripts/make.py"
+            script.parent.mkdir()
+            script.write_text("print('fixture')\n", encoding="utf-8")
+            identity = write_execution_state(source, outputs)
+            before = (source / "pyrun.json").read_bytes()
+
+            destination_data = destination / "data"
+            destination_data.mkdir()
+            (source / outputs[0]).rename(destination_data / "first.txt")
+            partial = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--data",
+                "first",
+                "--path-map",
+                outputs[0],
+                "data/first.txt",
+            )
+            self.assertEqual(partial.returncode, 2)
+            self.assertIn("reorganize.transfer.support_ambiguous", partial.stderr)
+            self.assertEqual((source / "pyrun.json").read_bytes(), before)
+
+            (source / outputs[1]).rename(destination_data / "second.txt")
+            complete = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--data",
+                "first,second",
+                "--path-map",
+                outputs[0],
+                "data/first.txt",
+                "--path-map",
+                outputs[1],
+                "data/second.txt",
+            )
+
+            self.assertEqual(complete.returncode, 0, complete.stderr)
+            self.assertFalse((source / "pyrun.json").exists())
+            records = result(complete)["records"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["execution_id"], identity)
+
     def test_transfer_moves_artifact_registry_state_after_agent_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -24,6 +24,7 @@ class RecordSurfaceTests(unittest.TestCase):
             "operation-record.md",
             "operation-reference.md",
             "operation-reorganize.md",
+            "operation-reproduce.md",
             "operation-repair.md",
             "operation-replace.md",
             "operation-review.md",
@@ -33,7 +34,8 @@ class RecordSurfaceTests(unittest.TestCase):
         references = set(REFERENCE_PATTERN.findall(skill))
         self.assertEqual(
             references,
-            expected_operations | {"file-validation-records.md"},
+            expected_operations
+            | {"file-reproduction-records.md", "file-validation-records.md"},
         )
 
         record = reference("operation-record.md")
@@ -346,11 +348,13 @@ class RecordSurfaceTests(unittest.TestCase):
             encoding="utf-8"
         )
         naming = reference("file-entry-naming.md")
-        self.assertIn("seven core operations", guide)
+        self.assertIn("eight core operations", guide)
+        self.assertIn("**Reproduce**", guide)
         self.assertIn("**Repair**", guide)
         self.assertIn("**Reorganize**", guide)
         self.assertIn("### Repair", guide)
         self.assertIn("### Reorganize", guide)
+        self.assertIn("## Reproducing a research log", guide)
         self.assertNotIn("Reorganizing the log is part of Record", guide)
         self.assertIn("simultaneous Reorganize\nreorder", naming)
 

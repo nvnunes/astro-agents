@@ -56,8 +56,8 @@ command/input-registry guidance that affects `pyrun`, also run:
 ./.conda/bin/python -m unittest skills/research-logging/tests/test_pyrun.py
 ```
 
-When changing the persisted `pyrun-outputs.json` shape, also run its focused
-contract tests:
+When changing the bounded legacy `pyrun-outputs.json` migration reader, also
+run its focused contract tests:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \

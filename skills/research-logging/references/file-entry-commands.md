@@ -222,10 +222,16 @@ beside the command.
 
 After creating or changing an entry Python script, input declaration, `pyrun`
 symlink, or recorded command, run the command from the entry root and confirm
-its saved outputs can be read before presenting them. `pyrun` updates the entry-root
-`pyrun-outputs.json` only after successful execution and complete output
+its saved outputs can be read before presenting them. `pyrun` updates the
+entry-root `pyrun.json` only after successful execution and complete output
 observation, provided the script and direct input bytes also remained stable
-across execution; do not edit that file by hand.
+across execution; do not edit that file by hand. Add `--slow` before `--` only
+for simulation, model-training, or comparable commands that should not be
+included casually in default reproduction:
+
+```bash
+./pyrun --slow -- scripts/run_simulation.py --output-data data/result.json
+```
 
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader

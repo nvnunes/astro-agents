@@ -1,12 +1,12 @@
 ---
 name: research-logging
-description: Perform and record investigations in project-native research logs by implementing and running scripts, retaining and analyzing outputs, documenting evidence and observations, safely replacing superseded experimental work, updating summaries, reviewing or validating research, managing references, reorganizing log files, and maintaining evidence and input registries. Use when research work should be performed or preserved in a research log, not for general project docs, exploratory or standalone analysis without research-log intent, or scientific manuscript writing.
+description: Perform, record, reproduce, review, and validate investigations in project-native research logs by implementing and running scripts, retaining and analyzing outputs, documenting evidence and observations, safely replacing superseded work, updating summaries, managing references, reorganizing log files, and maintaining evidence and input registries. Use when research work should be performed, preserved, or mechanically reproduced in a research log, not for general project docs, standalone exploration without preservation intent, or scientific manuscript writing.
 ---
 
 # Research Logging
 
 Use this skill for Record, Replace, Update Summary, Repair, Reorganize, Review,
-and Validate.
+Validate, and Reproduce.
 Record performs and documents an investigation as one workflow and also starts
 logs. Its production checks do not establish validation.
 
@@ -36,6 +36,9 @@ Choose the core operation:
   `references/operation-validate.md`. The validation run is code-only; neither
   path becomes semantic review or reproduction. Those remain separate
   workflows.
+- Explicit mechanical reproduction of a maintained log or one entry: read
+  `references/operation-reproduce.md`. Reproduce is CLI-owned, uses JSON as its
+  graph and execution authority, and never becomes Record, Review, or Validate.
 - Explicit correction of a named research-log finding, malformed or legacy
   state, transaction residue, or other identified log defect: read
   `references/operation-repair.md`. A failed authoring command or reported
@@ -96,6 +99,10 @@ state does not start Repair without an explicit correction request.
   and authored prose as research-owned. Research operations never edit
   generated validation files; Validate reads research files and writes
   only the generated files defined in `references/file-validation-records.md`.
+- Treat generated reproduction jobs, machine results, and `reproduction.md` as
+  Reproduce-owned. Other operations preserve them and never edit them by hand;
+  their exact paths and mutation boundaries are defined in
+  `references/file-reproduction-records.md`.
 - If a maintained log command reports `operation.lock.conflict`, stop and
   retry after the conflicting operation completes; do not bypass its lock.
 - If validation reports `research-owned state changed during validation`,

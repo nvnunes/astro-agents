@@ -29,7 +29,7 @@ inside an entry.
   material quality findings that still exist. Do not invent, normalize, or
   rerun them for documentation; record reconstruction limits, not a check
   inventory.
-- Preserve the summary's fixed validation-report link exactly. Do not open,
+- Preserve the summary's fixed validation and reproduction report links exactly. Do not open,
   edit, delete, repair, or normalize generated validation records solely to
   assess whether validation remains current.
 - Keep new or revised `Follow-up:` items in the entry during Record. Do not add

@@ -47,7 +47,7 @@ delete an unmentioned dependent section or file.
    executable work; and `references/file-presented-evidence.md`,
    `references/file-data-index.md`, or `references/file-retention.md` for the
    corresponding material. Leave the log summary unchanged, including its
-   fixed validation-report link, unless Update Summary is separately
+   fixed validation and reproduction report links, unless Update Summary is separately
    authorized. Do not change generated validation files. When a command must
    overwrite an artifact at the same path, the verified backup must already
    contain the old artifact.
@@ -67,7 +67,7 @@ delete an unmentioned dependent section or file.
    Invoke only the families required by the authorized replacement and stop on
    the first failure. Never repair the failure by editing a registry directly.
    Leave every old source and retained artifact in place until all required
-   mutations succeed. `pyrun-outputs.json` remains tool-owned and is outside
+   mutations succeed. `pyrun.json` remains tool-owned and is outside
    this research-owned removal sequence.
 8. Only after all required record removals succeed, delete the explicitly
    authorized old source and retained artifacts. Leave the durable backup in

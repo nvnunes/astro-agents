@@ -617,10 +617,14 @@ def _require_no_stale_identity_links(
 
 def _require_relocation_markdown(log: LogContext, root_name: str) -> None:
     text = log.summary.read_text(encoding="utf-8")
-    expected = f"{root_name}/validation.md"
-    if expected not in text:
+    expected = (
+        f"{root_name}/validation.md",
+        f"{root_name}/reproduction.md",
+    )
+    if any(target not in text for target in expected):
         raise ActionError(
-            "reorganize.markdown.incomplete", "update the summary validation link first"
+            "reorganize.markdown.incomplete",
+            "update the summary validation and reproduction links first",
         )
     if root_name != log.root.name and f"{log.root.name}/" in text:
         raise ActionError(

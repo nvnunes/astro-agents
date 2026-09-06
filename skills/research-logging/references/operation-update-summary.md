@@ -35,7 +35,7 @@ the validator's final snapshot check rejects an overlapping raw edit.
 - Keep detailed evidence, long caveats, commands, and reconstruction details in entries.
 - Preserve the existing `## AI Use` disclosure exactly unless the researcher
   asks to revise it. Do not reset customized wording to the creation default.
-- Preserve the fixed validation-report link exactly. Do not open, edit, delete,
+- Preserve the fixed validation and reproduction report links exactly. Do not open, edit, delete,
   repair, or normalize generated validation records because summary content
   changed.
 - Do not add conclusions that are not supported by entries, references, or user-provided direction.

@@ -9,6 +9,8 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from validation.human_projection import ReportContext
+
 from .context import (
     EntryContext,
     LogContext,
@@ -18,6 +20,10 @@ from .context import (
     parse_entry_document_name,
 )
 from .model import ActionError, ActionResult, AddArguments, InitArguments
+from .reproduction_results import (
+    compose_reproduction_report,
+    empty_reproduction_results,
+)
 from .storage import (
     atomic_create_text,
     atomic_write_text,
@@ -106,8 +112,19 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
 
     title = _title(arguments.title, "log.title.invalid")
     summary = _initial_summary(log, title)
+    reproduction = log.root / "reproduction"
+    reproduction_results = reproduction / "results.json"
+    reproduction_report = log.root / "reproduction.md"
     paths = tuple(
-        path.as_posix() for path in (log.summary, log.root, log.root / "entries")
+        path.as_posix()
+        for path in (
+            log.summary,
+            log.root,
+            log.root / "entries",
+            reproduction,
+            reproduction_results,
+            reproduction_report,
+        )
     )
     with log_creation_lock(log):
         _require_new_log_target(log)
@@ -118,8 +135,26 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
             _make_directory(log.root, created)
             entries = log.root / "entries"
             _make_directory(entries, created)
+            _make_directory(reproduction, created)
             atomic_create_text(log.summary, summary)
             created.append(log.summary)
+            generated_at = _utc_now()
+            summary_path = (
+                log.summary.resolve()
+                .relative_to(log.project_root.resolve())
+                .as_posix()
+            )
+            results = empty_reproduction_results(
+                summary_path, updated_at=generated_at
+            )
+            atomic_create_text(reproduction_results, results.serialized())
+            created.append(reproduction_results)
+            report_context = ReportContext(title, log.summary, log.root, {})
+            atomic_create_text(
+                reproduction_report,
+                compose_reproduction_report(results, context=report_context),
+            )
+            created.append(reproduction_report)
         except OSError as error:
             _raise_publication_failure("init", error, created)
     return _result("init", "changed", True, paths)
@@ -290,6 +325,17 @@ def _summary_section(log: LogContext, text: str) -> SummarySection:
     if not any(line.rstrip("\r\n") in accepted for line in lines[1:3]):
         raise ActionError(
             "summary.scaffold.invalid", "summary validation link is not canonical"
+        )
+    reproduction = f"Reproduction: [latest report]({log.root.name}/reproduction.md)"
+    accepted_reproduction = {
+        reproduction,
+        reproduction.replace("(", "(<", 1).replace(")", ">)", 1),
+    }
+    if not any(
+        line.rstrip("\r\n") in accepted_reproduction for line in lines[3:6]
+    ):
+        raise ActionError(
+            "summary.scaffold.invalid", "summary reproduction link is not canonical"
         )
     headings = [
         index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Entries"
@@ -544,9 +590,11 @@ def _insert_entry(
 
 def _initial_summary(log: LogCreationContext, title: str) -> str:
     validation_target = _markdown_target(f"{log.root.name}/validation.md")
+    reproduction_target = _markdown_target(f"{log.root.name}/reproduction.md")
     return (
         f"# {title}\n\n"
         f"Validation: [latest completed report]({validation_target})\n\n"
+        f"Reproduction: [latest report]({reproduction_target})\n\n"
         "## Contents\n\n"
         "- [Entries](#entries)\n"
         "- [Summary](#summary)\n"
@@ -555,6 +603,14 @@ def _initial_summary(log: LogCreationContext, title: str) -> str:
         "## Summary\n\n"
         "## AI Use\n\n"
         f"{AI_DISCLOSURE}\n"
+    )
+
+
+def _utc_now() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
     )
 
 

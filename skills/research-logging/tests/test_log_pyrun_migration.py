@@ -48,6 +48,7 @@ def _fixture(root: Path, *, obsolete: bool = False) -> tuple[Path, Path, str | N
         root / "docs/study.md",
         "# Study\n\n"
         "Validation: [latest completed report](study/validation.md)\n\n"
+        "Reproduction: [latest report](study/reproduction.md)\n\n"
         "## Summary\n\n"
         "## Entries\n\n"
         "- `2030-01-01` [Study](study/entries/2030-01-01-e001-study/e001.md)\n",

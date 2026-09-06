@@ -43,6 +43,7 @@ implicit-research-log-replace,research-logging,research-logging,true,implicit,Re
 implicit-research-log-update-summary,research-logging,research-logging,true,implicit,Update the current summary for this adaptive optics research log
 implicit-research-log-review,research-logging,research-logging,true,implicit,Review this adaptive optics research log for structure synthesis and writing issues
 implicit-research-log-validate,research-logging,research-logging,true,implicit,Run mechanical validation on this adaptive optics research log
+implicit-research-log-reproduce,research-logging,research-logging,true,implicit,Reproduce the evidence artifacts in e004 of this adaptive optics research log
 implicit-research-log-repair-explicit,research-logging,research-logging,true,implicit,Repair the data.fingerprint.mismatch finding in e004 of this adaptive optics research log
 implicit-research-log-repair-after-validation,research-logging,research-logging,true,implicit,Validation is complete; now repair the named evidence presentation mismatch in e004
 implicit-research-log-failed-record-no-repair,research-logging,research-logging,true,implicit,The research-log evidence add command failed; report the failure without repairing anything

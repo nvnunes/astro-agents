@@ -1,8 +1,8 @@
 # Generated Validation Record Instructions
 
 Use this file when mechanical validation reads research material and publishes
-its generated result. Entry-root `pyrun-outputs.json` is separate `pyrun`-owned
-support state; validation reads it but never writes or repairs it.
+its generated result. Entry-root `pyrun.json` is separate `pyrun`-owned
+execution state; validation reads it but never writes or repairs it.
 
 ## Ownership
 
@@ -19,10 +19,10 @@ Mechanical Validate may create or update only these generated paths:
 `validation/results.json` is the authoritative complete machine-readable
 result. Repair accesses a selected finding through `log findings list` and
 `log findings show`; it does not load this file directly in ordinary work.
-`validation.md` is a concise human-only projection and also carries the
-independent Reproduction section. Validate and Repair do not parse it.
-Mechanical Validate preserves any existing
-`validation/reproduction.json`; reproduction is a separate operation.
+`validation.md` is a concise validation-only human projection. Validate and
+Repair do not parse it. Reproduction is a separate operation with
+`reproduction/results.json` and `reproduction.md`; mechanical validation
+preserves both.
 
 The human report contains the validation date, one compact Area and Result
 table, and findings grouped by entry and human issue type. Each issue group

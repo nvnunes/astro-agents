@@ -249,22 +249,23 @@ Future validation changes must preserve these invariants:
   the material graph independently of confirmation so Hygiene does not
   duplicate a Provenance failure. This is a bounded support claim, not
   causation, scientific validity, or reproduction.
-- **Output-owned execution state:** `pyrun-outputs.json` is keyed by output so
-  command splitting, merging, and renaming reconcile through current graph
-  membership rather than command identity. Validation reads this state but
-  does not write it. The explicit Reorganize transfer coordinator may ask the
-  `pyrun`-owned service to retire only output support made mechanically stale
-  by that exact transfer; it never rewrites or relocates execution signatures.
-  This remains the active invariant until the atomic cutover defined by
-  `docs/research-log-reproduction-spec.md`; the target command-oriented
-  contract must not leak into the current runtime piecemeal.
+- **Command-owned execution state:** entry-root `pyrun.json` records one stable
+  execution identity for each exact command recipe, including its complete
+  output set, observed inputs and code, confirmation state, latest run time,
+  and slow classification. One shell loop produces one execution identity per
+  child `pyrun` invocation. Validation reads this state but does not write it;
+  Reproduction executes it directly without using Markdown as authority. The
+  bounded historical migration is defined by
+  `docs/research-log-reproduction-spec.md`.
 - **Split Reorganize ownership:** agents own semantic partitioning, Markdown,
   links, record selection, and support-file movement. The `log reorganize`
   family owns only verified closed identity changes and coordinated authored
   registry updates within one maintained log.
 - **Separate write ownership:** Validation agents manage validation artifacts
   and do not modify research-log entries, scripts, or artifacts. Research
-  agents manage research material and do not modify validation artifacts.
+  agents manage research material and do not modify validation or reproduction
+  artifacts. Reproduction agents manage only generated reproduction state and
+  never promote staged outputs into retained research material automatically.
 - **Low-cost evolution:** Generated record and cache schemas evolve
   independently. Cache state is disposable; authored evidence-format changes
   use an explicit upgrade rather than compatibility branches in validation.

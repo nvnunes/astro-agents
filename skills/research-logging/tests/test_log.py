@@ -64,6 +64,7 @@ def fixture(root: Path) -> tuple[Path, Path]:
     summary.write_text(
         "# Study\n\n"
         "Validation: [latest completed report](study/validation.md)\n\n"
+        "Reproduction: [latest report](study/reproduction.md)\n\n"
         "## Summary\n\n"
         "## Entries\n\n"
         "- `2026-09-03` [Study](study/entries/2026-09-03-e001-study/e001.md)\n",
@@ -274,7 +275,8 @@ print(json.dumps({{
             nested_entry.mkdir(parents=True)
             (entry / "nested.md").write_text(
                 "# Nested\n\n"
-                "Validation: [latest completed report](nested/validation.md)\n",
+                "Validation: [latest completed report](nested/validation.md)\n\n"
+                "Reproduction: [latest report](nested/reproduction.md)\n",
                 encoding="utf-8",
             )
             ambiguous = run(

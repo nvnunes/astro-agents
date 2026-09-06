@@ -7,11 +7,12 @@ understanding across entries and point back to supporting entries where useful.
 Its organization may use ordinary sections chosen by the researcher. It does
 not need to follow entry chronology.
 
-Immediately below the level-one title, include the stable report link defined
-in `references/file-summary-validation.md`. The
-maintained summary then starts with `## Contents`, followed by `## Entries` and
-`## Summary`. If entries contain `Follow-up:` label items, add `## Follow-ups`
-after `## Summary`. End with `## AI Use`.
+Immediately below the level-one title, include the stable report links defined
+in `references/file-summary-validation.md` and
+`references/file-summary-reproduction.md`. The maintained summary then starts
+with `## Contents`, followed by `## Entries` and `## Summary`. If entries
+contain `Follow-up:` label items, add `## Follow-ups` after `## Summary`. End
+with `## AI Use`.
 
 `Contents` links to the main sections. Include the `Follow-ups` link only when the section exists:
 
@@ -45,9 +46,10 @@ entries. Add, revise, or remove these summary items during Update Summary, not
 during Record. Group follow-up items under topic headings when useful, and link
 each item back to the entry label that created it.
 
-Every maintained summary includes the fixed validation-report link defined in
-`references/file-summary-validation.md`. It never
-contains a generated validation-status section.
+Every maintained summary includes the fixed validation and reproduction report
+links defined in `references/file-summary-validation.md` and
+`references/file-summary-reproduction.md`. It never contains generated status
+sections.
 
 Use `## AI Use` for the log-level disclosure defined in
 `references/file-summary-ai-use.md`. Every maintained

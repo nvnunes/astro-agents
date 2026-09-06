@@ -18,7 +18,7 @@ do not repeat the same detail.
 
 ## Workflow at a glance
 
-A research log uses seven core operations:
+A research log uses eight core operations:
 
 1. **Record** research activity in a new or existing log, using numbered, dated
    entries with their supporting material.
@@ -31,9 +31,11 @@ A research log uses seven core operations:
 5. **Validate** mechanically that presented computational results match their
    declared sources, have visible provenance, and leave no unexplained retained
    material.
-6. **Repair** a named malformed, legacy, or invalid research-owned condition
+6. **Reproduce** the evidence-relevant artifacts of one entry or log through a
+   mechanical, JSON-authoritative background workflow.
+7. **Repair** a named malformed, legacy, or invalid research-owned condition
    without broadening into unrelated corrections.
-7. **Reorganize** explicitly selected structure without changing research
+8. **Reorganize** explicitly selected structure without changing research
    meaning.
 
 Reference management supports these operations when needed; it is not an
@@ -66,6 +68,9 @@ The minimum structure is:
 <log>.md
 <log>/
   entries/
+  reproduction.md
+  reproduction/
+    results.json
 ```
 
 A populated log may contain:
@@ -77,13 +82,15 @@ A populated log may contain:
   scripts/
   validation.md
   validation/
+  reproduction.md
+  reproduction/
   .cache/
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
       data.json
       evidence.json
-      pyrun-outputs.json
+      pyrun.json
       retention.json
       pyrun -> <installed launcher>
       data/
@@ -91,7 +98,7 @@ A populated log may contain:
       scripts/
 ```
 
-Create optional files and folders only when they are needed. Start navigation
+Create other optional files and folders only when they are needed. Start navigation
 from the summary for current understanding, scan `entries/` by date and topic,
 and open entry documents for the detailed record.
 
@@ -105,8 +112,8 @@ revise scripts, run the research, retain and analyze its outputs, document the
 evidence, and draft observations grounded in those results. Recording updates
 all directly affected material together, including prose, commands, saved
 results, source links, citations, input indexes, and supporting evidence
-metadata. It preserves
-the fixed report link and every generated validation file. Check outputs as they are produced;
+metadata. It preserves the fixed validation and reproduction report links and
+every generated report file. Check outputs as they are produced;
 these checks are part of doing the research and do not establish validation
 status.
 
@@ -259,7 +266,8 @@ to change. Read the relevant entries, then revise `<log>.md` by topic rather
 than by date. Collect follow-ups only from explicit entry `Follow-up:` items;
 do not infer them from general discussion. Keep detailed methods, commands, and
 caveats in entries. Preserve established framing, the AI-use disclosure, the
-fixed validation-report link, and every generated validation file exactly.
+fixed validation and reproduction report links, and every generated report
+file exactly.
 
 ### Review
 
@@ -548,11 +556,14 @@ should not have to reshape a natural command merely to satisfy validation.
 
 Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results.
-`pyrun` records each output's current script, parameters, inputs, and bytes.
-It also records log-local Python source files loaded by the command or by an
-ordinary Python child invocation. A logical path through an intentional log
-symlink remains log-local. Changing a recorded helper makes the dependent
-output support stale; reproduction refreshes the observed dependency set.
+`pyrun` records one stable execution identity for the exact recipe and its
+complete output set, current script, parameters, inputs, and bytes. It also
+records log-local Python source files loaded by the command or by an ordinary
+Python child invocation. A logical path through an intentional log symlink
+remains log-local. Changing a recorded helper makes the dependent execution
+support stale; a later successful run refreshes the observed dependency set.
+Use `./pyrun --slow -- ...` for simulation, model-training, and comparable
+commands that should not be included casually in default reproduction.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
@@ -746,8 +757,8 @@ problems but do not change the research record.
 ## The current summary
 
 `<log>.md` is the current view of the research. Immediately below its title it
-links to the latest completed generated validation report. It then starts with
-`## Contents`, `## Entries`, and `## Summary`. During Update Summary, add
+links separately to the generated validation and reproduction reports. It then
+starts with `## Contents`, `## Entries`, and `## Summary`. During Update Summary, add
 `## Follow-ups` only when entries contain intentional `Follow-up:` items, and
 add its Contents link at the same time. Every summary ends with `## AI Use`.
 
@@ -755,6 +766,8 @@ add its Contents link at the same time. Every summary ends with `## AI Use`.
 # <Log title>
 
 Validation: [latest completed report](<log>/validation.md)
+
+Reproduction: [latest report](<log>/reproduction.md)
 
 ## Contents
 
@@ -825,27 +838,29 @@ outputs have been kept so the results can be checked and reproduced.
 Do not add entry-level `AI Use:` labels. This internal disclosure does not
 replace disclosure rules from a journal, institution, funder, or venue.
 
-### Validation link in the summary
+### Generated report links in the summary
 
-Place this exact navigation line immediately below the level-one title,
-followed by one blank line:
+Place these exact navigation lines immediately below the level-one title, with
+one blank line after each:
 
 ```md
 Validation: [latest completed report](<log>/validation.md)
+
+Reproduction: [latest report](<log>/reproduction.md)
 ```
 
-The link is stable research-document scaffolding. It contains no date, status,
-failure count, artifact-currentness claim, or rules version. Do not add a `## Validation`
-section or a Validation item to `## Contents`. Before the first validation, the
-link may point to a report that does not yet exist.
+The links are stable research-document scaffolding. They contain no date,
+status, failure count, artifact-currentness claim, or contract version. Do not
+add Validation or Reproduction items to `## Contents`. A new log initializes
+its reproduction report as not yet reproduced; before the first validation,
+the validation link may point to a report that does not yet exist.
 
-Record, Replace, Reorganize, Repair, and Update Summary preserve this link
-exactly and never edit generated validation files. Validate reads the
-maintained summary but never changes it. The generated `<log>/validation.md`
-report contains an independent Mechanical Validation section with its date,
-scope/status counts, and non-passing checks, plus a separate Reproduction
-section. Until the reproduction workflow is implemented and run, that section
-states `not_yet_run`. The report has no combined conclusion.
+Record, Replace, Reorganize, Repair, and Update Summary preserve both links
+exactly and never edit generated reports. Validate reads the maintained summary
+but never changes it. The generated `<log>/validation.md` contains only
+mechanical-validation state. The generated `<log>/reproduction.md` contains
+only reproduction artifact and run state. Neither report supplies a combined
+conclusion.
 
 ## Reviewing a research log
 
@@ -885,6 +900,60 @@ soundness. When the intended operation is unclear, the agent asks which you
 want. After a Review report, you retain authority over methods, interpretations,
 conclusions, decisions, accepted synthesis, and research direction. Ask
 explicitly when you want findings addressed.
+
+## Reproducing a research log
+
+Reproduction is a mechanical background workflow for checking whether the
+evidence-relevant artifacts of one maintained entry or log can be regenerated
+from the recorded JSON graph and execution state. It does not use Markdown as
+execution authority, judge scientific meaning, or change research prose,
+commands, evidence declarations, or retained artifacts.
+
+Preview one exact scope without writing anything:
+
+```bash
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --dry-run
+```
+
+Launch it by omitting `--dry-run`. The command prints a durable run ID and
+returns immediately while the CLI-owned background job continues. By default,
+executions recorded with `pyrun --slow` are skipped. Include them only when you
+explicitly intend the additional simulation or training cost:
+
+```bash
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --include-slow
+```
+
+An entry target starts from that entry's evidence and never executes a command
+from another entry. A log target follows evidence and dependencies only within
+that log. Multiple logs require separate runs.
+
+Inspect or control an accepted run with its immutable ID:
+
+```bash
+<skill>/scripts/log reproduce status --path <log> --run-id <run-id>
+<skill>/scripts/log reproduce stop --path <log> --run-id <run-id>
+<skill>/scripts/log reproduce resume --path <log> --run-id <run-id>
+```
+
+`stop` preserves the same disposable run folder and completed checkpoints for
+a guarded resume. An optional scheduled monitor may use `status --json` to
+report meaningful progress after you confirm that you want monitoring; it
+never controls the run.
+
+On completion, the generated `<log>/reproduction.md` lists every current
+evidence artifact by entry and status. Retrieve the same centralized human
+projection with `log reproduce report --path <log> [--entry <entry-id>]`.
+Changed, failed, comparison-failed, skipped, and stale artifacts remain
+visible. Bounded `log reproduce artifacts list` and `show` commands provide
+exact machine details for diagnosis without requiring an agent to parse the
+generated files.
+
+Regenerated files remain together in the project `tmp` run folder. They do not
+replace retained research automatically. If you decide to adopt one complete
+execution output set, a research agent can use the separate explicit `log
+reproduce promote` action under your direction. Promotion copies every related
+output together and leaves the run folder intact.
 
 ## Validating a research log
 
@@ -938,14 +1007,13 @@ A completed published mechanical evaluation writes the human-facing
 `<log>/validation.md` report. It shows when mechanical validation last
 completed, summarizes the four check areas, and groups findings by entry and
 human-readable issue type. Each group shows at most ten targets and states when
-more were omitted. Its separate Reproduction section remains independent and
-shows that reproduction has not yet run until that workflow produces its own
-result.
+more were omitted. Reproduction publishes its separate
+`<log>/reproduction.md` report; neither report hides the other's failures.
 
 The adjacent `<log>/validation/` directory contains machine-readable results.
 Disposable validator caches live beneath `<log>/.cache/` and the research
-project's `.cache/` directory. Entry-root `pyrun-outputs.json` is separate
-current output-support state maintained by `pyrun`. Researchers and research
+project's `.cache/` directory. Entry-root `pyrun.json` is separate current
+execution state maintained by `pyrun`. Researchers and research
 agents should not edit or ordinarily inspect these generated files directly.
 Validation reads the research record but changes only its own generated output.
 

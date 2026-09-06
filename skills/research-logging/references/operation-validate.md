@@ -144,5 +144,4 @@ repairs. Begin Repair only after the researcher explicitly asks to correct the
 finding.
 
 Mechanical validation does not continue into semantic review or reproduction.
-Those are separate workflows with separate ownership and are not implemented
-by this operation.
+Those are separate workflows with separate ownership.

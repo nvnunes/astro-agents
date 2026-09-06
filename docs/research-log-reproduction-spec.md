@@ -4,9 +4,9 @@
 
 Status: active implementation specification. The reproduction implementation,
 metadata migration, bounded maintained-log evaluation, and cutover are
-complete. Phase 9 validation hardening, the separately planned orphan-hygiene
-cleanup, and full maintained-corpus operation remain gated by the reproduction
-plan.
+complete. Phase 9 recheck support, Phase 10 validation hardening, the separately
+planned orphan-hygiene cleanup, and full maintained-corpus operation remain
+gated by the reproduction plan.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -984,7 +984,7 @@ Every ordinary declared output must bind unambiguously to exactly one recorded
 child-parameter occurrence. Runner-owned captures are direct bindings. Before
 execution, the executor substitutes each binding with the corresponding path
 inside the run workspace. A missing or ambiguous binding is an operational
-failure until Phase 9 makes the same condition an earlier Structure failure.
+failure until Phase 10 makes the same condition an earlier Structure failure.
 
 The executor resolves retained origins and boundaries directly from their
 verified read-only locations. When a downstream input is the output of an

@@ -872,6 +872,37 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             self.assertEqual(failed.returncode, 3)
             self.assertEqual((entry / "pyrun.json").read_bytes(), before)
 
+    def test_log_relative_script_is_recorded_with_portable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            log_script = entry.parent.parent / "scripts/build_shared.py"
+            log_script.parent.mkdir()
+            log_script.write_text(
+                "from pathlib import Path\n"
+                "Path('data/shared.txt').write_text('shared\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "<log>/scripts/build_shared.py",
+                    "data/shared.txt",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = execution_for_output(entry, "data/shared.txt")
+            self.assertEqual(
+                record["recipe"]["script"], "<log>/scripts/build_shared.py"
+            )
+
     def test_records_only_loaded_direct_transitive_and_dynamic_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

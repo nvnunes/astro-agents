@@ -59,6 +59,7 @@ from validation.pyrun_state import (
     portable_script_path,
     publish_execution_locked,
     quarantine_invalid_pyrun_state,
+    script_target_path,
     validate_output_paths,
 )
 
@@ -617,12 +618,14 @@ def main(argv: list[str]) -> int:
             _require_declared_input_tokens(script_args, roles, data)
             verified: set[str] = set()
             observed_inputs: dict[str, Fingerprint] = {}
-            resolved_script = _reserved_tokens(script_argument, root, log)
-            script_identity = portable_script_path(script_argument, entry_root=entry)
-            script_path = (
-                Path(resolved_script)
-                if Path(resolved_script).is_absolute()
-                else entry / resolved_script
+            script_identity = portable_script_path(
+                script_argument,
+                entry_root=entry,
+                project_root=root,
+                authored=True,
+            )
+            script_path = script_target_path(
+                script_identity, entry_root=entry, project_root=root
             )
             try:
                 script_observation = fingerprint_cache.observe_regular_file(script_path)

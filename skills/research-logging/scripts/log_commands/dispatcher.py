@@ -427,6 +427,17 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
 def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log pyrun")
     actions = parser.add_subparsers(dest="action", required=True)
+    migrate = actions.add_parser(
+        "migrate", help="Convert a complete project to command-oriented state"
+    )
+    migrate.add_argument("--root", required=True, type=Path)
+    migrate.add_argument(
+        "--retire-legacy",
+        action="append",
+        default=[],
+        help="researcher-approved legacy migration case ID; repeat as needed",
+    )
+    _mutation_argument(migrate)
     update = actions.add_parser(
         "update", help="Apply one Markdown-first execution policy change"
     )
@@ -436,6 +447,14 @@ def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:
     policy.add_argument("--slow", action="store_true")
     policy.add_argument("--no-slow", action="store_true")
     args = parser.parse_args(arguments)
+    if args.action == "migrate":
+        from . import pyrun_migration
+
+        return pyrun_migration.migrate_project(
+            args.root,
+            dry_run=args.dry_run,
+            approved_retirements=tuple(args.retire_legacy),
+        )
     from . import pyrun_policy
 
     return pyrun_policy.update_slow(

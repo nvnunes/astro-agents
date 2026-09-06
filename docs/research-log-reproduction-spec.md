@@ -335,7 +335,11 @@ supported sets.
 `recipe` has exactly `script`, `parameters`, `environment`, `inputs`, and
 `outputs`:
 
-- `script` is the normalized POSIX script argument relative to the entry root.
+- `script` is the normalized POSIX script argument. A script beneath the entry
+  uses its entry-relative identity; any other script beneath the maintained log
+  uses the inherited `<log>/...` identity; and a script elsewhere in the
+  current Git project uses `<project>/...`. Scripts outside the project are not
+  eligible.
 - `parameters` is the exact ordered child-process argument tail after the
   script. It contains no runner role declarations, capture options, explicit
   environment options, or separator token.

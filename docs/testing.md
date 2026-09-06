@@ -73,6 +73,7 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_research_log_pyrun_state.py \
   skills/research-logging/tests/test_log_pyrun.py \
+  skills/research-logging/tests/test_log_pyrun_migration.py \
   skills/research-logging/tests/test_pyrun.py
 ```
 

@@ -19,8 +19,10 @@ from validation.pyrun_state import (
     confirm_execution_locked,
     execution_id,
     load_pyrun_state,
+    portable_script_path,
     publish_execution_locked,
     retire_execution_locked,
+    script_target_path,
     update_slow_locked,
     validate_output_paths,
 )
@@ -78,6 +80,70 @@ def _entry(root: Path) -> Path:
 
 
 class PyrunStateContractTests(unittest.TestCase):
+    def test_script_identity_accepts_canonical_entry_and_log_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+
+            self.assertEqual(
+                portable_script_path("scripts/build.py", entry_root=entry),
+                "scripts/build.py",
+            )
+            self.assertEqual(
+                portable_script_path("<log>/scripts/shared.py", entry_root=entry),
+                "<log>/scripts/shared.py",
+            )
+            self.assertEqual(
+                script_target_path(
+                    "<log>/scripts/shared.py", entry_root=entry
+                ),
+                root / "log/scripts/shared.py",
+            )
+            self.assertEqual(
+                portable_script_path(
+                    "<project>/log/scripts/shared.py",
+                    entry_root=entry,
+                    project_root=root,
+                    authored=True,
+                ),
+                "<log>/scripts/shared.py",
+            )
+            self.assertEqual(
+                portable_script_path(
+                    "<project>/shared/build.py",
+                    entry_root=entry,
+                    project_root=root,
+                    authored=True,
+                ),
+                "<project>/shared/build.py",
+            )
+            self.assertEqual(
+                script_target_path(
+                    "<project>/shared/build.py",
+                    entry_root=entry,
+                    project_root=root,
+                ),
+                root / "shared/build.py",
+            )
+            self.assertEqual(
+                portable_script_path(
+                    "<project>/log/entries/2030-01-01-e001-test/scripts/build.py",
+                    entry_root=entry,
+                    project_root=root,
+                    authored=True,
+                ),
+                "scripts/build.py",
+            )
+            for invalid in (
+                "<project>/scripts/shared.py",
+                "<log>/entries/2030-01-01-e001-test/scripts/build.py",
+                "../scripts/shared.py",
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(
+                    PyrunStateError
+                ):
+                    portable_script_path(invalid, entry_root=entry)
+
     def test_round_trip_is_canonical_and_identity_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

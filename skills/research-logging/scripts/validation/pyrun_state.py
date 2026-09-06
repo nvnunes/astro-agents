@@ -10,7 +10,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, NoReturn, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
@@ -178,7 +178,10 @@ def recipe_from_invocation(
     if invocation.script_argument is None:
         _invalid(invocation.document, {"reason": "script_missing"})
     script = portable_script_path(
-        invocation.script_argument, entry_root=entry_root
+        invocation.script_argument,
+        entry_root=entry_root,
+        project_root=project_root,
+        authored=True,
     )
     inputs = tuple(
         sorted(
@@ -251,10 +254,41 @@ def ordinary_execution(
     )
 
 
-def portable_script_path(value: str, *, entry_root: Path) -> str:
-    """Return one canonical entry-relative Python script identity."""
+def portable_script_path(
+    value: str,
+    *,
+    entry_root: Path,
+    project_root: Path | None = None,
+    authored: bool = False,
+) -> str:
+    """Return one canonical entry-relative or log-relative script identity."""
 
-    return _portable_script_path(value, entry_root=entry_root)
+    return _portable_script_path(
+        value,
+        entry_root=entry_root,
+        project_root=project_root,
+        authored=authored,
+    )
+
+
+def script_target_path(
+    value: str, *, entry_root: Path, project_root: Path | None = None
+) -> Path:
+    """Resolve one canonical script identity without resolving symlinks."""
+
+    key = _portable_script_path(
+        value,
+        entry_root=entry_root,
+        project_root=project_root,
+        authored=False,
+    )
+    if key.startswith("<project>/"):
+        if project_root is None:
+            _invalid(value, {"reason": "project_root_required"})
+        return Path(os.path.abspath(project_root)).joinpath(
+            *Path(key.removeprefix("<project>/")).parts
+        )
+    return code_target_path(key, entry_root=entry_root)
 
 
 def validate_output_paths(
@@ -301,6 +335,20 @@ def empty_pyrun_state(entry_root: Path) -> PyrunFile:
 
     root = entry_root.resolve()
     return PyrunFile(root / PYRUN_FILENAME, root, {})
+
+
+def validated_pyrun_serialization(
+    state: PyrunFile, *, project_root: Path | None = None
+) -> str:
+    """Return canonical bytes after enforcing the complete production contract.
+
+    This is the publication boundary for callers that construct a complete
+    multi-execution state before performing their own larger transaction. It
+    applies the same decoder and ownership checks as ordinary ``pyrun``
+    publication without writing the entry-owned file.
+    """
+
+    return _validated_serialization(state, project_root=project_root)
 
 
 def legacy_output_projection(
@@ -664,7 +712,12 @@ def _decode_recipe(
     outputs = value.get("outputs")
     if not _bounded_path(script):
         _invalid(subject, {"script": script})
-    script = _portable_script_path(cast(str, script), entry_root=entry_root)
+    script = _portable_script_path(
+        cast(str, script),
+        entry_root=entry_root,
+        project_root=project_root,
+        authored=False,
+    )
     if (
         not isinstance(parameters, list)
         or len(parameters) > MAX_PARAMETERS
@@ -898,23 +951,96 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
-def _portable_script_path(value: str, *, entry_root: Path) -> str:
-    parts = PurePosixPath(value).parts
+def _portable_script_path(
+    value: str,
+    *,
+    entry_root: Path,
+    project_root: Path | None,
+    authored: bool,
+) -> str:
+    if not isinstance(value, str) or not value or len(value.encode()) > MAX_PATH_BYTES:
+        _invalid(value, {"reason": "script_path_invalid"})
+    root = Path(os.path.abspath(entry_root))
+    log = root.parent.parent
+    lexical = _script_lexical_path(
+        value,
+        root=root,
+        log=log,
+        project_root=project_root,
+    )
+    canonical = _canonical_script_identity(
+        value,
+        lexical=lexical,
+        root=root,
+        log=log,
+        project_root=project_root,
+    )
+    if not canonical.endswith(".py") or not authored and canonical != value:
+        _invalid(value, {"canonical": canonical, "reason": "script_path_invalid"})
+    return canonical
+
+
+def _script_lexical_path(
+    value: str,
+    *,
+    root: Path,
+    log: Path,
+    project_root: Path | None,
+) -> Path:
+    if value.startswith("<project>/"):
+        if project_root is None:
+            _invalid(value, {"reason": "script_path_invalid"})
+        suffix = value.removeprefix("<project>/")
+        project = Path(os.path.abspath(project_root))
+        return project.joinpath(*_script_parts(value, suffix))
+    if value.startswith("<log>/"):
+        suffix = value.removeprefix("<log>/")
+        return log.joinpath(*_script_parts(value, suffix))
+    if Path(value).is_absolute():
+        _invalid(value, {"reason": "script_path_invalid"})
+    return root.joinpath(*_script_parts(value, value))
+
+
+def _canonical_script_identity(
+    value: str,
+    *,
+    lexical: Path,
+    root: Path,
+    log: Path,
+    project_root: Path | None,
+) -> str:
+    relative = _relative_to(lexical, root)
+    if relative is not None:
+        return Path(*relative.parts).as_posix()
+    relative = _relative_to(lexical, log)
+    if relative is not None:
+        return "<log>/" + Path(*relative.parts).as_posix()
+    if project_root is None:
+        _invalid(value, {"reason": "script_outside_log"})
+    relative = _relative_to(lexical, Path(os.path.abspath(project_root)))
+    if relative is None:
+        _invalid(value, {"reason": "script_outside_project"})
+    return "<project>/" + Path(*relative.parts).as_posix()
+
+
+def _relative_to(path: Path, root: Path) -> Path | None:
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return None
+
+
+def _script_parts(value: str, suffix: str) -> tuple[str, ...]:
+    parts = tuple(Path(suffix).parts)
     if (
-        not value
-        or value.startswith("/")
-        or "\\" in value
-        or any(character in value for character in "<>")
+        not suffix
+        or suffix.startswith("/")
+        or "\\" in suffix
+        or any(character in suffix for character in "<>")
         or any(part in {"", ".", ".."} for part in parts)
     ):
         _invalid(value, {"reason": "script_path_invalid"})
-    canonical = PurePosixPath(*parts).as_posix()
-    if canonical != value or not canonical.endswith(".py"):
-        _invalid(value, {"canonical": canonical, "reason": "script_path_invalid"})
-    lexical = entry_root.resolve().joinpath(*parts)
-    if not _within(lexical, entry_root.resolve()):
-        _invalid(value, {"reason": "script_outside_entry"})
-    return canonical
+    return parts
 
 
 def _decode_fingerprint(

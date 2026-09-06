@@ -159,6 +159,15 @@ class _StagingRequest:
     results: tuple[ArtifactComparison, ...]
 
 
+@dataclass(frozen=True)
+class ConfirmationUpdates:
+    """Candidate entry states and bytes for one coordinated publication."""
+
+    files: Mapping[Path, str]
+    states: Mapping[str, PyrunFile]
+    execution_ids: Mapping[str, frozenset[str]]
+
+
 def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
     """Compare one artifact path using its closed, suffix-selected v1 profile."""
 
@@ -324,7 +333,8 @@ def prepare_confirmation_updates_locked(
     results: Sequence[ExecutionComparison],
     *,
     project_root: Path,
-) -> Mapping[Path, str]:
+    verify_snapshot: bool = True,
+) -> ConfirmationUpdates:
     """Build exact confirmation writes under the caller's scope lock.
 
     The caller owns either the selected entry lock or the enclosing log lock.
@@ -335,12 +345,15 @@ def prepare_confirmation_updates_locked(
 
     from .reproduction_planner import verify_reproduction_snapshot
 
-    verify_reproduction_snapshot(log, plan)
+    if verify_snapshot:
+        verify_reproduction_snapshot(log, plan)
     selected: dict[str, set[str]] = {}
     for result in results:
         if result.matched:
             selected.setdefault(result.entry, set()).add(result.execution_id)
     updates: dict[Path, str] = {}
+    states: dict[str, PyrunFile] = {}
+    changed_ids: dict[str, frozenset[str]] = {}
     for entry_id, identities in sorted(selected.items()):
         entry = resolve_entry(log, entry_id)
         state = load_pyrun_state(
@@ -355,11 +368,13 @@ def prepare_confirmation_updates_locked(
             )
         executions = dict(state.executions)
         changed = False
+        changed_in_entry: set[str] = set()
         for identity in identities:
             current = executions[identity]
             if current.confirmed:
                 continue
             changed = True
+            changed_in_entry.add(identity)
             executions[identity] = PyrunExecution(
                 True,
                 current.slow,
@@ -372,10 +387,12 @@ def prepare_confirmation_updates_locked(
             )
         if changed:
             candidate = PyrunFile(state.path, state.entry_root, executions)
+            states[entry_id] = candidate
+            changed_ids[entry_id] = frozenset(changed_in_entry)
             updates[state.path] = validated_pyrun_serialization(
                 candidate, project_root=project_root
             )
-    return updates
+    return ConfirmationUpdates(updates, states, changed_ids)
 
 
 def _profile(expected: Path, regenerated: Path) -> str:
@@ -387,7 +404,7 @@ def _profile(expected: Path, regenerated: Path) -> str:
         return "directory"
     if left != "file":
         raise _ComparisonFailure("unsupported_format", "unsupported artifact kind")
-    return _SUFFIX_PROFILES.get(expected.suffix.lower(), "opaque")
+    return _SUFFIX_PROFILES.get(expected.suffix.lower(), "opaque_file")
 
 
 def _compare_with_profile(expected: Path, regenerated: Path, profile: str) -> bool:
@@ -398,7 +415,7 @@ def _compare_with_profile(expected: Path, regenerated: Path, profile: str) -> bo
         "image": _compare_images,
         "json": _compare_json,
         "named_array": _compare_arrays,
-        "opaque": _compare_bytes,
+        "opaque_file": _compare_bytes,
         "table": _compare_table,
         "text": _compare_text,
     }

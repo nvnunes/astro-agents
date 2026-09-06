@@ -123,7 +123,11 @@ For reproduction planning, comparison, and staging development, run:
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_log_reproduction_planning.py \
-  skills/research-logging/tests/test_log_reproduction_comparison.py
+  skills/research-logging/tests/test_log_reproduction_comparison.py \
+  skills/research-logging/tests/test_log_reproduction_results.py \
+  skills/research-logging/tests/test_log_reproduction_publication.py \
+  skills/research-logging/tests/test_log_reproduction_queries.py \
+  skills/research-logging/tests/test_research_log_targeted_refresh.py
 ```
 
 This focused command supplements rather than replaces the complete tool gate.

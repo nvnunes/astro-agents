@@ -15,7 +15,6 @@ PUBLISHABLE_PATHS = frozenset(
     {
         "validation.md",
         "validation/results.json",
-        "validation/reproduction.json",
     }
 )
 

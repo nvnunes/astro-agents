@@ -1107,8 +1107,18 @@ The artifact outcomes are:
 Outcome and currentness are separate. Reason codes are a closed versioned
 machine vocabulary. At minimum, cycles use `dependency_cycle` with `failed`,
 and downstream blocking uses `dependency_failed` with `skipped`. A default
-slow boundary or a permitted cross-entry retained boundary is graph metadata,
-not a skipped artifact outcome.
+slow or permitted cross-entry dependency is boundary metadata rather than an
+artifact outcome. When the selected evidence root itself is slow or is
+produced outside an entry target, that selected artifact is respectively
+`skipped` with reason `slow` or `outside_entry`.
+
+The complete v1 reason vocabulary is `baseline_unavailable`,
+`boundary_changed`, `boundary_unavailable`, `comparator_error`,
+`content_changed`, `cross_log_generated_input`, `dependency_cycle`,
+`dependency_failed`, `execution_failed`, `generation_failed`, `graph_limit`,
+`missing_input`, `missing_producer`, `multiple_producers`, `output_missing`,
+`outside_entry`, `resource_limit`, `safety_failure`, `slow`, `stop_requested`,
+`unsupported_format`, `worker_cleanup_incomplete`, and `worker_survived`.
 
 ### Authoritative Result
 
@@ -1175,6 +1185,8 @@ null when comparison was not attempted. Otherwise it has exactly `contract`,
 closed observed fingerprint forms; a comparison failure that could not observe
 one side uses null for that side. Detailed differences and decoder diagnostics
 remain in the run directory rather than expanding this cumulative record.
+`execution_id` is null only for a pre-execution graph failure that has no
+resolvable producer; `matched` and `changed` always identify an execution.
 
 Every run item has exactly the fields shown. Its target follows the run-state
 target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is
@@ -1183,7 +1195,9 @@ event safely publishes it. `finished_at` is null for a resumable stopped run.
 Outcome counts use all five required keys. `folder.path` is the normalized
 project-relative run directory; `availability` is `available` or `unknown`.
 A conclusively absent directory causes the whole run item to be removed rather
-than persisting an `absent` value.
+than persisting an `absent` value. Current artifact records retain their run ID
+after that historical run item is removed; run-directory retention is not a
+precondition for retaining the authoritative artifact outcome.
 
 Unknown fields, duplicate artifact pairs, duplicate run IDs, invalid ordering,
 or inconsistent counts fail decoding. The cardinality and byte limits in
@@ -1436,9 +1450,9 @@ artifact path. It fails on zero or multiple matches rather than broadening the
 selection.
 
 Both commands read the latest completed published record as-is, expose its
-result date, and fail precisely for absent, ambiguous, malformed, or unsupported
-state. They never validate, reproduce, repair, publish, clean up, or write a
-file. Run-specific diagnosis remains on `status --json`.
+publication time, and fail precisely for absent, ambiguous, malformed, or
+unsupported state. They never validate, reproduce, repair, publish, clean up,
+or write a file. Run-specific diagnosis remains on `status --json`.
 
 ### Agent Monitoring
 
@@ -1471,13 +1485,9 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-No runtime implementation currently conforms to this target specification.
-Until cutover, `docs/research-log-mechanical-validator-spec.md` remains
-authoritative for the active `pyrun-outputs.json`, validation, evidence,
-`data.json`, and lock contracts. Implementation phases must update that
-specification where validation-owned schemas or services change and must keep
-the ownership boundary explicit rather than duplicating those contracts here.
-
-Before the affected implementation begins, freeze the exact result and status
-JSON fixtures. The fixed initial bounds and comparison dispatch are already
-inserted. The reproduction plan owns the remaining implementation gates.
+The command-oriented execution state, migration, planning, safety, disposable
+execution, comparison, result contract, current projection, bounded read-only
+queries, and narrow validation-owned Provenance refresh are implemented.
+Durable job control, promotion, maintained-corpus initialization, and final
+cutover remain gated by the reproduction plan. The frozen result and status
+fixtures remain the compatibility boundary for those later phases.

@@ -11,7 +11,11 @@ from unittest import mock
 
 from log_commands.context import EntryContext, LogContext
 from log_commands.model import ActionError
-from log_commands.reproduction_planner import _admit_validation, plan_reproduction
+from log_commands.reproduction_planner import (
+    _admit_validation,
+    plan_reproduction,
+    project_reproduction_state,
+)
 from research_log_data import Fingerprint
 from validation.engine import RULES_VERSION
 from validation.mechanical_results import (
@@ -267,6 +271,38 @@ class ReproductionPlanningTests(unittest.TestCase):
                 any(upstream_entry.root.name in value for value in authority)
             )
 
+    def test_direct_slow_evidence_is_reported_as_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            result = entry.root / "data" / "result.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            result.write_text("result\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "result", result, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "result")
+            slow = fixture.execution(
+                entry, "simulate", {"raw": raw}, {"result": result}, slow=True
+            )
+            fixture.write_pyrun(entry, [slow])
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(
+                [
+                    (value["disposition"], value["reason"])
+                    for value in plan.cases
+                ],
+                [("skipped", "slow")],
+            )
+
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
@@ -306,6 +342,75 @@ class ReproductionPlanningTests(unittest.TestCase):
                 if value["reason"] == "dependency_cycle"
             }
             self.assertEqual(cycle_artifacts, {"data/a.txt", "data/b.txt"})
+            self.assertTrue(
+                all(
+                    value["disposition"] == "failed"
+                    for value in plan.cases
+                    if value["reason"] == "dependency_cycle"
+                )
+            )
+
+    def test_entry_evidence_from_another_entry_is_skipped_not_executed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            producer_entry = fixture.entry(1)
+            evidence_entry = fixture.entry(2)
+            shared = fixture.root / "shared" / "result.txt"
+            shared.parent.mkdir()
+            shared.write_text("result\n", encoding="utf-8")
+            fixture.write_data(
+                producer_entry,
+                [fixture.item(producer_entry, "result", shared, origin=False)],
+            )
+            fixture.write_data(
+                evidence_entry,
+                [fixture.item(evidence_entry, "result", shared, origin=False)],
+            )
+            fixture.evidence(evidence_entry, "result")
+            execution = fixture.execution(
+                producer_entry, "produce", {}, {"result": shared}
+            )
+            recipe = ExecutionRecipe(
+                execution[1].recipe.script,
+                (),
+                (),
+                (),
+                (("<project>/shared/result.txt", "file"),),
+            )
+            external = PyrunExecution(
+                False,
+                False,
+                None,
+                execution[1].runner,
+                execution[1].environment_profile,
+                execution[1].execution_contract,
+                recipe,
+                ObservedExecution(
+                    execution[1].observed.script,
+                    (),
+                    (),
+                    (("<project>/shared/result.txt", _fingerprint(shared)),),
+                ),
+            )
+            external_id = execution_id(recipe)
+            fixture.write_pyrun(producer_entry, [(external_id, external)])
+
+            plan = _plan(fixture, evidence_entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(
+                [
+                    (value["entry"], value["disposition"], value["reason"])
+                    for value in plan.cases
+                ],
+                [(evidence_entry.id, "skipped", "outside_entry")],
+            )
+            self.assertEqual(plan.cases[0]["execution_id"], external_id)
+            projection = project_reproduction_state(fixture.log)
+            self.assertIn(
+                (evidence_entry.id, "<project>/shared/result.txt"),
+                projection.reachable,
+            )
 
     def test_current_matched_result_is_not_selected_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -338,12 +443,44 @@ class ReproductionPlanningTests(unittest.TestCase):
                     "artifacts": [
                         {
                             "artifact": "data/final.txt",
+                            "comparison": {
+                                "contract": "research-log-reproduction-comparison/1",
+                                "expected": _fingerprint(final).as_dict(),
+                                "profile": "text",
+                                "regenerated": _fingerprint(final).as_dict(),
+                            },
                             "entry": entry.id,
+                            "execution_id": execution[0],
                             "outcome": "matched",
+                            "reason": None,
                             "recorded_at": "2026-09-06T00:01:00Z",
+                            "run_id": "reproduce-20260906t000000z-current",
+                        }
+                    ],
+                    "runs": [
+                        {
+                            "accepted_at": "2026-09-06T00:00:00Z",
+                            "artifact_outcomes": {
+                                "changed": 0,
+                                "comparison_failed": 0,
+                                "failed": 0,
+                                "matched": 1,
+                                "skipped": 0,
+                            },
+                            "finished_at": "2026-09-06T00:01:00Z",
+                            "folder": {
+                                "availability": "unknown",
+                                "path": "tmp/reproduce-study-current",
+                            },
+                            "include_slow": False,
+                            "run_id": "reproduce-20260906t000000z-current",
+                            "status": "complete",
+                            "target": {"entry": entry.id, "kind": "entry"},
                         }
                     ],
                     "schema": "research-log-reproduction-result/1",
+                    "summary": "docs/study.md",
+                    "updated_at": "2026-09-06T00:01:00Z",
                 },
             )
 
@@ -351,6 +488,15 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             self.assertEqual(plan.executions, ())
             self.assertEqual(plan.cases[0]["disposition"], "current")
+
+            projection = project_reproduction_state(fixture.log)
+            self.assertEqual(
+                projection.reachable, frozenset({(entry.id, "data/final.txt")})
+            )
+            self.assertEqual(
+                projection.output_executions[(entry.id, "data/final.txt")],
+                execution[0],
+            )
 
     def test_changed_source_during_dry_run_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

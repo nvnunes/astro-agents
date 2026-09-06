@@ -36,7 +36,6 @@ def compose_validation_report(
     record: MechanicalGeneratedRecord,
     *,
     context: ReportContext | None = None,
-    reproduction_section: str | None = None,
 ) -> str:
     """Render the generated human document for one completed result."""
 
@@ -55,17 +54,6 @@ def compose_validation_report(
         "",
     ]
     lines.extend(_finding_lines(groups, context))
-    lines.extend(("", "## Reproduction", ""))
-    if reproduction_section is None:
-        lines.extend(
-            (
-                "Status: `not_yet_run`",
-                "",
-                "No reproduction audit has been run.",
-            )
-        )
-    else:
-        lines.append(reproduction_section.strip())
     return "\n".join(lines).rstrip() + "\n"
 
 

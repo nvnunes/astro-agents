@@ -653,6 +653,17 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
 
 
 def _dispatch_reproduce(arguments: Sequence[str]) -> int:
+    if arguments and arguments[0] == "report":
+        parser = argparse.ArgumentParser(prog="log reproduce report")
+        parser.add_argument("--path", required=True, type=Path)
+        parser.add_argument("--entry")
+        args = parser.parse_args(arguments[1:])
+        from .reproduction_queries import reproduction_report
+
+        print(reproduction_report(resolve_log(args.path), entry=args.entry), end="")
+        return 0
+    if arguments and arguments[0] == "artifacts":
+        return _dispatch_reproduction_artifacts(arguments[1:])
     parser = argparse.ArgumentParser(prog="log reproduce")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
@@ -670,6 +681,40 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
 
     plan = plan_reproduction(log, entry=entry, include_slow=args.include_slow)
     print(plan.serialized())
+    return 0
+
+
+def _dispatch_reproduction_artifacts(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log reproduce artifacts")
+    actions = parser.add_subparsers(dest="action", required=True)
+    listing = actions.add_parser("list", help="List current reproduction artifacts")
+    listing.add_argument("--path", required=True, type=Path)
+    listing.add_argument("--entry")
+    listing.add_argument("--outcome")
+    listing.add_argument("--artifact")
+    showing = actions.add_parser("show", help="Show one reproduction artifact")
+    showing.add_argument("--path", required=True, type=Path)
+    showing.add_argument("--entry", required=True)
+    showing.add_argument("--artifact", required=True)
+    args = parser.parse_args(arguments)
+    from .reproduction_queries import (
+        list_reproduction_artifacts,
+        show_reproduction_artifact,
+    )
+
+    log = resolve_log(args.path)
+    if args.action == "list":
+        result = list_reproduction_artifacts(
+            log,
+            entry=args.entry,
+            outcome=args.outcome,
+            artifact=args.artifact,
+        )
+    else:
+        result = show_reproduction_artifact(
+            log, entry=args.entry, artifact=args.artifact
+        )
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
 

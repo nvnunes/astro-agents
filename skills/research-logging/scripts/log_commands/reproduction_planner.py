@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -128,6 +127,82 @@ class _PlanningState:
     authority_paths: set[Path] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class ReproductionStateProjection:
+    """Current evidence reachability and execution timing without validation."""
+
+    reachable: frozenset[tuple[str, str]]
+    output_executions: Mapping[tuple[str, str], str]
+    last_runs: Mapping[tuple[str, str], str | None]
+
+
+@dataclass
+class _ReachabilityProjector:
+    """Bounded topology-only projection over current JSON authority."""
+
+    log: LogContext
+    project_root: Path
+    entries: Mapping[str, _EntryState]
+    owners: Mapping[str, tuple[_Owner, ...]]
+    reachable: set[tuple[str, str]] = field(default_factory=set)
+    output_executions: dict[tuple[str, str], str] = field(default_factory=dict)
+    last_runs: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    visited: set[ExecutionKey] = field(default_factory=set)
+
+    def execution(self, owner: _Owner) -> None:
+        key = owner.key
+        if key in self.visited:
+            return
+        self.visited.add(key)
+        for output, _ in owner.execution.recipe.outputs:
+            artifact_key = (owner.entry.context.id, output)
+            self.reachable.add(artifact_key)
+            self.output_executions[artifact_key] = owner.execution_id
+        self.last_runs[key] = owner.execution.last_run_at
+        if owner.entry.data is None:
+            return
+        for name in owner.execution.recipe.inputs:
+            resource = owner.entry.data.by_name.get(name)
+            if resource is not None:
+                self.resource(resource, owner.entry)
+
+    def resource(self, resource: InputResource, evidence_entry: _EntryState) -> None:
+        if resource.origin:
+            return
+        candidates = self.owners.get(resource.canonical_target, ())
+        same_entry = tuple(
+            value
+            for value in candidates
+            if value.entry.context.id == evidence_entry.context.id
+        )
+        evidence_artifact = (
+            same_entry[0].output
+            if same_entry
+            else _portable_resource_artifact(resource, self.project_root)
+        )
+        self.reachable.add((evidence_entry.context.id, evidence_artifact))
+        if len(candidates) == 1:
+            evidence_key = (evidence_entry.context.id, evidence_artifact)
+            self.output_executions[evidence_key] = candidates[0].execution_id
+            self.last_runs[
+                (evidence_entry.context.id, candidates[0].execution_id)
+            ] = candidates[0].execution.last_run_at
+            self.execution(candidates[0])
+
+    def result(self) -> ReproductionStateProjection:
+        if (
+            len(self.reachable) > MAX_ARTIFACT_CASES
+            or len(self.visited) > MAX_REACHABLE_EXECUTIONS
+        ):
+            raise ActionError(
+                "reproduction.results.resource_limit",
+                "current reproduction projection crossed a fixed bound",
+            )
+        return ReproductionStateProjection(
+            frozenset(self.reachable), self.output_executions, self.last_runs
+        )
+
+
 def plan_reproduction(
     log: LogContext, *, entry: EntryContext | None, include_slow: bool
 ) -> ReproductionPlan:
@@ -142,9 +217,9 @@ def plan_reproduction(
             "research state changed while validation admission was evaluated",
         )
     project_root = resolve_project_root(log.root)
-    contexts = (entry,) if entry is not None else _entry_contexts(log)
+    contexts = _entry_contexts(log)
     entries = _load_entries(log, project_root, contexts)
-    selected_ids = tuple(entries)
+    selected_ids = (entry.id,) if entry is not None else tuple(entries)
     state = _PlanningState(
         log,
         project_root,
@@ -210,6 +285,24 @@ def _entry_contexts(log: LogContext) -> tuple[EntryContext, ...]:
             "reproduction.entry.duplicate", "duplicate stable entry identity"
         )
     return tuple(item[2] for item in found)
+
+
+def project_reproduction_state(log: LogContext) -> ReproductionStateProjection:
+    """Project current evidence reachability without validating or writing."""
+
+    root = resolve_project_root(log.root)
+    entries = _load_entries(log, root, _entry_contexts(log))
+    owners = _owner_index(entries, root)
+    projector = _ReachabilityProjector(log, root, entries, owners)
+
+    for entry in entries.values():
+        if entry.evidence is None or entry.data is None:
+            continue
+        for record in entry.evidence.records:
+            for source in record.sources:
+                resolved = resolve_input_token(source.source, entry.data)
+                projector.resource(resolved.resource, entry)
+    return projector.result()
 
 
 def _load_entries(
@@ -310,6 +403,17 @@ def _trace_resource(
     if not in_scope:
         if len(state.selected_entries) == 1:
             _verified_boundary(state, "cross_entry", owner_entry, resource, artifact)
+            if consumer is None:
+                execution_id = (
+                    candidates[0].execution_id if len(candidates) == 1 else None
+                )
+                state.cases[(owner_entry.context.id, artifact)] = _case(
+                    owner_entry.context.id,
+                    artifact,
+                    execution_id,
+                    "skipped",
+                    "outside_entry",
+                )
             return
         reason = (
             "cross_log_generated_input"
@@ -333,16 +437,14 @@ def _trace_resource(
     producer = in_scope[0]
     if producer.execution.slow and not state.include_slow:
         _verified_boundary(state, "slow", owner_entry, resource, artifact)
-        state.cases.setdefault(
-            (producer.entry.context.id, producer.output),
-            _case(
-                producer.entry.context.id,
-                producer.output,
+        if consumer is None:
+            state.cases[(owner_entry.context.id, artifact)] = _case(
+                owner_entry.context.id,
+                artifact,
                 producer.execution_id,
-                "current",
-                "slow_boundary",
-            ),
-        )
+                "skipped",
+                "slow",
+            )
         return
     if consumer is not None:
         state.dependencies[consumer.key].add(producer.key)
@@ -538,7 +640,7 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
                         owner.entry.context.id,
                         output,
                         owner.execution_id,
-                        "failed",
+                        "skipped",
                         "dependency_failed",
                     )
                 changed = True
@@ -784,46 +886,21 @@ def _admit_validation(
 def _load_prior_results(
     log: LogContext,
 ) -> dict[tuple[str, str], Mapping[str, object]]:
+    from .reproduction_results import (
+        ReproductionResultError,
+        load_reproduction_results,
+    )
+
     path = log.root / "reproduction" / "results.json"
     if not path.exists() and not path.is_symlink():
         return {}
-    if path.is_symlink() or not path.is_file():
-        raise ActionError(
-            "reproduction.results.invalid", f"invalid result path: {path}"
-        )
     try:
-        raw = path.read_bytes()
-        if len(raw) > RESULT_MAX_BYTES:
-            raise ValueError("reproduction results crossed its byte bound")
-        value = json.loads(raw)
-    except (OSError, UnicodeError, ValueError) as error:
+        value = load_reproduction_results(path)
+    except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
-    if (
-        not isinstance(value, Mapping)
-        or value.get("schema") != "research-log-reproduction-result/1"
-    ):
-        raise ActionError(
-            "reproduction.results.invalid", "unsupported reproduction result"
-        )
-    artifacts = value.get("artifacts")
-    if not isinstance(artifacts, list):
-        raise ActionError(
-            "reproduction.results.invalid", "artifact results must be an array"
-        )
     result: dict[tuple[str, str], Mapping[str, object]] = {}
-    for item in artifacts:
-        if (
-            not isinstance(item, Mapping)
-            or not isinstance(item.get("entry"), str)
-            or not isinstance(item.get("artifact"), str)
-        ):
-            raise ActionError("reproduction.results.invalid", "invalid artifact result")
-        key = (cast(str, item["entry"]), cast(str, item["artifact"]))
-        if key in result:
-            raise ActionError(
-                "reproduction.results.invalid", "duplicate artifact result"
-            )
-        result[key] = cast(Mapping[str, object], item)
+    for item in value.artifacts:
+        result[(item.entry, item.artifact)] = item.as_dict()
     return result
 
 
@@ -876,6 +953,27 @@ def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> Non
         raise ActionError(
             "reproduction.source.changed", "validated research source changed"
         )
+
+
+def verify_reproduction_publication_snapshot(
+    log: LogContext, plan: ReproductionPlan
+) -> None:
+    """Recheck publication inputs while allowing unrelated entry publication.
+
+    A log run owns the whole log and therefore retains the exact admitted
+    validation and source projections. Distinct entry runs may publish in
+    either order; their own authority, execution, and material snapshots remain
+    exact while shared generated validation state is rebased under the brief
+    publication mutex.
+    """
+
+    if plan.target.get("kind") != "entry":
+        verify_reproduction_snapshot(log, plan)
+        return
+    project_root = resolve_project_root(log.root)
+    _recheck_authority_files(plan, project_root)
+    _recheck_executions(plan, log, project_root)
+    _recheck_materials(plan)
 
 
 def _recheck_authority_files(plan: ReproductionPlan, project_root: Path) -> None:
@@ -995,7 +1093,19 @@ def _artifact(
     same = [value for value in candidates if value.entry.context.id == entry.context.id]
     if same:
         return same[0].output
-    return resource.location
+    return _portable_resource_artifact(resource, state.project_root)
+
+
+def _portable_resource_artifact(resource: InputResource, project_root: Path) -> str:
+    target = Path(resource.canonical_target).resolve()
+    try:
+        relative = target.relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        raise ActionError(
+            "reproduction.artifact.outside_project",
+            f"generated artifact is outside the project: {target}",
+        ) from None
+    return f"<project>/{relative}"
 
 
 def _case(

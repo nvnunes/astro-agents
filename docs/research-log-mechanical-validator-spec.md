@@ -3700,15 +3700,14 @@ A completed published evaluation owns exactly these active generated paths:
 
 ```text
 <log>/validation/results.json
-<log>/validation/reproduction.json  # when reproduction publishes it
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
 <log>/.cache/research-log-operations/log.lock
 ```
 
-`pyrun` independently owns `<entry-root>/pyrun-outputs.json`. Standard
-validation reads this file but never writes it. The file is excluded from
-artifact inventory and report publication ownership.
+`pyrun` independently owns `<entry-root>/pyrun.json`. Standard validation
+reads this file but never writes it. The file is excluded from artifact
+inventory and report publication ownership.
 
 The SQLite database may have `-journal`, `-wal`, and `-shm` companions. A
 writable evaluation also owns the shared generated SQLite paths:
@@ -3793,10 +3792,11 @@ using `--recompute` bypasses both. A dry run that bypasses both opens neither
 cache and leaves generated state byte-identical.
 
 `validation.md` is a deterministic nonauthoritative human document. It contains
-one validated date, a compact Area and Result table, bounded findings grouped
-by entry and human issue type, and the independently owned Reproduction
-section. The area vocabulary is `Clear`, `N issues`, `N artifact issues`,
-`N await confirmation`, `Incomplete`, and an em dash for unevaluated areas.
+one validated date, a compact Area and Result table, and bounded findings
+grouped by entry and human issue type. Reproduction has no section in this
+document; its independent human projection is `<log>/reproduction.md`. The
+area vocabulary is `Clear`, `N issues`, `N artifact issues`, `N await
+confirmation`, `Incomplete`, and an em dash for unevaluated areas.
 Structure projects machine scope `conformance`, and Hygiene projects machine
 scope `orphan`; neither display label changes the machine schema. Provenance
 counts unique starting artifacts by their worst human result. Internal codes,
@@ -3813,8 +3813,18 @@ states its complete target count, and directs overflow to `log findings list`.
 Human names and concise sentences come from one complete presentation catalog;
 an emitted code without a catalog entry is an implementation error rather than
 a fallback that exposes machine syntax. A clear report says `No mechanical
-findings.` The separate Reproduction section remains visibly `not_yet_run`
-until the Reproduction workflow publishes `validation/reproduction.json`.
+findings.`
+
+The validation-owned targeted Provenance refresh accepts candidate
+confirmation-only `pyrun.json` states from the reproduction publication
+transaction. It rediscovers the current recorded commands, reconstructs the
+exact output-support dependency projection, and replaces only direct
+`provenance.output.unconfirmed` checks reached by the newly confirmed
+executions plus summary-Provenance checks that depend on them. It then rebuilds
+scope aggregates through the ordinary generated-record contract. Any command,
+material, support, or dependency inconsistency aborts the refresh. This service
+never evaluates Structure, Evidence, Hygiene, or unrelated Provenance checks,
+never writes a file itself, and is not a general validation mode.
 
 In the human Provenance artifact count, a
 `provenance.output.unconfirmed` check projects as unavailable rather than as a

@@ -38,7 +38,9 @@ class ArtifactComparisonTests(unittest.TestCase):
             regenerated.write_bytes(b"different")
             changed = compare_artifacts(expected, regenerated)
 
-            self.assertEqual((matched.profile, matched.outcome), ("opaque", "matched"))
+            self.assertEqual(
+                (matched.profile, matched.outcome), ("opaque_file", "matched")
+            )
             self.assertEqual(changed.outcome, "changed")
             self.assertEqual(changed.reason, "content_changed")
 
@@ -387,8 +389,9 @@ class ExecutionComparisonTests(unittest.TestCase):
 
             verify.assert_called_once_with(fixture.log, fixture.plan)
             self.assertEqual((fixture.entry_root / "pyrun.json").read_text(), before)
-            self.assertEqual(len(updates), 1)
-            candidate = json.loads(next(iter(updates.values())))
+            self.assertEqual(len(updates.files), 1)
+            self.assertEqual(updates.execution_ids, {"e001": {fixture.identity}})
+            candidate = json.loads(next(iter(updates.files.values())))
             execution = candidate["executions"][fixture.identity]
             original = json.loads(before)["executions"][fixture.identity]
             self.assertTrue(execution["confirmed"])

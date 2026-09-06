@@ -642,12 +642,8 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
         options=ValidationOptions(
             result_date=args.date,
             dry_run=args.dry_run,
-            recompute_validation=(
-                args.recompute or args.recompute_validation
-            ),
-            recompute_fingerprints=(
-                args.recompute or args.recompute_fingerprints
-            ),
+            recompute_validation=(args.recompute or args.recompute_validation),
+            recompute_fingerprints=(args.recompute or args.recompute_fingerprints),
         ),
     )
 
@@ -664,23 +660,55 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         return 0
     if arguments and arguments[0] == "artifacts":
         return _dispatch_reproduction_artifacts(arguments[1:])
+    if arguments and arguments[0] in {"status", "stop", "resume"}:
+        return _dispatch_reproduction_job(arguments[0], arguments[1:])
     parser = argparse.ArgumentParser(prog="log reproduce")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
     parser.add_argument("--include-slow", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(arguments)
-    if not args.dry_run:
-        raise ActionError(
-            "reproduction.launch.unavailable",
-            "durable reproduction launch is introduced by the execution phase",
-        )
     log = resolve_log(args.path)
-    entry = resolve_entry(log, args.entry) if args.entry is not None else None
-    from .reproduction_planner import plan_reproduction
+    from .reproduction_jobs import dry_run_reproduction, launch_reproduction
 
-    plan = plan_reproduction(log, entry=entry, include_slow=args.include_slow)
-    print(plan.serialized())
+    if args.dry_run:
+        plan = dry_run_reproduction(
+            log, entry=args.entry, include_slow=args.include_slow
+        )
+        print(plan.serialized())
+    else:
+        print(
+            launch_reproduction(log, entry=args.entry, include_slow=args.include_slow)
+        )
+    return 0
+
+
+def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog=f"log reproduce {action}")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--run-id", required=True)
+    if action == "status":
+        parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(arguments)
+    from .reproduction_jobs import (
+        format_reproduction_status,
+        reproduction_status,
+        resume_reproduction,
+        stop_reproduction,
+    )
+
+    log = resolve_log(args.path)
+    if action == "status":
+        status = reproduction_status(log, args.run_id)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+        else:
+            print(format_reproduction_status(status), end="")
+    elif action == "stop":
+        stop_reproduction(log, args.run_id)
+        print(args.run_id)
+    else:
+        print(resume_reproduction(log, args.run_id))
     return 0
 
 

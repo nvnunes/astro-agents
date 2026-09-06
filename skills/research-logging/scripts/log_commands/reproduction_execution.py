@@ -155,6 +155,9 @@ class ExecutionControl:
     resume: bool = False
     stop_requested: Callable[[], bool] = lambda: False
     confinement: ConfinementBackend | None = None
+    progress: Callable[[str, str, ExecutionAttempt | None], None] = (
+        lambda _event, _execution_id, _attempt: None
+    )
 
 
 @dataclass(frozen=True)
@@ -265,13 +268,43 @@ def prepare_disposable_copy(
             "reproduction.run.exists", f"run directory already exists: {run_root}"
         )
     temporary_root.mkdir(parents=True, exist_ok=True)
+    target_root.mkdir()
+    return _populate_disposable_copy(source, target_root, run_id, cleanup_root=True)
+
+
+def populate_disposable_copy(
+    project_root: Path, run_root: Path, run_id: str
+) -> ReproductionWorkspace:
+    """Populate an accepted run directory containing only durable job state."""
+
+    if RUN_ID_RE.fullmatch(run_id) is None:
+        raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
+    source = project_root.resolve()
+    temporary_root = (source / "tmp").resolve()
+    root = run_root.resolve()
+    if root.parent != temporary_root or root.is_symlink() or not root.is_dir():
+        raise ActionError(
+            "reproduction.run.path_invalid", "accepted run directory is invalid"
+        )
+    allowed = {"run.json", "supervisor.json", "supervisor.log"}
+    if any(path.name not in allowed for path in root.iterdir()):
+        raise ActionError(
+            "reproduction.run.path_invalid", "accepted run directory is not pristine"
+        )
+    return _populate_disposable_copy(source, root, run_id, cleanup_root=False)
+
+
+def _populate_disposable_copy(
+    source: Path, target_root: Path, run_id: str, *, cleanup_root: bool
+) -> ReproductionWorkspace:
+    """Populate one already-created, validated run root."""
+
     source_bytes = _project_copy_bytes(source)
-    if shutil.disk_usage(temporary_root).free < source_bytes:
+    if shutil.disk_usage(target_root.parent).free < source_bytes:
         raise ActionError(
             "reproduction.storage.insufficient",
             "available project-local temporary space is smaller than the source copy",
         )
-    target_root.mkdir()
     work = target_root / "worktree"
     try:
         shutil.copytree(
@@ -288,7 +321,19 @@ def prepare_disposable_copy(
             directory.mkdir()
         _sync_directory(target_root)
     except BaseException:
-        shutil.rmtree(target_root, ignore_errors=True)
+        if cleanup_root:
+            shutil.rmtree(target_root, ignore_errors=True)
+        else:
+            for name in (
+                "worktree",
+                "runtime",
+                "diagnostics",
+                "executions",
+                "checkpoints",
+            ):
+                path = target_root / name
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
         raise
     return ReproductionWorkspace(
         run_id,
@@ -310,8 +355,7 @@ def open_existing_workspace(
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
     root = run_root.resolve()
     paths = [
-        root / name
-        for name in ("worktree", "runtime", "diagnostics", "executions")
+        root / name for name in ("worktree", "runtime", "diagnostics", "executions")
     ]
     if any(path.is_symlink() or not path.is_dir() for path in paths):
         raise ActionError(
@@ -346,9 +390,7 @@ def execute_planned_recipe(
     backend = control.confinement or DarwinSeatbelt()
     confined = _confined_command(backend, prepared.command, plan, workspace)
     outcome = _run_prepared(prepared, confined, workspace, control.stop_requested)
-    outputs = _observe_available_outputs(
-        prepared.output_paths, prepared.execution
-    )
+    outputs = _observe_available_outputs(prepared.output_paths, prepared.execution)
     state, failure_code, failure_message = _attempt_state(
         outcome, len(outputs), len(prepared.output_paths)
     )
@@ -396,9 +438,7 @@ def _prepare_execution(
         )
     work_entry = workspace.map_source(source_entry.root)
     work_log = workspace.map_source(log.root)
-    data = load_data_file(
-        source_entry.root / "data.json", entry_root=source_entry.root
-    )
+    data = load_data_file(source_entry.root / "data.json", entry_root=source_entry.root)
     output_paths = _output_paths(
         execution,
         entry_root=work_entry,
@@ -411,9 +451,7 @@ def _prepare_execution(
         work_log=work_log,
         workspace=workspace,
     )
-    stdout_path, stderr_path = _diagnostic_paths(
-        workspace, entry_id, execution_id
-    )
+    stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, execution_id)
     checkpoint_path = _checkpoint_path(workspace, entry_id, execution_id)
     return _PreparedExecution(
         entry_id,
@@ -469,9 +507,10 @@ def _run_prepared(
     failure_code: str | None = None
     failure_message: str | None = None
     try:
-        with prepared.stdout.open("ab", buffering=0) as stdout, prepared.stderr.open(
-            "ab", buffering=0
-        ) as stderr:
+        with (
+            prepared.stdout.open("ab", buffering=0) as stdout,
+            prepared.stderr.open("ab", buffering=0) as stderr,
+        ):
             process = subprocess.Popen(
                 command,
                 cwd=prepared.work_entry,
@@ -590,7 +629,9 @@ def execute_reproduction_plan(
                     f"completed checkpoint is not reusable: {reference}",
                 )
             reused.append(reference)
+            control.progress("reused", identity, None)
             continue
+        control.progress("started", identity, None)
         attempt = execute_planned_recipe(
             log,
             plan,
@@ -600,14 +641,55 @@ def execute_reproduction_plan(
                 resume=control.resume and checkpoint is not None,
                 stop_requested=control.stop_requested,
                 confinement=backend,
+                progress=control.progress,
             ),
         )
         attempts.append(attempt)
+        control.progress("finished", identity, attempt)
         if attempt.stopped:
             return ExecutionBatch(tuple(attempts), tuple(reused), tuple(skips), True)
         if attempt.checkpoint.state != "complete":
             unavailable.add(reference)
     return ExecutionBatch(tuple(attempts), tuple(reused), tuple(skips), False)
+
+
+def completed_execution_attempts(
+    log: LogContext,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+) -> tuple[ExecutionAttempt, ...]:
+    """Load every complete planned checkpoint as a comparison-ready attempt."""
+
+    results: list[ExecutionAttempt] = []
+    for planned in sorted(plan.executions, key=_execution_order):
+        entry_id = _required_string(planned, "entry")
+        identity = _required_string(planned, "execution_id")
+        checkpoint = _load_checkpoint(workspace, entry_id, identity)
+        if checkpoint is None or checkpoint.state != "complete":
+            continue
+        if not _checkpoint_outputs_current(
+            checkpoint, log, workspace, entry_id, identity
+        ):
+            raise ActionError(
+                "reproduction.checkpoint.changed",
+                f"completed checkpoint is not current: {entry_id}:{identity}",
+            )
+        prepared = _prepare_execution(log, planned, workspace)
+        results.append(
+            ExecutionAttempt(
+                entry_id,
+                identity,
+                0,
+                False,
+                None,
+                None,
+                checkpoint,
+                (),
+                prepared.stdout.relative_to(workspace.run_root).as_posix(),
+                prepared.stderr.relative_to(workspace.run_root).as_posix(),
+            )
+        )
+    return tuple(results)
 
 
 def _execution_order(planned: Mapping[str, object]) -> int:
@@ -901,9 +983,7 @@ def _observe_available_outputs(
             fingerprint = _fingerprint(path, kind)
         except (OSError, ValueError):
             continue
-        result.append(
-            {"artifact": artifact, "fingerprint": fingerprint.as_dict()}
-        )
+        result.append({"artifact": artifact, "fingerprint": fingerprint.as_dict()})
     return tuple(result)
 
 
@@ -1129,9 +1209,10 @@ def _checkpoint_path(
 
 
 def _write_checkpoint(path: Path, checkpoint: ExecutionCheckpoint) -> None:
-    payload = json.dumps(
-        checkpoint.as_dict(), ensure_ascii=False, indent=2, sort_keys=True
-    ) + "\n"
+    payload = (
+        json.dumps(checkpoint.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n"
+    )
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with temporary.open("x", encoding="utf-8") as handle:
@@ -1218,8 +1299,11 @@ def _survivor_message(survivors: Sequence[int]) -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 

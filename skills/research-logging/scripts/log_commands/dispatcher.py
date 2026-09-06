@@ -681,6 +681,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
     parser.add_argument("--include-slow", action="store_true")
+    parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(arguments)
     log = resolve_log(args.path)
@@ -688,12 +689,20 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
 
     if args.dry_run:
         plan = dry_run_reproduction(
-            log, entry=args.entry, include_slow=args.include_slow
+            log,
+            entry=args.entry,
+            include_slow=args.include_slow,
+            recheck=args.recheck,
         )
         print(plan.serialized())
     else:
         print(
-            launch_reproduction(log, entry=args.entry, include_slow=args.include_slow)
+            launch_reproduction(
+                log,
+                entry=args.entry,
+                include_slow=args.include_slow,
+                recheck=args.recheck,
+            )
         )
     return 0
 

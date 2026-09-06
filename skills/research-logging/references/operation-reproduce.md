@@ -36,13 +36,15 @@ Preview a deterministic plan without creating a run ID, lock, directory,
 checkpoint, result, report, or other state:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] [--include-slow] --dry-run
+<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+  [--include-slow] [--recheck] --dry-run
 ```
 
 Launch the same scope by omitting `--dry-run`:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] [--include-slow]
+<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+  [--include-slow] [--recheck]
 ```
 
 Without `--entry`, the target is exactly the named log. With `--entry`, the
@@ -50,11 +52,17 @@ target is exactly that entry. Evidence dependencies outside the selected scope
 remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
 
+The default selection is incremental: current results satisfy their artifact
+cases, while new, unconfirmed, failed, stale, and dependency-affected eligible
+executions are selected. When the researcher explicitly asks to recheck, check
+again, or rerun already-current reproduction results, add `--recheck`. State
+whether the preview or launch uses incremental or recheck selection.
+
 The default run skips executions recorded as slow. `--include-slow` includes
-them and requires explicit researcher authorization. A real launch prints a run
-ID after durable acceptance and returns immediately. The background job is
-CLI-owned and does not depend on the launching agent or terminal remaining
-active.
+them and requires separate explicit researcher authorization. A request to
+recheck does not authorize slow execution. A real launch prints a run ID after
+durable acceptance and returns immediately. The background job is CLI-owned
+and does not depend on the launching agent or terminal remaining active.
 
 ## Observe Or Control A Run
 

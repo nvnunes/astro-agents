@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence, cast
+from typing import Literal, Mapping, Sequence, cast
 
 from research_log_data import (
     DataFile,
@@ -65,6 +65,9 @@ MAX_BOUNDARIES = 10_000
 MAX_FAILURES = 10_000
 RESULT_MAX_BYTES = 64 * 1024 * 1024
 ExecutionKey = tuple[str, str]
+SelectionPolicy = Literal["incremental", "recheck"]
+INCREMENTAL_SELECTION: SelectionPolicy = "incremental"
+RECHECK_SELECTION: SelectionPolicy = "recheck"
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,7 @@ class _PlanningState:
     project_root: Path
     selected_entries: tuple[str, ...]
     include_slow: bool
+    selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
     owners: Mapping[str, tuple[_Owner, ...]]
     selected: dict[ExecutionKey, _Owner] = field(default_factory=dict)
@@ -204,10 +208,19 @@ class _ReachabilityProjector:
 
 
 def plan_reproduction(
-    log: LogContext, *, entry: EntryContext | None, include_slow: bool
+    log: LogContext,
+    *,
+    entry: EntryContext | None,
+    include_slow: bool,
+    selection_policy: SelectionPolicy = INCREMENTAL_SELECTION,
 ) -> ReproductionPlan:
-    """Build and recheck one deterministic write-free reproduction plan."""
+    """Build one deterministic plan under the requested work-selection policy."""
 
+    if selection_policy not in {INCREMENTAL_SELECTION, RECHECK_SELECTION}:
+        raise ActionError(
+            "reproduction.selection.invalid",
+            f"unsupported reproduction selection policy: {selection_policy}",
+        )
     _require_existing_locks_available(log, entry)
     validation_snapshot, validation_state = _admit_validation(log)
     before_digest, before_projection = research_source_projection(log.summary)
@@ -225,6 +238,7 @@ def plan_reproduction(
         project_root,
         selected_ids,
         include_slow,
+        selection_policy,
         entries,
         _owner_index(entries, project_root),
     )
@@ -662,7 +676,10 @@ def _initial_work(
     prior: Mapping[tuple[str, str], Mapping[str, object]],
     runnable: set[ExecutionKey],
 ) -> set[ExecutionKey]:
-    """Select unconfirmed, new, failed, and timestamp-stale executions."""
+    """Select runnable executions under the active work-selection policy."""
+
+    if state.selection_policy == RECHECK_SELECTION:
+        return set(runnable)
 
     needs_run: set[ExecutionKey] = set()
     for key in runnable:

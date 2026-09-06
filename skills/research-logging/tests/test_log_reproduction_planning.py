@@ -7,11 +7,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from log_commands.context import EntryContext, LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_planner import (
+    RECHECK_SELECTION,
+    SelectionPolicy,
     _admit_validation,
     plan_reproduction,
     project_reproduction_state,
@@ -159,13 +162,19 @@ def _plan(
     entry: EntryContext,
     *,
     include_slow: bool = False,
+    recheck: bool = False,
 ):
     admission = _admission(fixture)
     with mock.patch(
         "log_commands.reproduction_planner._admit_validation",
         return_value=(admission, mock.sentinel.record),
     ):
-        return plan_reproduction(fixture.log, entry=entry, include_slow=include_slow)
+        return plan_reproduction(
+            fixture.log,
+            entry=entry,
+            include_slow=include_slow,
+            selection_policy=RECHECK_SELECTION if recheck else "incremental",
+        )
 
 
 def _admission(fixture: _Fixture) -> dict[str, object]:
@@ -183,6 +192,18 @@ def _admission(fixture: _Fixture) -> dict[str, object]:
 
 
 class ReproductionPlanningTests(unittest.TestCase):
+    def test_unknown_selection_policy_is_rejected_before_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+
+            with self.assertRaisesRegex(ActionError, "selection policy"):
+                plan_reproduction(
+                    fixture.log,
+                    entry=None,
+                    include_slow=False,
+                    selection_policy=cast(SelectionPolicy, "unsupported"),
+                )
+
     def test_default_stops_at_slow_boundary_and_include_slow_runs_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
@@ -225,6 +246,18 @@ class ReproductionPlanningTests(unittest.TestCase):
             complete = _plan(fixture, entry, include_slow=True)
             self.assertEqual(
                 [value["execution_id"] for value in complete.executions],
+                [slow[0], analysis[0]],
+            )
+            recheck = _plan(fixture, entry, recheck=True)
+            self.assertEqual(
+                [value["execution_id"] for value in recheck.executions],
+                [analysis[0]],
+            )
+            complete_recheck = _plan(
+                fixture, entry, include_slow=True, recheck=True
+            )
+            self.assertEqual(
+                [value["execution_id"] for value in complete_recheck.executions],
                 [slow[0], analysis[0]],
             )
             self.assertEqual(
@@ -489,6 +522,28 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.executions, ())
             self.assertEqual(plan.cases[0]["disposition"], "current")
 
+            recheck = _plan(fixture, entry, recheck=True)
+            self.assertEqual(
+                [value["execution_id"] for value in recheck.executions],
+                [execution[0]],
+            )
+            self.assertEqual(recheck.cases[0]["disposition"], "run")
+            self.assertEqual(
+                set(json.loads(recheck.serialized())),
+                {
+                    "boundaries",
+                    "cases",
+                    "executions",
+                    "failures",
+                    "include_slow",
+                    "schema",
+                    "source_snapshot",
+                    "summary",
+                    "target",
+                    "validation_snapshot",
+                },
+            )
+
             projection = project_reproduction_state(fixture.log)
             self.assertEqual(
                 projection.reachable, frozenset({(entry.id, "data/final.txt")})
@@ -600,6 +655,12 @@ class ReproductionPlanningTests(unittest.TestCase):
                 return_value=(admission, mock.sentinel.record),
             ):
                 plan = plan_reproduction(fixture.log, entry=None, include_slow=False)
+                recheck = plan_reproduction(
+                    fixture.log,
+                    entry=None,
+                    include_slow=False,
+                    selection_policy=RECHECK_SELECTION,
+                )
 
             self.assertEqual(
                 [value["execution_id"] for value in plan.executions],
@@ -608,6 +669,8 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertFalse(
                 any(value["kind"] == "cross_entry" for value in plan.boundaries)
             )
+            self.assertEqual(recheck.executions, plan.executions)
+            self.assertEqual(recheck.target, {"entry": None, "kind": "log"})
 
     def test_validation_admission_allows_only_unconfirmed_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

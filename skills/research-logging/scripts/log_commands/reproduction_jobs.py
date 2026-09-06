@@ -37,7 +37,12 @@ from .reproduction_execution import (
     preflight_execution_safety,
 )
 from .reproduction_paths import resolve_project_tmp
-from .reproduction_planner import plan_reproduction, verify_reproduction_snapshot
+from .reproduction_planner import (
+    INCREMENTAL_SELECTION,
+    RECHECK_SELECTION,
+    plan_reproduction,
+    verify_reproduction_snapshot,
+)
 from .reproduction_publication import (
     CompletedPublication,
     publish_completed_reproduction,
@@ -67,12 +72,17 @@ STATUS_POLL_SECONDS = 0.1
 
 
 def launch_reproduction(
-    log: LogContext, *, entry: str | None, include_slow: bool
+    log: LogContext, *, entry: str | None, include_slow: bool, recheck: bool = False
 ) -> str:
     """Accept one immutable plan and hand its scope lock to a supervisor."""
 
     selected = resolve_entry(log, entry) if entry is not None else None
-    plan = plan_reproduction(log, entry=selected, include_slow=include_slow)
+    plan = plan_reproduction(
+        log,
+        entry=selected,
+        include_slow=include_slow,
+        selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
+    )
     project = resolve_project_root(log.root)
     run_id = _new_run_id()
     run_root = _new_run_root(project, log, entry, run_id)
@@ -93,12 +103,17 @@ def launch_reproduction(
 
 
 def dry_run_reproduction(
-    log: LogContext, *, entry: str | None, include_slow: bool
+    log: LogContext, *, entry: str | None, include_slow: bool, recheck: bool = False
 ) -> ReproductionPlan:
     """Return one stable, write-free plan after the runtime safety preflight."""
 
     selected = resolve_entry(log, entry) if entry is not None else None
-    plan = plan_reproduction(log, entry=selected, include_slow=include_slow)
+    plan = plan_reproduction(
+        log,
+        entry=selected,
+        include_slow=include_slow,
+        selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
+    )
     preflight_execution_safety()
     verify_reproduction_snapshot(log, plan)
     return plan

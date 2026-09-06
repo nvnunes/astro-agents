@@ -120,7 +120,7 @@ class ReproductionJobTests(unittest.TestCase):
                     mock.patch(
                         "log_commands.reproduction_jobs.plan_reproduction",
                         return_value=plan,
-                    ),
+                    ) as planner,
                     mock.patch(
                         "log_commands.reproduction_jobs.preflight_execution_safety"
                     ) as safety,
@@ -129,10 +129,19 @@ class ReproductionJobTests(unittest.TestCase):
                     ) as verify,
                 ):
                     observed = dry_run_reproduction(
-                        log, entry="e003", include_slow=include_slow
+                        log,
+                        entry="e003",
+                        include_slow=include_slow,
+                        recheck=True,
                     )
 
                 self.assertEqual(observed, plan)
+                planner.assert_called_once_with(
+                    log,
+                    entry=mock.ANY,
+                    include_slow=include_slow,
+                    selection_policy="recheck",
+                )
                 safety.assert_called_once_with()
                 verify.assert_called_once_with(log, plan)
                 self.assertEqual(
@@ -277,7 +286,7 @@ class ReproductionJobTests(unittest.TestCase):
                 mock.patch(
                     "log_commands.reproduction_jobs.plan_reproduction",
                     return_value=_plan(),
-                ),
+                ) as planner,
                 mock.patch(
                     "log_commands.reproduction_jobs._new_run_id",
                     return_value="reproduce-20300101t000000z-fixture",
@@ -288,7 +297,9 @@ class ReproductionJobTests(unittest.TestCase):
                 ),
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
-                run_id = launch_reproduction(log, entry="e003", include_slow=False)
+                run_id = launch_reproduction(
+                    log, entry="e003", include_slow=False, recheck=True
+                )
 
             run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
             record = _load_run(run_root / "run.json")
@@ -296,6 +307,14 @@ class ReproductionJobTests(unittest.TestCase):
             self.assertEqual(
                 cast(Mapping[str, object], record["plan"])["executions"],
                 list(_plan().executions),
+            )
+            self.assertNotIn("recheck", record)
+            self.assertNotIn("recheck", cast(Mapping[str, object], record["plan"]))
+            planner.assert_called_once_with(
+                log,
+                entry=mock.ANY,
+                include_slow=False,
+                selection_policy="recheck",
             )
             spawn.assert_called_once()
 

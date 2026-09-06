@@ -915,17 +915,26 @@ project itself is not copied.
 Preview one exact scope without writing anything:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --dry-run
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] \
+  [--recheck] --dry-run
 ```
 
 Launch it by omitting `--dry-run`. The command prints a durable run ID and
 returns immediately while the CLI-owned background job continues. By default,
-executions recorded with `pyrun --slow` are skipped. Include them only when you
-explicitly intend the additional simulation or training cost:
+selection is incremental: already-current results satisfy their artifact
+cases. Add `--recheck` when you deliberately want every eligible execution in
+the selected evidence-relevant scope to run again, including executions whose
+results are current.
+
+Executions recorded with `pyrun --slow` are skipped by default. Include them
+only when you explicitly intend the additional simulation or training cost:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --include-slow
 ```
+
+Slow inclusion is independent from recheck selection. `--recheck` alone still
+skips slow executions; use both flags only when both behaviors are intended.
 
 An entry target starts from that entry's evidence and never executes a command
 from another entry. A log target follows evidence and dependencies only within

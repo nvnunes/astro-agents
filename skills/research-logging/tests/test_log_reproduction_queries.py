@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -99,6 +99,87 @@ class ReproductionQueryTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertIn('"matched": 0', output.getvalue())
+
+    def test_dispatcher_limits_recheck_to_launch_and_dry_run(self) -> None:
+        log = mock.sentinel.log
+        plan = mock.Mock()
+        plan.serialized.return_value = '{"schema":"fixture"}'
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
+                "log_commands.reproduction_jobs.dry_run_reproduction",
+                return_value=plan,
+            ) as dry_run,
+            redirect_stdout(output),
+        ):
+            status = main(
+                [
+                    "reproduce",
+                    "--path",
+                    "/project/log",
+                    "--entry",
+                    "e003",
+                    "--recheck",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue(), '{"schema":"fixture"}\n')
+        dry_run.assert_called_once_with(
+            log, entry="e003", include_slow=False, recheck=True
+        )
+
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
+                "log_commands.reproduction_jobs.launch_reproduction",
+                return_value="reproduce-fixture",
+            ) as launch,
+            redirect_stdout(output),
+        ):
+            status = main(
+                ["reproduce", "--path", "/project/log", "--recheck"]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue(), "reproduce-fixture\n")
+        launch.assert_called_once_with(
+            log, entry=None, include_slow=False, recheck=True
+        )
+
+        rejected = (
+            ["status", "--path", "/project/log", "--run-id", "run"],
+            ["stop", "--path", "/project/log", "--run-id", "run"],
+            ["resume", "--path", "/project/log", "--run-id", "run"],
+            [
+                "promote",
+                "--path",
+                "/project/log",
+                "--run-id",
+                "run",
+                "--execution-id",
+                "execution",
+            ],
+            ["report", "--path", "/project/log"],
+            ["artifacts", "list", "--path", "/project/log"],
+            [
+                "artifacts",
+                "show",
+                "--path",
+                "/project/log",
+                "--entry",
+                "e003",
+                "--artifact",
+                "data/result.txt",
+            ],
+        )
+        for arguments in rejected:
+            with self.subTest(action=arguments[0]), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    main(["reproduce", *arguments, "--recheck"])
 
 
 if __name__ == "__main__":

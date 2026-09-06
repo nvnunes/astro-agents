@@ -1051,6 +1051,19 @@ decoder. Image container metadata not included in decoded image structure is
 not content. Directory paths are compared in normalized lexical order and no
 member may escape through a symlink.
 
+For CSV/TSV floating cells and NumPy, HDF5, or MATLAB floating array
+components, NaNs compare equal only at the same logical positions; NaN payload
+bits are not content. Positive and negative zero remain distinct. JSON rejects
+non-finite numeric spellings rather than assigning them comparison semantics.
+
+Text is strict UTF-8. CSV uses comma and TSV uses tab with the standard
+double-quote escape rules. An empty table field is null; case-insensitive
+`true` and `false` are booleans; canonical decimal integers without leading
+zeroes are integers; decimal or exponent spellings and `nan`/`inf` spellings
+are floating values; every other field is text. These rules apply to data
+rows; header fields remain exact text column identities. Comparison does not
+inspect authored schema hints.
+
 An enclosing study directory uses the directory profile recursively; each
 compact completed-model leaf uses the named dispatch above. Point-level
 predictions are not implicit members of either artifact. Approximate numeric

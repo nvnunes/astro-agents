@@ -117,12 +117,13 @@ The pinned local Conda environment is the quality gate. Ambient Python, Ruff,
 or mypy installations may be used for diagnosis, but not as completion
 evidence for a research-logging tool change.
 
-For focused reproduction-planning development, run:
+For reproduction planning, comparison, and staging development, run:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_log_reproduction_planning.py
+  skills/research-logging/tests/test_log_reproduction_planning.py \
+  skills/research-logging/tests/test_log_reproduction_comparison.py
 ```
 
 This focused command supplements rather than replaces the complete tool gate.
@@ -143,7 +144,7 @@ host-confinement smoke test:
 REPRODUCTION_SANDBOX_TEST=1 \
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills.research-logging/tests/test_log_reproduction_execution.py
+  skills/research-logging/tests/test_log_reproduction_execution.py
 ```
 
 These tests use only generated projects and synthetic workers. The enabled

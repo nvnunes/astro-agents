@@ -42,7 +42,8 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
-Research logging has three distinct surfaces with separate authority:
+Research logging has three active surfaces with separate authority and one
+target reproduction contract:
 
 - `skills/research-logging/` is the runtime surface containing
   the operational and authoring instructions used by agents. It is
@@ -53,10 +54,14 @@ Research logging has three distinct surfaces with separate authority:
 - `docs/research-logging.md` is human-facing researcher documentation. It
   explains how researchers use the skill, what they should expect from it, and
   which research decisions remain theirs.
+- `docs/research-log-reproduction-spec.md` is the target normative contract for
+  command-oriented execution state and mechanical reproduction. Its status
+  section defines the prerequisite and cutover boundary; it is not an active
+  runtime contract before that cutover.
 
-The three surfaces must remain conceptually compatible, but they are not
-mirrors. The human guide is not a specification or completeness checklist for
-the agent surface or validation tools.
+These surfaces must remain conceptually compatible, but they are not mirrors.
+The human guide is not a specification or completeness checklist for the agent
+surface, validation tools, or reproduction tools.
 
 Repair has the sole explicit repository-level dependency in the agent surface:
 when malformed or legacy research-owned state prevents the owning CLI action
@@ -250,6 +255,9 @@ Future validation changes must preserve these invariants:
   does not write it. The explicit Reorganize transfer coordinator may ask the
   `pyrun`-owned service to retire only output support made mechanically stale
   by that exact transfer; it never rewrites or relocates execution signatures.
+  This remains the active invariant until the atomic cutover defined by
+  `docs/research-log-reproduction-spec.md`; the target command-oriented
+  contract must not leak into the current runtime piecemeal.
 - **Split Reorganize ownership:** agents own semantic partitioning, Markdown,
   links, record selection, and support-file movement. The `log reorganize`
   family owns only verified closed identity changes and coordinated authored

@@ -42,9 +42,13 @@ strong intent signals, and Validate does not require the researcher to say
 “mechanical.”
 
 Given only “check this research log” or “verify this research log,” the agent
-asks whether the researcher wants Validate, Review, or Reproduction. Given a
-specific semantic question beginning with “check” or “verify,” it may instead
-route by meaning to the matching Review lenses.
+asks whether the researcher wants Validate, Review, or Reproduction.
+
+Given a bounded question during validation-finding triage, such as “Do these
+orphan artifacts have future analytical value, or are they duplicated or easy
+to regenerate?”, the agent answers the question directly without starting
+Review or selecting lenses. The question's semantic overlap with a catalog
+concern is not itself a request for Review.
 
 Given “look into the 92 Provenance artifact issues” in the context of completed
 mechanical validation, the agent routes to Validate's read-only diagnosis path.

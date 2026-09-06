@@ -84,10 +84,14 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn("references/operation-record", text, route.name)
 
     def test_review_routes_through_catalog_to_focused_lens_prompts(self) -> None:
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         review = reference("operation-review.md")
         catalog = (REVIEW_LENSES / "catalog.md").read_text(encoding="utf-8")
 
+        self.assertIn("A bounded question that merely overlaps a lens", skill)
         self.assertIn("Semantic Review is costly", review)
+        self.assertIn("directly requests the act of\nsemantic review", review)
+        self.assertIn("A bounded question that merely overlaps a lens", review)
         self.assertIn("references/review-lenses/catalog.md", review)
         self.assertIn("four-option group-first menu", review)
         self.assertIn("complete numbered lens catalog verbatim", review)
@@ -128,6 +132,8 @@ class RecordSurfaceTests(unittest.TestCase):
             "does not automatically invoke Validate",
             "assigns no aggregate group verdict",
             "check this research log",
+            "orphan artifacts have future analytical value",
+            "semantic overlap with a catalog concern",
             "sibling `<log>/` tree",
             "verifies feasible arithmetic",
             "apparently evidential prose",

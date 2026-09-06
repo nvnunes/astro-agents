@@ -1,10 +1,12 @@
 # Review Operation Instructions
 
-Use this operation only when the researcher explicitly requests Review or
-clearly directs a semantic judgment represented by a named lens or review
-group. Semantic Review is costly. Never add it to Record, Replace, Update
-Summary, Repair, Reorganize, Validate, reproduction, or ordinary completion
-checks on your own initiative.
+Use this operation only when the researcher directly requests the act of
+semantic review—for example, asks to review, audit, assess, evaluate, critique,
+or check a target for a semantic concern—or asks to apply a named or naturally
+described review lens or group. A bounded question that merely overlaps a lens
+does not start Review. Semantic Review is costly. Never add it to Record,
+Replace, Update Summary, Repair, Reorganize, Validate, reproduction, or ordinary
+completion checks on your own initiative.
 
 Do not select review lenses for a request to inspect, explain, triage, or
 determine the cause of named mechanical-validation findings. Route that work
@@ -21,9 +23,10 @@ roles and perform that work.
 Read `references/review-lenses/catalog.md`. Route the request by meaning rather
 than through a keyword table.
 
-- Apply explicitly named lenses or groups directly.
-- When natural wording maps clearly to one or more catalog descriptions, name
-  the selected lenses or group briefly and proceed without confirmation.
+- Apply lenses or groups that the researcher directly asks to use.
+- When a direct Review request describes one or more catalog concerns in
+  natural wording, name the selected lenses or group briefly and proceed
+  without confirmation.
 - Select every concern clearly requested, but do not add adjacent lenses merely
   because they could be useful.
 - Route “review the analysis,” “review the evidence,” and “review the record”
@@ -38,8 +41,7 @@ than through a keyword table.
 Treat `Validate`, `Review`, and `Reproduction` as strong operation signals, but
 interpret the complete request. Researchers need not say “mechanical” to mean
 Validate. Treat a bare request to check or verify a research log as ambiguous
-and ask which of the three operations the researcher wants. A stated semantic
-question may still route directly to its matching lens by meaning.
+and ask which of the three operations the researcher wants.
 
 After selection, read only the chosen files under
 `references/review-lenses/`. A named group expands to its constituent lens

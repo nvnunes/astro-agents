@@ -70,9 +70,11 @@ corresponding operation, but interpret the complete request and ask when the
 intended operation remains unclear. The researcher does not need to describe
 Validate as “mechanical.” Treat a bare request to check or verify a research
 log as ambiguous and ask whether the researcher wants Validate, Review, or
-Reproduction. A specific semantic question may route to Review by its meaning.
-Do not infer semantic Review from a request to check or verify work performed
-under another operation.
+Reproduction. Start Review only when the researcher directly requests the act
+of reviewing a target or asks to apply a named or naturally described review
+lens or group. Review-direction language such as review, audit, assess,
+evaluate, critique, or check for a semantic concern can establish that request.
+A bounded question that merely overlaps a lens does not start Review.
 
 A request to inspect, explain, triage, or determine the cause of named
 mechanical-validation findings routes to Validate's read-only diagnosis path,

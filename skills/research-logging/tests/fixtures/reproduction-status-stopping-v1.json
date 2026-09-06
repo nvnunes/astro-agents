@@ -1,0 +1,42 @@
+{
+  "artifact_outcomes": {
+    "changed": 0,
+    "comparison_failed": 0,
+    "failed": 0,
+    "matched": 0,
+    "skipped": 0
+  },
+  "completed_executions": 0,
+  "current_execution": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
+  "include_slow": false,
+  "latest_failure": null,
+  "phase": "stopping",
+  "run_id": "reproduce-20300101t000000z-fixture",
+  "schema": "research-log-reproduction-status/1",
+  "status": null,
+  "summary": "docs/research.md",
+  "surviving_workers": [
+    {
+      "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "last_observed_at": "2030-01-01T00:00:05Z",
+      "parent_worker_id": null,
+      "pid": 12345,
+      "registered_at": "2030-01-01T00:00:03Z",
+      "state": "running",
+      "worker_id": "worker-0001"
+    }
+  ],
+  "target": {
+    "entry": "e003",
+    "kind": "entry"
+  },
+  "timestamps": {
+    "accepted_at": "2030-01-01T00:00:00Z",
+    "finished_at": null,
+    "resumed_at": null,
+    "started_at": "2030-01-01T00:00:01Z",
+    "stopped_at": null,
+    "updated_at": "2030-01-01T00:00:05Z"
+  },
+  "total_executions": 1
+}

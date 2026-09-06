@@ -1,0 +1,114 @@
+{
+  "artifacts": [
+    {
+      "artifact": "data/changed.bin",
+      "comparison": {
+        "contract": "research-log-reproduction-comparison/1",
+        "expected": {
+          "algorithm": "sha256",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "profile": "opaque_file",
+        "regenerated": {
+          "algorithm": "sha256",
+          "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "outcome": "changed",
+      "reason": "content_changed",
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-20300101t000000z-fixture"
+    },
+    {
+      "artifact": "data/comparison.dat",
+      "comparison": {
+        "contract": "research-log-reproduction-comparison/1",
+        "expected": {
+          "algorithm": "sha256",
+          "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "profile": "opaque_file",
+        "regenerated": {
+          "algorithm": "sha256",
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:2222222222222222222222222222222222222222222222222222222222222222",
+      "outcome": "comparison_failed",
+      "reason": "unsupported_format",
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-20300101t000000z-fixture"
+    },
+    {
+      "artifact": "data/failed.json",
+      "comparison": null,
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:3333333333333333333333333333333333333333333333333333333333333333",
+      "outcome": "failed",
+      "reason": "dependency_cycle",
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-20300101t000000z-fixture"
+    },
+    {
+      "artifact": "data/matched.csv",
+      "comparison": {
+        "contract": "research-log-reproduction-comparison/1",
+        "expected": {
+          "algorithm": "sha256",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "profile": "table",
+        "regenerated": {
+          "algorithm": "sha256",
+          "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:4444444444444444444444444444444444444444444444444444444444444444",
+      "outcome": "matched",
+      "reason": null,
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-20300101t000000z-fixture"
+    },
+    {
+      "artifact": "data/skipped.png",
+      "comparison": null,
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:5555555555555555555555555555555555555555555555555555555555555555",
+      "outcome": "skipped",
+      "reason": "dependency_failed",
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-20300101t000000z-fixture"
+    }
+  ],
+  "runs": [
+    {
+      "accepted_at": "2030-01-01T00:00:00Z",
+      "artifact_outcomes": {
+        "changed": 1,
+        "comparison_failed": 1,
+        "failed": 1,
+        "matched": 1,
+        "skipped": 1
+      },
+      "finished_at": "2030-01-01T00:05:00Z",
+      "folder": {
+        "availability": "available",
+        "path": "tmp/reproduce-research-reproduce-20300101t000000z-fixture"
+      },
+      "include_slow": false,
+      "run_id": "reproduce-20300101t000000z-fixture",
+      "status": "complete",
+      "target": {
+        "entry": null,
+        "kind": "log"
+      }
+    }
+  ],
+  "schema": "research-log-reproduction-result/1",
+  "summary": "docs/research.md",
+  "updated_at": "2030-01-01T00:05:00Z"
+}

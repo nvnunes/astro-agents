@@ -64,7 +64,7 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/end-to-end-provenance-1` |
+| Mechanical rules | `research-log-mechanical/end-to-end-provenance-2` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
@@ -2801,6 +2801,41 @@ without changing the resolved relationships. Capture options retain their
 existing execution-signature behavior. A successful command publishes no
 record for a declared output that is absent.
 
+### `pyrun.json` Output Bindings
+
+For every decoded `pyrun.json` execution, validation derives one closed output
+binding projection from `recipe.parameters` and `recipe.outputs`. It does not
+read Python source or add a persisted binding field. Every declared output must
+occur exactly once either as a child-process parameter value or as a leading
+runner-owned stream-capture target. Equals-delimited option values bind as the
+value after the first `=` while preserving the option prefix. Captures bind
+directly, remain file-only, and are followed by the persisted `--` separator.
+
+Two or more parameter or capture occurrences that canonicalize to the same
+declared output are ambiguous even when only one occurrence was assigned an
+output role during command discovery. No occurrence is missing. Either state
+is the execution-scoped Structure failure
+`pyrun.output.binding_invalid`. The remainder of a structurally decoded
+`pyrun.json` remains independently evaluable; one defective execution does not
+make the complete file undecodable.
+
+A single spelling that canonicalizes to the declared output but is not its
+canonical identity, such as `./data/result.csv`, has an unambiguous mechanical
+binding but is still `pyrun.output.binding_invalid` in Structure. This applies
+equally to child arguments and capture targets. `pyrun` may execute and record
+that invocation, but reproduction remains blocked by its requirement for
+current clean Structure validation until the authored spelling is canonical.
+
+The live runner, this validation rule, and reproduction use the same binding
+projection implementation. Before launching a child, `pyrun` rejects a missing
+or ambiguous projection that is knowable from the parsed invocation. A fresh
+successful publication therefore derives its recipe, output set, and binding
+from the same parse. Validation primarily detects malformed migration state and
+later authored-state problems. Markdown-to-JSON recipe disagreement remains a
+separate Provenance conclusion, and undeclared generated artifacts remain under
+the orphan rules. A script may still accept but ignore a valid output argument;
+static binding validation makes no claim about that runtime behavior.
+
 `pyrun` also accepts repeatable `--env NAME=value` runner options before the
 required `--` separator. It normalizes them by name into the persisted
 execution signature and child environment. Duplicate names, malformed names,
@@ -3271,6 +3306,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | `pyrun.outputs.invalid` | provenance | `pyrun-outputs.json` or one record violates its closed schema. |
 | `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
 | `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
+| `pyrun.output.binding_invalid` | conformance | One decoded execution has a missing, ambiguous, noncanonical, or otherwise invalid output binding. |
 | `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
 | `provenance.output.unconfirmed` | provenance | A reached generated output has only an unconfirmed baseline. |
 | `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, direct inputs, or recorded code differ from the confirmed record. |

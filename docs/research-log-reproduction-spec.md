@@ -356,6 +356,22 @@ supported sets.
   elsewhere in the current Git project use the inherited normalized
   `<project>/...` identity.
 
+Every declared output derives exactly one replay binding from these existing
+fields; no binding field is persisted. A binding is either one runner-owned
+capture target in the leading capture prefix or one complete child-parameter
+value, including the value after the first `=` in an equals-delimited option.
+The same canonical output in more than one occurrence is ambiguous, even if
+only one occurrence carried an output role during ingestion. An output in the
+map with no occurrence is missing. Either condition is invalid for execution
+and a Structure failure during validation.
+
+A single noncanonical spelling that resolves to the output identity remains
+mechanically bindable but is also a Structure failure. This lets `pyrun`
+record the completed live invocation without inventing a second identity while
+requiring the authored command to use the canonical spelling before
+reproduction. The binding projection is derived wholly from `parameters` and
+`outputs`, both already covered by the execution identity.
+
 `observed` has exactly `script`, `inputs`, `code`, and `outputs`:
 
 - `script` is the fingerprint of the directly executed script.
@@ -1011,8 +1027,12 @@ generated paths.
 Every ordinary declared output must bind unambiguously to exactly one recorded
 child-parameter occurrence. Runner-owned captures are direct bindings. Before
 execution, the executor substitutes each binding with the corresponding path
-inside the run workspace. A missing or ambiguous binding is an operational
-failure until Phase 10 makes the same condition an earlier Structure failure.
+inside the run workspace. Current clean Structure validation is an admission
+requirement and therefore prevents a recipe with a missing, ambiguous, or
+noncanonical binding from reaching execution. The executor consumes the same
+shared binding projection defensively; an unexpected projection failure means
+the validated source snapshot changed or an implementation invariant failed,
+not a separate artifact outcome or user-facing binding check.
 
 The executor resolves retained origins and boundaries directly from their
 verified read-only locations. When a downstream input is the output of an

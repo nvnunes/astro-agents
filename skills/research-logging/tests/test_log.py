@@ -127,6 +127,7 @@ class LogHelpAndContextTests(unittest.TestCase):
             "discover",
             "evidence",
             "init",
+            "reproduce",
             "reorganize",
             "retention",
             "validate",

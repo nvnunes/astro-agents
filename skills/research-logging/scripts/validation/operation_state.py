@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 MAX_SNAPSHOT_FILES = 1_000_000
+RUNTIME_CACHE_DIRECTORIES = frozenset(
+    {".cache", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__"}
+)
 REORGANIZE_RESIDUE = "reorganize-residue"
 REGISTRY_RESIDUE = "registry-residue"
 REGISTRY_RESIDUE_PREFIX = "registry-residue-"
@@ -151,9 +154,9 @@ def research_snapshot(summary: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:
     paths = [summary]
     for directory, names, files in os.walk(log_root, topdown=True, followlinks=False):
         root = Path(directory)
-        generated_directories = {".cache"}
+        generated_directories = set(RUNTIME_CACHE_DIRECTORIES)
         if root == log_root:
-            generated_directories.add("validation")
+            generated_directories.update({"reproduction", "validation"})
         paths.extend(
             root / name
             for name in names
@@ -167,7 +170,7 @@ def research_snapshot(summary: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:
         paths.extend(
             root / name
             for name in sorted(files)
-            if not (root == log_root and name == "validation.md")
+            if not (root == log_root and name in {"reproduction.md", "validation.md"})
         )
         if len(paths) > MAX_SNAPSHOT_FILES:
             raise OSError("research snapshot crossed its file bound")

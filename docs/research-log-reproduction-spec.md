@@ -726,7 +726,11 @@ or `failed`, and `reason` is null only when no qualification is needed.
 
 Executions are in deterministic run order and each has exactly `order`,
 `entry`, `execution_id`, `depends_on`, `outputs`, and `slow`. `depends_on` and
-`outputs` are sorted unique identity arrays. Boundaries are sorted and each has
+`outputs` are sorted unique identity arrays. A dependency reference is the
+entry-qualified string `<entry>:<execution_id>` because the same stable recipe
+identity may legitimately occur in more than one entry; `execution_id` itself
+remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
+sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 `origin`, `cross_entry`, or `slow`. Fields inapplicable to a boundary kind are
 null rather than omitted. Failures are sorted artifact projections with exactly

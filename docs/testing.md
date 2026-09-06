@@ -117,6 +117,16 @@ The pinned local Conda environment is the quality gate. Ambient Python, Ruff,
 or mypy installations may be used for diagnosis, but not as completion
 evidence for a research-logging tool change.
 
+For focused reproduction-planning development, run:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_log_reproduction_planning.py
+```
+
+This focused command supplements rather than replaces the complete tool gate.
+
 The complexity check is a ratchet over explicitly recorded complexity debt. It
 allows refactoring to reduce findings, but rejects a new complex function, a
 higher complexity score, or growth in the total advisory finding count.

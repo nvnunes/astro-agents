@@ -851,35 +851,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             script = source / "scripts" / "make.py"
             script.parent.mkdir()
             script.write_text("print('complete')\n", encoding="utf-8")
-            (source / "pyrun-outputs.json").write_text(
-                json.dumps(
-                    {
-                        "schema": "research-log-pyrun-outputs/v1",
-                        "outputs": {
-                            "data/result.txt": {
-                                "confirmed": True,
-                                "fingerprint": {
-                                    "algorithm": "sha256",
-                                    "digest": sha256(source_data),
-                                },
-                                "inputs": {},
-                                "code": {},
-                                "parameters": ["--output", "data/result.txt"],
-                                "script": {
-                                    "path": "scripts/make.py",
-                                    "fingerprint": {
-                                        "algorithm": "sha256",
-                                        "digest": sha256(script),
-                                    },
-                                },
-                            }
-                        },
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            write_execution_state(source, ("data/result.txt",))
 
             marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
             source_document.write_text(
@@ -920,8 +892,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             )
             self.assertEqual(transferred.returncode, 0, transferred.stderr)
             self.assertEqual(len(result(transferred)["records"]), 1)
-            support = json.loads((source / "pyrun-outputs.json").read_text())
-            self.assertEqual(support["outputs"], {})
+            self.assertFalse((source / "pyrun.json").exists())
             self.assertFalse((source / "data.json").exists())
             self.assertFalse((source / "evidence.json").exists())
             evidence = json.loads((destination / "evidence.json").read_text())

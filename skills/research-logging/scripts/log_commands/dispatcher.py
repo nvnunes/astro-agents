@@ -30,6 +30,7 @@ FAMILIES = (
     "findings",
     "init",
     "pyrun",
+    "reproduce",
     "reorganize",
     "retention",
     "validate",
@@ -66,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         read_only_dispatch = {
             "discover": _dispatch_discover,
             "findings": _dispatch_findings,
+            "reproduce": _dispatch_reproduce,
             "validate": _dispatch_validate,
         }
         if family in read_only_dispatch:
@@ -648,6 +650,27 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
             ),
         ),
     )
+
+
+def _dispatch_reproduce(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log reproduce")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--entry")
+    parser.add_argument("--include-slow", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(arguments)
+    if not args.dry_run:
+        raise ActionError(
+            "reproduction.launch.unavailable",
+            "durable reproduction launch is introduced by the execution phase",
+        )
+    log = resolve_log(args.path)
+    entry = resolve_entry(log, args.entry) if args.entry is not None else None
+    from .reproduction_planner import plan_reproduction
+
+    plan = plan_reproduction(log, entry=entry, include_slow=args.include_slow)
+    print(plan.serialized())
+    return 0
 
 
 def _dispatch_findings(arguments: Sequence[str]) -> int:

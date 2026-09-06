@@ -126,6 +126,35 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         ) from error
 
 
+def evaluate_current_record(
+    summary: Path, *, result_date: str
+) -> MechanicalGeneratedRecord:
+    """Evaluate one current record without locking, publication, or cache writes.
+
+    This narrow service lets a read-only consumer prove that a published result
+    still describes the exact current research source.  The caller must guard
+    the complete source snapshot against concurrent change.
+    """
+
+    summary = summary.resolve()
+    _validate_request(summary)
+    unsupported = _unsupported_metadata_state(summary)
+    if unsupported is not None:
+        raise ValidationControllerError(
+            "generated metadata requires Repair before currentness evaluation"
+        )
+    result = _run_validation(
+        ValidationRequest(summary, result_date=result_date, publish=False),
+        summary,
+        summary.with_suffix(""),
+        _result_date(result_date),
+    )
+    raw = result.get("record")
+    if not isinstance(raw, Mapping):
+        raise ValidationControllerError("mechanical validation did not complete")
+    return MechanicalGeneratedRecord.from_dict(raw)
+
+
 def _run_validation(
     request: ValidationRequest,
     summary: Path,

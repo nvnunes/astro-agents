@@ -4,8 +4,9 @@
 
 Status: active implementation specification. The reproduction implementation,
 metadata migration, bounded maintained-log evaluation, and cutover are
-complete. Phase 9 validation hardening and Phase 10 maintained-corpus operation
-remain separately gated by the reproduction plan.
+complete. Phase 9 validation hardening, the separately planned orphan-hygiene
+cleanup, and full maintained-corpus operation remain gated by the reproduction
+plan.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -1508,5 +1509,5 @@ Validation-owned targeted refresh covers confirmation-only Provenance changes
 and the Evidence and Provenance closure reached by promoted outputs without
 running general validation. Maintained-corpus initialization and the bounded
 entry-level cutover evaluation are complete. Full maintained-corpus
-reproduction remains gated by Phase 10 of the reproduction plan. The frozen
+reproduction remains gated by the reproduction plan. The frozen
 result and status fixtures remain the compatibility boundary.

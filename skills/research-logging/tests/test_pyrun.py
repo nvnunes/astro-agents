@@ -291,7 +291,13 @@ class PyrunResolutionTests(unittest.TestCase):
         )
         self.assertEqual(
             layout.recipe_parameters,
-            ("--results", "data/results.csv"),
+            (
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "--results",
+                "data/results.csv",
+            ),
         )
 
     def test_slow_is_policy_outside_recipe_parameters(self) -> None:
@@ -308,6 +314,34 @@ class PyrunResolutionTests(unittest.TestCase):
         ):
             with self.assertRaises(PYRUN_MODULE.PyrunContractError):
                 PYRUN_MODULE.parse_pyrun_arguments(arguments)
+
+    def test_explicit_environment_is_separate_from_capture_recipe_parameters(
+        self,
+    ) -> None:
+        layout = PYRUN_MODULE.parse_pyrun_arguments(
+            [
+                "--env",
+                "MODE=exact",
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "scripts/model.py",
+                "--mode",
+                "exact",
+            ]
+        )
+
+        self.assertEqual(layout.environment, (("MODE", "exact"),))
+        self.assertEqual(
+            layout.recipe_parameters,
+            (
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "--mode",
+                "exact",
+            ),
+        )
 
     def test_resolves_project_log_file_directory_and_member_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1554,6 +1588,16 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertEqual(
                 recorded_outputs(entry), {"data/err.log", "data/out.log"}
             )
+            self.assertEqual(
+                execution_for_output(entry, "data/out.log")["recipe"]["parameters"],
+                [
+                    "--capture-stdout",
+                    "data/out.log",
+                    "--capture-stderr",
+                    "data/err.log",
+                    "--",
+                ],
+            )
 
             combined = run(
                 [
@@ -1570,6 +1614,16 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertIn("out\n", combined.stdout)
             self.assertIn("err\n", combined.stdout)
             self.assertEqual((entry / "data/combined.log").read_text(), combined.stdout)
+            self.assertEqual(
+                execution_for_output(entry, "data/combined.log")["recipe"][
+                    "parameters"
+                ],
+                [
+                    "--capture-stdout-stderr",
+                    "data/combined.log",
+                    "--",
+                ],
+            )
 
     def test_capture_contract_rejects_ambiguous_forms_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

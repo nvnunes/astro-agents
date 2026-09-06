@@ -62,6 +62,7 @@ class _RunnerState:
     declarations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     environment: dict[str, str] = field(default_factory=dict)
     signature_prefix: list[str] = field(default_factory=list)
+    recipe_prefix: list[str] = field(default_factory=list)
     slow: bool = False
 
 
@@ -93,6 +94,8 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
                 for item in ("--env", f"{name}={value}")
             )
             state.signature_prefix.append("--")
+        if state.captures:
+            state.recipe_prefix.append("--")
         index += 1
     if index >= len(arguments):
         raise PyrunContractError("missing script")
@@ -107,7 +110,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         tuple(state.captures),
         roles,
         tuple(sorted(state.environment.items())),
-        script_arguments,
+        tuple((*state.recipe_prefix, *script_arguments)),
         state.slow,
     )
 
@@ -132,6 +135,7 @@ def _consume_runner_option(
     elif option in PYRUN_CAPTURE_STREAMS:
         state.captures.append((option, target))
         state.signature_prefix.extend((option, target))
+        state.recipe_prefix.extend((option, target))
     else:
         if option in state.declarations:
             raise PyrunContractError(f"duplicate {option} declaration")

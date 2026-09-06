@@ -343,9 +343,11 @@ supported sets.
   uses the inherited `<log>/...` identity; and a script elsewhere in the
   current Git project uses `<project>/...`. Scripts outside the project are not
   eligible.
-- `parameters` is the exact ordered child-process argument tail after the
-  script. It contains no runner role declarations, capture options, explicit
-  environment options, or separator token.
+- `parameters` is the exact ordered replay parameter vector. It contains each
+  leading runner-owned stream-capture option and target, followed by `--`, then
+  the exact ordered child-process argument tail after the script. Without a
+  capture, it contains only that child-process argument tail. It contains no
+  runner role declarations, `--slow`, or explicit environment options.
 - `environment` maps each explicit normalized `--env NAME=value` variable name
   to its exact value. It contains no inherited or runner-supplied variable.
 - `inputs` is the sorted unique list of directly consumed `data.json` names.
@@ -402,11 +404,12 @@ separators, no ASCII escaping, and no trailing newline. Array order is retained
 for `parameters`; `inputs` is sorted before serialization; environment and
 output map keys are sorted by canonical JSON serialization.
 
-The projection includes the normalized script, ordered child parameters,
+The projection includes the normalized script, ordered replay parameters,
 explicit environment variables, direct input names, and complete output paths
-and kinds. It excludes observations, confirmation, slow policy, timestamps,
-Markdown location, standard-environment profile, schema version, runner
-version, and execution-contract version.
+and kinds. The replay parameters make each runner-owned stream capture and its
+output identity explicit. It excludes observations, confirmation, slow policy,
+timestamps, Markdown location, standard-environment profile, schema version,
+runner version, and execution-contract version.
 
 Changing script bytes or direct-input bytes makes observed state stale without
 changing the execution ID. Changing the script path, parameters, explicit

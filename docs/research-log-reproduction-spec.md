@@ -1487,7 +1487,10 @@ implicit extension.
 
 The command-oriented execution state, migration, planning, safety, disposable
 execution, comparison, result contract, current projection, bounded read-only
-queries, and narrow validation-owned Provenance refresh are implemented.
-Durable job control, promotion, maintained-corpus initialization, and final
-cutover remain gated by the reproduction plan. The frozen result and status
-fixtures remain the compatibility boundary for those later phases.
+queries, durable job control, stop and same-path resume, lost-supervisor
+reconciliation, and whole-execution copy-based promotion are implemented.
+Validation-owned targeted refresh covers confirmation-only Provenance changes
+and the Evidence and Provenance closure reached by promoted outputs without
+running general validation. Maintained-corpus initialization and final cutover
+remain gated by the reproduction plan. The frozen result and status fixtures
+remain the compatibility boundary.

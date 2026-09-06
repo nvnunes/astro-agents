@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Mapping, cast
@@ -15,6 +16,7 @@ from log_commands.reproduction_jobs import (
     RUN_SCHEMA,
     _accepted_record,
     _load_run,
+    _require_no_promotion_conflict,
     _status_projection,
     format_reproduction_status,
     launch_reproduction,
@@ -22,6 +24,7 @@ from log_commands.reproduction_jobs import (
 )
 from log_commands.reproduction_results import RunFolder, RunResult
 from log_commands.storage import atomic_write_text
+from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
@@ -216,6 +219,36 @@ class ReproductionJobTests(unittest.TestCase):
                 1,
             )
 
+    def test_active_promotion_output_rejects_intersecting_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            material = project / "shared" / "result.csv"
+            plan = replace(
+                _plan(),
+                source_snapshot={
+                    "materials": [
+                        {
+                            "identity": material.resolve().as_posix(),
+                            "role": "boundary",
+                        }
+                    ]
+                },
+            )
+            directory_path = operation_directory(project)
+            directory_path.mkdir(parents=True)
+            (directory_path / "promotion-fixture.json").write_text(
+                json.dumps({"outputs": [material.resolve().as_posix()]}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(Exception, "active promotion"):
+                _require_no_promotion_conflict(LogContext(summary, log_root), plan)
+
 
 def _plan() -> ReproductionPlan:
     execution = "pyrun-exec/v1:" + "1" * 64
@@ -224,7 +257,7 @@ def _plan() -> ReproductionPlan:
         {"entry": "e003", "kind": "entry"},
         False,
         {},
-        {},
+        {"materials": []},
         (),
         (
             {
@@ -247,7 +280,7 @@ def _empty_plan() -> ReproductionPlan:
         {"entry": None, "kind": "log"},
         False,
         {},
-        {},
+        {"materials": []},
         (),
         (),
         (),

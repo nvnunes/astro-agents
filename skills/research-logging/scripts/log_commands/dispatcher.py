@@ -660,6 +660,21 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         return 0
     if arguments and arguments[0] == "artifacts":
         return _dispatch_reproduction_artifacts(arguments[1:])
+    if arguments and arguments[0] == "promote":
+        parser = argparse.ArgumentParser(prog="log reproduce promote")
+        parser.add_argument("--path", required=True, type=Path)
+        parser.add_argument("--run-id", required=True)
+        parser.add_argument("--execution-id", required=True)
+        args = parser.parse_args(arguments[1:])
+        from .reproduction_promotion import promote_execution
+
+        result = promote_execution(
+            resolve_log(args.path),
+            run_id=args.run_id,
+            execution_id=args.execution_id,
+        )
+        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+        return 0
     if arguments and arguments[0] in {"status", "stop", "resume"}:
         return _dispatch_reproduction_job(arguments[0], arguments[1:])
     parser = argparse.ArgumentParser(prog="log reproduce")

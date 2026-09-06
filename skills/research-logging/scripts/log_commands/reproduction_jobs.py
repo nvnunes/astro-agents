@@ -77,9 +77,12 @@ def launch_reproduction(
     run_root = _new_run_root(project, log, entry, run_id)
     lock_fds = _acquire_scope_locks(log, entry)
     try:
-        run_root.mkdir(parents=True)
-        accepted = _accepted_record(log, plan, run_id, run_root, project)
-        atomic_write_text(run_root / "run.json", _canonical(accepted))
+        with operation_lock(log.root, "reproduction-publication.lock"):
+            with operation_lock(project, "reproduction-promotion-index.lock"):
+                _require_no_promotion_conflict(log, plan)
+                run_root.mkdir(parents=True)
+                accepted = _accepted_record(log, plan, run_id, run_root, project)
+                atomic_write_text(run_root / "run.json", _canonical(accepted))
         _spawn_supervisor(log, run_root, lock_fds, resume=False)
     except BaseException:
         _close_fds(lock_fds)
@@ -364,6 +367,42 @@ def _acquire_scope_locks(log: LogContext, entry: str | None) -> tuple[int, ...]:
         _close_fds(opened)
         raise
     return tuple(opened)
+
+
+def _require_no_promotion_conflict(log: LogContext, plan: ReproductionPlan) -> None:
+    materials = cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"])
+    inputs = {
+        Path(cast(str, item["identity"])).resolve()
+        for item in materials
+        if item.get("role") == "boundary" and isinstance(item.get("identity"), str)
+    }
+    directory = operation_directory(resolve_project_root(log.root))
+    if not directory.is_dir():
+        return
+    for path in sorted(directory.glob("promotion-*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            outputs = value["outputs"]
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ) as error:
+            raise ActionError(
+                "reproduction.promotion.state_invalid", str(path)
+            ) from error
+        if not isinstance(outputs, list) or not all(
+            isinstance(item, str) for item in outputs
+        ):
+            raise ActionError("reproduction.promotion.state_invalid", str(path))
+        overlap = inputs & {Path(item).resolve() for item in outputs}
+        if overlap:
+            raise ActionError(
+                "reproduction.promotion.conflict",
+                f"active promotion changes a reproduction input: {min(overlap)}",
+            )
 
 
 @contextmanager

@@ -126,6 +126,7 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_log_reproduction_comparison.py \
   skills/research-logging/tests/test_log_reproduction_results.py \
   skills/research-logging/tests/test_log_reproduction_jobs.py \
+  skills/research-logging/tests/test_log_reproduction_promotion.py \
   skills/research-logging/tests/test_log_reproduction_publication.py \
   skills/research-logging/tests/test_log_reproduction_queries.py \
   skills/research-logging/tests/test_research_log_targeted_refresh.py

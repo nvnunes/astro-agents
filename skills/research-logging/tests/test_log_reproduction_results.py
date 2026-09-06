@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,7 +22,11 @@ from log_commands.reproduction_results import (
     reconcile_run_folders,
 )
 from research_log_data import Fingerprint
-from validation.human_projection import EntryPresentation, ReportContext
+from validation.human_projection import (
+    EntryPresentation,
+    ReportContext,
+    load_report_context,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -128,6 +133,23 @@ class ReproductionResultContractTests(unittest.TestCase):
                 self.assertEqual(reconciled.runs, ())
                 self.assertEqual(reconciled.artifacts, current.artifacts)
 
+        with self.subTest("intentional accessible tmp symlink"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                external = root / "external"
+                external.mkdir()
+                (root / "tmp").symlink_to(external, target_is_directory=True)
+                run_root = external / Path(current.runs[0].folder.path).name
+                run_root.mkdir()
+
+                available = reconcile_run_folders(current, project_root=root)
+                self.assertEqual(
+                    available.runs[0].folder.availability, "available"
+                )
+                run_root.rmdir()
+                absent = reconcile_run_folders(current, project_root=root)
+                self.assertEqual(absent.runs, ())
+
         unknown = RunResult(
             current.runs[0].run_id,
             current.runs[0].target,
@@ -173,6 +195,33 @@ class ReproductionResultContractTests(unittest.TestCase):
 
 
 class ReproductionReportTests(unittest.TestCase):
+    def test_split_documents_project_as_one_stable_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "docs/study"
+            root.mkdir(parents=True)
+            summary = root.with_suffix(".md")
+            summary.write_text(
+                "# Study\n\n"
+                "Validation: [latest completed report](study/validation.md)\n\n"
+                "Reproduction: [latest report](study/reproduction.md)\n\n"
+                "## Entries\n\n"
+                "- `2030-01-01` Split Study:\n"
+                "  - [Part A](study/entries/2030-01-01-e002-split/e002a.md)\n"
+                "  - [Part B](study/entries/2030-01-01-e002-split/e002b.md)\n",
+                encoding="utf-8",
+            )
+
+            report = compose_reproduction_report(
+                ReproductionResults(
+                    "docs/study.md", "2030-01-01T00:00:00Z", (), ()
+                ),
+                context=load_report_context(summary),
+            )
+
+            self.assertIn("## [e002 — Split Study]", report)
+            self.assertNotIn("## [e002a", report)
+            self.assertNotIn("## [e002b", report)
+
     def test_report_lists_every_entry_bolds_nonmatches_and_hides_reason_codes(
         self,
     ) -> None:

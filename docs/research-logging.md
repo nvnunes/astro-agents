@@ -908,6 +908,9 @@ evidence-relevant artifacts of one maintained entry or log can be regenerated
 from the recorded JSON graph and execution state. It does not use Markdown as
 execution authority, judge scientific meaning, or change research prose,
 commands, evidence declarations, or retained artifacts.
+Retained scripts and inputs are read in place under confinement. Only generated
+outputs and runtime state are written into the project-local run folder; the
+project itself is not copied.
 
 Preview one exact scope without writing anything:
 

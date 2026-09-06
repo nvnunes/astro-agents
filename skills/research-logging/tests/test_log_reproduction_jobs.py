@@ -10,16 +10,23 @@ from typing import Mapping, cast
 from unittest import mock
 
 from log_commands.context import LogContext
+from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_execution import ExecutionBatch
 from log_commands.reproduction_jobs import (
     RUN_SCHEMA,
     _accepted_record,
+    _acquire_scope_locks,
+    _close_fds,
+    _find_run,
     _load_run,
+    _reconcile_lost_supervisor,
     _require_no_promotion_conflict,
     _status_projection,
+    dry_run_reproduction,
     format_reproduction_status,
     launch_reproduction,
+    resume_reproduction,
     supervise_reproduction,
 )
 from log_commands.reproduction_results import RunFolder, RunResult
@@ -28,6 +35,115 @@ from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_status_finds_run_beneath_intentional_project_tmp_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / ".git").mkdir()
+            external_tmp = root / "run-storage"
+            external_tmp.mkdir()
+            (project / "tmp").symlink_to(external_tmp, target_is_directory=True)
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-fixture"
+            logical_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            logical_root.mkdir()
+            atomic_write_text(
+                logical_root / "run.json",
+                json.dumps(
+                    _accepted_record(log, _plan(), run_id, logical_root, project),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+            unrelated = external_tmp / (
+                "reproduce-research-e003-"
+                "reproduce-20300102t000000z-incompatible"
+            )
+            unrelated.mkdir()
+            (unrelated / "run.json").write_text(
+                '{"legacy_run_record": true}\n', encoding="utf-8"
+            )
+
+            self.assertEqual(_find_run(log, run_id), logical_root.resolve())
+
+    def test_scope_locks_allow_distinct_entries_and_reject_overlaps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+
+            first = _acquire_scope_locks(log, "e001")
+            second: tuple[int, ...] = ()
+            try:
+                second = _acquire_scope_locks(log, "e002")
+                with self.assertRaisesRegex(Exception, "operation is active"):
+                    _acquire_scope_locks(log, "e001")
+                with self.assertRaisesRegex(Exception, "operation is active"):
+                    _acquire_scope_locks(log, None)
+            finally:
+                _close_fds(second)
+                _close_fds(first)
+
+            whole_log = _acquire_scope_locks(log, None)
+            try:
+                with self.assertRaisesRegex(Exception, "operation is active"):
+                    _acquire_scope_locks(log, "e001")
+            finally:
+                _close_fds(whole_log)
+
+    def test_dry_run_performs_final_recheck_without_writing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            entry_root = log_root / "entries" / "2030-01-01-e003-example"
+            entry_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            before = tuple(
+                sorted(path.relative_to(project) for path in project.rglob("*"))
+            )
+            for include_slow in (False, True):
+                plan = replace(_plan(), include_slow=include_slow)
+                with (
+                    mock.patch(
+                        "log_commands.reproduction_jobs.plan_reproduction",
+                        return_value=plan,
+                    ),
+                    mock.patch(
+                        "log_commands.reproduction_jobs.preflight_execution_safety"
+                    ) as safety,
+                    mock.patch(
+                        "log_commands.reproduction_jobs.verify_reproduction_snapshot"
+                    ) as verify,
+                ):
+                    observed = dry_run_reproduction(
+                        log, entry="e003", include_slow=include_slow
+                    )
+
+                self.assertEqual(observed, plan)
+                safety.assert_called_once_with()
+                verify.assert_called_once_with(log, plan)
+                self.assertEqual(
+                    tuple(
+                        sorted(
+                            path.relative_to(project) for path in project.rglob("*")
+                        )
+                    ),
+                    before,
+                )
+
     def test_accepted_run_projects_frozen_status_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -62,6 +178,61 @@ class ReproductionJobTests(unittest.TestCase):
                 ).read_text(encoding="utf-8")
             )
             self.assertEqual(_status_projection(record), expected)
+
+    def test_frozen_status_fixtures_cover_active_and_terminal_lifecycle(self) -> None:
+        names = ("executing", "stopping", "stopped", "complete", "failed")
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            (log_root / "entries" / "2030-01-01-e003-example").mkdir(
+                parents=True
+            )
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            run_root = project / "tmp" / "reproduce-research-e003-fixture"
+            run_root.mkdir(parents=True)
+            for name in names:
+                with self.subTest(name=name):
+                    expected = json.loads(
+                        (
+                            Path(__file__).parent
+                            / "fixtures"
+                            / f"reproduction-status-{name}-v1.json"
+                        ).read_text(encoding="utf-8")
+                    )
+                    record = _accepted_record(
+                        LogContext(summary, log_root),
+                        _plan(),
+                        cast(str, expected["run_id"]),
+                        run_root,
+                        project,
+                    )
+                    cast(dict[str, object], record["progress"]).update(
+                        {
+                            "artifact_outcomes": expected["artifact_outcomes"],
+                            "completed_executions": expected["completed_executions"],
+                            "total_executions": expected["total_executions"],
+                        }
+                    )
+                    cast(dict[str, object], record["state"]).update(
+                        {
+                            "current_execution": expected["current_execution"],
+                            "latest_failure": expected["latest_failure"],
+                            "phase": expected["phase"],
+                            "status": expected["status"],
+                        }
+                    )
+                    record["timestamps"] = expected["timestamps"]
+                    record["workers"] = expected["surviving_workers"]
+                    path = run_root / "run.json"
+                    path.write_text(
+                        json.dumps(record, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    self.assertEqual(_status_projection(_load_run(path)), expected)
 
     def test_run_loader_rejects_unknown_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +360,7 @@ class ReproductionJobTests(unittest.TestCase):
             with (
                 mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
                 mock.patch(
-                    "log_commands.reproduction_jobs.populate_disposable_copy",
+                    "log_commands.reproduction_jobs.populate_output_workspace",
                     return_value=object(),
                 ),
                 mock.patch(
@@ -248,6 +419,110 @@ class ReproductionJobTests(unittest.TestCase):
 
             with self.assertRaisesRegex(Exception, "active promotion"):
                 _require_no_promotion_conflict(LogContext(summary, log_root), plan)
+
+    def test_lost_supervisor_stops_without_restarting_and_resume_reuses_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-fixture"
+            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root.mkdir(parents=True)
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(
+                    _accepted_record(log, _plan(), run_id, run_root, project),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._terminate_marked_workers",
+                    return_value=[],
+                ) as terminate,
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                _reconcile_lost_supervisor(log, run_root)
+
+            stopped = _status_projection(_load_run(run_root / "run.json"))
+            self.assertEqual(stopped["status"], "stopped")
+            self.assertEqual(
+                cast(Mapping[str, object], stopped["latest_failure"])["code"],
+                "supervisor_lost",
+            )
+            terminate.assert_called_once_with(run_id)
+            spawn.assert_not_called()
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs.verify_reproduction_snapshot"
+                ),
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                self.assertEqual(resume_reproduction(log, run_id), run_id)
+
+            spawn.assert_called_once_with(log, run_root.resolve(), (), resume=True)
+            resumed = _status_projection(_load_run(run_root / "run.json"))
+            self.assertEqual(resumed["phase"], "accepted")
+            self.assertIsNone(resumed["status"])
+
+    def test_resume_refuses_changed_snapshot_and_preserves_stopped_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-fixture"
+            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root.mkdir(parents=True)
+            record = _accepted_record(log, _plan(), run_id, run_root, project)
+            cast(dict[str, object], record["state"]).update(
+                {"phase": None, "status": "stopped"}
+            )
+            cast(dict[str, object], record["timestamps"])["stopped_at"] = (
+                "2030-01-01T00:00:05Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs.verify_reproduction_snapshot",
+                    side_effect=ActionError(
+                        "reproduction.source.changed", "source changed"
+                    ),
+                ),
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                with self.assertRaisesRegex(ActionError, "source changed"):
+                    resume_reproduction(log, run_id)
+
+            spawn.assert_not_called()
+            preserved = _status_projection(_load_run(run_root / "run.json"))
+            self.assertEqual(preserved["status"], "stopped")
+            self.assertIsNone(preserved["phase"])
 
 
 def _plan() -> ReproductionPlan:

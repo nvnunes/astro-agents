@@ -31,6 +31,7 @@ from .reproduction_comparison import (
     prepare_confirmation_updates_locked,
 )
 from .reproduction_contract import ReproductionPlan
+from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
     project_reproduction_state,
     verify_reproduction_publication_snapshot,
@@ -295,8 +296,8 @@ def _run_result(
     project_root: Path,
 ) -> RunResult:
     try:
-        folder = request.run_folder.resolve().relative_to(project_root).as_posix()
-    except ValueError as error:
+        folder = project_tmp_relative(request.run_folder, project_root)
+    except OSError as error:
         raise ActionError(
             "reproduction.run.path_invalid", "run folder is outside the project"
         ) from error

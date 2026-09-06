@@ -13,7 +13,7 @@
     "code": "stop_requested",
     "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
     "message": "Reproduction was stopped by request.",
-    "recorded_at": "2030-01-01T00:00:06Z"
+    "recorded_at": "2030-01-01T00:00:05Z"
   },
   "phase": null,
   "run_id": "reproduce-20300101t000000z-fixture",
@@ -30,8 +30,8 @@
     "finished_at": null,
     "resumed_at": null,
     "started_at": "2030-01-01T00:00:01Z",
-    "stopped_at": "2030-01-01T00:00:06Z",
-    "updated_at": "2030-01-01T00:00:06Z"
+    "stopped_at": "2030-01-01T00:00:05Z",
+    "updated_at": "2030-01-01T00:00:05Z"
   },
   "total_executions": 1
 }

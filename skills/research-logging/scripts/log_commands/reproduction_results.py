@@ -16,6 +16,7 @@ from validation.pyrun_state import PYRUN_EXECUTION_RE
 
 from .context import ENTRY_ID_RE
 from .model import ActionError
+from .reproduction_paths import resolve_project_tmp
 from .reproduction_planner import ReproductionStateProjection
 
 RESULT_SCHEMA = "research-log-reproduction-result/1"
@@ -363,10 +364,19 @@ def reconcile_run_folders(
     availability unknown.
     """
 
-    root = project_root.resolve()
+    try:
+        temporary_root = resolve_project_tmp(project_root)
+    except OSError:
+        return ReproductionResults(
+            results.summary,
+            results.updated_at,
+            results.artifacts,
+            tuple(_run_with_folder(run, "unknown") for run in results.runs),
+        )
     retained: list[RunResult] = []
     for run in results.runs:
-        target = root.joinpath(*PurePosixPath(run.folder.path).parts)
+        parts = PurePosixPath(run.folder.path).parts
+        target = temporary_root.joinpath(*parts[1:])
         try:
             parent_available = target.parent.is_dir() and not target.parent.is_symlink()
             exists = target.exists() or target.is_symlink()
@@ -460,11 +470,14 @@ def compose_reproduction_report(
         + ", ".join(f"{counts[name]} {name}" for name in OUTCOMES)
         + f", {stale} stale.",
     ]
+    stable_context_entries = {
+        value for value in context.entries if re.fullmatch(r"e[0-9]+", value)
+    }
     entry_ids = sorted(
         (
             {entry}
             if entry is not None
-            else set(context.entries) | {item.entry for item in artifacts}
+            else stable_context_entries | {item.entry for item in artifacts}
         ),
         key=_entry_key,
     )
@@ -802,7 +815,10 @@ def _artifact_key(value: ArtifactResult) -> tuple[tuple[int, str], str]:
 
 
 def _entry_key(value: str) -> tuple[int, str]:
-    return int(value[1:]), value
+    match = re.fullmatch(r"e(?P<number>[0-9]+)(?P<suffix>[a-z]?)", value)
+    if match is None:
+        raise ReproductionResultError(f"invalid entry ID: {value!r}")
+    return int(match.group("number")), value
 
 
 def _run_key(value: RunResult) -> tuple[float, str]:

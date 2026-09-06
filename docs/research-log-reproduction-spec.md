@@ -2,8 +2,10 @@
 
 ## Status And Authority
 
-Status: target implementation specification. The contract is not active until
-the reproduction cutover is complete.
+Status: active implementation specification. The reproduction implementation,
+metadata migration, bounded maintained-log evaluation, and cutover are
+complete. Phase 9 validation hardening and Phase 10 maintained-corpus operation
+remain separately gated by the reproduction plan.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -41,7 +43,7 @@ requirements.
   graph traversal, slow boundaries, cycles, and dry runs.
 - [Durable Reproduction Jobs](#durable-reproduction-jobs) defines launch,
   status, stop, resume, recovery, and exit semantics.
-- [Execution Safety](#execution-safety) defines disposable execution, network
+- [Execution Safety](#execution-safety) defines run-local execution, network
   denial, write confinement, and worker ownership.
 - [Artifact Comparison](#artifact-comparison) defines exact type-aware
   comparison and defensive failure behavior.
@@ -754,7 +756,7 @@ boundary, and comparison baseline by canonical identity, role, kind, and
 closed fingerprint. All arrays are unique and canonically sorted. This snapshot
 is the exact acceptance, final-publication, and resume comparison boundary.
 
-Dry run is completely write-free. It creates no run ID, lock, working copy,
+Dry run is completely write-free. It creates no run ID, lock, output workspace,
 staging directory, checkpoint, result, report, cache, or other state. Because
 it deliberately takes no scope lock, it records and rechecks the complete
 source snapshot immediately before returning. A changed snapshot is an
@@ -770,7 +772,7 @@ immediately. The job is independent of the invoking terminal and agent turn.
 There is no foreground mode.
 
 A run ID is an opaque, lowercase, filesystem-safe unique token produced by the
-CLI. It is immutable and names the durable state, disposable copy, diagnostics,
+CLI. It is immutable and names the durable state, output workspace, diagnostics,
 and staging paths for the life of the run. It is not derived from Markdown or
 an execution recipe.
 
@@ -827,7 +829,7 @@ Each run directory contains one canonical `run.json` using
   },
   "paths": {
     "run": "tmp/reproduce-research-e003-reproduce-...",
-    "working_copy": "worktree",
+    "workspace": "workspace",
     "diagnostics": "diagnostics",
     "staging": "executions"
   },
@@ -877,7 +879,7 @@ The run record therefore durably retains:
 - completed and total execution counts;
 - accumulated artifact-outcome counts;
 - per-execution checkpoints and worker registrations;
-- disposable-copy, diagnostics, and staging paths; and
+- output-workspace, diagnostics, and staging paths; and
 - stop, interruption, recovery, and publication state required for idempotent
   continuation.
 
@@ -923,7 +925,7 @@ fixed code-owned grace period, then force-terminates every survivor. It does
 not wait for the current execution to finish naturally.
 
 The run becomes `stopped` and releases its scope lock only after no supervised
-worker remains. It retains the same run ID, disposable path, checkpoints,
+worker remains. It retains the same run ID, workspace path, checkpoints,
 partial outputs, and diagnostics.
 
 If forced termination leaves a survivor, the run remains active in `stopping`,
@@ -933,7 +935,7 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 ### Resume
 
 `resume` is available only for `stopped` runs. It reacquires the original scope
-lock, reuses the same disposable project copy and run paths, skips completed
+lock, reuses the same run-local output workspace and run paths, skips completed
 execution checkpoints, and reinvokes the stopped execution in place. This
 preserves script-native checkpoint and resume behavior.
 
@@ -969,24 +971,37 @@ encoded in launch or status exit status.
 
 ## Execution Safety
 
-### Disposable Execution
+### Run-Local Output Workspace
 
-Every job executes in a disposable project copy bound to its run ID. The copy
-must preserve the project-relative, log-relative, and entry-relative layout
-expected by recipes without writing generated artifacts into the maintained
-project.
+Every job executes retained scripts and participating code directly from their
+current verified locations under read-only confinement. It does not copy the
+project. Each run owns an initially empty output workspace that mirrors only
+the project-relative, log-relative, and entry-relative directories required by
+generated paths.
 
-The executor makes regenerated upstream outputs available to downstream
-recipes within that copy. It uses the project-local Python environment and the
-recorded execution environment. Runner-owned temporary and cache locations,
-including `MPLCONFIGDIR` and `XDG_CACHE_HOME`, are located inside the run's
-allowed paths.
+Every ordinary declared output must bind unambiguously to exactly one recorded
+child-parameter occurrence. Runner-owned captures are direct bindings. Before
+execution, the executor substitutes each binding with the corresponding path
+inside the run workspace. A missing or ambiguous binding is an operational
+failure until Phase 9 makes the same condition an earlier Structure failure.
 
-Retained inputs and comparison baselines are read-only. Generated outputs,
-temporary files, checkpoints, captures, and diagnostics are confined to the
-disposable project copy and runner-owned project-local temporary paths. A
-recipe containing an output or effective write target outside those locations
-must fail preflight.
+The executor resolves retained origins and boundaries directly from their
+verified read-only locations. When a downstream input is the output of an
+earlier selected execution, it substitutes the regenerated path from the same
+run workspace. Comparison reads the retained artifact as its immutable
+baseline. No retained input or baseline is copied into the workspace.
+
+Recipes execute from the workspace's mirrored entry directory. The executor
+uses the project-local Python environment and recorded execution environment.
+Runner-owned temporary and cache locations, including `MPLCONFIGDIR` and
+`XDG_CACHE_HOME`, are located inside the run's allowed paths.
+
+Generated outputs, temporary files, checkpoints, captures, and diagnostics are
+confined to run-owned paths. Retained scripts, participating code, inputs,
+boundaries, comparison baselines, and the project-local environment remain
+read-only. A script that accepts but ignores a substituted output and attempts
+another write fails at runtime; static inspection never substitutes for this
+control.
 
 ### Network And External Effects
 
@@ -1485,12 +1500,13 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-The command-oriented execution state, migration, planning, safety, disposable
+The command-oriented execution state, migration, planning, safety, run-local
 execution, comparison, result contract, current projection, bounded read-only
 queries, durable job control, stop and same-path resume, lost-supervisor
 reconciliation, and whole-execution copy-based promotion are implemented.
 Validation-owned targeted refresh covers confirmation-only Provenance changes
 and the Evidence and Provenance closure reached by promoted outputs without
-running general validation. Maintained-corpus initialization and final cutover
-remain gated by the reproduction plan. The frozen result and status fixtures
-remain the compatibility boundary.
+running general validation. Maintained-corpus initialization and the bounded
+entry-level cutover evaluation are complete. Full maintained-corpus
+reproduction remains gated by Phase 10 of the reproduction plan. The frozen
+result and status fixtures remain the compatibility boundary.

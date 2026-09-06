@@ -7,9 +7,14 @@
     "skipped": 0
   },
   "completed_executions": 0,
-  "current_execution": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
+  "current_execution": null,
   "include_slow": false,
-  "latest_failure": null,
+  "latest_failure": {
+    "code": "worker_cleanup_incomplete",
+    "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
+    "message": "One worker survived shutdown.",
+    "recorded_at": "2030-01-01T00:00:04Z"
+  },
   "phase": "stopping",
   "run_id": "reproduce-20300101t000000z-fixture",
   "schema": "research-log-reproduction-status/1",
@@ -18,12 +23,12 @@
   "surviving_workers": [
     {
       "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
-      "last_observed_at": "2030-01-01T00:00:05Z",
+      "last_observed_at": "2030-01-01T00:00:04Z",
       "parent_worker_id": null,
-      "pid": 12345,
-      "registered_at": "2030-01-01T00:00:03Z",
+      "pid": 4321,
+      "registered_at": "2030-01-01T00:00:02Z",
       "state": "running",
-      "worker_id": "worker-0001"
+      "worker_id": "worker-4321"
     }
   ],
   "target": {
@@ -36,7 +41,7 @@
     "resumed_at": null,
     "started_at": "2030-01-01T00:00:01Z",
     "stopped_at": null,
-    "updated_at": "2030-01-01T00:00:05Z"
+    "updated_at": "2030-01-01T00:00:04Z"
   },
   "total_executions": 1
 }

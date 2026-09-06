@@ -27,6 +27,12 @@ ENTRY_LINK_RE = re.compile(
     r"\[(?P<title>[^\]\r\n]+)\]"
     r"\((?P<target><?[^()\s\r\n]+>?)\)"
 )
+SPLIT_ENTRY_PARENT_RE = re.compile(
+    r"^- `[0-9]{4}-[0-9]{2}-[0-9]{2}` (?P<title>.+):$"
+)
+ENTRY_FOLDER_ID_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}-(?P<entry>e[0-9]{3,})-.+\Z"
+)
 SUMMARY_LINE_RE = re.compile(r"summary:(?P<line>[1-9][0-9]*)\Z")
 MAX_SUMMARY_BYTES = 8 * 1024 * 1024
 
@@ -695,17 +701,23 @@ def load_report_context(summary: Path) -> ReportContext:
     first = text.splitlines()[0] if text else ""
     title = first[2:].strip() if first.startswith("# ") else summary.stem
     log_root = summary.with_suffix("")
+    entries = _direct_entry_presentations(text, log_root)
+    for entry_id, presentation in _split_entry_presentations(text, log_root).items():
+        entries.setdefault(entry_id, presentation)
+    return ReportContext(title or summary.stem, summary, log_root, entries)
+
+
+def _direct_entry_presentations(
+    text: str, log_root: Path
+) -> dict[str, EntryPresentation]:
     entries: dict[str, EntryPresentation] = {}
     for match in ENTRY_LINK_RE.finditer(text):
         raw_target = match.group("target").strip("<>")
-        target = PurePosixPath(raw_target)
+        target = _entry_target(raw_target, log_root)
+        if target is None:
+            continue
         entry_id = Path(target.name).stem.lower()
         if ENTRY_ID_RE.fullmatch(entry_id) is None:
-            continue
-        parts = target.parts
-        if parts and parts[0] == log_root.name:
-            target = PurePosixPath(*parts[1:])
-        if not target.parts or target.parts[0] != "entries":
             continue
         document = target.as_posix()
         root = log_root.joinpath(*target.parts[:-1])
@@ -718,7 +730,63 @@ def load_report_context(summary: Path) -> ReportContext:
                 root.absolute(),
             ),
         )
-    return ReportContext(title or summary.stem, summary, log_root, entries)
+    return entries
+
+
+def _split_entry_presentations(
+    text: str, log_root: Path
+) -> dict[str, EntryPresentation]:
+    entries: dict[str, EntryPresentation] = {}
+    parent_title: str | None = None
+    for line in text.splitlines():
+        parent = SPLIT_ENTRY_PARENT_RE.fullmatch(line)
+        if parent is not None:
+            parent_title = parent.group("title").strip()
+            continue
+        if parent_title is None or not line.startswith("  - "):
+            if line.strip():
+                parent_title = None
+            continue
+        split_match = ENTRY_LINK_RE.search(line)
+        if split_match is None:
+            continue
+        raw_target = split_match.group("target").strip("<>")
+        target = _entry_target(raw_target, log_root)
+        if target is None:
+            continue
+        folder = next(
+            (
+                value
+                for part in target.parts
+                if (value := ENTRY_FOLDER_ID_RE.fullmatch(part)) is not None
+            ),
+            None,
+        )
+        if folder is None:
+            continue
+        entry_id = folder.group("entry").lower()
+        document = target.as_posix()
+        root = log_root.joinpath(*target.parts[:-1])
+        entries.setdefault(
+            entry_id,
+            EntryPresentation(
+                entry_id,
+                parent_title,
+                document,
+                root.absolute(),
+            ),
+        )
+    return entries
+
+
+def _entry_target(raw_target: str, log_root: Path) -> PurePosixPath | None:
+    target = PurePosixPath(raw_target)
+    parts = target.parts
+    if parts and parts[0] == log_root.name:
+        target = PurePosixPath(*parts[1:])
+    if not target.parts or target.parts[0] != "entries":
+        return None
+    return target
 
 
 def project_findings(

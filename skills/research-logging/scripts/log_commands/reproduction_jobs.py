@@ -33,9 +33,10 @@ from .reproduction_execution import (
     completed_execution_attempts,
     execute_reproduction_plan,
     open_existing_workspace,
-    populate_disposable_copy,
+    populate_output_workspace,
     preflight_execution_safety,
 )
+from .reproduction_paths import resolve_project_tmp
 from .reproduction_planner import plan_reproduction, verify_reproduction_snapshot
 from .reproduction_publication import (
     CompletedPublication,
@@ -225,7 +226,7 @@ def supervise_reproduction(
         workspace = (
             open_existing_workspace(resolve_project_root(log.root), run_root, run_id)
             if resume
-            else populate_disposable_copy(
+            else populate_output_workspace(
                 resolve_project_root(log.root), run_root, run_id
             )
         )
@@ -660,7 +661,7 @@ def _accepted_record(
             "diagnostics": "diagnostics",
             "run": run_root.relative_to(project).as_posix(),
             "staging": "executions",
-            "working_copy": "worktree",
+            "workspace": "workspace",
         },
         "plan": plan_value,
         "progress": {
@@ -894,13 +895,13 @@ def _validate_paths(value: object) -> None:
         "diagnostics",
         "run",
         "staging",
-        "working_copy",
+        "workspace",
     }:
         raise ActionError("reproduction.run.invalid", "run paths are invalid")
     if (
         value.get("diagnostics") != "diagnostics"
         or value.get("staging") != "executions"
-        or value.get("working_copy") != "worktree"
+        or value.get("workspace") != "workspace"
     ):
         raise ActionError("reproduction.run.invalid", "run paths are invalid")
 
@@ -965,8 +966,9 @@ def _write_run(root: Path, record: Mapping[str, object]) -> None:
 def _find_run(log: LogContext, run_id: str) -> Path:
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
-    tmp = resolve_project_root(log.root) / "tmp"
-    if tmp.is_symlink() or not tmp.is_dir():
+    try:
+        tmp = resolve_project_tmp(resolve_project_root(log.root))
+    except OSError:
         raise ActionError("reproduction.run.missing", f"run not found: {run_id}")
     matches: list[Path] = []
     for index, candidate in enumerate(
@@ -978,6 +980,7 @@ def _find_run(log: LogContext, run_id: str) -> Path:
             )
         if (
             not candidate.name.startswith("reproduce-")
+            or not candidate.name.endswith(f"-{run_id}")
             or candidate.is_symlink()
             or not candidate.is_dir()
         ):

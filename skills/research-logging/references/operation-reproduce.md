@@ -6,6 +6,8 @@ separate from Record, Review, and Validate. It starts from evidence declared in
 `evidence.json`, plans and executes only from JSON authority, stages all
 regenerated outputs in a disposable project-local run folder, compares them
 with retained artifacts, and publishes generated reproduction state.
+It reads verified scripts, code, inputs, and comparison baselines in place;
+it does not copy the project into that folder.
 
 Read `references/file-reproduction-records.md` before launching or reporting a
 run.

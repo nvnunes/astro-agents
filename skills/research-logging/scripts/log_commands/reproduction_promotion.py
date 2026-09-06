@@ -39,6 +39,7 @@ from .model import ActionError
 from .reproduction_comparison import STAGING_SCHEMA
 from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _find_run, _load_run, _plan_from_record
+from .reproduction_paths import resolve_project_tmp
 from .reproduction_planner import (
     project_reproduction_state,
     verify_reproduction_snapshot,
@@ -304,9 +305,10 @@ def _require_no_active_input_overlap(
 ) -> None:
     promoted = {item.destination.resolve() for item in outputs}
     project = resolve_project_root(log.root)
-    tmp = project / "tmp"
-    if not tmp.is_dir() or tmp.is_symlink():
-        return
+    try:
+        tmp = resolve_project_tmp(project)
+    except OSError as error:
+        raise ActionError("reproduction.promotion.state_invalid", str(error)) from error
     for index, run_root in enumerate(sorted(tmp.iterdir(), key=lambda path: path.name)):
         if index >= MAX_ACTIVE_RUNS:
             raise ActionError(

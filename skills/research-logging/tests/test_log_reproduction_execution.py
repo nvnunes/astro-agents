@@ -13,6 +13,7 @@ from typing import Sequence
 from unittest import mock
 
 from log_commands.context import LogContext
+from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
 from log_commands.reproduction_execution import (
     ConfinementBackend,
@@ -23,7 +24,7 @@ from log_commands.reproduction_execution import (
     _seatbelt_profile,
     execute_planned_recipe,
     execute_reproduction_plan,
-    prepare_disposable_copy,
+    prepare_output_workspace,
 )
 from research_log_data import Fingerprint
 from validation.pyrun_state import (
@@ -32,6 +33,7 @@ from validation.pyrun_state import (
     PyrunExecution,
     PyrunFile,
     execution_id,
+    load_pyrun_state,
 )
 
 
@@ -151,13 +153,13 @@ class _Fixture:
     def workspace(self):
         suffix = hashlib.sha256(str(self.project).encode()).hexdigest()[:12]
         run_id = f"reproduce-controlled-{suffix}"
-        return prepare_disposable_copy(
+        return prepare_output_workspace(
             self.project, self.project / "tmp" / run_id, run_id
         )
 
 
 class ReproductionExecutionTests(unittest.TestCase):
-    def test_disposable_copy_excludes_environment_git_runtime_and_source_tmp(
+    def test_output_workspace_does_not_copy_retained_project_material(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -167,11 +169,12 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             workspace = fixture.workspace()
 
-            self.assertTrue(workspace.map_source(fixture.script).is_file())
+            self.assertFalse(workspace.map_source(fixture.script).exists())
             self.assertFalse((workspace.work_project / ".git").exists())
             self.assertFalse((workspace.work_project / ".conda").exists())
             self.assertFalse((workspace.work_project / ".cache").exists())
             self.assertFalse((workspace.work_project / "tmp").exists())
+            self.assertFalse(workspace.staging_root.exists())
 
     def test_seatbelt_profile_denies_by_default_and_protects_boundaries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -219,6 +222,231 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertEqual(copied.read_text(), "SOURCE\n")
             self.assertTrue((workspace.run_root / attempt.checkpoint.path).is_file())
 
+    def test_captures_declared_stream_directly_in_output_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('captured')\n")
+            recipe = ExecutionRecipe(
+                "scripts/produce.py",
+                ("--capture-stdout", "data/result.txt", "--"),
+                (),
+                (),
+                (("data/result.txt", "file"),),
+            )
+            identity = execution_id(recipe)
+            execution = PyrunExecution(
+                False,
+                False,
+                None,
+                "research-log-pyrun-runner/1",
+                "pyrun-standard/v1",
+                "research-log-pyrun-execution/1",
+                recipe,
+                ObservedExecution(
+                    _fingerprint(fixture.script),
+                    (),
+                    (),
+                    (("data/result.txt", _fingerprint(fixture.output)),),
+                ),
+            )
+            state = PyrunFile(
+                fixture.entry_root / "pyrun.json",
+                fixture.entry_root,
+                {identity: execution},
+            )
+            (fixture.entry_root / "pyrun.json").write_text(
+                state.serialized(), encoding="utf-8"
+            )
+            workspace = fixture.workspace()
+
+            attempt = execute_planned_recipe(
+                fixture.log,
+                fixture.plan,
+                {"entry": "e001", "execution_id": identity},
+                workspace,
+                ExecutionControl(confinement=_FixtureConfinement()),
+            )
+
+            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertEqual(
+                workspace.map_source(fixture.output).read_text(), "captured\n"
+            )
+            self.assertEqual(fixture.output.read_text(), "retained\n")
+
+    def test_ambiguous_output_argument_fails_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "raise RuntimeError('ran')\n")
+            recipe = ExecutionRecipe(
+                "scripts/produce.py",
+                (
+                    "--output",
+                    "data/result.txt",
+                    "--duplicate",
+                    "data/result.txt",
+                ),
+                (),
+                (),
+                (("data/result.txt", "file"),),
+            )
+            identity = execution_id(recipe)
+            execution = PyrunExecution(
+                False,
+                False,
+                None,
+                "research-log-pyrun-runner/1",
+                "pyrun-standard/v1",
+                "research-log-pyrun-execution/1",
+                recipe,
+                ObservedExecution(
+                    _fingerprint(fixture.script),
+                    (),
+                    (),
+                    (("data/result.txt", _fingerprint(fixture.output)),),
+                ),
+            )
+            state = PyrunFile(
+                fixture.entry_root / "pyrun.json",
+                fixture.entry_root,
+                {identity: execution},
+            )
+            (fixture.entry_root / "pyrun.json").write_text(
+                state.serialized(), encoding="utf-8"
+            )
+            workspace = fixture.workspace()
+
+            with self.assertRaisesRegex(
+                ActionError, "output does not have one unambiguous parameter"
+            ):
+                execute_planned_recipe(
+                    fixture.log,
+                    fixture.plan,
+                    {"entry": "e001", "execution_id": identity},
+                    workspace,
+                    ExecutionControl(confinement=_FixtureConfinement()),
+                )
+
+            self.assertFalse(workspace.map_source(fixture.output).exists())
+
+    def test_downstream_input_uses_regenerated_upstream_path(self) -> None:
+        producer = (
+            "import argparse\n"
+            "from pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "Path(a.output).write_text(Path(a.source).read_text().upper())\n"
+        )
+        consumer = (
+            "import argparse\n"
+            "from pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--input'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "Path(a.output).write_text(Path(a.input).read_text() + 'downstream\\n')\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), producer)
+            final = fixture.entry_root / "data" / "final.txt"
+            final.write_text("retained final\n", encoding="utf-8")
+            consume = fixture.entry_root / "scripts" / "consume.py"
+            consume.write_text(consumer, encoding="utf-8")
+            fixture.data["inputs"].append(
+                {
+                    "fingerprint": _fingerprint(fixture.output).as_dict(),
+                    "kind": "file",
+                    "location": "data/result.txt",
+                    "name": "generated",
+                    "origin": False,
+                }
+            )
+            (fixture.entry_root / "data.json").write_text(
+                json.dumps(fixture.data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            consumer_recipe = ExecutionRecipe(
+                "scripts/consume.py",
+                ("--input", "<generated>", "--output", "data/final.txt"),
+                (),
+                ("generated",),
+                (("data/final.txt", "file"),),
+            )
+            consumer_id = execution_id(consumer_recipe)
+            consumer_execution = PyrunExecution(
+                False,
+                False,
+                None,
+                "research-log-pyrun-runner/1",
+                "pyrun-standard/v1",
+                "research-log-pyrun-execution/1",
+                consumer_recipe,
+                ObservedExecution(
+                    _fingerprint(consume),
+                    (("generated", _fingerprint(fixture.output)),),
+                    (),
+                    (("data/final.txt", _fingerprint(final)),),
+                ),
+            )
+            state = load_pyrun_state(
+                fixture.entry_root / "pyrun.json",
+                entry_root=fixture.entry_root,
+                project_root=fixture.project,
+            )
+            executions = dict(state.executions)
+            executions[consumer_id] = consumer_execution
+            (fixture.entry_root / "pyrun.json").write_text(
+                PyrunFile(state.path, state.entry_root, executions).serialized(),
+                encoding="utf-8",
+            )
+            first_reference = f"e001:{fixture.identity}"
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "depends_on": [],
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                        "order": 1,
+                        "outputs": ["data/result.txt"],
+                        "slow": False,
+                    },
+                    {
+                        "depends_on": [first_reference],
+                        "entry": "e001",
+                        "execution_id": consumer_id,
+                        "order": 2,
+                        "outputs": ["data/final.txt"],
+                        "slow": False,
+                    },
+                ),
+            )
+            workspace = fixture.workspace()
+
+            with mock.patch(
+                "log_commands.reproduction_planner.verify_reproduction_snapshot"
+            ):
+                result = execute_reproduction_plan(
+                    fixture.log,
+                    plan,
+                    workspace,
+                    ExecutionControl(confinement=_FixtureConfinement()),
+                )
+
+            self.assertEqual(len(result.attempts), 2)
+            failures = [
+                (workspace.run_root / attempt.stderr).read_text()
+                for attempt in result.attempts
+                if attempt.failure_code is not None
+            ]
+            self.assertEqual(
+                [
+                    (attempt.checkpoint.state, attempt.failure_code)
+                    for attempt in result.attempts
+                ],
+                [("complete", None), ("complete", None)],
+                failures,
+            )
+            self.assertEqual(
+                workspace.map_source(final).read_text(), "SOURCE\ndownstream\n"
+            )
+            self.assertEqual(fixture.output.read_text(), "retained\n")
+
     @unittest.skipUnless(
         sys.platform == "darwin"
         and os.environ.get("REPRODUCTION_SANDBOX_TEST") == "1",
@@ -257,7 +485,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             self.assertEqual(fixture.source.read_text(), "source\n")
 
-    def test_resume_reuses_partial_output_in_same_working_copy(self) -> None:
+    def test_resume_reuses_partial_output_in_same_workspace(self) -> None:
         script = (
             "import argparse\n"
             "from pathlib import Path\n"

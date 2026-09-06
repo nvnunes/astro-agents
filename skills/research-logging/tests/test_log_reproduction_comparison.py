@@ -210,11 +210,13 @@ class ArtifactComparisonTests(unittest.TestCase):
 
 
 class ExecutionComparisonTests(unittest.TestCase):
-    def test_wholly_matched_output_is_discarded_from_disposable_copy(self) -> None:
+    def test_wholly_matched_output_is_discarded_from_output_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             workspace = fixture.workspace()
             regenerated = workspace.map_source(fixture.output)
+            regenerated.parent.mkdir(parents=True)
+            regenerated.write_bytes(fixture.output.read_bytes())
             checkpoint = ExecutionCheckpoint(
                 "e001", fixture.identity, "complete", "checkpoint.json", "now", ()
             )
@@ -245,6 +247,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             retained = fixture.output.read_bytes()
             workspace = fixture.workspace()
             regenerated = workspace.map_source(fixture.output)
+            regenerated.parent.mkdir(parents=True)
             regenerated.write_text("changed\n")
             stdout = workspace.diagnostics_root / "stdout.log"
             stderr = workspace.diagnostics_root / "stderr.log"
@@ -290,6 +293,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             workspace = fixture.workspace()
             first_work = workspace.map_source(fixture.output)
             second_work = workspace.map_source(second)
+            first_work.parent.mkdir(parents=True)
             first_work.write_text("partial first\n")
             second_work.write_text("partial second\n")
             checkpoint = ExecutionCheckpoint(
@@ -328,7 +332,10 @@ class ExecutionComparisonTests(unittest.TestCase):
             fixture = _Fixture(Path(directory), "print('unused')\n")
             identity, second = _add_second_output(fixture)
             workspace = fixture.workspace()
+            first_work = workspace.map_source(fixture.output)
             second_work = workspace.map_source(second)
+            first_work.parent.mkdir(parents=True)
+            first_work.write_bytes(fixture.output.read_bytes())
             second_work.write_text("second changed\n")
             checkpoint = ExecutionCheckpoint(
                 "e001", identity, "complete", "checkpoint.json", "now", ()

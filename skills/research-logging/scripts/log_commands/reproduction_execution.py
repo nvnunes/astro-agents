@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
-import errno
 import hashlib
 import json
 import os
@@ -12,11 +10,13 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Mapping, Protocol, Sequence, cast
+from typing import BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
 
 import psutil
 from research_log_data import (
@@ -31,8 +31,9 @@ from research_log_data import (
     parse_fingerprint,
     resolve_input_token,
 )
-from validation.operation_state import RUNTIME_CACHE_DIRECTORIES
-from validation.pyrun_outputs import output_target_path
+from validation.errors import MechanicalContractError
+from validation.pyrun_contract import PYRUN_CAPTURE_STREAMS, PYRUN_ENV_OPTION
+from validation.pyrun_outputs import output_target_path, portable_output_path
 from validation.pyrun_state import (
     PyrunExecution,
     load_pyrun_state,
@@ -45,7 +46,6 @@ from .reproduction_contract import ReproductionPlan
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 RUNNER_MARKER = "RESEARCH_LOG_REPRODUCTION_RUN_ID"
-MAX_RUN_STORAGE_BYTES = 1 << 40
 MAX_WORKERS_PER_EXECUTION = 1_024
 MAX_WORKERS_PER_RUN = 4_096
 POLL_SECONDS = 0.1
@@ -56,7 +56,7 @@ FORCED_STOP_SECONDS = 10.0
 
 @dataclass(frozen=True)
 class ReproductionWorkspace:
-    """One immutable mapping from retained source paths to a disposable copy."""
+    """One immutable mapping from retained paths to run-local output paths."""
 
     run_id: str
     run_root: Path
@@ -67,13 +67,16 @@ class ReproductionWorkspace:
     staging_root: Path
 
     def map_source(self, path: Path) -> Path:
-        """Map one source-project path into the disposable project copy."""
+        """Map one lexical source-project path into the output workspace."""
 
-        source = path.resolve()
+        source = path.absolute()
         try:
             relative = source.relative_to(self.source_project)
         except ValueError:
-            return source
+            try:
+                relative = source.resolve().relative_to(self.source_project)
+            except ValueError:
+                return source.resolve()
         return self.work_project / relative
 
 
@@ -155,6 +158,7 @@ class ExecutionControl:
     resume: bool = False
     stop_requested: Callable[[], bool] = lambda: False
     confinement: ConfinementBackend | None = None
+    generated_paths: Mapping[Path, tuple[Path, str]] | None = None
     progress: Callable[[str, str, ExecutionAttempt | None], None] = (
         lambda _event, _execution_id, _attempt: None
     )
@@ -169,6 +173,7 @@ class _PreparedExecution:
     output_paths: Mapping[str, Path]
     command: tuple[str, ...]
     environment: Mapping[str, str]
+    captures: Mapping[str, Path]
     stdout: Path
     stderr: Path
     checkpoint: Path
@@ -181,6 +186,13 @@ class _ProcessOutcome:
     failure_code: str | None
     failure_message: str | None
     workers: tuple[WorkerRecord, ...]
+
+
+@dataclass(frozen=True)
+class _LaunchedProcess:
+    process: subprocess.Popen[bytes]
+    pumps: tuple[threading.Thread, ...]
+    stream_errors: list[BaseException]
 
 
 class ConfinementBackend(Protocol):
@@ -248,10 +260,10 @@ def preflight_execution_safety(
     (backend or DarwinSeatbelt()).preflight()
 
 
-def prepare_disposable_copy(
+def prepare_output_workspace(
     project_root: Path, run_root: Path, run_id: str
 ) -> ReproductionWorkspace:
-    """Create the sole run-ID-bound project copy and owned runtime paths."""
+    """Create the sole run-ID-bound output workspace and runtime paths."""
 
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
@@ -269,10 +281,10 @@ def prepare_disposable_copy(
         )
     temporary_root.mkdir(parents=True, exist_ok=True)
     target_root.mkdir()
-    return _populate_disposable_copy(source, target_root, run_id, cleanup_root=True)
+    return _populate_output_workspace(source, target_root, run_id, cleanup_root=True)
 
 
-def populate_disposable_copy(
+def populate_output_workspace(
     project_root: Path, run_root: Path, run_id: str
 ) -> ReproductionWorkspace:
     """Populate an accepted run directory containing only durable job state."""
@@ -291,33 +303,21 @@ def populate_disposable_copy(
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is not pristine"
         )
-    return _populate_disposable_copy(source, root, run_id, cleanup_root=False)
+    return _populate_output_workspace(source, root, run_id, cleanup_root=False)
 
 
-def _populate_disposable_copy(
+def _populate_output_workspace(
     source: Path, target_root: Path, run_id: str, *, cleanup_root: bool
 ) -> ReproductionWorkspace:
-    """Populate one already-created, validated run root."""
+    """Create an empty writable project-layout projection for generated files."""
 
-    source_bytes = _project_copy_bytes(source)
-    if shutil.disk_usage(target_root.parent).free < source_bytes:
-        raise ActionError(
-            "reproduction.storage.insufficient",
-            "available project-local temporary space is smaller than the source copy",
-        )
-    work = target_root / "worktree"
+    work = target_root / "workspace"
     try:
-        shutil.copytree(
-            source,
-            work,
-            symlinks=True,
-            copy_function=_clone_or_copy,
-            ignore=_copy_ignores(source),
-        )
+        work.mkdir()
         runtime = target_root / "runtime"
         diagnostics = target_root / "diagnostics"
         staging = target_root / "executions"
-        for directory in (runtime, diagnostics, staging, target_root / "checkpoints"):
+        for directory in (runtime, diagnostics, target_root / "checkpoints"):
             directory.mkdir()
         _sync_directory(target_root)
     except BaseException:
@@ -325,7 +325,7 @@ def _populate_disposable_copy(
             shutil.rmtree(target_root, ignore_errors=True)
         else:
             for name in (
-                "worktree",
+                "workspace",
                 "runtime",
                 "diagnostics",
                 "executions",
@@ -354,9 +354,8 @@ def open_existing_workspace(
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
     root = run_root.resolve()
-    paths = [
-        root / name for name in ("worktree", "runtime", "diagnostics", "executions")
-    ]
+    paths = [root / name for name in ("workspace", "runtime", "diagnostics")]
+    paths.append(root / "checkpoints")
     if any(path.is_symlink() or not path.is_dir() for path in paths):
         raise ActionError(
             "reproduction.workspace.invalid", "stopped run workspace is incomplete"
@@ -368,7 +367,7 @@ def open_existing_workspace(
         paths[0],
         paths[1],
         paths[2],
-        paths[3],
+        root / "executions",
     )
 
 
@@ -379,9 +378,12 @@ def execute_planned_recipe(
     workspace: ReproductionWorkspace,
     control: ExecutionControl = ExecutionControl(),
 ) -> ExecutionAttempt:
-    """Execute one accepted recipe inside its disposable project copy."""
+    """Execute one accepted recipe against its run-local output workspace."""
 
-    prepared = _prepare_execution(log, planned, workspace)
+    generated = control.generated_paths
+    if generated is None:
+        generated = _generated_output_paths(log, plan, workspace)
+    prepared = _prepare_execution(log, planned, workspace, generated)
     _preflight_output_paths(prepared.output_paths.values(), workspace.work_project)
     if not control.resume:
         _clear_outputs(prepared.output_paths.values())
@@ -421,6 +423,7 @@ def _prepare_execution(
     log: LogContext,
     planned: Mapping[str, object],
     workspace: ReproductionWorkspace,
+    generated: Mapping[Path, tuple[Path, str]],
 ) -> _PreparedExecution:
     entry_id = _required_string(planned, "entry")
     execution_id = _required_string(planned, "execution_id")
@@ -435,21 +438,20 @@ def _prepare_execution(
         raise ActionError(
             "reproduction.execution.missing",
             f"accepted execution is no longer present: {entry_id}:{execution_id}",
-        )
+    )
     work_entry = workspace.map_source(source_entry.root)
-    work_log = workspace.map_source(log.root)
-    data = load_data_file(source_entry.root / "data.json", entry_root=source_entry.root)
+    work_entry.mkdir(parents=True, exist_ok=True)
     output_paths = _output_paths(
         execution,
         entry_root=work_entry,
         project_root=workspace.work_project,
     )
-    command = _execution_command(
+    command, captures = _execution_command(
         execution,
-        data=data,
-        work_entry=work_entry,
-        work_log=work_log,
+        source_entry=source_entry.root,
         workspace=workspace,
+        output_paths=output_paths,
+        generated=generated,
     )
     stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, execution_id)
     checkpoint_path = _checkpoint_path(workspace, entry_id, execution_id)
@@ -461,6 +463,7 @@ def _prepare_execution(
         output_paths,
         tuple(command),
         _execution_environment(execution, workspace),
+        captures,
         stdout_path,
         stderr_path,
         checkpoint_path,
@@ -502,58 +505,166 @@ def _run_prepared(
     stop_requested: Callable[[], bool],
 ) -> _ProcessOutcome:
     registry = _WorkerRegistry(prepared.execution_id, workspace.run_id)
-    returncode: int | None = None
-    stopped = False
-    failure_code: str | None = None
-    failure_message: str | None = None
     try:
-        with (
-            prepared.stdout.open("ab", buffering=0) as stdout,
-            prepared.stderr.open("ab", buffering=0) as stderr,
-        ):
-            process = subprocess.Popen(
-                command,
-                cwd=prepared.work_entry,
-                env=prepared.environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                start_new_session=True,
+        with ExitStack() as stack:
+            launched = _launch_process(prepared, command, stack)
+            registry.register_root(launched.process.pid)
+            outcome = _monitor_process(launched.process, registry, stop_requested)
+            failure_code, failure_message = _finish_streams(
+                launched, outcome.failure_code, outcome.failure_message
             )
-            registry.register_root(process.pid)
-            while process.poll() is None:
-                registry.refresh()
-                if stop_requested():
-                    stopped = True
-                    survivors = registry.stop_all()
-                    if survivors:
-                        failure_code = "worker_cleanup_incomplete"
-                        failure_message = _survivor_message(survivors)
-                    break
-                time.sleep(POLL_SECONDS)
-            returncode = process.poll()
-            if returncode is None:
-                try:
-                    returncode = process.wait(timeout=FORCED_STOP_SECONDS)
-                except subprocess.TimeoutExpired:
-                    returncode = None
-            registry.refresh()
-            if not stopped:
-                survivors = registry.wait_for_descendants(WORKER_SETTLE_SECONDS)
-                if survivors:
-                    remaining = registry.stop_all()
-                    failure_code = "worker_survived"
-                    failure_message = _survivor_message(remaining or survivors)
     except BaseException:
         registry.stop_all()
         raise
     return _ProcessOutcome(
-        returncode,
-        stopped,
+        outcome.returncode,
+        outcome.stopped,
         failure_code,
         failure_message,
         registry.records(),
     )
+
+
+def _launch_process(
+    prepared: _PreparedExecution,
+    command: Sequence[str],
+    stack: ExitStack,
+) -> _LaunchedProcess:
+    stdout = stack.enter_context(prepared.stdout.open("ab", buffering=0))
+    stderr = stack.enter_context(prepared.stderr.open("ab", buffering=0))
+    capture_handles: dict[str, BinaryIO] = {}
+    for option, path in prepared.captures.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        capture_handles[option] = stack.enter_context(path.open("wb", buffering=0))
+    combined = capture_handles.get("--capture-stdout-stderr")
+    stdout_capture = capture_handles.get("--capture-stdout")
+    stderr_capture = capture_handles.get("--capture-stderr")
+    process = subprocess.Popen(
+        command,
+        cwd=prepared.work_entry,
+        env=prepared.environment,
+        stdin=subprocess.DEVNULL,
+        stdout=(
+            subprocess.PIPE
+            if combined is not None or stdout_capture is not None
+            else stdout
+        ),
+        stderr=(
+            subprocess.STDOUT
+            if combined is not None
+            else subprocess.PIPE
+            if stderr_capture is not None
+            else stderr
+        ),
+        start_new_session=True,
+    )
+    errors: list[BaseException] = []
+    pumps = _start_stream_pumps(
+        process,
+        stdout,
+        stderr,
+        capture_handles,
+        errors,
+    )
+    return _LaunchedProcess(process, pumps, errors)
+
+
+def _start_stream_pumps(
+    process: subprocess.Popen[bytes],
+    stdout: BinaryIO,
+    stderr: BinaryIO,
+    captures: Mapping[str, BinaryIO],
+    errors: list[BaseException],
+) -> tuple[threading.Thread, ...]:
+    combined = captures.get("--capture-stdout-stderr")
+    stdout_capture = captures.get("--capture-stdout")
+    stderr_capture = captures.get("--capture-stderr")
+    pumps: list[threading.Thread] = []
+    for source, destinations in (
+        (process.stdout, (stdout, combined or stdout_capture)),
+        (process.stderr, (stderr, stderr_capture)),
+    ):
+        if source is None:
+            continue
+        thread = threading.Thread(
+            target=_pump_stream,
+            args=(source, destinations, errors),
+            daemon=True,
+        )
+        pumps.append(thread)
+        thread.start()
+    return tuple(pumps)
+
+
+def _monitor_process(
+    process: subprocess.Popen[bytes],
+    registry: _WorkerRegistry,
+    stop_requested: Callable[[], bool],
+) -> _ProcessOutcome:
+    stopped = False
+    failure_code: str | None = None
+    failure_message: str | None = None
+    while process.poll() is None:
+        registry.refresh()
+        if stop_requested():
+            stopped = True
+            survivors = registry.stop_all()
+            if survivors:
+                failure_code = "worker_cleanup_incomplete"
+                failure_message = _survivor_message(survivors)
+            break
+        time.sleep(POLL_SECONDS)
+    returncode = process.poll()
+    if returncode is None:
+        try:
+            returncode = process.wait(timeout=FORCED_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = None
+    registry.refresh()
+    if not stopped:
+        survivors = registry.wait_for_descendants(WORKER_SETTLE_SECONDS)
+        if survivors:
+            remaining = registry.stop_all()
+            failure_code = "worker_survived"
+            failure_message = _survivor_message(remaining or survivors)
+    return _ProcessOutcome(
+        returncode, stopped, failure_code, failure_message, registry.records()
+    )
+
+
+def _finish_streams(
+    launched: _LaunchedProcess,
+    failure_code: str | None,
+    failure_message: str | None,
+) -> tuple[str | None, str | None]:
+    for thread in launched.pumps:
+        thread.join(timeout=FORCED_STOP_SECONDS)
+    if any(thread.is_alive() for thread in launched.pumps):
+        launched.stream_errors.append(RuntimeError("capture stream did not close"))
+    if launched.stream_errors and failure_code is None:
+        return (
+            "capture_failed",
+            f"could not retain captured output: {launched.stream_errors[0]}",
+        )
+    return failure_code, failure_message
+
+
+def _pump_stream(
+    source: BinaryIO,
+    destinations: Sequence[BinaryIO | None],
+    errors: list[BaseException],
+) -> None:
+    """Copy one captured child stream to its diagnostics and declared output."""
+
+    try:
+        while chunk := source.read(64 * 1024):
+            for destination in destinations:
+                if destination is not None:
+                    destination.write(chunk)
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        source.close()
 
 
 def _attempt_state(
@@ -600,6 +711,7 @@ def execute_reproduction_plan(
     skips: list[Mapping[str, object]] = []
     unavailable: set[str] = set()
     backend = control.confinement or DarwinSeatbelt()
+    generated = _generated_output_paths(log, plan, workspace)
     for planned in ordered:
         if control.stop_requested():
             return ExecutionBatch(tuple(attempts), tuple(reused), tuple(skips), True)
@@ -641,6 +753,7 @@ def execute_reproduction_plan(
                 resume=control.resume and checkpoint is not None,
                 stop_requested=control.stop_requested,
                 confinement=backend,
+                generated_paths=generated,
                 progress=control.progress,
             ),
         )
@@ -661,6 +774,7 @@ def completed_execution_attempts(
     """Load every complete planned checkpoint as a comparison-ready attempt."""
 
     results: list[ExecutionAttempt] = []
+    generated = _generated_output_paths(log, plan, workspace)
     for planned in sorted(plan.executions, key=_execution_order):
         entry_id = _required_string(planned, "entry")
         identity = _required_string(planned, "execution_id")
@@ -674,7 +788,7 @@ def completed_execution_attempts(
                 "reproduction.checkpoint.changed",
                 f"completed checkpoint is not current: {entry_id}:{identity}",
             )
-        prepared = _prepare_execution(log, planned, workspace)
+        prepared = _prepare_execution(log, planned, workspace, generated)
         results.append(
             ExecutionAttempt(
                 entry_id,
@@ -841,11 +955,12 @@ def _checkpoint_outputs_current(
 def _execution_command(
     execution: PyrunExecution,
     *,
-    data: DataFile,
-    work_entry: Path,
-    work_log: Path,
+    source_entry: Path,
     workspace: ReproductionWorkspace,
-) -> list[str]:
+    output_paths: Mapping[str, Path],
+    generated: Mapping[Path, tuple[Path, str]],
+) -> tuple[list[str], Mapping[str, Path]]:
+    data = load_data_file(source_entry / "data.json", entry_root=source_entry)
     interpreter_link = workspace.source_project / ".conda" / "bin" / "python"
     interpreter = interpreter_link.resolve()
     if not interpreter.is_file():
@@ -855,34 +970,186 @@ def _execution_command(
         )
     script = script_target_path(
         execution.recipe.script,
-        entry_root=work_entry,
-        project_root=workspace.work_project,
+        entry_root=source_entry,
+        project_root=workspace.source_project,
     )
     if script.is_symlink() or not script.is_file():
         raise ActionError(
-            "reproduction.script.unavailable", f"script missing from copy: {script}"
+            "reproduction.script.unavailable", f"retained script is missing: {script}"
         )
-    arguments = [
-        _resolve_parameter(
-            value,
-            data=data,
-            work_log=work_log,
-            workspace=workspace,
+    parameters, captures = _recorded_parameter_layout(
+        execution.recipe.parameters,
+        source_entry=source_entry,
+        workspace=workspace,
+        output_paths=output_paths,
+    )
+    bindings = _output_argument_bindings(
+        parameters,
+        source_entry=source_entry,
+        workspace=workspace,
+        output_paths=output_paths,
+        captured_outputs=frozenset(captures.values()),
+    )
+    arguments = []
+    for index, value in enumerate(parameters):
+        binding = bindings.get(index)
+        if binding is not None:
+            arguments.append(binding)
+            continue
+        arguments.append(
+            _resolve_parameter(
+                value,
+                data=data,
+                source_log=source_entry.parent.parent,
+                workspace=workspace,
+                generated=generated,
+            )
         )
-        for value in execution.recipe.parameters
-    ]
-    return [str(interpreter), str(script), *arguments]
+    return [str(interpreter), str(script), *arguments], captures
+
+
+def _recorded_parameter_layout(
+    parameters: Sequence[str],
+    *,
+    source_entry: Path,
+    workspace: ReproductionWorkspace,
+    output_paths: Mapping[str, Path],
+) -> tuple[tuple[str, ...], Mapping[str, Path]]:
+    """Separate runner-owned capture/environment prefixes from child arguments."""
+
+    index = 0
+    captures: dict[str, Path] = {}
+    runner_prefix = False
+    while index < len(parameters) and parameters[index] in {
+        *PYRUN_CAPTURE_STREAMS,
+        PYRUN_ENV_OPTION,
+    }:
+        runner_prefix = True
+        option = parameters[index]
+        if index + 1 >= len(parameters):
+            raise ActionError(
+                "reproduction.output.binding_invalid",
+                "recorded runner option has no value",
+            )
+        value = parameters[index + 1]
+        if option in PYRUN_CAPTURE_STREAMS:
+            try:
+                identity = portable_output_path(
+                    value,
+                    entry_root=source_entry,
+                    project_root=workspace.source_project,
+                    authored=True,
+                )
+            except MechanicalContractError as error:
+                raise ActionError(
+                    "reproduction.output.binding_invalid", str(error)
+                ) from error
+            destination = output_paths.get(identity)
+            if destination is None or option in captures:
+                raise ActionError(
+                    "reproduction.output.binding_invalid",
+                    f"capture output has no unique declaration: {identity}",
+                )
+            captures[option] = destination
+        index += 2
+    if runner_prefix:
+        if index >= len(parameters) or parameters[index] != "--":
+            raise ActionError(
+                "reproduction.output.binding_invalid",
+                "recorded runner prefix has no separator",
+            )
+        index += 1
+    return tuple(parameters[index:]), captures
+
+
+def _output_argument_bindings(
+    parameters: Sequence[str],
+    *,
+    source_entry: Path,
+    workspace: ReproductionWorkspace,
+    output_paths: Mapping[str, Path],
+    captured_outputs: frozenset[Path],
+) -> Mapping[int, str]:
+    """Bind every ordinary output identity to one exact child argument."""
+
+    candidates: dict[str, list[tuple[int, str | None]]] = {
+        identity: []
+        for identity, path in output_paths.items()
+        if path not in captured_outputs
+    }
+    for index, parameter in enumerate(parameters):
+        raw = parameter
+        prefix: str | None = None
+        if parameter.startswith("-") and "=" in parameter:
+            prefix, raw = parameter.split("=", 1)
+        if raw.startswith("-"):
+            continue
+        try:
+            identity = portable_output_path(
+                raw,
+                entry_root=source_entry,
+                project_root=workspace.source_project,
+                authored=True,
+            )
+        except MechanicalContractError:
+            continue
+        if identity in candidates:
+            candidates[identity].append((index, prefix))
+    result: dict[int, str] = {}
+    for identity, occurrences in candidates.items():
+        if len(occurrences) != 1:
+            raise ActionError(
+                "reproduction.output.binding_invalid",
+                f"output does not have one unambiguous parameter: {identity}",
+            )
+        index, prefix = occurrences[0]
+        destination = str(output_paths[identity])
+        result[index] = f"{prefix}={destination}" if prefix is not None else destination
+    return result
+
+
+def _generated_output_paths(
+    log: LogContext, plan: ReproductionPlan, workspace: ReproductionWorkspace
+) -> Mapping[Path, tuple[Path, str]]:
+    """Map retained generated identities to run-local graph paths."""
+
+    result: dict[Path, tuple[Path, str]] = {}
+    for planned in plan.executions:
+        entry = resolve_entry(log, _required_string(planned, "entry"))
+        state = load_pyrun_state(
+            entry.root / "pyrun.json",
+            entry_root=entry.root,
+            project_root=workspace.source_project,
+        )
+        execution = state.executions.get(_required_string(planned, "execution_id"))
+        if execution is None:
+            continue
+        work_entry = workspace.map_source(entry.root)
+        for identity, kind in execution.recipe.outputs:
+            retained = output_target_path(
+                identity,
+                entry_root=entry.root,
+                project_root=workspace.source_project,
+            )
+            generated = output_target_path(
+                identity,
+                entry_root=work_entry,
+                project_root=workspace.work_project,
+            )
+            result[retained.resolve()] = (generated, kind)
+    return result
 
 
 def _resolve_parameter(
     value: str,
     *,
     data: DataFile,
-    work_log: Path,
+    source_log: Path,
     workspace: ReproductionWorkspace,
+    generated: Mapping[Path, tuple[Path, str]],
 ) -> str:
-    value = value.replace("<project>", str(workspace.work_project)).replace(
-        "<log>", str(work_log)
+    value = value.replace("<project>", str(workspace.source_project)).replace(
+        "<log>", str(source_log)
     )
     parts = input_token_parts(value)
     if parts is None:
@@ -894,17 +1161,32 @@ def _resolve_parameter(
     if resolved.projection == "commit":
         return resolved.value
     source = Path(resolved.value)
-    try:
-        relative = source.resolve().relative_to(workspace.source_project)
-    except ValueError:
-        return resolved.value
-    mapped = workspace.work_project / relative
-    if not mapped.exists():
-        raise ActionError(
-            "reproduction.input.unavailable",
-            f"input is missing from disposable copy: {resolved.resource.name}",
-        )
-    return str(mapped)
+    mapped = _regenerated_input_path(source.resolve(), generated)
+    if mapped is not None:
+        if not mapped.exists():
+            raise ActionError(
+                "reproduction.input.unavailable",
+                f"regenerated input is unavailable: {resolved.resource.name}",
+            )
+        return str(mapped)
+    return resolved.value
+
+
+def _regenerated_input_path(
+    source: Path, generated: Mapping[Path, tuple[Path, str]]
+) -> Path | None:
+    exact = generated.get(source)
+    if exact is not None:
+        return exact[0]
+    for retained, (workspace_path, kind) in generated.items():
+        if kind != "directory":
+            continue
+        try:
+            relative = source.relative_to(retained)
+        except ValueError:
+            continue
+        return workspace_path / relative
+    return None
 
 
 def _execution_environment(
@@ -945,7 +1227,8 @@ def _preflight_output_paths(paths: Iterable[Path], work_project: Path) -> None:
             lexical.relative_to(root)
         except ValueError as error:
             raise ActionError(
-                "reproduction.output.escape", f"output escapes project copy: {path}"
+                "reproduction.output.escape",
+                f"output escapes the run-local workspace: {path}",
             ) from error
         current = root
         for part in lexical.relative_to(root).parts[:-1]:
@@ -1020,7 +1303,7 @@ def _readonly_boundaries(
             raise ActionError(
                 "reproduction.source.invalid", "invalid retained boundary snapshot"
             )
-        result.add((workspace.map_source(Path(identity)), cast(str, kind)))
+        result.add((Path(identity), cast(str, kind)))
     return tuple(sorted(result, key=lambda value: value[0].as_posix()))
 
 
@@ -1224,65 +1507,6 @@ def _write_checkpoint(path: Path, checkpoint: ExecutionCheckpoint) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
-
-
-def _copy_ignores(source: Path) -> Callable[[str, list[str]], set[str]]:
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        path = Path(directory)
-        result = set(names) & set(RUNTIME_CACHE_DIRECTORIES)
-        if path.resolve() == source:
-            result.update(set(names) & {".conda", ".git", "tmp"})
-        return result
-
-    return ignore
-
-
-def _project_copy_bytes(source: Path) -> int:
-    """Measure the bounded regular-file content selected for the working copy."""
-
-    total = 0
-    ignore = _copy_ignores(source)
-    for directory, names, files in os.walk(source, topdown=True, followlinks=False):
-        root = Path(directory)
-        ignored = ignore(directory, names + files)
-        names[:] = [
-            name
-            for name in names
-            if name not in ignored and not (root / name).is_symlink()
-        ]
-        for name in files:
-            path = root / name
-            if name in ignored or path.is_symlink():
-                continue
-            try:
-                total += path.stat().st_size
-            except OSError as error:
-                raise ActionError(
-                    "reproduction.copy.unavailable", f"cannot inspect {path}: {error}"
-                ) from error
-            if total > MAX_RUN_STORAGE_BYTES:
-                raise ActionError(
-                    "reproduction.storage.resource_limit",
-                    "disposable project copy crosses the fixed storage bound",
-                )
-    return total
-
-
-def _clone_or_copy(source: str, target: str) -> str:
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        clonefile = libc.clonefile
-        clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
-        clonefile.restype = ctypes.c_int
-        result = clonefile(os.fsencode(source), os.fsencode(target), 0)
-        if result == 0:
-            return target
-        error = ctypes.get_errno()
-        if error not in {errno.ENOTSUP, errno.EXDEV, errno.EINVAL}:
-            raise OSError(error, os.strerror(error), source)
-    except AttributeError:
-        pass
-    return shutil.copy2(source, target)
 
 
 def _required_string(value: Mapping[str, object], name: str) -> str:

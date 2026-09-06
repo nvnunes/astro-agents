@@ -176,8 +176,11 @@ make plain.
 
 Given a log-structure review, Research-Log Conformance diagnoses semantic misuse
 of section roles, entry boundaries, navigation, lifecycle state, or retained-
-material placement. Deterministic file, metadata, association, and presentation
-checks remain validation concerns.
+material placement. It also identifies apparently evidential prose that uses no
+supported presentation form and therefore remains outside mechanical evidence
+registration and validation. It does not repeat recognizable missing-marker,
+missing-record, malformed-association, or presentation-template failures that
+mechanical validation owns.
 
 Given a research-log writing review, Research-Log Writing applies
 `$science-writing` with the research-logging conventions, uses sections as the

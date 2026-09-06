@@ -337,10 +337,12 @@ missing relationship.
 
 Given "MSE was `0.184` for `seed=42`", the result expression is presented
 evidence only when one adjacent `eid` marker names its entry record; the visibly
-named parameter is not. Given "MSE was 0.184", validation reports an apparent
-unmarked result. Given a derived claim such as `14.3% lower`, Record requires
-that the derived value already exist in one retained artifact and adds one
-`statistic` record naming that artifact.
+named parameter is not. Given "MSE was 0.184", validation does not promote the
+plain unmarked prose to evidence. A separately requested Research-Log
+Conformance review may report it when the prose appears to offer the result as
+evidence but uses no supported presentation form. Given a derived claim such as
+`14.3% lower`, Record requires that the derived value already exist in one
+retained artifact and adds one `statistic` record naming that artifact.
 
 Given a numerical result in a Results table that is discussed again under
 `Observations:`, the prose occurrence is independently marked and indexed.

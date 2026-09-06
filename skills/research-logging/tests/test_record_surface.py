@@ -128,6 +128,8 @@ class RecordSurfaceTests(unittest.TestCase):
             "check this research log",
             "sibling `<log>/` tree",
             "verifies feasible arithmetic",
+            "apparently evidential prose",
+            "does not repeat recognizable missing-marker",
             "`$science-writing`",
         ):
             self.assertIn(expected, normalized_cases)

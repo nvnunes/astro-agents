@@ -13,10 +13,13 @@ from validation.controller import (
     validate,
 )
 from validation.discovery import MAX_HEADER_CHARACTERS, discover_summaries
+from validation.human_projection import area_results, project_findings
 from validation.mechanical_results import MechanicalGeneratedRecord
 from validation.report import (
+    AREA_NAMES,
     ValidationBatchReportRow,
     compose_validation_batch_report,
+    unavailable_explanation,
 )
 
 from .context import resolve_log
@@ -95,6 +98,7 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
         },
         "metrics": result.get("metrics", {}),
         "published": True,
+        "report": result["report"],
         "result_date": record.get("result_date"),
         "rules_version": record.get("rules_version"),
         "schema": CLI_RESULT_SCHEMA,
@@ -146,34 +150,25 @@ def run_validate(
     failures: list[dict[str, object]] = []
     report_rows: list[ValidationBatchReportRow] = []
     for summary in summaries:
+        title = summary.stem
         try:
             title = _summary_title(summary)
             outcome = _evaluate_validation(summary, options)
             results.append(outcome.result)
-            if outcome.record is not None and str(outcome.result.get("status")) in {
-                "complete_clear",
-                "complete_findings",
-            }:
-                log_root = summary.with_suffix("")
-                report_rows.append(
-                    ValidationBatchReportRow(
-                        title,
-                        summary.resolve().as_posix(),
-                        (log_root / "validation.md").resolve().as_posix(),
-                        (
-                            log_root / "validation" / "results.json"
-                        ).resolve().as_posix(),
-                        bool(outcome.result.get("published")),
-                        outcome.record,
-                    )
-                )
+            report_rows.append(_batch_row(title, summary, outcome))
         except (OSError, UnicodeError, ValidationControllerError, ValueError) as error:
-            failures.append(
-                {
-                    "code": str(getattr(error, "code", "validation.failed")),
-                    "message": _bounded_failure_message(error),
-                    "summary": summary.resolve().as_posix(),
-                }
+            failure: dict[str, object] = {
+                "code": str(getattr(error, "code", "validation.failed")),
+                "message": _bounded_failure_message(error),
+                "summary": summary.resolve().as_posix(),
+            }
+            failures.append(failure)
+            report_rows.append(
+                _blocked_batch_row(
+                    title,
+                    summary,
+                    "Validation could not start: " + str(failure["message"]),
+                )
             )
     print(
         json.dumps(
@@ -215,3 +210,52 @@ def _summary_title(summary: Path) -> str:
     if not title:
         raise ValueError(f"maintained summary has an empty title: {summary}")
     return title
+
+
+def _batch_row(
+    title: str,
+    summary: Path,
+    outcome: _ValidationOutcome,
+) -> ValidationBatchReportRow:
+    """Project one structured per-log result into a complete batch row."""
+
+    if outcome.record is None:
+        return _blocked_batch_row(
+            title,
+            summary,
+            "Validation could not start because generated metadata requires Repair",
+        )
+    groups = project_findings(outcome.record)
+    log_root = summary.with_suffix("")
+    return ValidationBatchReportRow(
+        title=title,
+        summary=summary.resolve().as_posix(),
+        human_report=(log_root / "validation.md").resolve().as_posix(),
+        mechanical_report=(log_root / "validation" / "results.json")
+        .resolve()
+        .as_posix(),
+        published=bool(outcome.result.get("published")),
+        areas=area_results(outcome.record, groups),
+        explanation=unavailable_explanation(outcome.record),
+    )
+
+
+def _blocked_batch_row(
+    title: str,
+    summary: Path,
+    explanation: str,
+) -> ValidationBatchReportRow:
+    """Project one blocked or failed log without inventing area results."""
+
+    log_root = summary.with_suffix("")
+    return ValidationBatchReportRow(
+        title=title,
+        summary=summary.resolve().as_posix(),
+        human_report=(log_root / "validation.md").resolve().as_posix(),
+        mechanical_report=(log_root / "validation" / "results.json")
+        .resolve()
+        .as_posix(),
+        published=False,
+        areas={name: "—" for name in AREA_NAMES},
+        explanation=explanation,
+    )

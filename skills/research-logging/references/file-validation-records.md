@@ -16,10 +16,20 @@ Mechanical Validate may create or update only these generated paths:
 - `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
   and shared-memory companions.
 
-`validation/results.json` is the authoritative machine-readable result.
-`validation.md` is its human projection and also carries the independent
-Reproduction section. Mechanical Validate preserves any existing
+`validation/results.json` is the authoritative complete machine-readable
+result. Repair accesses a selected finding through `log findings list` and
+`log findings show`; it does not load this file directly in ordinary work.
+`validation.md` is a concise human-only projection and also carries the
+independent Reproduction section. Validate and Repair do not parse it.
+Mechanical Validate preserves any existing
 `validation/reproduction.json`; reproduction is a separate operation.
+
+The human report contains the validation date, one compact Area and Result
+table, and findings grouped by entry and human issue type. Each issue group
+shows at most ten deterministic target details and an overflow command. It
+contains no internal failure codes, check identities, raw observed state,
+dependency mappings, passing totals, or repair instructions. A clear completed
+result says `No mechanical findings.`
 
 The cache files are disposable generated acceleration state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every

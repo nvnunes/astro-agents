@@ -456,12 +456,11 @@ marker, command relationship, and retained-material graph satisfy the
 specification, validation completes through code without agent judgment.
 
 Given `log validate --root` returns completed evaluations for several logs,
-the CLI includes the finished Markdown comparison table in `report`. The agent
-presents that table unchanged and does not open generated reports or
-recalculate its cells. For every item in `failures`, it reports the returned
-`summary`, `code`, and `message` from standard output; a nonzero batch may have
-empty standard error. It reports `incomplete` and `unsupported_metadata`
-results separately according to their statuses.
+the CLI includes every discovered log in the finished Markdown comparison in
+`report`, with concise explanations for incomplete, blocked, or operationally
+failed rows. The agent presents that report unchanged and does not open
+generated reports, recalculate cells, or separately reconcile `results` and
+`failures`. A nonzero batch may have empty standard error.
 
 Given a supported presentation that differs from its selected source through an
 approved percentage, rounding, notation, unit, interval, tuple, uncertainty, or
@@ -469,11 +468,17 @@ table transformation, validation applies the declared deterministic form.
 An unsupported or ambiguous declaration fails precisely; validation does not
 choose a plausible alternative.
 
-Given a mechanical finding, the validation agent reports the exact code,
-subject, observed state, violated rule, and dependency cause from the generated
-record. The validation agent does not override the result or edit research
-material. A later, separately authorized Repair operation resolves the issue
-before Validate is rerun.
+Given a one-log mechanical result, the validation agent presents the returned
+`report` unchanged. It does not open generated files, enumerate machine checks,
+or reconstruct the human summary. The agent does not override the result or
+edit research material. A later, separately authorized Repair operation
+resolves a named issue before Validate is rerun.
+
+Given a separately authorized Repair of a published finding, the agent uses
+`log findings list` with exact entry or subject filters and then `log findings
+show` for one selected check. It does not parse `validation.md` or load
+`validation/results.json` directly. The query remains read-only and returns no
+repair advice or inferred intent.
 
 Given complete findings, the CLI exits zero and publishes
 `validation/results.json`, its disposable cache, and `validation.md`.

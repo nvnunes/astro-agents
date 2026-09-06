@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
+from .human_projection import ReportContext, load_report_context
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
 from .operation_state import operation_lock, require_mutation_ready, research_snapshot
@@ -18,7 +19,11 @@ from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
 )
-from .report import compose_validation_report
+from .report import (
+    compose_blocked_validation_report,
+    compose_validation_command_report,
+    compose_validation_report,
+)
 from .validation_cache import ValidationCache, ValidationCacheError
 
 RESULT_SCHEMA = "research-log-validation-result/1"
@@ -94,6 +99,11 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             _validate_request(summary)
             unsupported = _unsupported_metadata_state(summary)
             if unsupported is not None:
+                context = load_report_context(summary)
+                unsupported["report"] = compose_blocked_validation_report(
+                    context.title,
+                    _unsupported_report_explanation(unsupported),
+                )
                 return unsupported
             result_date = _result_date(request.result_date)
             log_root = summary.with_suffix("")
@@ -127,6 +137,7 @@ def _run_validation(
     """Evaluate under the caller-owned publication lifecycle."""
 
     starting_snapshot = research_snapshot(summary) if request.publish else None
+    report_context = load_report_context(summary)
     recompute_validation = request.recompute or request.recompute_validation
     recompute_fingerprints = request.recompute or request.recompute_fingerprints
     with FingerprintCache(
@@ -163,13 +174,20 @@ def _run_validation(
                 raise ValidationControllerError(
                     "mechanical engine returned an invalid record"
                 )
-            result = _completed_result(record, evaluation.metrics, published=False)
+            result = _completed_result(
+                record,
+                evaluation.metrics,
+                published=False,
+                report_context=report_context,
+            )
             if not request.publish or record.completion is CompletionState.INCOMPLETE:
                 return result
             mechanical = (record.canonical_json() + "\n").encode()
             mechanical_digest = hashlib.sha256(mechanical).hexdigest()
             outputs = {
-                "validation.md": compose_validation_report(record).encode(),
+                "validation.md": compose_validation_report(
+                    record, context=report_context
+                ).encode(),
             }
             mechanical_changed = report_identity != mechanical_digest
             if mechanical_changed:
@@ -191,9 +209,7 @@ def _run_validation(
                     log_root / "validation" / "results.json",
                     digest=mechanical_digest,
                     expected_size=len(mechanical),
-                    expected_identity=published_identities[
-                        "validation/results.json"
-                    ],
+                    expected_identity=published_identities["validation/results.json"],
                 )
             validation_cache.finish_published_run(
                 record.checks,
@@ -281,6 +297,19 @@ def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
     }
 
 
+def _unsupported_report_explanation(state: Mapping[str, Any]) -> str:
+    """Name the bounded generated paths that require Repair."""
+
+    observed = state.get("observed")
+    paths = observed.get("paths") if isinstance(observed, Mapping) else None
+    if not isinstance(paths, list):
+        return "Generated metadata requires Repair before validation can run"
+    displayed = ", ".join(f"`{path}`" for path in paths if isinstance(path, str))
+    if not displayed:
+        return "Generated metadata requires Repair before validation can run"
+    return "Generated metadata requires Repair before validation can run: " + displayed
+
+
 def _require_unsupported_metadata_clear(summary: Path) -> None:
     state = _unsupported_metadata_state(summary)
     if state is not None:
@@ -319,11 +348,20 @@ def _completed_result(
     metrics: Mapping[str, Any],
     *,
     published: bool,
+    report_context: ReportContext,
 ) -> dict[str, Any]:
+    log_root = Path(record.summary).with_suffix("")
     return {
         "metrics": dict(metrics),
         "published": published,
         "record": record.as_dict(),
+        "report": compose_validation_command_report(
+            record,
+            context=report_context,
+            published=published,
+            human_report=(log_root / "validation.md").as_posix(),
+            mechanical_report=(log_root / "validation" / "results.json").as_posix(),
+        ),
         "schema": RESULT_SCHEMA,
         "status": record.completion.value,
         "summary": record.summary,

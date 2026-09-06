@@ -27,6 +27,7 @@ FAMILIES = (
     "data",
     "discover",
     "evidence",
+    "findings",
     "init",
     "reorganize",
     "retention",
@@ -60,10 +61,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else family
     )
     try:
-        if family == "discover":
-            return _dispatch_discover(arguments)
-        if family == "validate":
-            return _dispatch_validate(arguments)
+        read_only_dispatch = {
+            "discover": _dispatch_discover,
+            "findings": _dispatch_findings,
+            "validate": _dispatch_validate,
+        }
+        if family in read_only_dispatch:
+            return read_only_dispatch[family](arguments)
         dispatch = {
             "add": _dispatch_add,
             "data": _dispatch_data,
@@ -605,3 +609,25 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
             ),
         ),
     )
+
+
+def _dispatch_findings(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log findings")
+    actions = parser.add_subparsers(dest="action", required=True)
+    listing = actions.add_parser("list", help="List bounded published findings")
+    listing.add_argument("--path", required=True, type=Path)
+    listing.add_argument("--entry")
+    listing.add_argument("--subject")
+    showing = actions.add_parser("show", help="Show one published finding")
+    showing.add_argument("--path", required=True, type=Path)
+    showing.add_argument("--id", required=True)
+    args = parser.parse_args(arguments)
+    from .findings import list_findings, show_finding
+
+    log = resolve_log(args.path)
+    if args.action == "list":
+        result = list_findings(log, entry=args.entry, subject=args.subject)
+    else:
+        result = show_finding(log, check_id=args.id)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0

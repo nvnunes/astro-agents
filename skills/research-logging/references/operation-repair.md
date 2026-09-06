@@ -15,9 +15,21 @@ definition mode, not Repair.
 
 - Begin with the requested log, finding, and affected files. Do not expand the
   task to other findings or nearby cleanup.
-- For a published validation finding, read its exact check in
-  `validation/results.json` and use `validation.md` only as the human
-  projection. Treat both as read-only generated state.
+- For a published validation finding, locate only the relevant bounded group:
+
+  ```text
+  <skill>/scripts/log findings list --path <log> [--entry <entry>] [--subject <subject>]
+  ```
+
+  Then retrieve the selected complete check:
+
+  ```text
+  <skill>/scripts/log findings show --path <log> --id <check-id>
+  ```
+
+  Match `--entry` and `--subject` exactly and narrow rather than loading
+  unrelated groups. Treat the returned machine condition as read-only. Do not
+  read or parse `validation.md` or `validation/results.json` directly.
 - Inspect the affected files and only enough surrounding log
   state to establish the intended relationship.
 - If the request and retained log do not establish the intended corrected

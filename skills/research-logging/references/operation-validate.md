@@ -52,10 +52,10 @@ For repo-wide or multi-log validation, run the bounded all-log operation:
 
 It uses the same canonical discovery contract as
 `<skill>/scripts/log discover --root <project-root>` and returns one bounded
-batch result. Its `report` field is the finished Markdown comparison for every
-completed evaluation. Present that table unchanged; do not open generated
-reports to reconstruct its counts. It omits operational failures and
-non-completed results; handle both under Report below.
+batch result. Its `report` field is the complete finished Markdown comparison
+for every discovered log, including concise explanations for incomplete,
+blocked, or operationally failed rows. Present it unchanged; do not open
+generated reports or interpret the structured collections to reconstruct it.
 Do not build the log set with filename globs, and do not exclude a candidate
 because its basename is `validation.md`; discovery recognizes maintained
 summaries by their stable navigation line and sibling log root, so generated
@@ -92,37 +92,21 @@ state.
 
 ## Report
 
-Report according to the returned status:
+Present the returned `report` field unchanged for one-log and `--root`
+validation. Do not reconstruct, reformat, supplement, or reconcile it against
+the structured fields or generated files. The report already contains the
+shared human area wording, publication links or `Not published`, and concise
+explanations for incomplete or blocked results. The batch report likewise
+includes every discovered log and every exceptional explanation even when the
+command exits nonzero.
 
-- For `--root`, present the returned `report` table without recalculating or
-  reformatting its cells. For each item in `failures`, report its `summary`,
-  `code`, and `message` from the structured batch result on standard output;
-  these items have no `status`. Then report every `incomplete` or
-  `unsupported_metadata` item in `results` using the applicable rule below.
-- For a one-log `complete_clear` or `complete_findings` result, report whether
-  publication
-  occurred, counts by mechanical scope and status, and each non-passing check.
-  Use the human report's unique-artifact counts for Provenance; the
-  machine-readable scope aggregate remains a count of internal checks.
-  When publication occurred, point any later repair operation to
-  `validation/results.json` for machine-readable details and
-  `validation.md` for the human projection. A dry run publishes neither file.
-  A published CLI result is deliberately compact; read those generated files
-  instead of expecting every check to be repeated on standard output. An
-  unpublished dry run retains the complete record in its result because no
-  generated bundle exists.
-- For `unsupported_metadata`, report every path in `observed.paths` and state
-  that no mechanical evaluation or generated file was published. Stop and
-  request separate user authorization to archive or remove those generated
-  paths. Do not point to `validation/results.json` or `validation.md` as the
-  result of this invocation, and do not route the blocker to Record.
-- For `incomplete`, report the unavailable required observations from the
-  returned record and state that no new per-log generated bundle was
-  published. A writable run may have retained completed project-level
-  fingerprint observations and independently completed bounded selections;
-  neither becomes a new comparison baseline.
-- When an invocation returns no structured result, report the precise
-  operational error from standard error.
+The other structured fields remain available to callers and establish exit
+behavior, but are not an additional agent reporting task. For
+`unsupported_metadata`, stop after presenting the report and request separate
+user authorization before archiving or removing the identified generated
+paths. Do not route the blocker to Record. When an invocation returns no
+structured result at all, report the precise operational error from standard
+error.
 
 Do not invent item-specific repair guidance. A separately authorized Repair
 operation resolves a reported condition from its exact target

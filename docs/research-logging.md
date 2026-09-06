@@ -919,11 +919,10 @@ the logical log path:
 
 Use `<skill>/scripts/log validate --root <project-root>` for every maintained
 log returned by canonical bounded discovery beneath one project. The returned
-batch result includes a ready-to-present Markdown comparison table; the agent
-does not recalculate its counts from generated reports. The table includes only
-completed evaluations; per-log operational failures, `incomplete` results, and
-`unsupported_metadata` results are reported separately, so a nonzero batch may
-still return a useful table.
+result includes a ready-to-present Markdown report; the agent presents it
+unchanged rather than recalculating counts from generated files. A cross-log
+report includes one row per discovered log and keeps operational failures,
+`incomplete` results, and `unsupported_metadata` results visible.
 
 A mechanical evaluation reports either that no findings were found or that one
 or more findings need attention. A preliminary validator-state check may
@@ -937,26 +936,37 @@ validation result, not a tool failure.
 
 A completed published mechanical evaluation writes the human-facing
 `<log>/validation.md` report. It shows when mechanical validation last
-completed, summarizes the four check areas, and lists non-passing checks by
-entry. Its separate Reproduction section remains independent and shows that
-reproduction has not yet run until that workflow produces its own result.
+completed, summarizes the four check areas, and groups findings by entry and
+human-readable issue type. Each group shows at most ten targets and states when
+more were omitted. Its separate Reproduction section remains independent and
+shows that reproduction has not yet run until that workflow produces its own
+result.
 
 The adjacent `<log>/validation/` directory contains machine-readable results.
 Disposable validator caches live beneath `<log>/.cache/` and the research
 project's `.cache/` directory. Entry-root `pyrun-outputs.json` is separate
 current output-support state maintained by `pyrun`. Researchers and research
-agents should not edit these generated files directly. Validation reads the
-research record but changes only its own generated output.
+agents should not edit or ordinarily inspect these generated files directly.
+Validation reads the research record but changes only its own generated output.
 
 ### Resolving findings
 
 Validation identifies problems; it does not repair the research record. A
 separately authorized Repair operation reviews the named finding, corrects the
 relevant evidence, command, source, or retained-material relationship, and then
-runs validation again. When incompatible generated metadata stops evaluation
-before a report is published, use the paths identified by the validation
-command for a separately authorized archival or removal action; a research
-operation must not modify them.
+runs validation again. Repair obtains bounded finding details through:
+
+```bash
+<skill>/scripts/log findings list --path <log> [--entry <entry-id>] [--subject <subject>]
+<skill>/scripts/log findings show --path <log> --id <finding-id>
+```
+
+The list command supplies stable finding IDs for the show command. These
+commands inspect the latest completed result without validating or changing the
+log. When incompatible generated metadata stops evaluation before a report is
+published, use the paths identified by the validation command for a separately
+authorized archival or removal action; a research operation must not modify
+them.
 
 Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed

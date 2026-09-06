@@ -20,6 +20,7 @@ DATA = importlib.import_module("research_log_data")
 ENGINE = importlib.import_module("validation.engine")
 FILESYSTEM = importlib.import_module("validation.filesystem")
 FINGERPRINT_CACHE = importlib.import_module("validation.fingerprint_cache")
+HUMAN = importlib.import_module("validation.human_projection")
 LOCATOR = importlib.import_module("validation.locator")
 OPERATION_STATE = importlib.import_module("validation.operation_state")
 RECORDS = importlib.import_module("validation.records")
@@ -64,10 +65,10 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn("| structure | checks | `fail` | 0 | 1 | 0 | 0 | 1 |", report)
-        self.assertNotIn("| conformance | checks |", report)
-        self.assertIn("| evidence | checks |  | 0 | 0 | 0 | 0 | 0 |", report)
-        self.assertNotIn("| evidence | checks | `not_applicable`", report)
+        self.assertIn("| Structure | 1 issue |", report)
+        self.assertIn("| Evidence | Clear |", report)
+        self.assertIn("| Provenance | Clear |", report)
+        self.assertIn("| Hygiene | Clear |", report)
 
     def test_report_counts_unique_provenance_artifacts_not_evidence_checks(
         self,
@@ -124,10 +125,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn(
-            "| provenance | artifacts | `fail` | 1 | 1 | 0 | 0 | 2 |",
-            report,
-        )
+        self.assertIn("| Provenance | 1 artifact issue |", report)
 
     def test_batch_report_composes_ready_to_present_shared_scope_counts(
         self,
@@ -141,7 +139,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 RESULTS.CheckStatus.FAIL,
                 "summary",
                 failure=RESULTS.FailurePayload(
-                    "summary.invalid", "summary", {}, "Summary"
+                    "association.declaration_missing", "summary", {}, "Summary"
                 ),
             ),
             RESULTS.MechanicalCheck(
@@ -156,7 +154,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 RESULTS.CheckStatus.FAIL,
                 "fail",
                 failure=RESULTS.FailurePayload(
-                    "evidence.invalid", "fail", {}, "Evidence"
+                    "evidence.declaration.invalid", "fail", {}, "Evidence"
                 ),
             ),
             RESULTS.MechanicalCheck(
@@ -192,7 +190,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     RESULTS.CheckStatus.FAIL,
                     f"orphan-{number}",
                     failure=RESULTS.FailurePayload(
-                        "orphan.output",
+                        "orphan.material.unused",
                         f"orphan-{number}",
                         {},
                         "Hygiene",
@@ -210,14 +208,14 @@ class MechanicalControllerTests(unittest.TestCase):
             "/project/docs/study/validation.md",
             "/project/docs/study/validation/results.json",
             True,
-            record,
+            HUMAN.area_results(record, HUMAN.project_findings(record)),
         )
 
         report = REPORT.compose_validation_batch_report((row,))
 
         self.assertIn(
-            "| [Study \\| One](</project/docs/study.md>) | 1 | 1/2 | "
-            "1 failed · 1 unconfirmed | 2 | "
+            "| [Study \\| One](</project/docs/study.md>) | 1 issue | 1 issue | "
+            "1 artifact issue · 1 await confirmation | 2 issues | "
             "[Human](</project/docs/study/validation.md>) · "
             "[JSON](</project/docs/study/validation/results.json>) |",
             report,
@@ -248,10 +246,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn(
-            "| provenance | artifacts | `unavailable` | 0 | 0 | 1 | 0 | 1 |",
-            report,
-        )
+        self.assertIn("| Provenance | 1 await confirmation |", report)
 
     def test_report_prefers_actual_failure_over_unconfirmed_output(self) -> None:
         artifact = "/project/data/migrated.csv"
@@ -291,10 +286,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn(
-            "| provenance | artifacts | `fail` | 0 | 1 | 0 | 0 | 1 |",
-            report,
-        )
+        self.assertIn("| Provenance | 1 artifact issue |", report)
 
     def test_report_status_prefers_failed_artifact_over_distinct_unconfirmed(
         self,
@@ -338,8 +330,7 @@ class MechanicalControllerTests(unittest.TestCase):
         report = REPORT.compose_validation_report(record)
 
         self.assertIn(
-            "| provenance | artifacts | `fail` | 0 | 1 | 1 | 0 | 2 |",
-            report,
+            "| Provenance | 1 artifact issue · 1 await confirmation |", report
         )
 
     def test_report_counts_artifact_blocked_by_provenance_failure_as_failed(
@@ -384,10 +375,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn(
-            "| provenance | artifacts | `fail` | 0 | 1 | 0 | 0 | 1 |",
-            report,
-        )
+        self.assertIn("| Provenance | 1 artifact issue |", report)
 
     def test_report_keeps_artifact_blocked_by_other_scope_not_applicable(
         self,
@@ -405,7 +393,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     RESULTS.CheckStatus.FAIL,
                     artifact,
                     failure=RESULTS.FailurePayload(
-                        "evidence.value.mismatch",
+                        "transformation.presentation.mismatch",
                         artifact,
                         {"expected": 1, "observed": 2},
                         "Evidence Values",
@@ -423,10 +411,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn(
-            "| provenance | artifacts | `not_applicable` | 0 | 0 | 0 | 1 | 1 |",
-            report,
-        )
+        self.assertIn("| Provenance | — |", report)
 
     def test_completed_result_publishes_public_bundle_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -460,7 +445,9 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertIn("## Mechanical Validation", report)
             self.assertIn("## Reproduction", report)
             self.assertIn("Status: `not_yet_run`", report)
-            self.assertIn("### Counts", report)
+            self.assertNotIn("### Counts", report)
+            self.assertIn("| Structure | Clear |", report)
+            self.assertIn("Validated Study.", result["report"])
             for check in record["checks"]:
                 if check["status"] == "pass":
                     self.assertNotIn(check["identity"], report)
@@ -488,12 +475,14 @@ class MechanicalControllerTests(unittest.TestCase):
 
             report = (summary.with_suffix("") / "validation.md").read_text()
             self.assertEqual(result["status"], "complete_findings")
-            self.assertIn("#### e001", report)
-            self.assertIn("`material.candidate.unresolved`", report)
-            self.assertIn("Status: `not_applicable`", report)
-            self.assertIn("Dependencies:", report)
-            self.assertIn("Observed:", report)
-            self.assertIn("Violated rule:", report)
+            self.assertIn("### [e001 — Study trial]", report)
+            self.assertIn("#### Material Role Unresolved", report)
+            self.assertIn("prevents 3 dependent checks", report)
+            self.assertNotIn("material.candidate.unresolved", report)
+            self.assertNotIn("Status: `not_applicable`", report)
+            self.assertNotIn("Dependencies:", report)
+            self.assertNotIn("Observed:", report)
+            self.assertNotIn("Violated rule:", report)
             for check in result["record"]["checks"]:
                 if check["status"] == "pass":
                     self.assertNotIn(check["identity"], report)
@@ -503,13 +492,11 @@ class MechanicalControllerTests(unittest.TestCase):
                         continue
                     if failure is None:
                         self.assertEqual(check["status"], "not_applicable")
-                        self.assertIn(f"`{check['identity']}`", report)
+                        self.assertNotIn(f"`{check['identity']}`", report)
                         self.assertTrue(check["dependencies"])
                     else:
-                        self.assertIn(f"`{failure['code']}`", report)
-                        if failure["code"] != "orphan.material.unused":
-                            self.assertIn(f"`{failure['subject']}`", report)
-            self.assertIn("| hygiene | findings | `fail`", report)
+                        self.assertNotIn(f"`{failure['code']}`", report)
+            self.assertIn("| Hygiene | 3 issues |", report)
 
     def test_report_renders_the_cause_of_dependent_not_applicable_checks(
         self,
@@ -536,11 +523,8 @@ class MechanicalControllerTests(unittest.TestCase):
                 dependent["dependencies"],
                 [{"dependency": "evidence:e001:success-rate"}],
             )
-            self.assertIn("`provenance:e001:success-rate`", report)
-            self.assertIn(
-                'Dependencies: `[{"dependency":"evidence:e001:success-rate"}]`',
-                report,
-            )
+            self.assertNotIn("`provenance:e001:success-rate`", report)
+            self.assertIn("prevents 2 dependent checks", report)
 
     def test_dry_run_and_incomplete_evaluation_publish_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

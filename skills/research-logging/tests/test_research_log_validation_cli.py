@@ -191,11 +191,14 @@ class ValidationCliTests(unittest.TestCase):
                         f"[Study](<{good_summary.resolve()}>)",
                         payload["report"],
                     )
-                    self.assertNotIn(
-                        bad_summary.resolve().as_posix(), payload["report"]
+                    self.assertIn(bad_summary.resolve().as_posix(), payload["report"])
+                    self.assertIn(
+                        "| — | — | — | — | Not published |", payload["report"]
                     )
+                    self.assertIn("Validation could not start:", payload["report"])
                     self.assertEqual(
-                        "Not published" in payload["report"], dry_run
+                        payload["report"].count("Not published"),
+                        2 if dry_run else 1,
                     )
                     self.assertEqual(
                         payload["failures"],
@@ -258,6 +261,9 @@ class ValidationCliTests(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["status"], "unsupported_metadata")
             self.assertEqual(result["code"], "validation.unsupported_metadata")
+            self.assertIn(
+                "`validation/.cache/upgrade-transactions`", result["report"]
+            )
             self.assertEqual(
                 result["observed"]["paths"],
                 ["validation/.cache/upgrade-transactions"],

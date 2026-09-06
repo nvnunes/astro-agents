@@ -20,9 +20,10 @@ do not open, repair, delete, or normalize generated validation files. Validate
 reads the summary but never changes it. Before the first validation, the link
 may resolve to a report that does not yet exist.
 
-`<log>/validation.md` is the shared human projection. Its Mechanical Validation
-section shows the latest completed mechanical date, scope/status counts, and
-non-passing checks grouped by entry. Its independent Reproduction section shows
-`not_yet_run` until reproduction has its own generated result. The report has no
-combined conclusion. Correct generated records through their owning operation,
-never through summary edits.
+`<log>/validation.md` is the human-only projection. Its Mechanical Validation
+section shows the latest completed date and compact human area results; its
+bounded Findings section groups affected targets by entry and human issue type.
+Its independent Reproduction section shows `not_yet_run` until reproduction has
+its own generated result. Agents do not parse this report for validation or
+repair. The report has no combined conclusion. Correct generated records
+through their owning operation, never through summary edits.

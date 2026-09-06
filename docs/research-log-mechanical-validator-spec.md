@@ -68,6 +68,7 @@ or evolution requires it.
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
+| Finding query results | `research-log-findings-list/1` and `research-log-finding/1` |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
@@ -3435,6 +3436,11 @@ The validation and discovery operations are:
 <skill>/scripts/log validate --root PROJECT
   [--date YYYY-MM-DD] [--recompute] [--recompute-validation]
   [--recompute-fingerprints] [--dry-run]
+
+<skill>/scripts/log findings list --path LOG
+  [--entry ENTRY] [--subject SUBJECT]
+
+<skill>/scripts/log findings show --path LOG --id CHECK_ID
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
@@ -3451,13 +3457,15 @@ spelling. Omission is allowed only when the working directory resolves exactly
 one maintained log. `validate --root` validates every summary returned by the
 same bounded discovery contract and emits the batch-result schema. It is the
 only all-log validation spelling; an omitted `--path` never means all logs.
-The batch result contains a `results` array for completed per-log results and a
+The batch result contains a `results` array for structured per-log results and a
 `failures` array whose items contain the affected summary, stable error code,
-and bounded message. Its `report` field contains the complete ready-to-present
-Markdown comparison table for `complete_clear` and `complete_findings` results;
-dry-run rows state that reports were not published. One log's operational
-failure does not skip later logs or discard earlier results; any batch failure
-makes the command exit nonzero.
+and bounded message. Its `report` field is a complete ready-to-present Markdown
+comparison containing every discovered log. Completed rows use the shared
+human area projection; dry-run, incomplete, unsupported, and operationally
+failed rows say that no report was published, and exceptional rows receive a
+concise explanation below the table. One log's operational failure does not
+skip later logs or discard earlier results; any batch failure makes the command
+exit nonzero.
 `--date` defaults to the local calendar date and, when present, must be one
 exact ISO date.
 The nearest enclosing non-symlink `.git` file or directory defines the project
@@ -3661,6 +3669,8 @@ in `Current Versions` and contains:
 - `status` is `complete_clear`, `complete_findings`, `incomplete`, or
   `unsupported_metadata`; and
 - `published`, which states whether a new generated bundle was installed;
+- `report`, which is the complete ready-to-present human summary for this
+  invocation;
 - the bounded `metrics`, `result_date`, `rules_version`, and scope aggregates;
   and
 - `generated.human` and `generated.mechanical`, which name the installed
@@ -3782,24 +3792,29 @@ writable run may repopulate each bypassed cache; combining the two flags or
 using `--recompute` bypasses both. A dry run that bypasses both opens neither
 cache and leaves generated state byte-identical.
 
-`validation.md` is a deterministic nonauthoritative projection. Its Mechanical
-Validation section contains completion, result date, check counts for
-Structure and Evidence, unique Provenance starting-artifact counts, and one
-Hygiene finding count. Structure projects machine scope `conformance`, and
-Hygiene projects machine scope `orphan`; neither display label changes the
-machine schema. Hygiene combines orphan artifacts, unmatched output records,
-and unused input declarations; their distinct checks remain authoritative in
-`results.json`. Human detail may collapse maximal
-all-orphan directories for discussion. The section contains every non-Hygiene
-non-passing check grouped by entry with its status, identity, subject, and
-dependencies. Failed and unavailable checks additionally show their code,
-observed state, and violated rule. It does not list individual passing checks
-or provide repair instructions. A scope with zero checks has a blank displayed
-aggregate status; the report does not present absent checks as
-`not_applicable`. Its separate Reproduction section is visibly `not_yet_run`
-until the Reproduction workflow publishes `validation/reproduction.json`. The
-report has no combined pass/fail conclusion, and standard mechanical validation
-reads or writes no reproduction record.
+`validation.md` is a deterministic nonauthoritative human document. It contains
+one validated date, a compact Area and Result table, bounded findings grouped
+by entry and human issue type, and the independently owned Reproduction
+section. The area vocabulary is `Clear`, `N issues`, `N artifact issues`,
+`N await confirmation`, `Incomplete`, and an em dash for unevaluated areas.
+Structure projects machine scope `conformance`, and Hygiene projects machine
+scope `orphan`; neither display label changes the machine schema. Provenance
+counts unique starting artifacts by their worst human result. Internal codes,
+check identities, raw observed state, dependency mappings, passing totals, and
+ordinary `not_applicable` checks remain only in `results.json`.
+
+Each direct failed or unavailable condition enters a status-sensitive finding
+signature using its code, resolved entry, normalized logical subject, violated
+rule, and relevant observed state. Exact duplicate signatures collapse without
+changing the authoritative checks. A direct prerequisite states how many
+unique dependent `not_applicable` checks it prevents. Each entry and human
+issue-type group displays at most ten deterministic target details, always
+states its complete target count, and directs overflow to `log findings list`.
+Human names and concise sentences come from one complete presentation catalog;
+an emitted code without a catalog entry is an implementation error rather than
+a fallback that exposes machine syntax. A clear report says `No mechanical
+findings.` The separate Reproduction section remains visibly `not_yet_run`
+until the Reproduction workflow publishes `validation/reproduction.json`.
 
 In the human Provenance artifact count, a
 `provenance.output.unconfirmed` check projects as unavailable rather than as a
@@ -3809,11 +3824,32 @@ actual failed Provenance prerequisite projects as a failed artifact, while its
 authoritative machine check remains `not_applicable`. A failed Provenance
 artifact takes precedence over an unconfirmed status for both an individual
 artifact and the human row's aggregate status. Other `not_applicable` checks
-remain visible in detailed and machine-readable results but are omitted from
-multi-log summary cells; they are not abbreviated as N/A.
+remain only in machine-readable results and are omitted from human reports;
+they are not abbreviated as N/A.
 The batch CLI composes the multi-log table directly from the same scope
 projection used by each human report. Agents do not parse generated reports or
 recalculate these cells.
+
+`log findings list` and `log findings show` are read-only bounded machine
+access to the latest published `validation/results.json`. Both require an
+explicit logical log path, read a regular non-symlink result through a bounded
+UTF-8 decoder, expose its own result date without claiming currentness, and
+never validate, publish, repair, or inspect research-owned files. `list`
+returns at most 50 direct failed or unavailable finding-signature groups. Exact
+`--entry` and `--subject` filters may be combined; there is no fuzzy matching,
+pagination, or adjustable limit. Each returned group includes its code, entry,
+logical subject, represented-check count, and one representative check ID.
+`show` accepts one exact ID and returns that check's code, scope, status,
+resolved entry, logical subject, dependencies, observed state, violated rule,
+and result date without repair advice.
+
+Finding queries distinguish absent published state
+(`findings.result.missing`), unsupported schema
+(`findings.result.schema_unsupported`), malformed or inconsistent state
+(`findings.result.malformed`), duplicate identities (`findings.id.duplicate`),
+unknown identities (`findings.id.unknown`), and identities that are not direct
+findings (`findings.id.not_finding`). Expected query failures exit 2 and emit
+no success object.
 
 Validation acquires the canonical exclusive
 `<log>/.cache/research-log-operations/log.lock` before opening the per-log

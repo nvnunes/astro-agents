@@ -299,19 +299,19 @@ class RecordSurfaceTests(unittest.TestCase):
     def test_multilog_reporting_is_owned_by_the_validation_tool(self) -> None:
         validate = reference("operation-validate.md")
         records = reference("file-validation-records.md")
-        self.assertIn("Its `report` field is the finished Markdown", validate)
-        self.assertIn("without recalculating or\n  reformatting", validate)
-        self.assertIn("each item in `failures`", validate)
-        self.assertIn("`summary`,\n  `code`, and `message`", validate)
-        self.assertIn("standard error can be empty", validate)
-        self.assertIn("items have no `status`", validate)
-        self.assertIn("returns no structured result", validate)
         self.assertIn(
-            "includes the finished Markdown comparison table",
+            "Its `report` field is the complete finished Markdown", validate
+        )
+        self.assertIn("Present it unchanged", validate)
+        self.assertIn("every discovered log", validate)
+        self.assertIn("every exceptional explanation", validate)
+        self.assertIn("returns no\nstructured result", validate)
+        self.assertIn(
+            "includes every discovered log in the finished Markdown comparison",
             CASES.read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "a nonzero batch may have\nempty standard error",
+            "A nonzero batch may have empty standard error.",
             CASES.read_text(encoding="utf-8"),
         )
         self.assertFalse(

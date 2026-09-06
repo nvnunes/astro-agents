@@ -39,6 +39,7 @@ from research_log_data import (
 from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.operation_state import OperationLockError
+from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_contract import (
     PyrunContractError,
     automatic_option_role,
@@ -654,6 +655,19 @@ def main(argv: list[str]) -> int:
                 validate_output_paths(
                     tuple(output_paths), entry_root=entry, project_root=root
                 )
+                try:
+                    project_output_bindings(
+                        parameters,
+                        {
+                            key: kind
+                            for key, (_path, kind) in output_paths.items()
+                        },
+                        entry_root=entry,
+                        project_root=root,
+                        subject=str(entry / "pyrun.json"),
+                    )
+                except OutputBindingError as error:
+                    raise SystemExit(f"pyrun: {error}") from error
             capture_paths = _capture_paths(captures, entry, root, log)
             with tempfile.TemporaryDirectory(prefix="pyrun-") as temporary:
                 environment, trace_directory = prepare_environment(

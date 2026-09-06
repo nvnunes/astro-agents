@@ -71,6 +71,7 @@ reader. When changing the current `pyrun.json` contract or lifecycle, also run:
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_output_bindings.py \
   skills/research-logging/tests/test_research_log_pyrun_state.py \
   skills/research-logging/tests/test_log_pyrun.py \
   skills/research-logging/tests/test_log_pyrun_migration.py \

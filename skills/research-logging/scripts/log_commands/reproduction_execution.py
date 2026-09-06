@@ -31,9 +31,8 @@ from research_log_data import (
     parse_fingerprint,
     resolve_input_token,
 )
-from validation.errors import MechanicalContractError
-from validation.pyrun_contract import PYRUN_CAPTURE_STREAMS, PYRUN_ENV_OPTION
-from validation.pyrun_outputs import output_target_path, portable_output_path
+from validation.output_bindings import OutputBindingError, project_output_bindings
+from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
     load_pyrun_state,
@@ -977,21 +976,28 @@ def _execution_command(
         raise ActionError(
             "reproduction.script.unavailable", f"retained script is missing: {script}"
         )
-    parameters, captures = _recorded_parameter_layout(
-        execution.recipe.parameters,
-        source_entry=source_entry,
-        workspace=workspace,
-        output_paths=output_paths,
-    )
-    bindings = _output_argument_bindings(
-        parameters,
-        source_entry=source_entry,
-        workspace=workspace,
-        output_paths=output_paths,
-        captured_outputs=frozenset(captures.values()),
-    )
+    try:
+        projection = project_output_bindings(
+            execution.recipe.parameters,
+            execution.recipe.outputs,
+            entry_root=source_entry,
+            project_root=workspace.source_project,
+            subject=execution.recipe.script,
+        )
+    except OutputBindingError as error:
+        raise ActionError("reproduction.output.binding_invalid", str(error)) from error
+    captures = {
+        binding.option: output_paths[binding.output]
+        for binding in projection.captures
+        if binding.option is not None
+    }
+    bindings = {
+        binding.parameter_index: binding.substituted(output_paths[binding.output])
+        for binding in projection.parameters
+        if binding.parameter_index is not None
+    }
     arguments = []
-    for index, value in enumerate(parameters):
+    for index, value in enumerate(projection.child_parameters):
         binding = bindings.get(index)
         if binding is not None:
             arguments.append(binding)
@@ -1006,106 +1012,6 @@ def _execution_command(
             )
         )
     return [str(interpreter), str(script), *arguments], captures
-
-
-def _recorded_parameter_layout(
-    parameters: Sequence[str],
-    *,
-    source_entry: Path,
-    workspace: ReproductionWorkspace,
-    output_paths: Mapping[str, Path],
-) -> tuple[tuple[str, ...], Mapping[str, Path]]:
-    """Separate runner-owned capture/environment prefixes from child arguments."""
-
-    index = 0
-    captures: dict[str, Path] = {}
-    runner_prefix = False
-    while index < len(parameters) and parameters[index] in {
-        *PYRUN_CAPTURE_STREAMS,
-        PYRUN_ENV_OPTION,
-    }:
-        runner_prefix = True
-        option = parameters[index]
-        if index + 1 >= len(parameters):
-            raise ActionError(
-                "reproduction.output.binding_invalid",
-                "recorded runner option has no value",
-            )
-        value = parameters[index + 1]
-        if option in PYRUN_CAPTURE_STREAMS:
-            try:
-                identity = portable_output_path(
-                    value,
-                    entry_root=source_entry,
-                    project_root=workspace.source_project,
-                    authored=True,
-                )
-            except MechanicalContractError as error:
-                raise ActionError(
-                    "reproduction.output.binding_invalid", str(error)
-                ) from error
-            destination = output_paths.get(identity)
-            if destination is None or option in captures:
-                raise ActionError(
-                    "reproduction.output.binding_invalid",
-                    f"capture output has no unique declaration: {identity}",
-                )
-            captures[option] = destination
-        index += 2
-    if runner_prefix:
-        if index >= len(parameters) or parameters[index] != "--":
-            raise ActionError(
-                "reproduction.output.binding_invalid",
-                "recorded runner prefix has no separator",
-            )
-        index += 1
-    return tuple(parameters[index:]), captures
-
-
-def _output_argument_bindings(
-    parameters: Sequence[str],
-    *,
-    source_entry: Path,
-    workspace: ReproductionWorkspace,
-    output_paths: Mapping[str, Path],
-    captured_outputs: frozenset[Path],
-) -> Mapping[int, str]:
-    """Bind every ordinary output identity to one exact child argument."""
-
-    candidates: dict[str, list[tuple[int, str | None]]] = {
-        identity: []
-        for identity, path in output_paths.items()
-        if path not in captured_outputs
-    }
-    for index, parameter in enumerate(parameters):
-        raw = parameter
-        prefix: str | None = None
-        if parameter.startswith("-") and "=" in parameter:
-            prefix, raw = parameter.split("=", 1)
-        if raw.startswith("-"):
-            continue
-        try:
-            identity = portable_output_path(
-                raw,
-                entry_root=source_entry,
-                project_root=workspace.source_project,
-                authored=True,
-            )
-        except MechanicalContractError:
-            continue
-        if identity in candidates:
-            candidates[identity].append((index, prefix))
-    result: dict[int, str] = {}
-    for identity, occurrences in candidates.items():
-        if len(occurrences) != 1:
-            raise ActionError(
-                "reproduction.output.binding_invalid",
-                f"output does not have one unambiguous parameter: {identity}",
-            )
-        index, prefix = occurrences[0]
-        destination = str(output_paths[identity])
-        result[index] = f"{prefix}={destination}" if prefix is not None else destination
-    return result
 
 
 def _generated_output_paths(

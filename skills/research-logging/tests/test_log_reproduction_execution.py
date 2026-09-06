@@ -314,7 +314,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             workspace = fixture.workspace()
 
             with self.assertRaisesRegex(
-                ActionError, "output does not have one unambiguous parameter"
+                ActionError, "pyrun.output.binding_invalid"
             ):
                 execute_planned_recipe(
                     fixture.log,

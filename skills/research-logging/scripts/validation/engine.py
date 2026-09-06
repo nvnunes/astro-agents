@@ -90,6 +90,7 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .mechanical_values import SelectionResult
+from .output_bindings import OutputBindingError, project_output_bindings
 from .output_support import (
     ResolvedCodeSupport,
     confirmed_output_record,
@@ -118,6 +119,7 @@ from .pyrun_outputs import (
 )
 from .pyrun_state import (
     PYRUN_FILENAME,
+    PyrunFile,
     legacy_output_projection,
     load_pyrun_state,
 )
@@ -130,7 +132,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/end-to-end-provenance-1"
+RULES_VERSION = "research-log-mechanical/end-to-end-provenance-2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -948,6 +950,9 @@ def _load_output_support(state: _ScanState) -> None:
                     entry_root=root,
                     project_root=state.project_root,
                 )
+                _validate_execution_bindings(
+                    owner, execution_state, state
+                )
                 state.output_files[owner] = legacy_output_projection(
                     execution_state,
                     tuple(
@@ -970,6 +975,69 @@ def _load_output_support(state: _ScanState) -> None:
                     f"entry:{owner}:pyrun",
                     CheckScope.PROVENANCE,
                     error,
+                )
+            )
+
+
+def _validate_execution_bindings(
+    owner: str, execution_state: PyrunFile, state: _ScanState
+) -> None:
+    """Report each invalid persisted binding without rejecting sibling state."""
+
+    entry_id = next(
+        (
+            entry.id
+            for entry in state.entries
+            if _material_owner(entry, state) == owner
+        ),
+        owner,
+    )
+    record_path = execution_state.path.resolve().as_posix()
+    dependency = {
+        "pyrun_state": {
+            "path": record_path,
+            "sha256": state.output_file_observations.get(record_path),
+        }
+    }
+    for identity, execution in sorted(execution_state.executions.items()):
+        subject = f"{execution_state.path}:executions[{identity!r}]"
+        try:
+            projection = project_output_bindings(
+                execution.recipe.parameters,
+                execution.recipe.outputs,
+                entry_root=execution_state.entry_root,
+                project_root=state.project_root,
+                subject=subject,
+            )
+            aliases = projection.aliases
+            if aliases:
+                first = aliases[0]
+                raise OutputBindingError(
+                    subject,
+                    {
+                        "aliases": [
+                            {
+                                "authored": binding.authored,
+                                "mechanism": binding.mechanism,
+                                "output": binding.output,
+                            }
+                            for binding in aliases
+                        ],
+                        "authored": first.authored,
+                        "entry": entry_id,
+                        "output": first.output,
+                        "reason": "noncanonical",
+                    },
+                )
+        except OutputBindingError as error:
+            observed = dict(cast(Mapping[str, object], error.observed))
+            observed.setdefault("entry", entry_id)
+            state.checks.append(
+                _error_check(
+                    f"conformance:{entry_id}:pyrun-binding:{identity}",
+                    CheckScope.CONFORMANCE,
+                    OutputBindingError(subject, observed),
+                    dependencies=(dependency,),
                 )
             )
 

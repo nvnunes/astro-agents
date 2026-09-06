@@ -819,6 +819,67 @@ target.mkdir()
             self.assertIn("declared output is missing", result.stderr)
             self.assertFalse((entry / "pyrun.json").exists())
 
+    def test_ambiguous_output_binding_fails_before_child_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            sentinel = entry / "ran.txt"
+            (entry / "scripts/would_run.py").write_text(
+                "from pathlib import Path\nPath('ran.txt').write_text('ran')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "output",
+                    "--",
+                    "scripts/would_run.py",
+                    "--output",
+                    "data/result.csv",
+                    "--reference",
+                    "data/result.csv",
+                ],
+                cwd=entry,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("pyrun.output.binding_invalid", result.stderr)
+            self.assertFalse(sentinel.exists())
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_noncanonical_output_alias_executes_and_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            (entry / "scripts/write.py").write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[1]).write_text('result\\n')\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/write.py",
+                    "./data/result.csv",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = execution_for_output(entry, "data/result.csv")
+            self.assertEqual(
+                record["recipe"]["parameters"], ["./data/result.csv"]
+            )
+
     def test_other_role_contract_rejects_invalid_forms_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

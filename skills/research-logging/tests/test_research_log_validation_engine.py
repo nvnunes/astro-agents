@@ -18,6 +18,7 @@ MECHANICAL = importlib.import_module("validation.mechanical")
 RESULTS = importlib.import_module("validation.mechanical_results")
 LOCATOR = importlib.import_module("validation.locator")
 CACHE = importlib.import_module("validation.validation_cache")
+PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -168,6 +169,69 @@ def _comparison(evaluation: Any) -> dict[str, Any]:
     }
 
 
+def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...]) -> str:
+    """Replace the legacy fixture registry with one current execution."""
+
+    entry = entry_document.parent
+    (entry / "pyrun-outputs.json").unlink()
+    recipe = PYRUN_STATE.ExecutionRecipe(
+        "scripts/model.py",
+        parameters,
+        (),
+        ("catalog",),
+        (("data/results.csv", "file"),),
+    )
+    observed = PYRUN_STATE.ObservedExecution(
+        DATA.Fingerprint(
+            "sha256",
+            digest=hashlib.sha256(
+                (entry / "scripts/model.py").read_bytes()
+            ).hexdigest(),
+        ),
+        (
+            (
+                "catalog",
+                DATA.Fingerprint(
+                    "sha256",
+                    digest=hashlib.sha256(
+                        (entry / "data/catalog.csv").read_bytes()
+                    ).hexdigest(),
+                ),
+            ),
+        ),
+        (),
+        (
+            (
+                "data/results.csv",
+                DATA.Fingerprint(
+                    "sha256",
+                    digest=hashlib.sha256(
+                        (entry / "data/results.csv").read_bytes()
+                    ).hexdigest(),
+                ),
+            ),
+        ),
+    )
+    execution = PYRUN_STATE.PyrunExecution(
+        True,
+        False,
+        "2030-01-01T00:00:00Z",
+        PYRUN_STATE.PYRUN_RUNNER,
+        PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,
+        PYRUN_STATE.PYRUN_EXECUTION_CONTRACT,
+        recipe,
+        observed,
+    )
+    identity = PYRUN_STATE.execution_id(recipe)
+    state = PYRUN_STATE.PyrunFile(
+        entry / PYRUN_STATE.PYRUN_FILENAME,
+        entry,
+        {identity: execution},
+    )
+    write(entry / PYRUN_STATE.PYRUN_FILENAME, state.serialized())
+    return identity
+
+
 def _evaluate(summary: Path, *, check_comparison: dict[str, Any] | None = None) -> Any:
     return MECHANICAL.evaluate_mechanical(
         MECHANICAL.MechanicalEvaluationRequest(
@@ -272,6 +336,92 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_pyrun_binding_failure_is_execution_scoped_structure(self) -> None:
+        cases = (
+            (("--catalog", "<catalog>", "--mode", "exact"), "missing"),
+            (
+                (
+                    "--catalog",
+                    "<catalog>",
+                    "--output-data",
+                    "data/results.csv",
+                    "--reference",
+                    "data/results.csv",
+                ),
+                "ambiguous",
+            ),
+            (
+                (
+                    "--catalog",
+                    "<catalog>",
+                    "--output-data",
+                    "./data/results.csv",
+                ),
+                "noncanonical",
+            ),
+        )
+        for parameters, reason in cases:
+            with tempfile.TemporaryDirectory() as directory, self.subTest(
+                reason=reason
+            ):
+                summary, entry = _log(Path(directory))
+                identity = _replace_with_pyrun_state(entry, parameters)
+
+                evaluation = _evaluate(summary)
+
+                binding = next(
+                    check
+                    for check in evaluation.result.checks
+                    if check.failure is not None
+                    and check.failure.code == "pyrun.output.binding_invalid"
+                )
+                self.assertEqual(binding.scope, RESULTS.CheckScope.CONFORMANCE)
+                self.assertIn(identity, binding.identity)
+                self.assertEqual(binding.failure.observed["reason"], reason)
+                self.assertFalse(
+                    any(
+                        check.failure is not None
+                        and check.failure.code == "pyrun.state.invalid"
+                        for check in evaluation.result.checks
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        check.identity == "evidence:e001:success-rate"
+                        for check in evaluation.result.checks
+                    )
+                )
+
+    def test_undeclared_generated_artifact_remains_an_orphan_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            unexpected = entry.parent / "data/unexpected.csv"
+            write(unexpected, "value\n2\n")
+            _replace_with_pyrun_state(
+                entry,
+                (
+                    "--catalog",
+                    "<catalog>",
+                    "--output-data",
+                    "data/results.csv",
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            failures = {
+                (check.failure.code, check.failure.subject)
+                for check in evaluation.result.checks
+                if check.failure is not None
+            }
+            self.assertIn(
+                ("orphan.material.unused", unexpected.resolve().as_posix()),
+                failures,
+            )
+            self.assertFalse(
+                any(code == "pyrun.output.binding_invalid" for code, _ in failures)
+            )
+
     def test_current_code_support_enters_provenance_and_suppresses_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

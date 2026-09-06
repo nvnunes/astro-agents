@@ -503,6 +503,12 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The current output bytes or kind do not match the recorded identity.",
         "path",
     ),
+    "pyrun.output.binding_invalid": FindingPresentation(
+        "Invalid Output Binding",
+        "A recorded output cannot be redirected through exactly one canonical "
+        "parameter or runner-owned capture.",
+        "path",
+    ),
     "pyrun.outputs.invalid": FindingPresentation(
         "Invalid Output-Support Registry",
         "The output-support registry does not satisfy its schema or ownership "

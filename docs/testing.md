@@ -99,6 +99,12 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 For any research-logging tool change, run the complete tool gate rather than
 linting only the main validator:
 
+The complete unittest suite includes process-lifecycle tests that enumerate
+the host process table to track detached descendants. When running this gate
+from a sandboxed agent session, request elevated execution for the complete
+unittest command before its first attempt. Do not run it in the process-
+observation sandbox and retry after the expected permission failure.
+
 ```bash
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \

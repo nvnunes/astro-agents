@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -290,42 +291,41 @@ print(json.dumps({{
 
     def test_explicit_log_selects_its_project_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            target = root / "target"
-            caller = root / "caller"
-            target.mkdir()
-            caller.mkdir()
-            logical, _ = fixture(target)
-            subprocess.run(["git", "init"], cwd=caller, check=True, capture_output=True)
-            target_marker = target / "selected"
-            caller_marker = caller / "selected"
-            for project, marker in (
-                (target, target_marker),
-                (caller, caller_marker),
-            ):
-                executable = project / ".conda" / "bin" / "python"
-                executable.parent.mkdir(parents=True)
-                executable.write_text(
-                    "#!/bin/sh\n"
-                    f"printf selected > {str(marker)!r}\n"
-                    f"exec {str(Path(sys.executable))!r} \"$@\"\n",
-                    encoding="utf-8",
-                )
-                executable.chmod(0o755)
-
-            result = run_log_process(
-                caller,
+            target = Path(directory) / "target"
+            logical = target / "docs" / "study"
+            logical.mkdir(parents=True)
+            executable = target / ".conda" / "bin" / "python"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("placeholder\n", encoding="utf-8")
+            arguments = [
                 "retention",
                 "list",
                 "--path",
                 str(logical),
                 "--entry",
                 "e001",
-            )
+            ]
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(target_marker.is_file())
-            self.assertFalse(caller_marker.exists())
+            with (
+                mock.patch.object(sys, "argv", [str(LOG), *arguments]),
+                mock.patch.dict(
+                    os.environ, {"RESEARCH_LOG_PYTHON_REEXEC": "0"}
+                ),
+                mock.patch(
+                    "subprocess.check_output", return_value=f"{target}\n"
+                ),
+                mock.patch(
+                    "os.execve", side_effect=RuntimeError("selected interpreter")
+                ) as execute,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "selected interpreter"):
+                    runpy.run_path(str(LOG), run_name="log_launcher_test")
+
+            selected, argv, environment = execute.call_args.args
+            expected = executable.resolve()
+            self.assertEqual(selected, expected)
+            self.assertEqual(argv, [str(expected), str(LOG), *arguments])
+            self.assertEqual(environment["RESEARCH_LOG_PYTHON_REEXEC"], "1")
 
 
 class LogValidationRouteTests(unittest.TestCase):

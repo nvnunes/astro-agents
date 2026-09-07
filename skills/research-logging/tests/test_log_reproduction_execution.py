@@ -23,6 +23,7 @@ from log_commands.reproduction_execution import (
     ExecutionControl,
     _generated_output_paths,
     _seatbelt_profile,
+    completed_execution_attempts,
     execute_planned_recipe,
     execute_reproduction_plan,
     prepare_output_workspace,
@@ -182,6 +183,45 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             self.assertEqual(loader.call_count, 1)
             self.assertEqual(len(projected), 1)
+
+    def test_completed_attempts_reuse_loaded_entry_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(
+                Path(directory),
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+                "p.add_argument('--output'); a=p.parse_args()\n"
+                "Path(a.output).write_text(Path(a.source).read_text())\n",
+            )
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                        "order": 1,
+                    },
+                ),
+            )
+            workspace = fixture.workspace()
+            attempt = execute_planned_recipe(
+                fixture.log,
+                plan,
+                plan.executions[0],
+                workspace,
+                ExecutionControl(confinement=_FixtureConfinement()),
+            )
+            self.assertEqual(attempt.checkpoint.state, "complete")
+
+            with mock.patch(
+                "log_commands.reproduction_execution.load_pyrun_state",
+                wraps=load_pyrun_state,
+            ) as loader:
+                completed = completed_execution_attempts(fixture.log, plan, workspace)
+
+            self.assertEqual(loader.call_count, 1)
+            self.assertEqual(len(completed), 1)
 
     def test_output_workspace_does_not_copy_retained_project_material(
         self,

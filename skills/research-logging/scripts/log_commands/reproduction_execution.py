@@ -159,6 +159,7 @@ class ExecutionControl:
     stop_requested: Callable[[], bool] = lambda: False
     confinement: ConfinementBackend | None = None
     generated_paths: Mapping[Path, tuple[Path, str]] | None = None
+    source: _ExecutionSource | None = None
     progress: Callable[[str, str, ExecutionAttempt | None], None] = (
         lambda _event, _execution_id, _attempt: None
     )
@@ -177,6 +178,14 @@ class _PreparedExecution:
     stdout: Path
     stderr: Path
     checkpoint: Path
+
+
+@dataclass(frozen=True)
+class _ExecutionSource:
+    """One entry and its validated pyrun authority for a reproduction pass."""
+
+    entry: EntryContext
+    state: PyrunFile
 
 
 @dataclass(frozen=True)
@@ -380,10 +389,15 @@ def execute_planned_recipe(
 ) -> ExecutionAttempt:
     """Execute one accepted recipe against its run-local output workspace."""
 
+    sources: dict[str, _ExecutionSource] = {}
+    if control.source is not None:
+        sources[control.source.entry.id] = control.source
     generated = control.generated_paths
     if generated is None:
-        generated = _generated_output_paths(log, plan, workspace)
-    prepared = _prepare_execution(log, planned, workspace, generated)
+        generated = _generated_output_paths(log, plan, workspace, sources=sources)
+    entry_id = _required_string(planned, "entry")
+    source = _execution_source(log, workspace, entry_id, sources)
+    prepared = _prepare_execution(log, planned, workspace, generated, source=source)
     _preflight_output_paths(prepared.output_paths.values(), workspace.work_project)
     if not control.resume:
         _clear_outputs(prepared.output_paths.values())
@@ -424,21 +438,19 @@ def _prepare_execution(
     planned: Mapping[str, object],
     workspace: ReproductionWorkspace,
     generated: Mapping[Path, tuple[Path, str]],
+    *,
+    source: _ExecutionSource | None = None,
 ) -> _PreparedExecution:
     entry_id = _required_string(planned, "entry")
     execution_id = _required_string(planned, "execution_id")
-    source_entry = resolve_entry(log, entry_id)
-    source_state = load_pyrun_state(
-        source_entry.root / "pyrun.json",
-        entry_root=source_entry.root,
-        project_root=workspace.source_project,
-    )
-    execution = source_state.executions.get(execution_id)
+    loaded = source or _execution_source(log, workspace, entry_id, {})
+    source_entry = loaded.entry
+    execution = loaded.state.executions.get(execution_id)
     if execution is None:
         raise ActionError(
             "reproduction.execution.missing",
             f"accepted execution is no longer present: {entry_id}:{execution_id}",
-    )
+        )
     work_entry = workspace.map_source(source_entry.root)
     work_entry.mkdir(parents=True, exist_ok=True)
     output_paths = _output_paths(
@@ -711,7 +723,8 @@ def execute_reproduction_plan(
     skips: list[Mapping[str, object]] = []
     unavailable: set[str] = set()
     backend = control.confinement or DarwinSeatbelt()
-    generated = _generated_output_paths(log, plan, workspace)
+    sources: dict[str, _ExecutionSource] = {}
+    generated = _generated_output_paths(log, plan, workspace, sources=sources)
     for planned in ordered:
         if control.stop_requested():
             return ExecutionBatch(tuple(attempts), tuple(reused), tuple(skips), True)
@@ -734,7 +747,10 @@ def execute_reproduction_plan(
         checkpoint = _load_checkpoint(workspace, entry_id, identity)
         if checkpoint is not None and checkpoint.state == "complete":
             if not control.resume or not _checkpoint_outputs_current(
-                checkpoint, log, workspace, entry_id, identity
+                checkpoint,
+                _execution_source(log, workspace, entry_id, sources),
+                workspace,
+                identity,
             ):
                 raise ActionError(
                     "reproduction.checkpoint.changed",
@@ -754,6 +770,7 @@ def execute_reproduction_plan(
                 stop_requested=control.stop_requested,
                 confinement=backend,
                 generated_paths=generated,
+                source=_execution_source(log, workspace, entry_id, sources),
                 progress=control.progress,
             ),
         )
@@ -774,7 +791,8 @@ def completed_execution_attempts(
     """Load every complete planned checkpoint as a comparison-ready attempt."""
 
     results: list[ExecutionAttempt] = []
-    generated = _generated_output_paths(log, plan, workspace)
+    sources: dict[str, _ExecutionSource] = {}
+    generated = _generated_output_paths(log, plan, workspace, sources=sources)
     for planned in sorted(plan.executions, key=_execution_order):
         entry_id = _required_string(planned, "entry")
         identity = _required_string(planned, "execution_id")
@@ -782,13 +800,22 @@ def completed_execution_attempts(
         if checkpoint is None or checkpoint.state != "complete":
             continue
         if not _checkpoint_outputs_current(
-            checkpoint, log, workspace, entry_id, identity
+            checkpoint,
+            _execution_source(log, workspace, entry_id, sources),
+            workspace,
+            identity,
         ):
             raise ActionError(
                 "reproduction.checkpoint.changed",
                 f"completed checkpoint is not current: {entry_id}:{identity}",
             )
-        prepared = _prepare_execution(log, planned, workspace, generated)
+        prepared = _prepare_execution(
+            log,
+            planned,
+            workspace,
+            generated,
+            source=_execution_source(log, workspace, entry_id, sources),
+        )
         results.append(
             ExecutionAttempt(
                 entry_id,
@@ -915,18 +942,12 @@ def _load_checkpoint(
 
 def _checkpoint_outputs_current(
     checkpoint: ExecutionCheckpoint,
-    log: LogContext,
+    source: _ExecutionSource,
     workspace: ReproductionWorkspace,
-    entry_id: str,
     execution_id: str,
 ) -> bool:
-    entry = resolve_entry(log, entry_id)
-    state = load_pyrun_state(
-        entry.root / "pyrun.json",
-        entry_root=entry.root,
-        project_root=workspace.source_project,
-    )
-    execution = state.executions.get(execution_id)
+    entry = source.entry
+    execution = source.state.executions.get(execution_id)
     if execution is None:
         return False
     paths = _output_paths(
@@ -1015,30 +1036,44 @@ def _execution_command(
     return [str(interpreter), str(script), *arguments], captures
 
 
+def _execution_source(
+    log: LogContext,
+    workspace: ReproductionWorkspace,
+    entry_id: str,
+    sources: dict[str, _ExecutionSource],
+) -> _ExecutionSource:
+    source = sources.get(entry_id)
+    if source is not None:
+        return source
+    entry = resolve_entry(log, entry_id)
+    state = load_pyrun_state(
+        entry.root / "pyrun.json",
+        entry_root=entry.root,
+        project_root=workspace.source_project,
+    )
+    source = _ExecutionSource(entry, state)
+    sources[entry_id] = source
+    return source
+
+
 def _generated_output_paths(
-    log: LogContext, plan: ReproductionPlan, workspace: ReproductionWorkspace
+    log: LogContext,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    *,
+    sources: dict[str, _ExecutionSource] | None = None,
 ) -> Mapping[Path, tuple[Path, str]]:
     """Map retained generated identities to run-local graph paths."""
 
     result: dict[Path, tuple[Path, str]] = {}
-    entries: dict[str, EntryContext] = {}
-    states: dict[Path, PyrunFile] = {}
+    loaded_sources = sources if sources is not None else {}
     for planned in plan.executions:
         entry_id = _required_string(planned, "entry")
-        entry = entries.get(entry_id)
-        if entry is None:
-            entry = resolve_entry(log, entry_id)
-            entries[entry_id] = entry
-        entry_root = entry.root.resolve()
-        state = states.get(entry_root)
-        if state is None:
-            state = load_pyrun_state(
-                entry.root / "pyrun.json",
-                entry_root=entry.root,
-                project_root=workspace.source_project,
-            )
-            states[entry_root] = state
-        execution = state.executions.get(_required_string(planned, "execution_id"))
+        source = _execution_source(log, workspace, entry_id, loaded_sources)
+        entry = source.entry
+        execution = source.state.executions.get(
+            _required_string(planned, "execution_id")
+        )
         if execution is None:
             continue
         work_entry = workspace.map_source(entry.root)

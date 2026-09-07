@@ -118,6 +118,41 @@ class ReproductionResultContractTests(unittest.TestCase):
             ReproductionResults.from_json(result.serialized()).artifacts[0].execution_id
         )
 
+    def test_failed_external_generated_input_retains_absolute_identity(self) -> None:
+        artifact = ArtifactResult(
+            "e001",
+            "/Volumes/Data/fixture/build.log",
+            None,
+            "failed",
+            "cross_log_generated_input",
+            "2030-01-01T00:00:00Z",
+            "reproduce-20300101t000000z-fixture",
+            None,
+        )
+        result = ReproductionResults(
+            "docs/research.md",
+            "2030-01-01T00:00:00Z",
+            (artifact,),
+            (_run("reproduce-20300101t000000z-fixture", "2030-01-01T00:00:00Z"),),
+        )
+
+        decoded = ReproductionResults.from_json(result.serialized())
+
+        self.assertEqual(decoded.artifacts[0].artifact, artifact.artifact)
+        with self.assertRaisesRegex(
+            ReproductionResultError, "not a canonical path"
+        ):
+            ArtifactResult(
+                "e001",
+                "/Volumes/Data/fixture/../build.log",
+                None,
+                "failed",
+                "cross_log_generated_input",
+                "2030-01-01T00:00:00Z",
+                "reproduce-20300101t000000z-fixture",
+                None,
+            )
+
     def test_reconciliation_removes_only_conclusively_absent_run_folders(self) -> None:
         current = ReproductionResults.from_json(
             (FIXTURES / "reproduction-result-complete-v1.json").read_text()

@@ -716,6 +716,17 @@ def _fingerprint_or_none(value: object, subject: str) -> Fingerprint | None:
 
 def _artifact_path(value: object, subject: str) -> str:
     path = _string(value, subject)
+    pure = PurePosixPath(path)
+    if pure.is_absolute():
+        if (
+            path.startswith("//")
+            or "\\" in path
+            or len(pure.parts) == 1
+            or any(part in {"", ".", ".."} for part in pure.parts)
+            or pure.as_posix() != path
+        ):
+            raise ReproductionResultError(f"{subject} is not a canonical path")
+        return path
     suffix = path.removeprefix("<project>/")
     portable = _portable_path(suffix, subject)
     return f"<project>/{portable}" if path.startswith("<project>/") else portable

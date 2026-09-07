@@ -1261,6 +1261,11 @@ one side uses null for that side. Detailed differences and decoder diagnostics
 remain in the run directory rather than expanding this cumulative record.
 `execution_id` is null only for a pre-execution graph failure that has no
 resolvable producer; `matched` and `changed` always identify an execution.
+Generated-output artifact identities are normalized entry-relative or
+`<project>/...` paths. A pre-execution failure or boundary for a declared
+resource outside the project retains its canonical absolute POSIX identity so
+the result identifies the same resource as `data.json`; noncanonical absolute
+forms remain invalid.
 
 Every run item has exactly the fields shown. Its target follows the run-state
 target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is

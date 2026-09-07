@@ -276,6 +276,7 @@ def build_producer_index(
             ):
                 continue
             root = _collection_root(invocation, collection).as_posix()
+            outputs.setdefault(root, []).append(invocation)
             indexed = _IndexedOutput(invocation, root)
             directory_by_root.setdefault(root, []).append(indexed)
             for directory_ancestor in _path_and_parents(root):

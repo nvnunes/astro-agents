@@ -266,6 +266,14 @@ class MaterialGraphTests(unittest.TestCase):
             )
 
             self.assertTrue(members.issubset(result.orphan.connected))
+            self.assertIn(
+                (entry_root / "scripts/build.py").resolve().as_posix(),
+                result.orphan.connected,
+            )
+            self.assertIn(
+                (entry_root / "data/source.csv").resolve().as_posix(),
+                result.orphan.connected,
+            )
             input_materials = {
                 edge.source.identity
                 for edge in result.edges
@@ -273,6 +281,82 @@ class MaterialGraphTests(unittest.TestCase):
             }
             self.assertTrue(members.issubset(input_materials))
             self.assertNotIn(bundle, input_materials)
+
+    def test_linked_bundle_consumer_reaches_directory_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root = root / "docs/log"
+            entry_root = log_root / "entries/entry"
+            output_data = root / "output/logs/log/e001/data"
+            write(entry_root / "e001.md", "# Entry\n")
+            write(entry_root / "scripts/build.py", "# fixture\n")
+            write(entry_root / "scripts/use.py", "# fixture\n")
+            write(entry_root / "configs/source.csv", "value\n1\n")
+            write(output_data / "bundle/model.pt", "model\n")
+            write(output_data / "bundle/metrics.csv", "value\n2\n")
+            write(output_data / "final.csv", "value\n3\n")
+            (entry_root / "data").symlink_to(output_data, target_is_directory=True)
+            source = build_local_input(
+                "source",
+                "file",
+                "configs/source.csv",
+                entry_root=entry_root,
+                origin=True,
+            )
+            bundle = build_local_input(
+                "bundle",
+                "directory",
+                "data/bundle",
+                entry_root=entry_root,
+                origin=False,
+            )
+            data_file = data_file_from_inputs(
+                entry_root / "data.json",
+                entry_root=entry_root,
+                inputs=(source, bundle),
+            )
+            context = COMMAND.CommandContext(
+                log_id="docs/log",
+                entry="e001",
+                document="entries/entry/e001.md",
+                entry_root=entry_root,
+                log_root=log_root,
+                project_root=root,
+                data_file=data_file,
+                require_experimental_context=False,
+            )
+            invocations = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
+./pyrun scripts/use.py --results-root '<bundle>' --output-data data/final.csv
+```
+""",
+                context,
+            ).invocations
+            final = (output_data / "final.csv").resolve().as_posix()
+            result = GRAPH.compose_material_graph(
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    evidence=(
+                        GRAPH.EvidenceConnection(
+                            "e001", "final", "e001.md:eid:final", (final,)
+                        ),
+                    ),
+                )
+            )
+
+            producer, consumer = invocations
+            self.assertEqual(
+                tuple(item.path for item in consumer.inputs),
+                ((output_data / "bundle").resolve().as_posix(),),
+            )
+            self.assertIn(producer.script, result.orphan.connected)
+            self.assertIn(
+                (entry_root / "configs/source.csv").resolve().as_posix(),
+                result.orphan.connected,
+            )
 
     def test_exact_bundle_member_consumer_keeps_input_edge_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

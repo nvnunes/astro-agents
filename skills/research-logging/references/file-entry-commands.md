@@ -43,11 +43,12 @@ a fence is unsupported or unbound, the whole fence fails closed and establishes
 no relationships.
 
 For Python commands, use `./pyrun` to simplify recorded syntax. Verify any
-project-declared environment is available before running it. `pyrun` uses
-`<project>/.conda/bin/python` when present; otherwise it uses the interpreter
-running `pyrun`. If a declared environment is unavailable, report it and get
-researcher approval before relying on that fallback. `pyrun` replaces tokens
-with full paths and recognizes:
+project-declared environment is available before running it. Before loading
+its Python implementation, `pyrun` uses `<project>/.conda/bin/python` when
+present; otherwise it uses a supported `python3` available to the caller. If a
+declared environment is unavailable, report it and get researcher approval
+before relying on that fallback. `pyrun` replaces tokens with full paths and
+recognizes:
 
 - `<project>` resolves to the project root.
 - `<project>/...` resolves to a path under the project root.

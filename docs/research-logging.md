@@ -509,9 +509,10 @@ needed to understand each invocation mechanically visible. Validation does not
 execute shell or guess through dynamic shell behavior; it reports unsupported
 command structure rather than inferring relationships from it.
 
-For Python, use the entry-root `./pyrun` launcher. It uses
-`<project>/.conda/bin/python` when that environment exists; otherwise it uses
-the interpreter that runs `pyrun`. It also expands these path tokens:
+For Python, use the entry-root `./pyrun` launcher. Before loading its Python
+implementation, it uses `<project>/.conda/bin/python` when that environment
+exists; otherwise it uses a supported `python3` available to the caller. It
+also expands these path tokens:
 
 - `<project>`: project root;
 - `<log>`: research-log directory;

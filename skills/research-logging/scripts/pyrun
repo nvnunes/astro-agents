@@ -1,7 +1,45 @@
-#!/usr/bin/env python3
-"""Run entry-local Python commands and publish current output support."""
+#!/bin/sh
+""":"
+# Select the project interpreter before Python parses or imports this module.
+pyrun_bootstrap_root=$(pwd -P) || {
+    printf '%s\n' 'pyrun: could not resolve the working directory' >&2
+    exit 2
+}
+while [ ! -d "$pyrun_bootstrap_root/.git" ] && \
+    [ ! -f "$pyrun_bootstrap_root/.git" ]; do
+    if [ "$pyrun_bootstrap_root" = / ]; then
+        printf '%s\n' 'pyrun: could not resolve project root' >&2
+        exit 2
+    fi
+    pyrun_bootstrap_root=${pyrun_bootstrap_root%/*}
+    [ -n "$pyrun_bootstrap_root" ] || pyrun_bootstrap_root=/
+done
+
+pyrun_bootstrap_python="$pyrun_bootstrap_root/.conda/bin/python"
+if [ -e "$pyrun_bootstrap_python" ] || [ -L "$pyrun_bootstrap_python" ]; then
+    if [ ! -f "$pyrun_bootstrap_python" ] || [ ! -x "$pyrun_bootstrap_python" ]; then
+        printf '%s\n' \
+            "pyrun: project Python is not executable: $pyrun_bootstrap_python" >&2
+        exit 2
+    fi
+    exec "$pyrun_bootstrap_python" "$0" "$@"
+    printf '%s\n' \
+        "pyrun: could not execute project Python: $pyrun_bootstrap_python" >&2
+    exit 2
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'pyrun: supported python3 is unavailable' >&2
+    exit 2
+fi
+exec python3 "$0" "$@"
+printf '%s\n' 'pyrun: could not execute python3' >&2
+exit 2
+":"""
 
 from __future__ import annotations
+
+__doc__ = "Run entry-local Python commands and publish current output support."
 
 import os
 import re

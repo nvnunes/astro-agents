@@ -23,9 +23,16 @@ sys.modules[LOADER.name] = PYRUN_MODULE
 LOADER.exec_module(PYRUN_MODULE)
 
 
-def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str],
+    cwd: Path,
+    *,
+    environment_updates: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
+    if environment_updates is not None:
+        environment.update(environment_updates)
     return subprocess.run(
         command,
         cwd=cwd,
@@ -106,6 +113,19 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
             encoding="utf-8",
         )
     return entry
+
+
+def install_entry_runner(entry: Path) -> Path:
+    runner = entry / "pyrun"
+    runner.symlink_to(PYRUN)
+    return runner
+
+
+def install_project_python(root: Path) -> Path:
+    interpreter = root / ".conda" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.symlink_to(Path(sys.executable))
+    return interpreter
 
 
 def add_directory_input(entry: Path, name: str, directory: Path) -> None:
@@ -1858,6 +1878,179 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
 
 
 class PyrunRuntimeTests(unittest.TestCase):
+    def test_direct_launcher_bootstraps_before_loading_existing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            conda_python = install_project_python(root)
+            (entry / "scripts/record_executable.py").write_text(
+                "import argparse, sys\n"
+                "from pathlib import Path\n"
+                "p=argparse.ArgumentParser()\n"
+                "p.add_argument('--output-data'); a=p.parse_args()\n"
+                "Path(a.output_data).write_text(sys.executable, encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            broken_bin = root / "broken-bin"
+            broken_bin.mkdir()
+            broken_python = broken_bin / "python3"
+            broken_python.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+            broken_python.chmod(0o755)
+            inherited_path = os.environ.get("PATH", "")
+            command = [
+                "./pyrun",
+                "scripts/record_executable.py",
+                "--output-data",
+                "data/runner.txt",
+            ]
+
+            unactivated = run(
+                command,
+                cwd=entry,
+                environment_updates={
+                    "PATH": os.pathsep.join((str(broken_bin), inherited_path))
+                },
+            )
+
+            self.assertEqual(unactivated.returncode, 0, unactivated.stderr)
+            self.assertEqual(
+                (entry / "data/runner.txt").read_text(encoding="utf-8"),
+                str(conda_python),
+            )
+            before = execution_records(entry)
+            execution_id, = before
+
+            activated = run(
+                command,
+                cwd=entry,
+                environment_updates={
+                    "CONDA_PREFIX": str(root / ".conda"),
+                    "PATH": os.pathsep.join((str(conda_python.parent), inherited_path)),
+                },
+            )
+
+            self.assertEqual(activated.returncode, 0, activated.stderr)
+            after = execution_records(entry)
+            self.assertEqual(tuple(after), (execution_id,))
+            self.assertEqual(
+                after[execution_id]["recipe"], before[execution_id]["recipe"]
+            )
+
+    def test_direct_launcher_recognizes_git_worktree_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            repository = temporary / "repository"
+            repository.mkdir()
+            make_repo(repository)
+            commit_source(repository)
+            root = (temporary / "worktree").resolve()
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(root), "HEAD"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            self.assertTrue((root / ".git").is_file())
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            conda_python = install_project_python(root)
+            broken_bin = root / "broken-bin"
+            broken_bin.mkdir()
+            broken_python = broken_bin / "python3"
+            broken_python.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
+            broken_python.chmod(0o755)
+
+            result = run(
+                ["./pyrun", "scripts/print_executable.py"],
+                cwd=entry,
+                environment_updates={
+                    "PATH": os.pathsep.join(
+                        (str(broken_bin), os.environ.get("PATH", ""))
+                    )
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(conda_python))
+
+    def test_direct_launcher_falls_back_to_caller_python3(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            caller_bin = root / "caller-bin"
+            caller_bin.mkdir()
+            caller_python = caller_bin / "python3"
+            caller_python.symlink_to(Path(sys.executable))
+
+            result = run(
+                ["./pyrun", "scripts/print_executable.py"],
+                cwd=entry,
+                environment_updates={
+                    "PATH": os.pathsep.join(
+                        (str(caller_bin), os.environ.get("PATH", ""))
+                    )
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                Path(result.stdout.strip()).resolve(), Path(sys.executable).resolve()
+            )
+
+    def test_direct_launcher_rejects_unusable_project_python(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            conda_python = root / ".conda" / "bin" / "python"
+            conda_python.parent.mkdir(parents=True)
+            conda_python.write_text("not executable\n", encoding="utf-8")
+
+            result = run(
+                ["./pyrun", "scripts/print_executable.py"], cwd=entry
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(
+                result.stderr,
+                f"pyrun: project Python is not executable: {conda_python}\n",
+            )
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_direct_launcher_reports_missing_fallback_python(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            empty_bin = root / "empty-bin"
+            empty_bin.mkdir()
+
+            result = run(
+                ["./pyrun", "scripts/print_executable.py"],
+                cwd=entry,
+                environment_updates={"PATH": str(empty_bin)},
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(
+                result.stderr, "pyrun: supported python3 is unavailable\n"
+            )
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_direct_launcher_reports_missing_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = root / "pyrun"
+            runner.symlink_to(PYRUN)
+
+            result = run(["./pyrun"], cwd=root)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stderr, "pyrun: could not resolve project root\n")
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_uses_project_conda_python_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

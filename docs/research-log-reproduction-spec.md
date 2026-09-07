@@ -453,9 +453,12 @@ replays those role declarations.
 
 ### Standard Environment
 
-Ordinary `pyrun` and reproduction use the current project's
-`.conda/bin/python`. The interpreter fingerprint, installed-package inventory,
-and complete inherited process environment are outside the contract.
+Reproduction uses the current project's `.conda/bin/python`. The entry-local
+`./pyrun` launcher selects that interpreter before loading its implementation
+when it exists; its documented authoring fallback to a caller-available
+supported `python3` does not satisfy the reproduction environment contract.
+The interpreter fingerprint, installed-package inventory, and complete
+inherited process environment are outside the contract.
 
 The versioned standard environment supplies runner-controlled temporary
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` locations. Qualified external runtimes
@@ -464,7 +467,7 @@ temporary paths are not serialized.
 
 Repeatable `--env NAME=value` options are normalized into `recipe.environment`
 and participate in identity. A missing project environment or required
-executable prevents execution. Environment drift that still executes and
+executable prevents reproduction. Environment drift that still executes and
 changes output is reported through artifact comparison rather than diagnosed
 by inference.
 

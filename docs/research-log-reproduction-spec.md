@@ -1415,6 +1415,12 @@ change or incoherent refresh aborts the coordinated publication and requires a
 separate ordinary validation run. Reproduction must never broaden the refresh
 into general validation.
 
+When a newly confirmed execution still depends on another unconfirmed
+execution, the targeted refresh preserves an unconfirmed Provenance finding
+for that upstream producer. This expected partial confirmation does not abort
+publication; a later confirmation of the upstream execution refreshes the
+remaining dependent finding.
+
 ### Promotion Conflicts
 
 Promotion acquires the producing entry's normal operation lock. It is rejected

@@ -5,11 +5,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from research_log_data import Fingerprint, load_data_file
 from test_research_log_validation_engine import _evaluate, _log
 from validation.commands import CommandContext, discover_commands
 from validation.controller import evaluate_current_record
+from validation.errors import MechanicalContractError
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
     PYRUN_EXECUTION_CONTRACT,
@@ -149,6 +151,34 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                     )
                 },
             )
+
+            upstream_unconfirmed = MechanicalContractError(
+                "provenance.output.unconfirmed",
+                "data/upstream.csv",
+                {"output": "data/upstream.csv", "producer": "upstream"},
+                "Pyrun Output Support Records",
+            )
+            with mock.patch(
+                "validation.targeted_refresh.evaluate_provenance",
+                side_effect=upstream_unconfirmed,
+            ):
+                partial = refresh_confirmed_provenance(
+                    summary,
+                    prior,
+                    {"e001": candidate},
+                    {"e001": frozenset({identity})},
+                    result_date="2026-08-30",
+                )
+            partial_direct = next(
+                check
+                for check in partial.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(partial_direct.status.value, "fail")
+            self.assertEqual(
+                partial_direct.failure.code, "provenance.output.unconfirmed"
+            )
+            self.assertEqual(partial_direct.failure.observed["producer"], "upstream")
 
             refreshed = refresh_confirmed_provenance(
                 summary,

@@ -110,11 +110,16 @@ def refresh_confirmed_provenance(
     affected = _affected_checks(prior, state, changed_execution_ids)
     replacements: dict[str, MechanicalCheck] = {}
     for check in affected:
-        replacements[check.identity] = _refresh_direct_check(check, state)
+        replacements[check.identity] = _refresh_direct_check(
+            check, state, retain_unconfirmed=True
+        )
     direct_ids = set(replacements)
     for check in prior.checks:
         dependency = _summary_dependency(check)
-        if dependency in direct_ids:
+        if (
+            dependency in direct_ids
+            and replacements[dependency].status is CheckStatus.PASS
+        ):
             replacements[check.identity] = MechanicalCheck(
                 check.identity,
                 CheckScope.PROVENANCE,
@@ -595,6 +600,7 @@ def _refresh_direct_check(
     state: _RefreshState,
     *,
     refresh_artifact_dependency: bool = False,
+    retain_unconfirmed: bool = False,
 ) -> MechanicalCheck:
     if not check.dependencies:
         raise TargetedRefreshError(f"missing artifact dependency: {check.identity}")
@@ -661,9 +667,7 @@ def _refresh_direct_check(
                     }
                 )
     except MechanicalContractError as error:
-        raise TargetedRefreshError(
-            f"targeted provenance refresh failed: {error.code}"
-        ) from error
+        return _direct_refresh_failure(check, error, retain_unconfirmed)
     return MechanicalCheck(
         check.identity,
         CheckScope.PROVENANCE,
@@ -671,6 +675,18 @@ def _refresh_direct_check(
         check.identity,
         tuple(dependencies),
     )
+
+
+def _direct_refresh_failure(
+    check: MechanicalCheck,
+    error: MechanicalContractError,
+    retain_unconfirmed: bool,
+) -> MechanicalCheck:
+    if retain_unconfirmed and error.code == "provenance.output.unconfirmed":
+        return _failure_from_error(check.identity, CheckScope.PROVENANCE, error)
+    raise TargetedRefreshError(
+        f"targeted provenance refresh failed: {error.code}"
+    ) from error
 
 
 def _current_artifact_dependency(

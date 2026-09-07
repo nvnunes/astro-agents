@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, NoReturn, Sequence
+from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from research_log_data import InputResource
 
@@ -90,12 +90,22 @@ class ProducerIndex:
     scalar_by_ancestor: Mapping[str, tuple[_IndexedOutput, ...]]
     directory_by_ancestor: Mapping[str, tuple[_IndexedOutput, ...]]
     directory_by_root: Mapping[str, tuple[_IndexedOutput, ...]]
+    lookup_cache: dict[
+        tuple[str, int | None], tuple[DirectoryProducerMatch, ...]
+    ] = field(default_factory=dict, compare=False, repr=False)
+    dependency_cache: dict[str, Mapping[str, object]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     def lookup(
         self, root: str, *, before_sequence: int | None = None
     ) -> tuple[DirectoryProducerMatch, ...]:
         """Return producers touching ``root`` without filesystem access."""
 
+        cache_key = (root, before_sequence)
+        cached = self.lookup_cache.get(cache_key)
+        if cached is not None:
+            return cached
         builders: dict[str, _DirectoryMatchBuilder] = {}
         _collect_scalar_matches(
             self.scalar_by_ancestor.get(root, ()), builders, before_sequence
@@ -113,7 +123,7 @@ class ProducerIndex:
             before_sequence,
         )
 
-        return tuple(
+        result = tuple(
             DirectoryProducerMatch(
                 matched.producer,
                 tuple(sorted(matched.confirmation_targets)),
@@ -126,6 +136,48 @@ class ProducerIndex:
                 key=lambda value: self.order_by_identity[value.producer.identity],
             )
         )
+        self.lookup_cache[cache_key] = result
+        return result
+
+
+@dataclass(frozen=True)
+class _WalkTrace:
+    """One reusable root producer's ordered upstream traversal effects."""
+
+    producers: tuple[str, ...]
+    lineage: tuple[tuple[str, str], ...]
+    support: tuple[Mapping[str, object], ...]
+    findings: tuple[tuple[str, ProvenanceFinding], ...]
+
+
+@dataclass(frozen=True)
+class _ProvenanceDependency:
+    """Values contributing to one provenance dependency projection."""
+
+    material: str
+    producers: Sequence[str]
+    lineage: Sequence[tuple[str, str]]
+    support: Sequence[Mapping[str, object]]
+    findings: Sequence[ProvenanceFinding]
+
+
+@dataclass
+class CompleteProvenanceContext:
+    """Scan-local immutable-index and reusable producer conclusions."""
+
+    producer_index: ProducerIndex
+    producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None = None
+    confirmed_record: Callable[[Invocation, str], bool] | None = None
+    output_directory_cache: MutableMapping[int, ProvenanceFinding | None] = field(
+        default_factory=dict
+    )
+    root_invocation_cache: MutableMapping[int, _WalkTrace] = field(
+        default_factory=dict
+    )
+    origin_boundary_cache: MutableMapping[
+        tuple[str, int], ProvenanceFinding | None
+    ] = field(default_factory=dict)
+    canonical_mapping_cache: MutableMapping[int, str] = field(default_factory=dict)
 
 
 def _collect_scalar_matches(
@@ -202,6 +254,11 @@ class _WalkState:
     collect_findings: bool
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
     confirmed_record: Callable[[Invocation, str], bool] | None
+    output_directory_cache: MutableMapping[int, ProvenanceFinding | None] | None
+    root_invocation_cache: MutableMapping[int, _WalkTrace] | None
+    origin_boundary_cache: MutableMapping[
+        tuple[str, int], ProvenanceFinding | None
+    ] | None
 
 
 @dataclass(frozen=True)
@@ -210,6 +267,12 @@ class _EvaluationConfig:
     confirmed_record: Callable[[Invocation, str], bool] | None
     producer_index: ProducerIndex | None
     collect_findings: bool
+    output_directory_cache: MutableMapping[int, ProvenanceFinding | None] | None = None
+    root_invocation_cache: MutableMapping[int, _WalkTrace] | None = None
+    origin_boundary_cache: MutableMapping[
+        tuple[str, int], ProvenanceFinding | None
+    ] | None = None
+    canonical_mapping_cache: MutableMapping[int, str] | None = None
 
 
 def evaluate_provenance(
@@ -237,15 +300,27 @@ def evaluate_complete_provenance(
     *,
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None = None,
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
-    producer_index: ProducerIndex | None = None,
+    context: CompleteProvenanceContext | None = None,
 ) -> ProvenanceResult:
     """Collect every independently reachable bounded provenance failure."""
 
+    if context is not None:
+        if producer_validator is not None or confirmed_record is not None:
+            raise ValueError("complete provenance context owns validation callbacks")
+        producer_validator = context.producer_validator
+        confirmed_record = context.confirmed_record
     return _evaluate_provenance(
         material,
         invocations,
         _EvaluationConfig(
-            producer_validator, confirmed_record, producer_index, True
+            producer_validator,
+            confirmed_record,
+            context.producer_index if context is not None else None,
+            True,
+            context.output_directory_cache if context is not None else None,
+            context.root_invocation_cache if context is not None else None,
+            context.origin_boundary_cache if context is not None else None,
+            context.canonical_mapping_cache if context is not None else None,
         ),
     )
 
@@ -277,21 +352,23 @@ def _evaluate_provenance(
         config.collect_findings,
         config.producer_validator,
         config.confirmed_record,
+        config.output_directory_cache,
+        config.root_invocation_cache,
+        config.origin_boundary_cache,
     )
     _walk_material(canonical, None, state, starting=True, depth=0)
-    payload = {
-        "lineage": [list(edge) for edge in state.lineage],
-        "material": canonical,
-        "producers": state.producers,
-        "producer_state": [
-            _invocation_dependency(producer_index.by_identity[identity])
-            for identity in state.producers
-        ],
-        "support": state.support,
-        "findings": [item.as_dict() for item in state.findings],
-        "version": "end-to-end-provenance-2",
-    }
-    dependency = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    dependency_json = _provenance_dependency_json(
+        _ProvenanceDependency(
+            canonical,
+            state.producers,
+            state.lineage,
+            state.support,
+            state.findings,
+        ),
+        producer_index,
+        config.canonical_mapping_cache,
+    )
+    dependency = hashlib.sha256(dependency_json.encode()).hexdigest()
     return ProvenanceResult(
         canonical,
         tuple(state.producers),
@@ -431,6 +508,40 @@ def require_origin_boundary(
         )
 
 
+def _require_origin_boundary_cached(
+    material: str, resource: InputResource, state: _WalkState
+) -> None:
+    """Reuse one origin-boundary conclusion under a scan's fixed callbacks."""
+
+    cache = state.origin_boundary_cache
+    identity = (material, id(resource))
+    if cache is not None and identity in cache:
+        failure = cache[identity]
+        if failure is not None:
+            raise ProvenanceV2Error(
+                failure.code,
+                failure.subject,
+                failure.observed,
+                failure.rule,
+                outcome=failure.outcome,
+            )
+        return
+    try:
+        require_origin_boundary(
+            material,
+            resource,
+            state.producer_index.invocations,
+            confirmed_record=state.confirmed_record,
+            producer_index=state.producer_index,
+        )
+    except MechanicalContractError as error:
+        if cache is not None:
+            cache[identity] = _finding(error)
+        raise
+    if cache is not None:
+        cache[identity] = None
+
+
 def _walk_material(
     material: str,
     consumer: Invocation | None,
@@ -566,7 +677,7 @@ def _check_producer_ready(
                 ),
             )
         try:
-            _validate_output_directories(producer, state.producer_index)
+            _validate_output_directories_cached(producer, state)
         except MechanicalContractError as error:
             _record_finding(state, error)
     if producer.identity in state.visiting:
@@ -584,6 +695,34 @@ def _check_producer_ready(
             _record_finding(state, error)
             state.support.append({"finding": _finding(error).as_dict()})
     return True
+
+
+def _validate_output_directories_cached(
+    producer: Invocation, state: _WalkState
+) -> None:
+    """Reuse one immutable producer/index ownership conclusion per scan."""
+
+    cache = state.output_directory_cache
+    identity = id(producer)
+    if cache is not None and identity in cache:
+        failure = cache[identity]
+        if failure is not None:
+            raise ProvenanceV2Error(
+                failure.code,
+                failure.subject,
+                failure.observed,
+                failure.rule,
+                outcome=failure.outcome,
+            )
+        return
+    try:
+        _validate_output_directories(producer, state.producer_index)
+    except MechanicalContractError as error:
+        if cache is not None:
+            cache[identity] = _finding(error)
+        raise
+    if cache is not None:
+        cache[identity] = None
 
 
 def _require_declared_producer_ready(
@@ -621,17 +760,80 @@ def _record_producer_lineage(
 
 
 def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> None:
+    """Walk one producer, reusing traces only from an identical root context."""
+
+    cache = state.root_invocation_cache
+    if cache is None or not state.collect_findings or len(state.visiting) != 1:
+        _walk_invocation_uncached(invocation, state, depth)
+        return
+    identity = id(invocation)
+    cached = cache.get(identity)
+    if cached is not None:
+        _merge_walk_trace(cached, state)
+        return
+    trace_state = _WalkState(
+        state.producer_index,
+        [],
+        set(),
+        [],
+        set(),
+        set(state.visiting),
+        [],
+        [],
+        set(),
+        True,
+        state.producer_validator,
+        state.confirmed_record,
+        state.output_directory_cache,
+        state.root_invocation_cache,
+        state.origin_boundary_cache,
+    )
+    _walk_invocation_uncached(invocation, trace_state, depth)
+    trace = _WalkTrace(
+        tuple(trace_state.producers),
+        tuple(trace_state.lineage),
+        tuple(trace_state.support),
+        tuple(
+            (canonical_json(finding.as_dict()), finding)
+            for finding in trace_state.findings
+        ),
+    )
+    cache[identity] = trace
+    _merge_walk_trace(trace, state)
+
+
+def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
+    """Replay one cached root trace with normal result-level deduplication."""
+
+    for producer in trace.producers:
+        if producer not in state.producer_seen:
+            state.producers.append(producer)
+            state.producer_seen.add(producer)
+    for edge in trace.lineage:
+        if edge not in state.lineage_seen:
+            state.lineage.append(edge)
+            state.lineage_seen.add(edge)
+    state.support.extend(trace.support)
+    for identity, finding in trace.findings:
+        if identity not in state.finding_seen:
+            state.findings.append(finding)
+            state.finding_seen.add(identity)
+
+
+def _walk_invocation_uncached(
+    invocation: Invocation, state: _WalkState, depth: int
+) -> None:
+    """Walk one producer without consulting the root-trace cache."""
+
     if not invocation.inputs:
         return
     for relationship in invocation.inputs:
         if relationship.origin and relationship.input_resource is not None:
             try:
-                require_origin_boundary(
+                _require_origin_boundary_cached(
                     relationship.path,
                     relationship.input_resource,
-                    state.producer_index.invocations,
-                    confirmed_record=state.confirmed_record,
-                    producer_index=state.producer_index,
+                    state,
                 )
             except MechanicalContractError as error:
                 _record_finding(state, error)
@@ -663,13 +865,7 @@ def _walk_directory_input(
     resource = relationship.input_resource
     assert resource is not None
     if relationship.origin:
-        require_origin_boundary(
-            relationship.path,
-            resource,
-            state.producer_index.invocations,
-            confirmed_record=state.confirmed_record,
-            producer_index=state.producer_index,
-        )
+        _require_origin_boundary_cached(relationship.path, resource, state)
         return
     matches = state.producer_index.lookup(
         resource.canonical_target,
@@ -718,6 +914,65 @@ def _invocation_dependency(invocation: Invocation) -> Mapping[str, object]:
         "script_argument": invocation.script_argument,
         "script_identity": invocation.script_identity,
     }
+
+
+def _invocation_dependency_cached(
+    producer_index: ProducerIndex, identity: str
+) -> Mapping[str, object]:
+    """Reuse one immutable invocation dependency projection per scan."""
+
+    cached = producer_index.dependency_cache.get(identity)
+    if cached is not None:
+        return cached
+    dependency = _invocation_dependency(producer_index.by_identity[identity])
+    producer_index.dependency_cache[identity] = dependency
+    return dependency
+
+
+def _provenance_dependency_json(
+    value: _ProvenanceDependency,
+    producer_index: ProducerIndex,
+    cache: MutableMapping[int, str] | None,
+) -> str:
+    """Serialize the unchanged dependency contract with reusable mappings."""
+
+    producer_state = tuple(
+        _invocation_dependency_cached(producer_index, identity)
+        for identity in value.producers
+    )
+    return (
+        '{"findings":'
+        + canonical_json([finding.as_dict() for finding in value.findings])
+        + ',"lineage":'
+        + canonical_json(value.lineage)
+        + ',"material":'
+        + canonical_json(value.material)
+        + ',"producer_state":'
+        + _canonical_mapping_sequence(producer_state, cache)
+        + ',"producers":'
+        + canonical_json(value.producers)
+        + ',"support":'
+        + _canonical_mapping_sequence(value.support, cache)
+        + ',"version":"end-to-end-provenance-2"}'
+    )
+
+
+def _canonical_mapping_sequence(
+    values: Sequence[Mapping[str, object]], cache: MutableMapping[int, str] | None
+) -> str:
+    """Serialize mappings in order while reusing their exact canonical forms."""
+
+    if cache is None:
+        return canonical_json(values)
+    serialized: list[str] = []
+    for value in values:
+        identity = id(value)
+        item = cache.get(identity)
+        if item is None:
+            item = canonical_json(value)
+            cache[identity] = item
+        serialized.append(item)
+    return "[" + ",".join(serialized) + "]"
 
 
 def _relationship_dependency(

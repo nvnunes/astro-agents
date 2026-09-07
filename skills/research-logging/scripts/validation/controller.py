@@ -11,7 +11,11 @@ from typing import Any, Mapping
 
 from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
-from .human_projection import ReportContext, load_report_context
+from .human_projection import (
+    ReportContext,
+    load_report_context,
+    project_findings,
+)
 from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
 from .operation_state import operation_lock, require_mutation_ready, research_snapshot
@@ -201,19 +205,19 @@ def _run_validation(
                 raise ValidationControllerError(
                     "mechanical engine returned an invalid record"
                 )
-            result = _completed_result(
-                record,
-                evaluation.metrics,
-                published=False,
-                report_context=report_context,
-            )
             if not request.publish or record.completion is CompletionState.INCOMPLETE:
-                return result
+                return _completed_result(
+                    record,
+                    evaluation.metrics,
+                    published=False,
+                    report_context=report_context,
+                )
+            finding_groups = project_findings(record, report_context)
             mechanical = (record.canonical_json() + "\n").encode()
             mechanical_digest = hashlib.sha256(mechanical).hexdigest()
             outputs = {
                 "validation.md": compose_validation_report(
-                    record, context=report_context
+                    record, context=report_context, groups=finding_groups
                 ).encode(),
             }
             mechanical_changed = report_identity != mechanical_digest

@@ -105,6 +105,7 @@ from .presentation import (
     require_artifact_source_association,
 )
 from .provenance import (
+    CompleteProvenanceContext,
     ProducerIndex,
     ProvenanceFinding,
     ProvenanceResult,
@@ -187,6 +188,23 @@ class _FailureSpec:
     status: CheckStatus = CheckStatus.FAIL
 
 
+@dataclass(frozen=True)
+class _PreparedProvenanceFinding:
+    """One finding with scan-local ordering and blocker work already resolved."""
+
+    finding: ProvenanceFinding
+    canonical: str
+    blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _OutputSupportConclusion:
+    """One reusable output-support result or mechanically identical failure."""
+
+    support: Mapping[str, object] | None = None
+    failure: ProvenanceFinding | None = None
+
+
 @dataclass
 class _RecordOutcome:
     entry: str
@@ -211,10 +229,14 @@ class _ScanState:
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
     producer_index: ProducerIndex | None = None
+    complete_provenance_context: CompleteProvenanceContext | None = None
     command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
     command_blocker_candidates: (
         tuple[tuple[Path, bool, tuple[str, ...]], ...] | None
     ) = None
+    command_blockers_by_subject: dict[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
     command_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     records: list[_RecordOutcome] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
@@ -227,6 +249,9 @@ class _ScanState:
         default_factory=dict
     )
     provenance_results: dict[str, ProvenanceResult] = field(default_factory=dict)
+    output_support_conclusions: dict[
+        tuple[str, str], _OutputSupportConclusion
+    ] = field(default_factory=dict)
     output_file_observations: dict[str, str] = field(default_factory=dict)
     selection_cache: dict[tuple[str, str], SelectionResult] = field(
         default_factory=dict
@@ -325,6 +350,15 @@ def _scan(
         phase = time.perf_counter()
         state.invocations = _discover_invocations(state)
         state.producer_index = build_producer_index(state.invocations)
+        state.complete_provenance_context = CompleteProvenanceContext(
+            state.producer_index,
+            producer_validator=lambda invocation, output: (
+                _validate_output_support(invocation, output, state)
+            ),
+            confirmed_record=lambda invocation, output: (
+                _has_confirmed_output_record(invocation, output, state)
+            ),
+        )
         _load_output_support(state)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
@@ -1097,6 +1131,39 @@ def _validate_output_support(
 ) -> Mapping[str, object]:
     """Require one exact confirmed observation for a reached graph output."""
 
+    cache_key = (invocation.identity, material)
+    cached = state.output_support_conclusions.get(cache_key)
+    if cached is not None:
+        if cached.failure is not None:
+            failure = cached.failure
+            raise MechanicalContractError(
+                failure.code,
+                failure.subject,
+                failure.observed,
+                failure.rule,
+                outcome=failure.outcome,
+            )
+        assert cached.support is not None
+        return cached.support
+
+    try:
+        support = _evaluate_output_support(invocation, material, state)
+    except MechanicalContractError as error:
+        state.output_support_conclusions[cache_key] = _OutputSupportConclusion(
+            failure=_provenance_finding(error)
+        )
+        raise
+    state.output_support_conclusions[cache_key] = _OutputSupportConclusion(
+        support=support
+    )
+    return support
+
+
+def _evaluate_output_support(
+    invocation: Invocation, material: str, state: _ScanState
+) -> Mapping[str, object]:
+    """Evaluate one output-support conclusion without scan-local reuse."""
+
     key, _ = _output_record(invocation, material, state)
     path = Path(material)
     if not path.is_file() and not path.is_dir():
@@ -1631,16 +1698,11 @@ def _record_provenance(
             result = state.provenance_results.get(material_identity)
             if result is None:
                 state.provenance_traversals += 1
+                assert state.complete_provenance_context is not None
                 result = evaluate_complete_provenance(
                     material.path,
                     state.invocations,
-                    producer_validator=lambda invocation, output: (
-                        _validate_output_support(invocation, output, state)
-                    ),
-                    confirmed_record=lambda invocation, output: (
-                        _has_confirmed_output_record(invocation, output, state)
-                    ),
-                    producer_index=state.producer_index,
+                    context=state.complete_provenance_context,
                 )
                 state.provenance_results[material_identity] = result
             else:
@@ -1652,9 +1714,9 @@ def _record_provenance(
                     "material": result.material,
                 }
             )
-        findings = _ordered_provenance_findings(findings, state)
-        if findings:
-            primary, *additional = findings
+        prepared_findings = _ordered_provenance_findings(findings, state)
+        if prepared_findings:
+            primary, *additional = prepared_findings
             _append_provenance_findings(
                 identity,
                 additional,
@@ -1662,7 +1724,7 @@ def _record_provenance(
                 dependencies=(artifact_dependency,),
             )
             return _provenance_finding_check(
-                identity, primary, state, dependencies=dependencies
+                identity, primary, dependencies=dependencies
             )
         return _pass_check(identity, CheckScope.PROVENANCE, dependencies=dependencies)
     except MechanicalContractError as error:
@@ -1691,28 +1753,38 @@ def _record_provenance(
 
 def _ordered_provenance_findings(
     findings: Sequence[ProvenanceFinding], state: _ScanState
-) -> list[ProvenanceFinding]:
+) -> list[_PreparedProvenanceFinding]:
     """Deduplicate findings and prefer actual failures over confirmation state."""
 
     unique: dict[str, ProvenanceFinding] = {}
     for finding in findings:
         key = canonical_json(finding.as_dict())
         unique.setdefault(key, finding)
+    prepared = [
+        _PreparedProvenanceFinding(
+            finding,
+            canonical,
+            (
+                _command_blockers(finding.subject, state)
+                if finding.code in {"producer.missing", "lineage.missing"}
+                else ()
+            ),
+        )
+        for canonical, finding in unique.items()
+    ]
     return sorted(
-        unique.values(),
-        key=lambda finding: (
-            _provenance_finding_priority(finding, state),
-            canonical_json(finding.as_dict()),
+        prepared,
+        key=lambda item: (
+            _provenance_finding_priority(item.finding, item.blockers),
+            item.canonical,
         ),
     )
 
 
 def _provenance_finding_priority(
-    finding: ProvenanceFinding, state: _ScanState
+    finding: ProvenanceFinding, blockers: Sequence[str]
 ) -> int:
-    if finding.code in {"producer.missing", "lineage.missing"} and _command_blockers(
-        finding.subject, state
-    ):
+    if finding.code in {"producer.missing", "lineage.missing"} and blockers:
         return 2
     if finding.code == "provenance.output.unconfirmed":
         return 1
@@ -1721,7 +1793,7 @@ def _provenance_finding_priority(
 
 def _append_provenance_findings(
     identity: str,
-    findings: Sequence[ProvenanceFinding],
+    findings: Sequence[_PreparedProvenanceFinding],
     state: _ScanState,
     *,
     dependencies: Sequence[Mapping[str, object]],
@@ -1733,7 +1805,6 @@ def _append_provenance_findings(
             _provenance_finding_check(
                 f"{identity}:finding:{number}",
                 finding,
-                state,
                 dependencies=dependencies,
             )
         )
@@ -1741,14 +1812,14 @@ def _append_provenance_findings(
 
 def _provenance_finding_check(
     identity: str,
-    finding: ProvenanceFinding,
-    state: _ScanState,
+    prepared: _PreparedProvenanceFinding,
     *,
     dependencies: Sequence[Mapping[str, object]],
 ) -> MechanicalCheck:
     """Project one collected traversal finding into validation state."""
 
-    blockers = _command_blockers(finding.subject, state)
+    finding = prepared.finding
+    blockers = prepared.blockers
     if finding.code in {"producer.missing", "lineage.missing"} and blockers:
         return _blocked_check(
             identity,
@@ -2702,16 +2773,23 @@ def _blocked_check(
 
 
 def _command_blockers(subject: str, state: _ScanState) -> tuple[str, ...]:
+    cached = state.command_blockers_by_subject.get(subject)
+    if cached is not None:
+        return cached
     if "://" in subject:
+        state.command_blockers_by_subject[subject] = ()
         return ()
     path = Path(subject)
     if not path.is_absolute():
+        state.command_blockers_by_subject[subject] = ()
         return ()
     blockers: set[str] = set()
     for candidate, directory, identities in _indexed_command_blockers(state):
         if path == candidate or (directory and _lexically_within(path, candidate)):
             blockers.update(identities)
-    return tuple(sorted(blockers))
+    result = tuple(sorted(blockers))
+    state.command_blockers_by_subject[subject] = result
+    return result
 
 
 def _indexed_command_blockers(

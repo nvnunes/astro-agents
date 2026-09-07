@@ -21,6 +21,7 @@ CACHE = importlib.import_module("validation.validation_cache")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 PRESENTATION = importlib.import_module("validation.presentation")
 HUMAN = importlib.import_module("validation.human_projection")
+PROVENANCE = importlib.import_module("validation.provenance")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -998,6 +999,90 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 _evaluate(summary)
 
             self.assertEqual(indexed.call_count, 1)
+
+    def test_output_support_conclusions_are_reused_within_one_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            invocation = mock.Mock(identity="entry:e001:execution:one")
+            support = {"output": "data/result.csv"}
+
+            with mock.patch.object(
+                ENGINE, "_evaluate_output_support", return_value=support
+            ) as evaluate:
+                first = ENGINE._validate_output_support(invocation, "result", state)
+                second = ENGINE._validate_output_support(invocation, "result", state)
+
+            self.assertIs(first, support)
+            self.assertIs(second, support)
+            self.assertEqual(evaluate.call_count, 1)
+
+            failure = ENGINE.EngineV2Error(
+                "provenance.output.unconfirmed",
+                "failed",
+                {"producer": invocation.identity},
+                "Pyrun Output Support Records",
+            )
+            with mock.patch.object(
+                ENGINE, "_evaluate_output_support", side_effect=failure
+            ) as evaluate:
+                for _ in range(2):
+                    with self.assertRaises(ENGINE.MechanicalContractError) as raised:
+                        ENGINE._validate_output_support(invocation, "failed", state)
+                    self.assertEqual(raised.exception.code, failure.code)
+                    self.assertEqual(raised.exception.observed, failure.observed)
+
+            self.assertEqual(evaluate.call_count, 1)
+
+    def test_provenance_findings_prepare_ordering_and_blockers_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subject = (root / "missing.csv").as_posix()
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            state.command_blocker_candidates = (
+                (root / "missing.csv", False, ("entry:e001:command:1:1",)),
+            )
+            findings = (
+                PROVENANCE.ProvenanceFinding(
+                    "lineage.missing", subject, {"consumer": "two"}, "Lineage"
+                ),
+                PROVENANCE.ProvenanceFinding(
+                    "provenance.output.unconfirmed",
+                    subject,
+                    {"producer": "one"},
+                    "Output Support",
+                ),
+            )
+            encoder = ENGINE.canonical_json
+
+            with mock.patch.object(
+                ENGINE, "canonical_json", wraps=encoder
+            ) as canonical, mock.patch.object(
+                ENGINE,
+                "_indexed_command_blockers",
+                wraps=ENGINE._indexed_command_blockers,
+            ) as blocker_index:
+                prepared = ENGINE._ordered_provenance_findings(findings, state)
+                self.assertEqual(
+                    ENGINE._command_blockers(subject, state),
+                    ("entry:e001:command:1:1",),
+                )
+
+            self.assertEqual(canonical.call_count, len(findings))
+            self.assertEqual(blocker_index.call_count, 1)
+            self.assertEqual(
+                [item.finding.code for item in prepared],
+                ["provenance.output.unconfirmed", "lineage.missing"],
+            )
+            with mock.patch.object(
+                ENGINE,
+                "_command_blockers",
+                side_effect=AssertionError("prepared check must reuse blockers"),
+            ):
+                check = ENGINE._provenance_finding_check(
+                    "provenance:e001:test", prepared[-1], dependencies=()
+                )
+            self.assertEqual(check.status, RESULTS.CheckStatus.NOT_APPLICABLE)
 
     def test_output_support_parameter_change_breaks_provenance_until_replaced(
         self,

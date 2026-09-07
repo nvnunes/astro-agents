@@ -86,6 +86,241 @@ def _unconfirmed_support(invocation: Any, material: str) -> Any:
 
 
 class ProvenanceLineageTests(unittest.TestCase):
+    def test_cached_dependency_serialization_preserves_canonical_contract(self) -> None:
+        producer = _invocation("shared", 0, outputs=("/tmp/result.csv",))
+        index = PROVENANCE.build_producer_index((producer,))
+        support = ({"nested": {"state": "confirmed"}, "output": "result.csv"},)
+        finding = PROVENANCE.ProvenanceFinding(
+            "lineage.missing",
+            "/tmp/source.csv",
+            {"consumer": "shared"},
+            "Recorded-Command Provenance And Material Graph",
+        )
+        value = PROVENANCE._ProvenanceDependency(
+            "/tmp/result.csv",
+            ("shared",),
+            (("upstream", "shared"),),
+            support,
+            (finding,),
+        )
+        expected = PROVENANCE.canonical_json(
+            {
+                "findings": [finding.as_dict()],
+                "lineage": [["upstream", "shared"]],
+                "material": "/tmp/result.csv",
+                "producers": ["shared"],
+                "producer_state": [PROVENANCE._invocation_dependency(producer)],
+                "support": list(support),
+                "version": "end-to-end-provenance-2",
+            }
+        )
+        cache: dict[int, str] = {}
+
+        actual = PROVENANCE._provenance_dependency_json(value, index, cache)
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(cache), 2)
+        self.assertEqual(
+            PROVENANCE._provenance_dependency_json(value, index, cache), expected
+        )
+
+    def test_complete_traversals_reuse_origin_boundary_conclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            source_path = root / "external/source.csv"
+            outputs = (entry_root / "data/first.csv", entry_root / "data/second.csv")
+            for path in (source_path, *outputs):
+                write(path, "value\n1\n")
+            source = build_local_input(
+                "source",
+                "file",
+                source_path.as_posix(),
+                entry_root=entry_root,
+                origin=True,
+            )
+            command_context = _context(root, (source,))
+            invocations = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/run.py --input-data '<source>' --output-data data/first.csv
+./pyrun scripts/run.py --input-data '<source>' --output-data data/second.csv
+```
+""",
+                command_context,
+            ).invocations
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index(invocations)
+            )
+            validator = PROVENANCE.require_origin_boundary
+
+            with mock.patch.object(
+                PROVENANCE, "require_origin_boundary", wraps=validator
+            ) as validated:
+                results = [
+                    PROVENANCE.evaluate_complete_provenance(
+                        output, invocations, context=context
+                    )
+                    for output in outputs
+                ]
+
+            self.assertEqual(validated.call_count, 1)
+            self.assertTrue(all(not result.findings for result in results))
+
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index(invocations)
+            )
+            failure = PROVENANCE.ProvenanceV2Error(
+                "data.origin.invalid",
+                "source",
+                {"producer": "unexpected"},
+                "Declared Origin Boundary",
+            )
+            with mock.patch.object(
+                PROVENANCE, "require_origin_boundary", side_effect=failure
+            ) as validated:
+                results = [
+                    PROVENANCE.evaluate_complete_provenance(
+                        output, invocations, context=context
+                    )
+                    for output in outputs
+                ]
+
+            self.assertEqual(validated.call_count, 1)
+            self.assertEqual(
+                [[finding.code for finding in result.findings] for result in results],
+                [["data.origin.invalid"], ["data.origin.invalid"]],
+            )
+
+    def test_complete_traversals_reuse_root_producer_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.csv"
+            outputs = (root / "first.csv", root / "second.csv")
+            for path in (source, *outputs):
+                write(path, "value\n1\n")
+            upstream = _invocation(
+                "upstream", 0, outputs=(source.resolve().as_posix(),)
+            )
+            producer = replace(
+                _invocation(
+                    "shared",
+                    1,
+                    outputs=tuple(path.resolve().as_posix() for path in outputs),
+                ),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        source.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+            invocations = (upstream, producer)
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index(invocations),
+                producer_validator=_unconfirmed_support,
+            )
+            walker = PROVENANCE._walk_invocation_uncached
+
+            with mock.patch.object(
+                PROVENANCE, "_walk_invocation_uncached", wraps=walker
+            ) as walked:
+                results = [
+                    PROVENANCE.evaluate_complete_provenance(
+                        output, invocations, context=context
+                    )
+                    for output in outputs
+                ]
+
+            calls_by_producer = [
+                call.args[0].identity for call in walked.call_args_list
+            ]
+            self.assertEqual(calls_by_producer.count("shared"), 1)
+            self.assertEqual(calls_by_producer.count("upstream"), 1)
+            for output, result in zip(outputs, results, strict=True):
+                self.assertEqual(result.material, output.resolve().as_posix())
+                self.assertEqual(result.producers, ("shared", "upstream"))
+                self.assertEqual(result.lineage, (("upstream", "shared"),))
+                self.assertEqual(
+                    [finding.subject for finding in result.findings],
+                    [output.resolve().as_posix(), source.resolve().as_posix()],
+                )
+
+    def test_producer_index_reuses_exact_directory_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = (root / "bundle").resolve().as_posix()
+            producer = _invocation("shared", 0, directories=(bundle,))
+            index = PROVENANCE.build_producer_index((producer,))
+
+            first = index.lookup(bundle, before_sequence=2)
+            second = index.lookup(bundle, before_sequence=2)
+            unbounded = index.lookup(bundle)
+
+            self.assertIs(first, second)
+            self.assertEqual(len(index.lookup_cache), 2)
+            self.assertEqual(first, unbounded)
+            dependency = PROVENANCE._invocation_dependency_cached(index, "shared")
+            self.assertIs(
+                dependency,
+                PROVENANCE._invocation_dependency_cached(index, "shared"),
+            )
+
+    def test_complete_traversals_reuse_output_directory_conclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = (root / "first.csv", root / "second.csv")
+            for output in outputs:
+                write(output, "value\n1\n")
+            producer = _invocation(
+                "shared",
+                0,
+                outputs=tuple(output.resolve().as_posix() for output in outputs),
+            )
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index((producer,))
+            )
+            validator = PROVENANCE._validate_output_directories
+
+            with mock.patch.object(
+                PROVENANCE, "_validate_output_directories", wraps=validator
+            ) as validated:
+                for output in outputs:
+                    result = PROVENANCE.evaluate_complete_provenance(
+                        output,
+                        (producer,),
+                        context=context,
+                    )
+                    self.assertFalse(result.findings)
+
+            self.assertEqual(validated.call_count, 1)
+
+            context.output_directory_cache.clear()
+            failure = PROVENANCE.ProvenanceV2Error(
+                "collection.output_directory.shared",
+                str(root),
+                {"owners": ["shared"]},
+                "Recorded-Command Provenance And Material Graph",
+            )
+            with mock.patch.object(
+                PROVENANCE, "_validate_output_directories", side_effect=failure
+            ) as validated:
+                results = [
+                    PROVENANCE.evaluate_complete_provenance(
+                        output,
+                        (producer,),
+                        context=context,
+                    )
+                    for output in outputs
+                ]
+
+            self.assertEqual(validated.call_count, 1)
+            self.assertEqual(
+                [[finding.code for finding in result.findings] for result in results],
+                [
+                    ["collection.output_directory.shared"],
+                    ["collection.output_directory.shared"],
+                ],
+            )
+
     def test_missing_output_does_not_hide_independent_lineage_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

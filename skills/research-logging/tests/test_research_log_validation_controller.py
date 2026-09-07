@@ -418,9 +418,16 @@ class MechanicalControllerTests(unittest.TestCase):
             summary, _ = _log(Path(directory))
             summary_bytes = summary.read_bytes()
 
-            result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-            )
+            with mock.patch.object(
+                CONTROLLER,
+                "project_findings",
+                wraps=HUMAN.project_findings,
+            ) as project_findings:
+                result = CONTROLLER.validate(
+                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                )
+
+            self.assertEqual(project_findings.call_count, 1)
 
             log_root = summary.with_suffix("")
             record = json.loads((log_root / "validation" / "results.json").read_text())

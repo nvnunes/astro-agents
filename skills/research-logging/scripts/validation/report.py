@@ -36,11 +36,12 @@ def compose_validation_report(
     record: MechanicalGeneratedRecord,
     *,
     context: ReportContext | None = None,
+    groups: Sequence[FindingGroup] | None = None,
 ) -> str:
     """Render the generated human document for one completed result."""
 
     context = context or ReportContext.empty(Path(record.summary))
-    groups = project_findings(record, context)
+    groups = project_findings(record, context) if groups is None else tuple(groups)
     lines = [
         "# Validation",
         "",

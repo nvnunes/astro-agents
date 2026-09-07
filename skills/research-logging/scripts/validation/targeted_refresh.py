@@ -817,7 +817,7 @@ def _confirmed(invocation: Invocation, material: str, state: _RefreshState) -> b
         entry = _entry_for(invocation, state)
         support = legacy_output_projection(
             entry.state,
-            tuple(item for item in state.invocations if item.entry == entry.entry),
+            _owner_invocations(entry, state),
             project_root=state.project_root,
         )
         return confirmed_output_record(
@@ -837,7 +837,7 @@ def _support(
     entry = _entry_for(invocation, state)
     support = legacy_output_projection(
         entry.state,
-        tuple(item for item in state.invocations if item.entry == entry.entry),
+        _owner_invocations(entry, state),
         project_root=state.project_root,
     )
     path = Path(material)
@@ -872,6 +872,16 @@ def _support(
         "record_file": entry.state.path.resolve().as_posix(),
         "record_file_sha256": entry.record_digest,
     }
+
+
+def _owner_invocations(
+    entry: _EntryState, state: _RefreshState
+) -> tuple[Invocation, ...]:
+    return tuple(
+        invocation
+        for invocation in state.invocations
+        if invocation.material_owner == entry.owner
+    )
 
 
 def _observe(path: Path) -> Fingerprint:

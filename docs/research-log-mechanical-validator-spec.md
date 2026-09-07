@@ -3896,7 +3896,9 @@ state used by ordinary validation; their absence cannot abort a targeted refresh
 unless a refreshed check actually requires that missing declaration or support.
 Candidate confirmation state is matched to its canonical entry root, not to an
 individual Markdown document name, so a split entry whose documents use suffixes
-such as `e002a.md` through `e002h.md` remains one execution-state owner.
+such as `e002a.md` through `e002h.md` remains one execution-state owner. Output
+support for that owner is projected from the commands in all of its indexed
+documents rather than from any single document.
 
 The reproduction promotion transaction may also request the bounded targeted
 refresh of Evidence checks whose resolved source is a promoted artifact. It

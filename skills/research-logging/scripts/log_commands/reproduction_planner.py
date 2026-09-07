@@ -174,7 +174,7 @@ class _ReachabilityProjector:
     def resource(self, resource: InputResource, evidence_entry: _EntryState) -> None:
         if resource.origin:
             return
-        candidates = self.owners.get(resource.canonical_target, ())
+        candidates = _resource_owners(self.owners, resource.canonical_target)
         same_entry = tuple(
             value
             for value in candidates
@@ -391,6 +391,35 @@ def _owner_index(
     }
 
 
+def _resource_owners(
+    owners: Mapping[str, tuple[_Owner, ...]], target: str
+) -> tuple[_Owner, ...]:
+    """Return exact and containing-directory owners for one material path."""
+
+    found = list(owners.get(target, ()))
+    material = Path(target)
+    for root, candidates in owners.items():
+        if root == target:
+            continue
+        try:
+            relative = material.relative_to(Path(root))
+        except ValueError:
+            continue
+        if not relative.parts:
+            continue
+        found.extend(owner for owner in candidates if owner.kind == "directory")
+    return tuple(
+        sorted(
+            found,
+            key=lambda owner: (
+                owner.entry.context.id,
+                owner.execution_id,
+                owner.output,
+            ),
+        )
+    )
+
+
 def _trace_resource(
     resource: InputResource,
     owner_entry: _EntryState,
@@ -414,7 +443,7 @@ def _trace_resource(
     if resource.origin:
         _boundary(state, "origin", owner_entry, resource, artifact)
         return
-    candidates = state.owners.get(resource.canonical_target, ())
+    candidates = _resource_owners(state.owners, resource.canonical_target)
     in_scope = tuple(
         value
         for value in candidates

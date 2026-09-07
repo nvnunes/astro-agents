@@ -19,7 +19,11 @@ from log_commands.reproduction_planner import (
     plan_reproduction,
     project_reproduction_state,
 )
-from research_log_data import Fingerprint
+from research_log_data import (
+    Fingerprint,
+    InputResource,
+    observe_fingerprint,
+)
 from validation.engine import RULES_VERSION
 from validation.mechanical_results import (
     CheckScope,
@@ -262,6 +266,86 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             self.assertEqual(
                 [value["kind"] for value in complete.boundaries], ["origin"]
+            )
+
+    def test_directory_output_member_creates_execution_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            bundle = entry.root / "data" / "bundle"
+            member = bundle / "member.txt"
+            final = entry.root / "data" / "final.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            bundle.mkdir()
+            member.write_text("member\n", encoding="utf-8")
+            final.write_text("final\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "member", member, origin=False),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "final")
+            producer_script = entry.root / "scripts" / "produce.py"
+            producer_script.write_text("# produce\n", encoding="utf-8")
+            producer_recipe = ExecutionRecipe(
+                "scripts/produce.py",
+                (),
+                (),
+                ("raw",),
+                (("data/bundle", "directory"),),
+            )
+            producer = (
+                execution_id(producer_recipe),
+                PyrunExecution(
+                    False,
+                    False,
+                    None,
+                    "research-log-pyrun-runner/1",
+                    "pyrun-standard/v1",
+                    "research-log-pyrun-execution/1",
+                    producer_recipe,
+                    ObservedExecution(
+                        _fingerprint(producer_script),
+                        (("raw", _fingerprint(raw)),),
+                        (),
+                        (
+                            (
+                                "data/bundle",
+                                observe_fingerprint(
+                                    InputResource(
+                                        "bundle",
+                                        "directory",
+                                        "data/bundle",
+                                        Fingerprint(
+                                            "directory-sha256-v1", "0" * 64
+                                        ),
+                                        False,
+                                        bundle.resolve().as_posix(),
+                                    )
+                                ).fingerprint,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            consumer = fixture.execution(
+                entry, "consume", {"member": member}, {"final": final}
+            )
+            fixture.write_pyrun(entry, [producer, consumer])
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(
+                [value["execution_id"] for value in plan.executions],
+                [producer[0], consumer[0]],
+            )
+            self.assertEqual(
+                plan.executions[1]["depends_on"],
+                [f"{entry.id}:{producer[0]}"],
             )
 
     def test_entry_target_uses_generated_cross_entry_input_as_boundary(self) -> None:

@@ -753,6 +753,10 @@ reason `dependency_failed`.
 
 The planner groups cases by execution ID, schedules each execution once in a
 deterministic dependency order, and preserves artifact-level result identity.
+An input beneath a declared directory output depends on that directory's
+producer just as an exact file output does. If that producer fails, the
+consumer is skipped with `dependency_failed`; the missing regenerated member
+must not abort independent work in the run.
 Its default incremental policy selects all and only new, unconfirmed, failed,
 stale, and dependency-affected current cases required by the target. It must
 not infer a reduced plan from prior matches when a current dependency

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from log_commands.model import ActionError
 from log_commands.reproduction_comparison import (
@@ -211,6 +212,54 @@ class ArtifactComparisonTests(unittest.TestCase):
 
 
 class ExecutionComparisonTests(unittest.TestCase):
+    def test_exact_fast_path_records_definition_without_extracting_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            _configure_evidence_comparison(fixture)
+            workspace = fixture.workspace()
+            regenerated = workspace.map_source(fixture.output)
+            regenerated.parent.mkdir(parents=True)
+            regenerated.write_bytes(fixture.output.read_bytes())
+            attempt = _complete_attempt(fixture)
+
+            with mock.patch(
+                "validation.evidence_comparison.evaluate_locator"
+            ) as evaluator:
+                result = compare_execution_outputs(
+                    fixture.log, fixture.plan, workspace, attempt
+                )
+
+            artifact = result.artifacts[0]
+            self.assertEqual(artifact.outcome, "matched")
+            self.assertEqual(artifact.profile, "text")
+            self.assertIsNotNone(artifact.evidence_definition)
+            self.assertEqual(artifact.evidence, ())
+            evaluator.assert_not_called()
+
+    def test_changed_whole_artifact_can_match_through_selected_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            fixture.output.write_text("stable\nruntime 1\n", encoding="utf-8")
+            _configure_evidence_comparison(fixture)
+            workspace = fixture.workspace()
+            regenerated = workspace.map_source(fixture.output)
+            regenerated.parent.mkdir(parents=True)
+            regenerated.write_text("stable\nruntime 2\n", encoding="utf-8")
+
+            result = compare_execution_outputs(
+                fixture.log, fixture.plan, workspace, _complete_attempt(fixture)
+            )
+
+            artifact = result.artifacts[0]
+            self.assertEqual(
+                (artifact.outcome, artifact.profile), ("matched", "evidence")
+            )
+            self.assertTrue(artifact.evidence[0]["matched"])
+            recorded = load_recorded_comparisons(fixture.plan, workspace)
+            self.assertEqual(recorded[0].artifacts[0], artifact)
+
     def test_wholly_matched_output_is_retained_with_durable_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
@@ -245,9 +294,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertEqual(recorded, (result,))
 
             regenerated.write_text("altered after comparison\n")
-            with self.assertRaisesRegex(
-                ActionError, "recorded output changed"
-            ):
+            with self.assertRaisesRegex(ActionError, "recorded output changed"):
                 load_recorded_comparisons(fixture.plan, workspace)
             self.assertEqual(
                 load_recorded_comparisons(
@@ -471,6 +518,78 @@ def _execution_id(execution: object) -> str:
 
     assert isinstance(execution, PyrunExecution)
     return execution_id(execution.recipe)
+
+
+def _complete_attempt(fixture: _Fixture) -> ExecutionAttempt:
+    checkpoint = ExecutionCheckpoint(
+        "e001", fixture.identity, "complete", "checkpoint.json", "now", ()
+    )
+    return ExecutionAttempt(
+        "e001",
+        fixture.identity,
+        0,
+        False,
+        None,
+        None,
+        checkpoint,
+        (),
+        "missing-stdout",
+        "missing-stderr",
+    )
+
+
+def _configure_evidence_comparison(fixture: _Fixture) -> None:
+    selected_text = fixture.output.read_text(encoding="utf-8").splitlines()[0]
+    fixture.data["inputs"].append(
+        {
+            "comparison": {
+                "contract": "research-log-evidence-scoped-comparison/1",
+                "profile": "evidence",
+            },
+            "fingerprint": _fingerprint(fixture.output).as_dict(),
+            "kind": "file",
+            "location": "data/result.txt",
+            "name": "result",
+            "origin": False,
+        }
+    )
+    (fixture.entry_root / "data.json").write_text(
+        json.dumps(fixture.data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (fixture.entry_root / "e001.md").write_text("# Evidence\n", encoding="utf-8")
+    (fixture.entry_root / "evidence.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "document": (
+                            "entries/2026-09-06-e001-controlled-fixture/e001.md"
+                        ),
+                        "id": "stable-output",
+                        "kind": "output",
+                        "sources": [
+                            {
+                                "locator": {
+                                    "text": {
+                                        "contains": selected_text,
+                                        "occurrence": 1,
+                                    }
+                                },
+                                "source": "<result>",
+                            }
+                        ],
+                        "transformation": None,
+                    }
+                ],
+                "schema": "research-log-evidence/v3",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _add_second_output(fixture: _Fixture) -> tuple[str, Path]:

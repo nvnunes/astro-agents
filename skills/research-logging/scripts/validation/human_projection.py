@@ -513,6 +513,27 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The provenance graph exceeds its validation bound.",
         "log",
     ),
+    "reproduction.comparison.declaration_conflict": FindingPresentation(
+        "Conflicting Reproduction Comparison",
+        "The same artifact has inconsistent evidence-scoped comparison metadata.",
+        "path",
+    ),
+    "reproduction.comparison.evidence_incompatible": FindingPresentation(
+        "Incompatible Reproduction Evidence",
+        "An evidence-scoped artifact depends on evidence that cannot be extracted "
+        "for reproduction.",
+        "record",
+    ),
+    "reproduction.comparison.evidence_missing": FindingPresentation(
+        "Reproduction Evidence Missing",
+        "An evidence-scoped artifact has no applicable evidence records.",
+        "path",
+    ),
+    "reproduction.comparison.tolerance_incompatible": FindingPresentation(
+        "Incompatible Reproduction Tolerance",
+        "A reproduction tolerance does not apply to a numeric selected value.",
+        "record",
+    ),
     "pyrun.output.identity_invalid": FindingPresentation(
         "Output Identity Mismatch",
         "The current output bytes or kind do not match the recorded identity.",

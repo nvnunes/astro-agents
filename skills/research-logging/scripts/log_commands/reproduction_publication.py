@@ -247,6 +247,8 @@ def _comparison_record(
             comparison.profile,
             _fingerprint(comparison.expected, "expected"),
             _fingerprint(comparison.regenerated, "regenerated"),
+            comparison.evidence_definition,
+            comparison.evidence,
         )
     except (DataContractError, ValueError) as error:
         raise ActionError("reproduction.publication.invalid", str(error)) from error

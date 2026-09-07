@@ -81,6 +81,7 @@ def add_or_update_common(
                 or arguments.where
                 or arguments.as_percentage
                 or arguments.scale is not None
+                or arguments.reproduction_tolerance is not None
             ):
                 raise ActionError(
                     "evidence.common.unsupported",
@@ -90,10 +91,13 @@ def add_or_update_common(
                 entry_root=entry.root,
                 log_root=entry.log.root,
                 record_id=arguments.record_id,
-                raw_sources=[
-                    {"source": _token(arguments.source), "locator": None},
-                ],
-                transformation=None,
+                definition=_candidate_definition(
+                    sources=[
+                        {"source": _token(arguments.source), "locator": None},
+                    ],
+                    transformation=None,
+                    tolerance=arguments.reproduction_tolerance,
+                ),
             )
             return apply_candidate_locked(
                 entry,
@@ -108,10 +112,13 @@ def add_or_update_common(
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=arguments.record_id,
-            raw_sources=[
-                {"source": _token(arguments.source), "locator": locator},
-            ],
-            transformation=transformation,
+            definition=_candidate_definition(
+                sources=[
+                    {"source": _token(arguments.source), "locator": locator},
+                ],
+                transformation=transformation,
+                tolerance=arguments.reproduction_tolerance,
+            ),
         )
         return apply_candidate_locked(
             entry,
@@ -181,8 +188,15 @@ def rename(
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=new_id,
-            raw_sources=[source.as_dict() for source in old.sources],
-            transformation=old.transformation,
+            definition=_candidate_definition(
+                sources=[source.as_dict() for source in old.sources],
+                transformation=old.transformation,
+                tolerance=(
+                    None
+                    if old.reproduction_tolerance is None
+                    else old.reproduction_tolerance.absolute
+                ),
+            ),
         )
         if (
             evaluated.presentation.document != old.document
@@ -190,7 +204,12 @@ def rename(
         ):
             raise ActionError("evidence.rename.presentation_changed", new_id)
         existing[new_id] = EvidenceRecord(
-            new_id, old.document, old.kind, old.sources, old.transformation
+            new_id,
+            old.document,
+            old.kind,
+            old.sources,
+            old.transformation,
+            old.reproduction_tolerance,
         )
         built = _build(entry, tuple(existing.values()))
         if not dry_run:
@@ -571,6 +590,18 @@ def _typed_value(kind: str, value: str) -> object:
 
 def _token(source: str) -> str:
     return source if source.startswith("<") else f"<{source}>"
+
+
+def _candidate_definition(
+    *, sources: object, transformation: object, tolerance: str | None
+) -> Mapping[str, object]:
+    definition: dict[str, object] = {
+        "sources": sources,
+        "transformation": transformation,
+    }
+    if tolerance is not None:
+        definition["reproduction_tolerance"] = {"absolute": tolerance}
+    return definition
 
 
 def load_current(entry: EntryContext) -> EvidenceFile | None:

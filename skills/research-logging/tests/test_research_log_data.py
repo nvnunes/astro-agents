@@ -82,6 +82,69 @@ def git_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class DataFileTests(unittest.TestCase):
+    def test_generated_file_accepts_explicit_evidence_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry, _ = data_fixture(Path(directory))
+            path = entry / "data.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            item = payload["inputs"][0]
+            item["origin"] = False
+            item["comparison"] = {
+                "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
+                "profile": "evidence",
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            loaded = DATA.load_data_file(path, entry_root=entry)
+
+            self.assertEqual(loaded.inputs[0].comparison.profile, "evidence")
+            self.assertEqual(
+                json.loads(loaded.canonical_json())["inputs"][0]["comparison"],
+                item["comparison"],
+            )
+
+    def test_evidence_comparison_rejects_origins_directories_and_unknown_forms(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry, _ = data_fixture(Path(directory))
+            path = entry / "data.json"
+            base = json.loads(path.read_text(encoding="utf-8"))
+            comparison = {
+                "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
+                "profile": "evidence",
+            }
+            replacements = (
+                {"comparison": None, "origin": False},
+                {"comparison": comparison},
+                {
+                    "comparison": comparison,
+                    "kind": "directory",
+                    "location": "data",
+                    "fingerprint": {
+                        "algorithm": "directory-sha256-v1",
+                        "digest": "0" * 64,
+                    },
+                    "origin": False,
+                },
+                {
+                    "comparison": {
+                        "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
+                        "profile": "approximate",
+                    },
+                    "origin": False,
+                },
+            )
+            for replacement in replacements:
+                with self.subTest(replacement=replacement):
+                    payload = json.loads(json.dumps(base))
+                    payload["inputs"][0].update(replacement)
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        DATA.DataContractError, "data.declaration.invalid"
+                    ):
+                        DATA.load_data_file(path, entry_root=entry)
+
     def test_input_token_parts_enforces_complete_member_syntax(self) -> None:
         self.assertEqual(
             DATA.input_token_parts("<results>"), ("results", None, None)

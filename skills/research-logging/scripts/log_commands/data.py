@@ -7,8 +7,10 @@ from glob import has_magic
 from pathlib import Path
 
 from research_log_data import (
+    EVIDENCE_COMPARISON_CONTRACT,
     DataFile,
     InputResource,
+    ReproductionComparison,
     build_git_repository_input,
     build_identity_directory,
     build_identity_pattern_directory,
@@ -74,6 +76,11 @@ def list_inputs(entry: EntryContext) -> ActionResult:
                 "classification": "origin" if item.origin else "generated",
                 "kind": item.kind,
                 "name": item.name,
+                **(
+                    {"reproduction_comparison": item.comparison.profile}
+                    if item.comparison is not None
+                    else {}
+                ),
                 "target": item.location,
             }
             for item in sorted(inputs, key=lambda value: value.name)
@@ -146,6 +153,7 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         and arguments.identity is None
         and not arguments.byte_complete
         and arguments.commit is None
+        and arguments.reproduction_comparison is None
     ):
         raise ActionError("data.update.empty", "update requires an explicit change")
     with entry_lock(entry):
@@ -168,20 +176,24 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
                 commit,
             ),
         )
+        comparison = existing.comparison
+        if arguments.reproduction_comparison == "evidence":
+            comparison = ReproductionComparison(
+                EVIDENCE_COMPARISON_CONTRACT, "evidence"
+            )
+        elif arguments.reproduction_comparison == "exact":
+            comparison = None
+        candidate = replace(candidate, comparison=comparison)
         built = _build(entry, _replace(current, existing.name, candidate))
         _require_boundary(entry, built, candidate)
         if candidate == existing:
             return _result("update", "unchanged", False)
         if not arguments.dry_run:
             remove_or_write(built.path, built.canonical_json())
-        return _result(
-            "update", "dry-run" if arguments.dry_run else "changed", True
-        )
+        return _result("update", "dry-run" if arguments.dry_run else "changed", True)
 
 
-def refresh(
-    entry: EntryContext, name: str, *, dry_run: bool
-) -> ActionResult:
+def refresh(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
     """Refresh one intentional byte identity without changing its semantics."""
 
     with entry_lock(entry):
@@ -428,6 +440,7 @@ def _renamed_evidence(
                 record.kind,
                 sources,
                 record.transformation,
+                record.reproduction_tolerance,
             )
         )
     return evidence_file_from_records(

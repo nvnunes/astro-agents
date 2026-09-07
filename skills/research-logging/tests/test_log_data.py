@@ -1253,6 +1253,36 @@ class LogDataTests(unittest.TestCase):
                 "--generated",
             )
             self.assertEqual(to_generated.returncode, 0, to_generated.stderr)
+            evidence_comparison = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "generated",
+                "--reproduction-comparison",
+                "evidence",
+            )
+            self.assertEqual(
+                evidence_comparison.returncode, 0, evidence_comparison.stderr
+            )
+            item = next(
+                value for value in data_inputs(entry) if value["name"] == "generated"
+            )
+            self.assertEqual(item["comparison"]["profile"], "evidence")
+            exact_comparison = run(
+                entry,
+                "data",
+                "update",
+                *common,
+                "generated",
+                "--reproduction-comparison",
+                "exact",
+            )
+            self.assertEqual(exact_comparison.returncode, 0, exact_comparison.stderr)
+            item = next(
+                value for value in data_inputs(entry) if value["name"] == "generated"
+            )
+            self.assertNotIn("comparison", item)
             before = (entry / "data.json").read_bytes()
             hidden = run(
                 entry,

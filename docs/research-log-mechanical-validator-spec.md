@@ -2022,8 +2022,11 @@ An entry-root presentation record has exactly:
 }
 ```
 
-Required keys are `id`, `document`, `kind`, `sources`, and `transformation`;
-unknown keys fail. `kind` is `artifact`, `statistic`, `table`, or `output`.
+Required keys are `id`, `document`, `kind`, `sources`, and `transformation`.
+The optional `reproduction_tolerance` key has the exact shape
+`{"absolute":"<canonical positive finite decimal>"}` and is allowed only on a
+non-artifact record. Unknown keys fail. `kind` is `artifact`, `statistic`,
+`table`, or `output`.
 `sources` is a non-empty ordered array of exact evidence source objects.
 `transformation` is `null` for identity or the JSON object portion of a
 transformation without a `v2:` prefix. Record kinds are entry
@@ -2547,8 +2550,8 @@ JSON uses the UTF-8, duplicate-key, finite-number, and trailing-content rules
 of `evidence.json`. Array order has no meaning; canonicalization sorts by
 `name`. One file is at most 8 MiB and contains at most 10,000 inputs.
 
-Every item has exactly `name`, `kind`, `location`, `fingerprint`, and the
-Boolean `origin`:
+Every item requires `name`, `kind`, `location`, `fingerprint`, and the Boolean
+`origin`:
 
 ```json
 {
@@ -2562,6 +2565,25 @@ Boolean `origin`:
   "origin": true
 }
 ```
+
+A generated file may additionally select the named evidence-scoped
+reproduction comparison:
+
+```json
+"comparison": {
+  "contract": "research-log-evidence-scoped-comparison/1",
+  "profile": "evidence"
+}
+```
+
+No other comparison form is accepted. The optional declaration is invalid on
+an origin, directory, or Git repository. It requires at least one applicable
+non-artifact evidence record selecting the same canonical resource. Every such
+record must have compatible bounded locator and transformation definitions;
+an evidence record with `reproduction_tolerance` must select a numeric value.
+Missing, ambiguous, inconsistent, or incompatible declarations are Structure
+failures before reproduction. The tolerance affects only retained-versus-
+regenerated reproduction comparison and never presentation validation.
 
 `name` is at most 96 ASCII characters and matches
 `[A-Za-z0-9][A-Za-z0-9_-]*`. `log`, `project`, `theme`, and names matching
@@ -2587,7 +2609,8 @@ not be declared twice in one file.
 
 Separate entries may declare the same material when each consumes it. Within
 one maintained log, all file and directory declarations of one target must
-agree on `kind`, `fingerprint`, and `origin`. Git repository declarations agree
+agree on `kind`, `fingerprint`, `origin`, and comparison declaration. Git
+repository declarations agree
 when their commit material identity agrees; locator paths may differ. Conflict
 fails; validation does not choose one declaration. The conflicting
 declarations are unavailable to dependent command and graph evaluation; other

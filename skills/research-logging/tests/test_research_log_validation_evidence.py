@@ -82,6 +82,59 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
+    def test_reproduction_tolerance_is_optional_and_numeric(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
+            path = entry_root / "evidence.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["records"][0]["reproduction_tolerance"] = {
+                "absolute": "0.01"
+            }
+            write(path, json.dumps(payload) + "\n")
+
+            evidence = EVIDENCE.load_evidence_file(
+                path, log_root=log_root, entry_root=entry_root
+            )
+
+            self.assertEqual(
+                evidence.records[0].reproduction_tolerance.absolute, "0.01"
+            )
+
+            for value in (None, "0", "-1", "+1", "NaN", 1):
+                with self.subTest(value=value):
+                    payload["records"][0]["reproduction_tolerance"] = (
+                        None if value is None else {"absolute": value}
+                    )
+                    write(path, json.dumps(payload) + "\n")
+                    with self.assertRaisesRegex(
+                        EVIDENCE.EvidenceContractError,
+                        "evidence.declaration.invalid",
+                    ):
+                        EVIDENCE.load_evidence_file(
+                            path, log_root=log_root, entry_root=entry_root
+                        )
+
+    def test_artifact_record_rejects_reproduction_tolerance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root, entry_root, _ = evidence_fixture(Path(directory))
+            fields = {
+                "document": "entries/2026-08-28-e001-study/e001.md",
+                "id": "result-map",
+                "kind": "artifact",
+                "sources": [{"source": "<result-map>", "locator": None}],
+                "transformation": None,
+                "reproduction_tolerance": {"absolute": "0.1"},
+            }
+            with self.assertRaisesRegex(
+                EVIDENCE.EvidenceContractError, "evidence.declaration.invalid"
+            ):
+                EVIDENCE.evidence_record_from_fields(
+                    subject="artifact",
+                    log_root=log_root,
+                    entry_root=entry_root,
+                    fields=fields,
+                )
+
     def test_artifact_record_requires_one_whole_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = evidence_fixture(Path(directory))

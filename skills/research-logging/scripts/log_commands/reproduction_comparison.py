@@ -9,16 +9,26 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Sequence, cast
 
 from research_log_data import (
     Fingerprint,
     compose_directory_fingerprint,
+    load_data_file,
     observe_directory_tree,
     observe_file_content,
     parse_fingerprint,
+)
+from validation.errors import MechanicalContractError
+from validation.evidence import load_evidence_file
+from validation.evidence_comparison import (
+    EVIDENCE_COMPARISON_RESULT_CONTRACT,
+    EvidenceComparisonDefinition,
+    compare_evidence_scoped,
+    definition_for_target,
+    evidence_comparison_definitions,
 )
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
@@ -90,6 +100,7 @@ _FLOAT_RE = re.compile(
     r"[0-9]+[eE][+-]?[0-9]+|inf(?:inity)?|nan)\Z",
     re.IGNORECASE,
 )
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class _ComparisonFailure(Exception):
@@ -110,9 +121,11 @@ class ArtifactComparison:
     profile: str | None
     expected: Mapping[str, object] | None
     regenerated: Mapping[str, object] | None
+    evidence_definition: str | None = None
+    evidence: tuple[Mapping[str, object], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
-        comparison = None
+        comparison: dict[str, object] | None = None
         if self.profile is not None:
             comparison = {
                 "contract": COMPARISON_CONTRACT,
@@ -124,6 +137,12 @@ class ArtifactComparison:
                     else None
                 ),
             }
+            if self.evidence_definition is not None:
+                comparison["evidence_contract"] = (
+                    EVIDENCE_COMPARISON_RESULT_CONTRACT
+                )
+                comparison["evidence_definition"] = self.evidence_definition
+                comparison["evidence"] = [dict(item) for item in self.evidence]
         return {
             "artifact": self.artifact,
             "comparison": comparison,
@@ -226,6 +245,21 @@ def compare_execution_outputs(
             "reproduction.comparison.execution_missing",
             f"execution is no longer present: {attempt.entry}:{attempt.execution_id}",
         )
+    data_path = source_entry.root / "data.json"
+    evidence_path = source_entry.root / "evidence.json"
+    definitions: tuple[EvidenceComparisonDefinition, ...] = ()
+    if data_path.is_file() and not data_path.is_symlink():
+        data = load_data_file(data_path, entry_root=source_entry.root)
+        evidence = (
+            load_evidence_file(
+                evidence_path,
+                log_root=log.root,
+                entry_root=source_entry.root,
+            )
+            if evidence_path.is_file() and not evidence_path.is_symlink()
+            else None
+        )
+        definitions = evidence_comparison_definitions(data, evidence)
     results: list[ArtifactComparison] = []
     for artifact, _kind in execution.recipe.outputs:
         expected = output_target_path(
@@ -234,51 +268,14 @@ def compare_execution_outputs(
             project_root=workspace.source_project,
         )
         regenerated = workspace.map_source(expected)
-        if attempt.checkpoint.state != "complete":
-            results.append(
-                ArtifactComparison(
-                    artifact,
-                    "failed",
-                    attempt.failure_code or "generation_failed",
-                    None,
-                    _observed_fingerprint(expected),
-                    _observed_fingerprint(regenerated),
-                )
-            )
-            continue
-        if not expected.exists() or expected.is_symlink():
-            results.append(
-                ArtifactComparison(
-                    artifact,
-                    "comparison_failed",
-                    "baseline_unavailable",
-                    None,
-                    _observed_fingerprint(expected),
-                    _observed_fingerprint(regenerated),
-                )
-            )
-            continue
-        if not regenerated.exists() or regenerated.is_symlink():
-            results.append(
-                ArtifactComparison(
-                    artifact,
-                    "failed",
-                    "output_missing",
-                    None,
-                    _observed_fingerprint(expected),
-                    _observed_fingerprint(regenerated),
-                )
-            )
-            continue
-        compared = compare_artifacts(expected, regenerated)
+        definition = definition_for_target(definitions, expected)
         results.append(
-            ArtifactComparison(
+            _compare_execution_output(
                 artifact,
-                compared.outcome,
-                compared.reason,
-                compared.profile,
-                compared.expected,
-                compared.regenerated,
+                expected=expected,
+                regenerated=regenerated,
+                attempt=attempt,
+                definition=definition,
             )
         )
     complete = attempt.checkpoint.state == "complete"
@@ -298,6 +295,93 @@ def compare_execution_outputs(
         tuple(results),
         staged,
         complete,
+    )
+
+
+def _compare_execution_output(
+    artifact: str,
+    *,
+    expected: Path,
+    regenerated: Path,
+    attempt: ExecutionAttempt,
+    definition: EvidenceComparisonDefinition | None,
+) -> ArtifactComparison:
+    if attempt.checkpoint.state != "complete":
+        return ArtifactComparison(
+            artifact,
+            "failed",
+            attempt.failure_code or "generation_failed",
+            None,
+            _observed_fingerprint(expected),
+            _observed_fingerprint(regenerated),
+        )
+    if not expected.exists() or expected.is_symlink():
+        return ArtifactComparison(
+            artifact,
+            "comparison_failed",
+            "baseline_unavailable",
+            None,
+            _observed_fingerprint(expected),
+            _observed_fingerprint(regenerated),
+        )
+    if not regenerated.exists() or regenerated.is_symlink():
+        return ArtifactComparison(
+            artifact,
+            "failed",
+            "output_missing",
+            None,
+            _observed_fingerprint(expected),
+            _observed_fingerprint(regenerated),
+        )
+    compared = compare_artifacts(expected, regenerated)
+    if definition is None:
+        return replace(compared, artifact=artifact)
+    if compared.outcome != "changed":
+        return ArtifactComparison(
+            artifact,
+            compared.outcome,
+            compared.reason,
+            compared.profile,
+            compared.expected,
+            compared.regenerated,
+            definition.identity,
+        )
+    return _compare_evidence_change(
+        artifact,
+        regenerated=regenerated,
+        compared=compared,
+        definition=definition,
+    )
+
+
+def _compare_evidence_change(
+    artifact: str,
+    *,
+    regenerated: Path,
+    compared: ArtifactComparison,
+    definition: EvidenceComparisonDefinition,
+) -> ArtifactComparison:
+    try:
+        evidence_result = compare_evidence_scoped(definition, regenerated=regenerated)
+    except MechanicalContractError:
+        return ArtifactComparison(
+            artifact,
+            "comparison_failed",
+            "evidence_comparison_failed",
+            "evidence",
+            compared.expected,
+            compared.regenerated,
+            definition.identity,
+        )
+    return ArtifactComparison(
+        artifact,
+        "matched" if evidence_result.matched else "changed",
+        None if evidence_result.matched else "content_changed",
+        "evidence",
+        compared.expected,
+        compared.regenerated,
+        definition.identity,
+        evidence_result.records,
     )
 
 
@@ -1040,6 +1124,15 @@ def _record_execution(request: _StagingRequest) -> str:
             {
                 "artifact": artifact,
                 "available": available,
+                **(
+                    {
+                        "evidence": [dict(item) for item in result.evidence],
+                        "evidence_contract": EVIDENCE_COMPARISON_RESULT_CONTRACT,
+                        "evidence_definition": result.evidence_definition,
+                    }
+                    if result.evidence_definition is not None
+                    else {}
+                ),
                 "expected": result.expected,
                 "kind": kind,
                 "outcome": result.outcome,
@@ -1229,7 +1322,12 @@ def _decode_recorded_artifact(
         "regenerated",
         "staged",
     }
-    if not isinstance(value, Mapping) or set(value) != fields:
+    evidence_fields = {"evidence", "evidence_contract", "evidence_definition"}
+    if (
+        not isinstance(value, Mapping)
+        or not fields <= set(value) <= fields | evidence_fields
+        or set(value) & evidence_fields not in (set(), evidence_fields)
+    ):
         raise ActionError("reproduction.staging.invalid", "output is invalid")
     artifact = value.get("artifact")
     outcome = value.get("outcome")
@@ -1237,6 +1335,8 @@ def _decode_recorded_artifact(
     reason = value.get("reason")
     available = value.get("available")
     staged = value.get("staged")
+    evidence = value.get("evidence", [])
+    evidence_definition = value.get("evidence_definition")
     if (
         not isinstance(artifact, str)
         or value.get("kind") not in {"file", "directory"}
@@ -1250,6 +1350,15 @@ def _decode_recorded_artifact(
         or staged is not None
         and not isinstance(staged, str)
         or available != (staged is not None)
+        or not isinstance(evidence, list)
+        or not all(isinstance(item, Mapping) for item in evidence)
+        or evidence_definition is not None
+        and (
+            not isinstance(evidence_definition, str)
+            or _SHA256_RE.fullmatch(evidence_definition) is None
+            or value.get("evidence_contract")
+            != EVIDENCE_COMPARISON_RESULT_CONTRACT
+        )
     ):
         raise ActionError("reproduction.staging.invalid", "output is invalid")
     current_path = None
@@ -1271,6 +1380,8 @@ def _decode_recorded_artifact(
         profile,
         expected,
         regenerated,
+        evidence_definition,
+        tuple(dict(item) for item in cast(list[Mapping[str, object]], evidence)),
     )
 
 

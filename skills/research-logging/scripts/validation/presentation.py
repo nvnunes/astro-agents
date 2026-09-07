@@ -93,8 +93,7 @@ def evaluate_candidate_record(
     entry_root: Path,
     log_root: Path,
     record_id: str,
-    raw_sources: object,
-    transformation: object,
+    definition: Mapping[str, object],
 ) -> CandidateEvaluation:
     """Decode and completely compare one candidate evidence record."""
 
@@ -107,8 +106,13 @@ def evaluate_candidate_record(
             "document": presentation.document,
             "id": record_id,
             "kind": presentation.kind,
-            "sources": raw_sources,
-            "transformation": transformation,
+            "sources": definition["sources"],
+            "transformation": definition["transformation"],
+            **(
+                {"reproduction_tolerance": definition["reproduction_tolerance"]}
+                if "reproduction_tolerance" in definition
+                else {}
+            ),
         },
     )
     data = load_data_file(entry_root / "data.json", entry_root=entry_root)

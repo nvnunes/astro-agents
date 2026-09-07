@@ -58,6 +58,12 @@ from .evidence import (
     load_evidence_file,
     resolve_summary_references,
 )
+from .evidence_comparison import (
+    EvidenceComparisonError,
+    evidence_comparison_definition,
+    validate_reproduction_tolerances,
+    validate_tolerant_selection,
+)
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .json_codec import canonical_json
@@ -137,7 +143,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/end-to-end-provenance-3"
+RULES_VERSION = "research-log-mechanical/evidence-scoped-reproduction-1"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -1277,6 +1283,7 @@ def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
 def _evaluate_entries(state: _ScanState) -> None:
     _record_unowned_evidence(state)
     for entry in state.entries:
+        _evaluate_reproduction_comparisons(entry, state)
         try:
             presentations = _entry_presentations(entry, state)
             state.presentation_count += len(presentations)
@@ -1321,9 +1328,43 @@ def _evaluate_entries(state: _ScanState) -> None:
             state.checks.append(_error_check(identity, scope, error))
 
 
-def _entry_presentations(
-    entry: _Entry, state: _ScanState
-) -> tuple[PresentedItem, ...]:
+def _evaluate_reproduction_comparisons(entry: _Entry, state: _ScanState) -> None:
+    """Validate authored evidence-scoped comparison declarations once."""
+
+    if entry.data_file is None or entry.data_failure is not None:
+        return
+    if entry.evidence_failure is not None:
+        return
+    try:
+        validate_reproduction_tolerances(entry.data_file, entry.evidence_file)
+    except MechanicalContractError as error:
+        state.checks.append(
+            _error_check(
+                f"conformance:reproduction-tolerance:{entry.id}:{error.subject}",
+                CheckScope.CONFORMANCE,
+                error,
+            )
+        )
+    for resource in entry.data_file.inputs:
+        if resource.comparison is None:
+            continue
+        try:
+            evidence_comparison_definition(
+                resource,
+                data=entry.data_file,
+                evidence=entry.evidence_file,
+            )
+        except MechanicalContractError as error:
+            state.checks.append(
+                _error_check(
+                    f"conformance:reproduction-comparison:{entry.id}:{resource.name}",
+                    CheckScope.CONFORMANCE,
+                    error,
+                )
+            )
+
+
+def _entry_presentations(entry: _Entry, state: _ScanState) -> tuple[PresentedItem, ...]:
     presented: list[PresentedItem] = []
     document = entry.document
     text = _read_text(document, state)
@@ -1523,6 +1564,11 @@ def _evaluate_record(
             _selection(source, resolved, state)
             for source, resolved in zip(record.sources, materials)
         ]
+        validate_tolerant_selection(
+            record,
+            tuple(material.resource for material in materials),
+            selections,
+        )
         transformed = _transform_and_compare(record, selections, item, state)
         evidence = _pass_check(
             identity,
@@ -1537,6 +1583,24 @@ def _evaluate_record(
             + [transformed.dependency_projection]
         )
     except MechanicalContractError as error:
+        if any(material.resource.comparison is not None for material in materials):
+            comparison_error = (
+                error
+                if isinstance(error, EvidenceComparisonError)
+                else EvidenceComparisonError(
+                    "reproduction.comparison.evidence_incompatible",
+                    record.id,
+                    {"code": error.code, "subject": error.subject},
+                    "Evidence-Scoped Reproduction Comparison",
+                )
+            )
+            state.checks.append(
+                _error_check(
+                    f"conformance:reproduction-comparison:{entry.id}:{record.id}",
+                    CheckScope.CONFORMANCE,
+                    comparison_error,
+                )
+            )
         scope = _error_scope(error, CheckScope.EVIDENCE)
         evidence = _error_check(identity, scope, error)
         canonical = None
@@ -2890,6 +2954,7 @@ def _error_scope(error: MechanicalContractError, default: CheckScope) -> CheckSc
         "locator.syntax.",
         "locator.version.",
         "presentation.marker.",
+        "reproduction.comparison.",
         "transformation.input.",
         "transformation.nonfinite_",
         "transformation.output.",

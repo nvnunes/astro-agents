@@ -30,6 +30,8 @@ from validation.filesystem import (
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
 DATA_SCHEMA = "research-log-data/v3"
+EVIDENCE_COMPARISON_CONTRACT = "research-log-evidence-scoped-comparison/1"
+_MISSING = object()
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
 DIRECTORY_OBSERVATION_SCHEMA = "research-log-directory-observation/1"
 IDENTITY_FILES_FINGERPRINT_SCHEMA = "research-log-identity-files-fingerprint/1"
@@ -63,6 +65,19 @@ GIT_COMMIT_ALGORITHM = "git-commit-sha1-v1"
 
 class DataContractError(MechanicalContractError):
     """One precise data-registry contract failure."""
+
+
+@dataclass(frozen=True)
+class ReproductionComparison:
+    """One explicit artifact-level reproduction comparison policy."""
+
+    contract: str
+    profile: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the exact authored comparison declaration."""
+
+        return {"contract": self.contract, "profile": self.profile}
 
 
 @dataclass(frozen=True)
@@ -132,6 +147,7 @@ class InputResource:
     fingerprint: Fingerprint
     origin: bool
     canonical_target: str
+    comparison: ReproductionComparison | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return authored canonical fields without resolved observations."""
@@ -143,6 +159,8 @@ class InputResource:
             "name": self.name,
             "origin": self.origin,
         }
+        if self.comparison is not None:
+            value["comparison"] = self.comparison.as_dict()
         return value
 
     @property
@@ -1187,7 +1205,7 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
         _invalid(subject, {"type": type(value).__name__})
     value = cast(Mapping[str, Any], value)
     required = {"name", "kind", "location", "fingerprint", "origin"}
-    if set(value) != required:
+    if not required <= set(value) <= required | {"comparison"}:
         _invalid(subject, {"fields": sorted(value)})
     name = _name(value.get("name"), subject)
     kind = value.get("kind")
@@ -1200,6 +1218,19 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
         _invalid(subject, {"origin": origin})
     if kind == "git-repository" and not origin:
         _invalid(subject, {"kind": kind, "origin": origin})
+    comparison = _decode_reproduction_comparison(
+        value["comparison"] if "comparison" in value else _MISSING,
+        subject,
+    )
+    if comparison is not None and (kind != "file" or origin):
+        _invalid(
+            subject,
+            {
+                "comparison": comparison.as_dict(),
+                "kind": kind,
+                "origin": origin,
+            },
+        )
     return InputResource(
         name=name,
         kind=kind,
@@ -1207,7 +1238,23 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
         fingerprint=fingerprint,
         origin=origin,
         canonical_target=target,
+        comparison=comparison,
     )
+
+
+def _decode_reproduction_comparison(
+    value: object, subject: str
+) -> ReproductionComparison | None:
+    if value is _MISSING:
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"contract", "profile"}
+        or value.get("contract") != EVIDENCE_COMPARISON_CONTRACT
+        or value.get("profile") != "evidence"
+    ):
+        _invalid(subject, {"comparison": value})
+    return ReproductionComparison(EVIDENCE_COMPARISON_CONTRACT, "evidence")
 
 
 def _name(value: object, subject: str) -> str:
@@ -1727,6 +1774,9 @@ def _consistency_projection(item: InputResource) -> str:
             "origin": item.origin,
             "fingerprint": item.fingerprint.as_dict(),
             "kind": item.kind,
+            "comparison": (
+                item.comparison.as_dict() if item.comparison is not None else None
+            ),
         }
     )
 

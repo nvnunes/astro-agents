@@ -6,6 +6,7 @@ import hashlib
 import re
 import urllib.parse
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
@@ -17,6 +18,8 @@ from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import V2JsonError, canonical_json, decode_json
 
 EVIDENCE_SCHEMA = "research-log-evidence/v3"
+REPRODUCTION_TOLERANCE_FIELD = "reproduction_tolerance"
+_MISSING = object()
 MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024
 MAX_RECORDS_PER_FILE = 1000
 MAX_RECORDS_PER_LOG = 10_000
@@ -106,6 +109,18 @@ class EvidenceSource:
 
 
 @dataclass(frozen=True)
+class ReproductionTolerance:
+    """One exact absolute tolerance for a reproduced evidence value."""
+
+    absolute: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the canonical authored tolerance declaration."""
+
+        return {"absolute": self.absolute}
+
+
+@dataclass(frozen=True)
 class PresentationRecord:
     """One entry-owned presentation declaration."""
 
@@ -114,11 +129,12 @@ class PresentationRecord:
     kind: str
     sources: tuple[EvidenceSource, ...]
     transformation: Mapping[str, Any] | None
+    reproduction_tolerance: ReproductionTolerance | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the canonical record object."""
 
-        return {
+        result: dict[str, Any] = {
             "document": self.document,
             "id": self.id,
             "kind": self.kind,
@@ -127,6 +143,11 @@ class PresentationRecord:
                 dict(self.transformation) if self.transformation is not None else None
             ),
         }
+        if self.reproduction_tolerance is not None:
+            result[REPRODUCTION_TOLERANCE_FIELD] = (
+                self.reproduction_tolerance.as_dict()
+            )
+        return result
 
 
 EvidenceRecord = PresentationRecord
@@ -898,8 +919,10 @@ def _decode_record(
     value = cast(Mapping[str, Any], value)
     record_id = _record_id(value.get("id"), subject)
     kind = value.get("kind")
-    expected = {"document", "id", "kind", "sources", "transformation"}
-    if set(value) != expected or kind not in {
+    required = {"document", "id", "kind", "sources", "transformation"}
+    if not required <= set(value) <= required | {
+        REPRODUCTION_TOLERANCE_FIELD
+    } or kind not in {
         "artifact",
         "statistic",
         "table",
@@ -929,13 +952,43 @@ def _decode_record(
         not isinstance(transformation, Mapping) or not transformation
     ):
         _invalid(subject, {"transformation": transformation})
+    tolerance = _decode_reproduction_tolerance(
+        (
+            value[REPRODUCTION_TOLERANCE_FIELD]
+            if REPRODUCTION_TOLERANCE_FIELD in value
+            else _MISSING
+        ),
+        subject,
+    )
+    if kind == "artifact" and tolerance is not None:
+        _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: tolerance.as_dict()})
     return PresentationRecord(
         id=record_id,
         document=document,
         kind=kind,
         sources=decoded_sources,
         transformation=(dict(transformation) if transformation is not None else None),
+        reproduction_tolerance=tolerance,
     )
+
+
+def _decode_reproduction_tolerance(
+    value: object, subject: str
+) -> ReproductionTolerance | None:
+    if value is _MISSING:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"absolute"}:
+        _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: value})
+    absolute = value.get("absolute")
+    if not isinstance(absolute, str) or not absolute or absolute != absolute.strip():
+        _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: value})
+    try:
+        parsed = Decimal(absolute)
+    except InvalidOperation:
+        _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: value})
+    if not parsed.is_finite() or parsed <= 0 or str(parsed) != absolute:
+        _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: value})
+    return ReproductionTolerance(absolute)
 
 
 def _decode_source(

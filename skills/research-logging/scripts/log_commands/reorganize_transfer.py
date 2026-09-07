@@ -23,6 +23,7 @@ from validation.evidence import (
     EvidenceFile,
     EvidenceRecord,
     EvidenceSource,
+    ReproductionTolerance,
     evidence_file_from_records,
     index_summary_references,
     load_evidence_file,
@@ -829,12 +830,15 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
     fields = cast(Mapping[str, Any], value)
     sources = fields.get("sources")
-    if set(fields) != {
+    required = {
         "document",
         "id",
         "kind",
         "sources",
         "transformation",
+    }
+    if not required <= set(fields) <= required | {
+        "reproduction_tolerance"
     } or not isinstance(sources, list):
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
     decoded_sources: list[EvidenceSource] = []
@@ -860,12 +864,24 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
     transformation = fields.get("transformation")
     if transformation is not None and not isinstance(transformation, Mapping):
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
+    raw_tolerance = fields.get("reproduction_tolerance")
+    if raw_tolerance is not None and (
+        not isinstance(raw_tolerance, Mapping)
+        or set(raw_tolerance) != {"absolute"}
+        or not isinstance(raw_tolerance.get("absolute"), str)
+    ):
+        raise ActionError("reorganize.transfer.schema_invalid", str(path))
     return EvidenceRecord(
         fields["id"],
         fields["document"],
         fields["kind"],
         tuple(decoded_sources),
         dict(transformation) if transformation is not None else None,
+        (
+            ReproductionTolerance(raw_tolerance["absolute"])
+            if isinstance(raw_tolerance, Mapping)
+            else None
+        ),
     )
 
 

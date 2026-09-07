@@ -224,6 +224,10 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
         transform.add_argument(
             "--scale", help="apply one researcher-authorized numeric scale"
         )
+        action.add_argument(
+            "--reproduction-tolerance",
+            help="absolute numeric tolerance for evidence-scoped reproduction",
+        )
     rename = actions.add_parser(
         "rename", help="Rename one evidence ID after every Markdown edit"
     )
@@ -249,6 +253,7 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
                 or args.where
                 or args.as_percentage
                 or args.scale is not None
+                or args.reproduction_tolerance is not None
             ):
                 raise ActionError(
                     "evidence.definition.arguments_conflict",
@@ -281,6 +286,7 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
                 where=tuple(tuple(value) for value in args.where),
                 as_percentage=args.as_percentage,
                 scale=args.scale,
+                reproduction_tolerance=args.reproduction_tolerance,
                 dry_run=args.dry_run,
             ),
         )
@@ -296,71 +302,8 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
 def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log data")
     actions = parser.add_subparsers(dest="action", required=True)
-    for name in ("add-origin", "add-generated"):
-        description = (
-            "Register one producerless material input and stop Provenance"
-            if name == "add-origin"
-            else "Register one current confirmed same-log generated input"
-        )
-        action = actions.add_parser(name, help=description, description=description)
-        _entry_arguments(action)
-        _mutation_argument(action)
-        action.add_argument("name", help="stable entry-scoped input name")
-        action.add_argument(
-            "target",
-            help="existing absolute or entry-root-relative file or directory",
-        )
-        if name == "add-origin":
-            representation = action.add_mutually_exclusive_group()
-            representation.add_argument(
-                "--identity",
-                action="append",
-                help="authoritative directory file or final-component pattern",
-            )
-            representation.add_argument(
-                "--commit",
-                help="full lowercase commit hash identifying a Git repository input",
-            )
-        else:
-            action.add_argument(
-                "--pending-confirmation",
-                action="store_true",
-                help=(
-                    "register one uniquely declared output before reproduction "
-                    "confirms it"
-                ),
-            )
-    update = actions.add_parser(
-        "update", help="Change explicitly selected input properties"
-    )
-    _entry_arguments(update)
-    _mutation_argument(update)
-    update.add_argument("name", help="existing input name")
-    update.add_argument("--target", help="replacement existing local target")
-    classification = update.add_mutually_exclusive_group()
-    classification.add_argument(
-        "--origin", action="store_true", help="assert an explicit origin boundary"
-    )
-    classification.add_argument(
-        "--generated",
-        action="store_true",
-        help="require current confirmed same-log production",
-    )
-    identity = update.add_mutually_exclusive_group()
-    identity.add_argument(
-        "--identity",
-        action="append",
-        help="replace an origin directory's authoritative selectors",
-    )
-    identity.add_argument(
-        "--byte-complete",
-        action="store_true",
-        help="identify an origin directory by all descendant bytes",
-    )
-    identity.add_argument(
-        "--commit",
-        help="full lowercase commit hash identifying a Git repository input",
-    )
+    _add_data_input_parsers(actions)
+    _add_data_update_parser(actions)
     rename = actions.add_parser(
         "rename", help="Rename an input after recorded-command token edits"
     )
@@ -414,6 +357,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                 identity=(tuple(args.identity) if args.identity is not None else None),
                 byte_complete=args.byte_complete,
                 commit=args.commit,
+                reproduction_comparison=args.reproduction_comparison,
                 dry_run=args.dry_run,
             ),
         )
@@ -424,6 +368,86 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     if args.action == "remove":
         return data.remove(entry, args.name, dry_run=args.dry_run)
     return data.list_inputs(entry)
+
+
+def _add_data_input_parsers(
+    actions: argparse._SubParsersAction[_AuthoringParser],
+) -> None:
+    for name in ("add-origin", "add-generated"):
+        description = (
+            "Register one producerless material input and stop Provenance"
+            if name == "add-origin"
+            else "Register one current confirmed same-log generated input"
+        )
+        action = actions.add_parser(name, help=description, description=description)
+        _entry_arguments(action)
+        _mutation_argument(action)
+        action.add_argument("name", help="stable entry-scoped input name")
+        action.add_argument(
+            "target",
+            help="existing absolute or entry-root-relative file or directory",
+        )
+        if name == "add-origin":
+            representation = action.add_mutually_exclusive_group()
+            representation.add_argument(
+                "--identity",
+                action="append",
+                help="authoritative directory file or final-component pattern",
+            )
+            representation.add_argument(
+                "--commit",
+                help="full lowercase commit hash identifying a Git repository input",
+            )
+        else:
+            action.add_argument(
+                "--pending-confirmation",
+                action="store_true",
+                help=(
+                    "register one uniquely declared output before reproduction "
+                    "confirms it"
+                ),
+            )
+
+
+def _add_data_update_parser(
+    actions: argparse._SubParsersAction[_AuthoringParser],
+) -> None:
+    update = actions.add_parser(
+        "update", help="Change explicitly selected input properties"
+    )
+    _entry_arguments(update)
+    _mutation_argument(update)
+    update.add_argument("name", help="existing input name")
+    update.add_argument("--target", help="replacement existing local target")
+    classification = update.add_mutually_exclusive_group()
+    classification.add_argument(
+        "--origin", action="store_true", help="assert an explicit origin boundary"
+    )
+    classification.add_argument(
+        "--generated",
+        action="store_true",
+        help="require current confirmed same-log production",
+    )
+    identity = update.add_mutually_exclusive_group()
+    identity.add_argument(
+        "--identity",
+        action="append",
+        help="replace an origin directory's authoritative selectors",
+    )
+    identity.add_argument(
+        "--byte-complete",
+        action="store_true",
+        help="identify an origin directory by all descendant bytes",
+    )
+    identity.add_argument(
+        "--commit",
+        help="full lowercase commit hash identifying a Git repository input",
+    )
+    update.add_argument(
+        "--reproduction-comparison",
+        choices=("exact", "evidence"),
+        help="select exact-default or evidence-scoped reproduction comparison",
+    )
 
 
 def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:

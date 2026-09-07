@@ -59,7 +59,9 @@ product, or submodule checkout separately when the command consumes it.
 Use the corresponding action for later intent:
 
 - `log data update` changes an explicitly named target or origin/generated
-  boundary;
+  boundary. For one researcher-approved legitimately nondeterministic generated
+  file, `--reproduction-comparison evidence` selects evidence-scoped
+  reproduction; `--reproduction-comparison exact` removes that exception;
 - `log data refresh` records an intentional byte change after rechecking the
   same boundary;
 - `log data rename` runs only after every recorded-command token is updated;
@@ -72,6 +74,13 @@ Use action-specific `--dry-run` when a mutation needs preflight. Advanced
 origin-directory identity options belong to the selected action's help and
 explicit researcher intent; do not load or reproduce their registry
 representation during ordinary Record.
+
+Whole-artifact exact comparison is always the default. Do not add an evidence
+comparison while recording ordinary work or merely because a reproduction
+changed. First rule out avoidable nondeterminism, environmental leakage, and a
+defect. Then identify every applicable evidence record and obtain researcher
+approval for the exception and any evidence-level tolerance before using the
+data update action.
 
 A generated output belongs in the input registry only when a later recorded
 command or evidence presentation consumes it. Output-only results, scripts,

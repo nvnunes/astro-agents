@@ -913,6 +913,14 @@ Retained scripts and inputs are read in place under confinement. Only generated
 outputs and runtime state are written into the project-local run folder; the
 project itself is not copied.
 
+Whole-artifact type-aware exact comparison is the default. A specific
+generated file with legitimate nondeterministic content may use a separately
+approved evidence-scoped comparison recorded in `data.json`; any numeric
+tolerance belongs to the individual `evidence.json` record. The CLI applies
+that metadata mechanically and records complete comparison detail. It never
+infers an exception from a changed result, and the exception never weakens the
+retained evidence-to-Markdown validation.
+
 Run folders live directly beneath the UTC acceptance date:
 
 ```text

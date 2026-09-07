@@ -17,8 +17,11 @@ then preflight and apply it:
 ```
 
 Use `evidence update` for an existing ID. The temporary file is a bounded
-regular non-symlink UTF-8 JSON object with exactly `sources` and
-`transformation`; the CLI never modifies or retains it.
+regular non-symlink UTF-8 JSON object with `sources`, `transformation`, and an
+optional `reproduction_tolerance` object of the form
+`{"absolute":"<positive finite decimal>"}`. Use that field only after explicit
+researcher approval for evidence-scoped reproduction. The CLI never modifies
+or retains the temporary file.
 
 ## Source Shape
 

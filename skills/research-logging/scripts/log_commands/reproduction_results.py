@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
+from validation.evidence_comparison import EVIDENCE_COMPARISON_RESULT_CONTRACT
 from validation.human_projection import ReportContext
 from validation.pyrun_state import PYRUN_EXECUTION_RE
 
@@ -35,6 +36,7 @@ OUTCOMES = ("matched", "changed", "failed", "comparison_failed", "skipped")
 RUN_STATUSES = ("complete", "failed", "stopped")
 PROFILES = (
     "directory",
+    "evidence",
     "image",
     "json",
     "named_array",
@@ -52,6 +54,7 @@ REASONS = {
     "dependency_cycle",
     "dependency_failed",
     "execution_failed",
+    "evidence_comparison_failed",
     "generation_failed",
     "graph_limit",
     "missing_input",
@@ -80,6 +83,8 @@ class ComparisonRecord:
     profile: str
     expected: Fingerprint | None
     regenerated: Fingerprint | None
+    evidence_definition: str | None = None
+    evidence: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         _choice(self.profile, PROFILES, "comparison.profile")
@@ -95,9 +100,19 @@ class ComparisonRecord:
                 raise ReproductionResultError(
                     f"comparison.{name} fingerprint is invalid"
                 ) from error
+        if self.evidence_definition is None:
+            if self.evidence or self.profile == "evidence":
+                raise ReproductionResultError(
+                    "evidence comparison needs its definition identity"
+                )
+        elif (
+            re.fullmatch(r"[0-9a-f]{64}", self.evidence_definition) is None
+            or any(not _valid_evidence_comparison(item) for item in self.evidence)
+        ):
+            raise ReproductionResultError("evidence comparison details are invalid")
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "contract": COMPARISON_CONTRACT,
             "expected": self.expected.as_dict() if self.expected is not None else None,
             "profile": self.profile,
@@ -105,6 +120,15 @@ class ComparisonRecord:
                 self.regenerated.as_dict() if self.regenerated is not None else None
             ),
         }
+        if self.evidence_definition is not None:
+            result.update(
+                {
+                    "evidence": [dict(item) for item in self.evidence],
+                    "evidence_contract": EVIDENCE_COMPARISON_RESULT_CONTRACT,
+                    "evidence_definition": self.evidence_definition,
+                }
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -439,6 +463,14 @@ def project_current_results(
         if current_execution is None and execution_key not in state.last_runs:
             currentness[key] = ArtifactCurrentness(False, "execution_unavailable")
             continue
+        recorded_definition = (
+            item.comparison.evidence_definition
+            if item.comparison is not None
+            else None
+        )
+        if recorded_definition != state.comparison_definitions.get(key):
+            currentness[key] = ArtifactCurrentness(False, "comparison_changed")
+            continue
         last_run = state.last_runs.get(execution_key)
         if last_run is not None and last_run > item.recorded_at:
             currentness[key] = ArtifactCurrentness(False, "execution_reran")
@@ -612,16 +644,76 @@ def _decode_artifact(value: object, index: int) -> ArtifactResult:
 
 def _decode_comparison(value: object, subject: str) -> ComparisonRecord:
     item = _mapping(value, subject)
-    if set(item) != {"contract", "expected", "profile", "regenerated"}:
+    required = {"contract", "expected", "profile", "regenerated"}
+    evidence_fields = {"evidence", "evidence_contract", "evidence_definition"}
+    if (
+        not required <= set(item) <= required | evidence_fields
+        or set(item) & evidence_fields not in (set(), evidence_fields)
+    ):
         raise ReproductionResultError(f"{subject} has incorrect fields")
     if item["contract"] != COMPARISON_CONTRACT:
         raise ReproductionResultError(f"{subject} contract is unsupported")
     profile = _choice(item["profile"], PROFILES, f"{subject}.profile")
+    evidence = item.get("evidence", [])
+    if not isinstance(evidence, list) or not all(
+        isinstance(record, Mapping) for record in evidence
+    ):
+        raise ReproductionResultError(f"{subject}.evidence is invalid")
+    definition = item.get("evidence_definition")
+    if definition is not None and (
+        not isinstance(definition, str)
+        or item.get("evidence_contract") != EVIDENCE_COMPARISON_RESULT_CONTRACT
+    ):
+        raise ReproductionResultError(f"{subject}.evidence contract is invalid")
     return ComparisonRecord(
         profile,
         _fingerprint_or_none(item["expected"], f"{subject}.expected"),
         _fingerprint_or_none(item["regenerated"], f"{subject}.regenerated"),
+        definition,
+        tuple(dict(record) for record in cast(list[Mapping[str, object]], evidence)),
     )
+
+
+def _valid_evidence_comparison(value: Mapping[str, object]) -> bool:
+    fields = {
+        "definition",
+        "expected",
+        "id",
+        "matched",
+        "regenerated",
+        "tolerance",
+    }
+    expected = value.get("expected")
+    regenerated = value.get("regenerated")
+    tolerance = value.get("tolerance")
+    if (
+        set(value) != fields
+        or not isinstance(value.get("definition"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", cast(str, value["definition"])) is None
+        or not isinstance(value.get("id"), str)
+        or re.fullmatch(
+            r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", cast(str, value["id"])
+        )
+        is None
+        or not isinstance(value.get("matched"), bool)
+        or not isinstance(expected, list)
+        or not isinstance(regenerated, list)
+        or not expected
+        or len(expected) != len(regenerated)
+        or not all(isinstance(item, Mapping) for item in (*expected, *regenerated))
+        or tolerance is not None
+        and (
+            not isinstance(tolerance, Mapping)
+            or set(tolerance) != {"absolute"}
+            or not isinstance(tolerance.get("absolute"), str)
+        )
+    ):
+        return False
+    try:
+        json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _decode_run(value: object, index: int) -> RunResult:

@@ -32,6 +32,46 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class ReproductionResultContractTests(unittest.TestCase):
+    def test_evidence_comparison_details_round_trip_durably(self) -> None:
+        comparison = ComparisonRecord(
+            "evidence",
+            Fingerprint("sha256", digest="a" * 64),
+            Fingerprint("sha256", digest="b" * 64),
+            "c" * 64,
+            (
+                {
+                    "definition": "d" * 64,
+                    "expected": [{"value": {"type": "integer", "value": "1"}}],
+                    "id": "score",
+                    "matched": True,
+                    "regenerated": [
+                        {"value": {"type": "integer", "value": "1"}}
+                    ],
+                    "tolerance": None,
+                },
+            ),
+        )
+        artifact = ArtifactResult(
+            "e001",
+            "data/result.json",
+            "pyrun-exec/v1:" + "1" * 64,
+            "matched",
+            None,
+            "2030-01-01T00:00:00Z",
+            "reproduce-20300101t000000z-fixture",
+            comparison,
+        )
+        result = ReproductionResults(
+            "docs/research.md",
+            "2030-01-01T00:00:00Z",
+            (artifact,),
+            (_run("reproduce-20300101t000000z-fixture", "2030-01-01T00:00:00Z"),),
+        )
+
+        decoded = ReproductionResults.from_json(result.serialized())
+
+        self.assertEqual(decoded.artifacts[0].comparison, comparison)
+
     def test_frozen_result_fixtures_are_exact_canonical_contracts(self) -> None:
         for path in sorted(FIXTURES.glob("reproduction-result-*.json")):
             with self.subTest(path=path.name):
@@ -220,6 +260,27 @@ class ReproductionResultContractTests(unittest.TestCase):
         self.assertEqual(
             currentness[(matched.entry, matched.artifact)],
             ArtifactCurrentness(False, "execution_reran"),
+        )
+
+    def test_comparison_definition_change_makes_prior_result_stale(self) -> None:
+        current = ReproductionResults.from_json(
+            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
+        )
+        matched = next(
+            item for item in current.artifacts if item.artifact == "data/matched.csv"
+        )
+        key = (matched.entry, matched.artifact)
+        state = ReproductionStateProjection(
+            frozenset({key}),
+            {key: matched.execution_id},
+            {(matched.entry, matched.execution_id): None},
+            {key: "f" * 64},
+        )
+
+        _, currentness = project_current_results(current, state)
+
+        self.assertEqual(
+            currentness[key], ArtifactCurrentness(False, "comparison_changed")
         )
 
 

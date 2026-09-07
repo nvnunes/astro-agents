@@ -34,8 +34,7 @@ def add_or_update(
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=record_id,
-            raw_sources=value["sources"],
-            transformation=value["transformation"],
+            definition=value,
         )
         current = evidence.load_current(entry)
         return evidence.apply_candidate_locked(
@@ -70,13 +69,14 @@ def _read_definition(path: Path) -> Mapping[str, Any]:
         )
     except (BoundedFileReadError, UnicodeError, V2JsonError) as error:
         raise ActionError("evidence.definition.invalid", str(error)) from error
-    if not isinstance(value, Mapping) or set(value) != {
-        "sources",
-        "transformation",
+    required = {"sources", "transformation"}
+    if not isinstance(value, Mapping) or not required <= set(value) <= required | {
+        "reproduction_tolerance"
     }:
         fields = sorted(value) if isinstance(value, Mapping) else None
         raise ActionError(
             "evidence.definition.invalid",
-            f"definition fields must be sources and transformation: {fields}",
+            "definition fields must be sources and transformation, with optional "
+            f"reproduction_tolerance: {fields}",
         )
     return cast(Mapping[str, Any], value)

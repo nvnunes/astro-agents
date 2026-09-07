@@ -81,6 +81,10 @@ wording, and parameters outside a marked statistic's code span.
    stable row identity. Use `--as-percentage` only when the retained proportion
    is intentionally presented as a percentage, and `--scale` only for a
    researcher-authorized scientific scale conversion.
+   Use `--reproduction-tolerance <absolute-decimal>` only after the researcher
+   approves that smallest scientifically justified tolerance for one evidence
+   value belonging to an artifact explicitly configured for evidence-scoped
+   reproduction. It never relaxes comparison with the Markdown presentation.
    For a whole artifact, pass only its one source token; the action recognizes
    the marked link, image, or inline `diff` fence and rejects selection or
    conversion arguments.

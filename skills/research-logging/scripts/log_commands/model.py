@@ -37,6 +37,7 @@ class EvidenceCommonArguments:
     as_percentage: bool
     scale: str | None
     dry_run: bool
+    reproduction_tolerance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class DataUpdateArguments:
     byte_complete: bool
     commit: str | None
     dry_run: bool
+    reproduction_comparison: str | None = None
 
 
 @dataclass(frozen=True)

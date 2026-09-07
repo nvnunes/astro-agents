@@ -339,6 +339,79 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["reproduction_tolerance"] = {"absolute": "0.01"}
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            evaluation = _evaluate(summary)
+
+            failure = next(
+                check
+                for check in evaluation.result.checks
+                if check.failure is not None
+                and check.failure.code
+                == "reproduction.comparison.tolerance_incompatible"
+            )
+            self.assertEqual(failure.scope, RESULTS.CheckScope.CONFORMANCE)
+
+    def test_evidence_scoped_comparison_requires_applicable_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["inputs"][1]["comparison"] = {
+                "contract": "research-log-evidence-scoped-comparison/1",
+                "profile": "evidence",
+            }
+            write(data_path, json.dumps(data, indent=2) + "\n")
+
+            valid = _evaluate(summary)
+
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code.startswith("reproduction.comparison.")
+                    for check in valid.result.checks
+                )
+            )
+
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"][0]["locator"] = {
+                "select": [["missing"]]
+            }
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            incompatible = _evaluate(summary)
+            self.assertTrue(
+                any(
+                    check.failure is not None
+                    and check.failure.code
+                    == "reproduction.comparison.evidence_incompatible"
+                    and check.scope is RESULTS.CheckScope.CONFORMANCE
+                    for check in incompatible.result.checks
+                )
+            )
+
+            evidence["records"][0]["sources"][0]["locator"] = {
+                "select": [["success_rate"]]
+            }
+            evidence["records"][0]["sources"][0]["source"] = "<catalog>"
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+
+            invalid = _evaluate(summary)
+
+            failure = next(
+                check
+                for check in invalid.result.checks
+                if check.failure is not None
+                and check.failure.code == "reproduction.comparison.evidence_missing"
+            )
+            self.assertEqual(failure.scope, RESULTS.CheckScope.CONFORMANCE)
+
     def test_pyrun_binding_failure_is_execution_scoped_structure(self) -> None:
         cases = (
             (("--catalog", "<catalog>", "--mode", "exact"), "missing"),

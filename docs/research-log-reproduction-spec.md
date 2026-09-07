@@ -47,7 +47,8 @@ requirements.
 - [Execution Safety](#execution-safety) defines run-local execution, network
   denial, write confinement, and worker ownership.
 - [Artifact Comparison](#artifact-comparison) defines exact type-aware
-  comparison and defensive failure behavior.
+  comparison, the explicit evidence-scoped exception, and defensive failure
+  behavior.
 - [Results And Currentness](#results-and-currentness) defines cumulative
   artifact outcomes and run history.
 - [Staging And Promotion](#staging-and-promotion) defines retained changed or
@@ -76,6 +77,8 @@ The initial implementation must use these versions:
 | Source snapshot | `research-log-reproduction-source-snapshot/2` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
+| Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
+| Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
 
 Execution IDs version only their identity algorithm and canonicalization.
 Schema, runner, standard-environment, execution-contract, and comparison
@@ -1132,9 +1135,11 @@ are defined in [Fixed Resource Bounds](#fixed-resource-bounds).
 
 ### General Contract
 
-Comparison is automatic, exact, code-only, bounded, and versioned. No agent or
-researcher decides equivalence during a run. Selection uses artifact kind and
-recognized format; there is no authored override in v1.
+Comparison is automatic, code-only, bounded, and versioned. No agent or
+researcher decides equivalence during a run. Whole-artifact type-aware exact
+comparison is the default. One generated file may explicitly select the
+evidence-scoped exception defined below; no exception is inferred from format,
+name, execution, or an observed difference.
 
 Comparison applies to each artifact case independently after its complete
 execution output set is available. Type-aware profiles compare decoded logical
@@ -1193,12 +1198,59 @@ comparison cannot complete has outcome `comparison_failed` with a precise
 reason such as `resource_limit`, `unsupported_format`, or `comparator_error`.
 It and every available sibling output are retained for diagnosis.
 
-### Future Non-Exact Comparison
+### Evidence-Scoped Comparison
 
-Non-exact comparison is deferred. If retained evidence later demonstrates a
-need, an approved named and versioned exception belongs to the affected
-artifact in `data.json`. It must not be command-level state in `pyrun.json`, an
-agent judgment, or an implicit tolerance.
+A generated file may opt into `research-log-evidence-scoped-comparison/1`
+through its `data.json` item:
+
+```json
+"comparison": {
+  "contract": "research-log-evidence-scoped-comparison/1",
+  "profile": "evidence"
+}
+```
+
+The declaration is invalid on an origin, directory, or Git repository. It is
+also invalid unless at least one non-artifact `evidence.json` record selects
+the same canonical resource and every applicable record can be evaluated by
+the existing locator and transformation contracts. Every applicable record
+participates; reproduction may not choose a subset.
+
+Whole-artifact comparison remains the first and cheapest step. When it
+matches, the artifact is `matched` under its ordinary profile and evidence is
+not extracted. The durable comparison nevertheless records the complete
+evidence-definition identity. When the whole artifact differs, reproduction
+evaluates every applicable record twice, substituting the regenerated path
+only for the resource being reproduced. Locator structure and every selected
+typed value compare exactly by default.
+
+One non-artifact evidence record may declare an absolute tolerance:
+
+```json
+"reproduction_tolerance": {"absolute": "0.01"}
+```
+
+The value is a canonical positive finite decimal string. It applies to each
+numeric selected item consumed by that record; selected nonnumeric items and
+numeric kinds remain exact. A record with a tolerance must select at least one
+numeric item. The tolerance defines equivalence only between retained and
+regenerated evidence. It does not weaken the exact retained-value comparison
+against Markdown.
+
+Every applicable record must match. A completed comparison with a differing
+selected value is `changed`. A missing value, invalid or incompatible
+selection, failed transformation, or other inability to evaluate the declared
+contract is `comparison_failed` with reason
+`evidence_comparison_failed`. Regenerated output remains retained under the
+ordinary run policy.
+
+The definition identity covers the artifact declaration plus the complete
+applicable evidence records, including sources, locators, transformations, and
+tolerances. A relevant `data.json` or `evidence.json` change therefore makes a
+prior artifact result stale. Evidence-scoped comparison is introduced only for
+one reviewed legitimate nondeterministic artifact at a time after researcher
+approval of its evidence set and smallest scientifically justified tolerance;
+it is never populated across the corpus automatically.
 
 ## Results And Currentness
 
@@ -1226,8 +1278,9 @@ produced outside an entry target, that selected artifact is respectively
 The complete v1 reason vocabulary is `baseline_unavailable`,
 `boundary_changed`, `boundary_unavailable`, `comparator_error`,
 `content_changed`, `cross_log_generated_input`, `dependency_cycle`,
-`dependency_failed`, `execution_failed`, `generation_failed`, `graph_limit`,
-`missing_input`, `missing_producer`, `multiple_producers`, `output_missing`,
+`dependency_failed`, `evidence_comparison_failed`, `execution_failed`,
+`generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
+`multiple_producers`, `output_missing`,
 `outside_entry`, `resource_limit`, `safety_failure`, `slow`, `stop_requested`,
 `unsupported_format`, `worker_cleanup_incomplete`, and `worker_survived`.
 
@@ -1292,10 +1345,16 @@ Every artifact record has exactly `entry`, `artifact`, `execution_id`,
 `outcome`, `reason`, `recorded_at`, `run_id`, and `comparison`. `reason` is null
 for `matched`; it is a required code for every other outcome. `comparison` is
 null when comparison was not attempted. Otherwise it has exactly `contract`,
-`profile`, `expected`, and `regenerated`. `expected` and `regenerated` are the
+`profile`, `expected`, and `regenerated`, except that an evidence-scoped
+artifact also has the complete group `evidence_contract`,
+`evidence_definition`, and `evidence`. The definition is a SHA-256 identity;
+the evidence array retains every record identity, retained and regenerated
+selection projections, tolerance, and match result. On the exact
+whole-artifact fast path the group is present with an empty evidence array.
+`expected` and `regenerated` are the
 closed observed fingerprint forms; a comparison failure that could not observe
 one side uses null for that side. Detailed differences and decoder diagnostics
-remain in the run directory rather than expanding this cumulative record.
+otherwise remain in the run directory.
 `execution_id` is null only for a pre-execution graph failure that has no
 resolvable producer; `matched` and `changed` always identify an execution.
 Generated-output artifact identities are normalized entry-relative or
@@ -1356,6 +1415,11 @@ Results no longer reachable from current `evidence.json` are ignored
 immediately and contribute to no entry or log coverage. A later reproduction
 publication may prune them. Ordinary `pyrun` and read-only reporting do not
 rewrite results merely to remove them.
+
+For evidence-scoped artifacts, currentness also requires the recorded
+evidence-definition identity to equal the identity derived from current
+`data.json` and `evidence.json`. A mismatch is stale as
+`comparison_changed`, even when the producing execution has not rerun.
 
 ## Staging And Promotion
 
@@ -1629,13 +1693,14 @@ implicit extension.
 ## Current Implementation Boundary
 
 The command-oriented execution state, migration, planning, safety, run-local
-execution, durable comparison records, immediate confirmation, independent
-result publication, current projection, bounded read-only queries, durable job
-control, stop and same-path resume, publication retry, lost-supervisor
-reconciliation, ordinary post-reproduction validation, and whole-execution
-copy-based promotion are implemented. Promotion retains its own approved
-targeted Evidence and Provenance refresh without running general validation;
-reproduction has no targeted-validation path. Maintained-corpus initialization
-and the bounded entry-level cutover evaluation are complete. Full
-maintained-corpus reproduction remains gated by the reproduction plan. The
-frozen result and status fixtures remain the compatibility boundary.
+execution, exact and evidence-scoped artifact comparison, durable comparison
+records, immediate confirmation, independent result publication, current
+projection, bounded read-only queries, durable job control, stop and same-path
+resume, publication retry, lost-supervisor reconciliation, ordinary
+post-reproduction validation, and whole-execution copy-based promotion are
+implemented. Promotion retains its own approved targeted Evidence and
+Provenance refresh without running general validation; reproduction has no
+targeted-validation path. Maintained-corpus initialization and the bounded
+entry-level cutover evaluation are complete. Full maintained-corpus
+reproduction remains gated by the reproduction plan. The frozen result and
+status fixtures remain the compatibility boundary.

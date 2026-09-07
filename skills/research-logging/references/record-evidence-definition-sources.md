@@ -22,7 +22,9 @@ registry directly.
 
 The CLI reads but never edits, retains, or removes the temporary definition.
 The file must be a regular non-symlink UTF-8 JSON file no larger than 8 MiB and
-must contain exactly `sources` and `transformation`.
+must contain `sources` and `transformation`, with optional
+`reproduction_tolerance` only for a researcher-approved evidence-scoped
+reproduction rule.
 
 ## Source Shape
 

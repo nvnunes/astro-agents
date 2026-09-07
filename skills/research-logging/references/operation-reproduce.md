@@ -27,6 +27,9 @@ run.
   replace retained research material.
 - Do not edit research-facing prose or evidence presentation. The only human
   report owned by this operation is generated `reproduction.md`.
+- Whole-artifact exact comparison remains the default. Reproduce may apply an
+  authored evidence-scoped rule, but it never creates, changes, or guesses that
+  rule or its evidence-level tolerance.
 - Never add `--include-slow` unless the researcher explicitly authorizes the
   slow executions for that run. Omission is the normal default.
 - Do not invoke promotion automatically. Promotion is a separate, explicit
@@ -111,6 +114,11 @@ Present the returned report unchanged. Never hide or soften `changed`,
 describes operational completion and is independent of artifact outcomes.
 Treat the subsequent validation outcome separately: its findings or failure do
 not invalidate completed reproduction work.
+
+An evidence-scoped artifact may report `matched` even when its complete file
+fingerprint differs. In that case, use the bounded artifact `show` result when
+the researcher needs the complete recorded per-evidence comparison. Do not
+describe the whole files as equal.
 
 For researcher-directed diagnosis, obtain bounded machine detail instead of
 opening generated JSON:

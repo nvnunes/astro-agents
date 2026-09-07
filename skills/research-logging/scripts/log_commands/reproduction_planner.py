@@ -24,6 +24,7 @@ from research_log_data import (
 from validation.controller import evaluate_current_record
 from validation.engine import RULES_VERSION
 from validation.evidence import EvidenceFile, load_evidence_file
+from validation.evidence_comparison import evidence_comparison_identity
 from validation.human_projection import provenance_artifact_counts
 from validation.mechanical_results import (
     CheckScope,
@@ -142,6 +143,9 @@ class ReproductionStateProjection:
     reachable: frozenset[tuple[str, str]]
     output_executions: Mapping[tuple[str, str], str]
     last_runs: Mapping[tuple[str, str], str | None]
+    comparison_definitions: Mapping[tuple[str, str], str | None] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -155,6 +159,9 @@ class _ReachabilityProjector:
     reachable: set[tuple[str, str]] = field(default_factory=set)
     output_executions: dict[tuple[str, str], str] = field(default_factory=dict)
     last_runs: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    comparison_definitions: dict[tuple[str, str], str | None] = field(
+        default_factory=dict
+    )
     visited: set[ExecutionKey] = field(default_factory=set)
 
     def execution(self, owner: _Owner) -> None:
@@ -166,6 +173,9 @@ class _ReachabilityProjector:
             artifact_key = (owner.entry.context.id, output)
             self.reachable.add(artifact_key)
             self.output_executions[artifact_key] = owner.execution_id
+            self.comparison_definitions[artifact_key] = _comparison_identity(
+                owner, output, self.project_root
+            )
         self.last_runs[key] = owner.execution.last_run_at
         if owner.entry.data is None:
             return
@@ -207,7 +217,10 @@ class _ReachabilityProjector:
                 "current reproduction projection crossed a fixed bound",
             )
         return ReproductionStateProjection(
-            frozenset(self.reachable), self.output_executions, self.last_runs
+            frozenset(self.reachable),
+            self.output_executions,
+            self.last_runs,
+            self.comparison_definitions,
         )
 
 
@@ -585,6 +598,31 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         )
 
 
+def _comparison_identity(
+    owner: _Owner, output: str, project_root: Path
+) -> str | None:
+    """Return one output's evidence-comparison definition identity, if any."""
+
+    data = owner.entry.data
+    if data is None:
+        return None
+    target = output_target_path(
+        output,
+        entry_root=owner.entry.context.root,
+        project_root=project_root,
+    ).resolve().as_posix()
+    resource = next(
+        (item for item in data.inputs if item.canonical_target == target), None
+    )
+    if resource is None:
+        return None
+    return evidence_comparison_identity(
+        resource,
+        data=data,
+        evidence=owner.entry.evidence,
+    )
+
+
 def _verified_boundary(
     state: _PlanningState,
     kind: str,
@@ -730,7 +768,7 @@ def _initial_work(
             continue
         for output, _ in owner.execution.recipe.outputs:
             result = prior.get((owner.entry.context.id, output))
-            if not _result_current(result, owner.execution):
+            if not _result_current(result, owner, output, state.project_root):
                 needs_run.add(key)
                 break
     return needs_run
@@ -796,16 +834,27 @@ def _topological_order(
 
 
 def _result_current(
-    result: Mapping[str, object] | None, execution: PyrunExecution
+    result: Mapping[str, object] | None,
+    owner: _Owner,
+    output: str,
+    project_root: Path,
 ) -> bool:
     if result is None or result.get("outcome") not in {"matched", "changed"}:
         return False
     recorded = result.get("recorded_at")
     if not isinstance(recorded, str):
         return False
-    if execution.last_run_at is None:
-        return True
-    return _timestamp(recorded) >= _timestamp(execution.last_run_at)
+    if owner.execution.last_run_at is not None and _timestamp(recorded) < _timestamp(
+        owner.execution.last_run_at
+    ):
+        return False
+    comparison = result.get("comparison")
+    recorded_definition = (
+        comparison.get("evidence_definition")
+        if isinstance(comparison, Mapping)
+        else None
+    )
+    return recorded_definition == _comparison_identity(owner, output, project_root)
 
 
 def _project_plan(

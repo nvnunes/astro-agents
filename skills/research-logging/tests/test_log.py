@@ -984,6 +984,8 @@ class LogEvidenceTests(unittest.TestCase):
                 "--select",
                 "/rate",
                 "--as-percentage",
+                "--reproduction-tolerance",
+                "0.01",
             )
             added = run(entry, "evidence", "add", *arguments)
             repeated = run(entry, "evidence", "add", *arguments)
@@ -1002,6 +1004,7 @@ class LogEvidenceTests(unittest.TestCase):
             self.assertNotEqual((entry / "evidence.json").read_bytes(), before)
             record = json.loads((entry / "evidence.json").read_text())["records"][0]
             self.assertEqual(record["transformation"]["decimal_places"], 2)
+            self.assertEqual(record["reproduction_tolerance"], {"absolute": "0.01"})
             unchanged = run(entry, "evidence", "update", *arguments)
             self.assertEqual(authoring_result(unchanged)["status"], "unchanged")
 
@@ -1181,6 +1184,7 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
                     "form": "percentage",
                     "source": {"input": 0, "item": 0},
                 },
+                "reproduction_tolerance": {"absolute": "0.01"},
             }
             path = write_definition(transient, definition)
             path_before = path.read_bytes()
@@ -1209,6 +1213,10 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
             record = json.loads((entry / "evidence.json").read_text())["records"][0]
             self.assertEqual(record["sources"], definition["sources"])
             self.assertEqual(record["transformation"], definition["transformation"])
+            self.assertEqual(
+                record["reproduction_tolerance"],
+                definition["reproduction_tolerance"],
+            )
 
             conflicting = {
                 **definition,
@@ -1316,6 +1324,7 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
                 ("--where", "/case", "string", "candidate"),
                 ("--as-percentage",),
                 ("--scale", "2"),
+                ("--reproduction-tolerance", "0.1"),
             )
             for arguments in conflicts:
                 with self.subTest(arguments=arguments):

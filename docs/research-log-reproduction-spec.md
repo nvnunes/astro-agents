@@ -697,6 +697,12 @@ boundary. Log-level reproduction must not execute a command outside the log.
 A source entering a log from outside it must be a declared origin; a cross-log
 generated input is invalid provenance.
 
+For a source outside the current Git project, the plan uses its exact authored
+`data.json` location as the boundary or failure artifact identity. External
+origins remain fingerprint-verified boundaries. An external non-origin source
+is reported as `cross_log_generated_input`; it does not abort planning for
+independent in-scope executions.
+
 Every selected execution includes the complete inherited local Python code
 dependency projection. Missing or changed participating code affects
 admission, planning, currentness, and guarded resume exactly as the final

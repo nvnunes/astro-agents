@@ -304,6 +304,77 @@ class ReproductionPlanningTests(unittest.TestCase):
                 any(upstream_entry.root.name in value for value in authority)
             )
 
+    def test_log_target_reports_external_generated_input_without_aborting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "project").mkdir()
+            fixture = _Fixture(root / "project")
+            entry = fixture.entry(1)
+            external = root / "external.txt"
+            raw = entry.root / "data" / "raw.txt"
+            final = entry.root / "data" / "final.txt"
+            external.write_text("external\n", encoding="utf-8")
+            raw.write_text("raw\n", encoding="utf-8")
+            final.write_text("final\n", encoding="utf-8")
+            external_item = fixture.item(entry, "external", external, origin=False)
+            external_item["location"] = external.as_posix()
+            fixture.write_data(
+                entry,
+                [
+                    external_item,
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "external", "final")
+            independent = fixture.execution(
+                entry, "independent", {"raw": raw}, {"final": final}
+            )
+            fixture.write_pyrun(entry, [independent])
+            admission = _admission(fixture)
+
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.record),
+            ):
+                plan = plan_reproduction(
+                    fixture.log, entry=None, include_slow=False
+                )
+
+            self.assertEqual(
+                [value["execution_id"] for value in plan.executions],
+                [independent[0]],
+            )
+            self.assertEqual(
+                [
+                    (value["artifact"], value["outcome"], value["reason"])
+                    for value in plan.failures
+                ],
+                [(external.as_posix(), "failed", "cross_log_generated_input")],
+            )
+
+    def test_external_origin_uses_authored_location_as_boundary_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "project").mkdir()
+            fixture = _Fixture(root / "project")
+            entry = fixture.entry(1)
+            external = root / "external.txt"
+            external.write_text("external\n", encoding="utf-8")
+            item = fixture.item(entry, "external", external, origin=True)
+            item["location"] = external.as_posix()
+            fixture.write_data(entry, [item])
+            fixture.evidence(entry, "external")
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(plan.failures, ())
+            self.assertEqual(
+                [(value["artifact"], value["kind"]) for value in plan.boundaries],
+                [(external.as_posix(), "origin")],
+            )
+
     def test_direct_slow_evidence_is_reported_as_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))

@@ -108,6 +108,7 @@ class _PlanningState:
     log: LogContext
     project_root: Path
     selected_entries: tuple[str, ...]
+    entry_target: bool
     include_slow: bool
     selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
@@ -216,11 +217,7 @@ def plan_reproduction(
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
 
-    if selection_policy not in {INCREMENTAL_SELECTION, RECHECK_SELECTION}:
-        raise ActionError(
-            "reproduction.selection.invalid",
-            f"unsupported reproduction selection policy: {selection_policy}",
-        )
+    _require_selection_policy(selection_policy)
     _require_existing_locks_available(log, entry)
     validation_snapshot, validation_state = _admit_validation(log)
     before_digest, before_projection = research_source_projection(log.summary)
@@ -237,6 +234,7 @@ def plan_reproduction(
         log,
         project_root,
         selected_ids,
+        entry is not None,
         include_slow,
         selection_policy,
         entries,
@@ -281,6 +279,14 @@ def plan_reproduction(
     plan.serialized()
     del validation_state
     return plan
+
+
+def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
+    if selection_policy not in {INCREMENTAL_SELECTION, RECHECK_SELECTION}:
+        raise ActionError(
+            "reproduction.selection.invalid",
+            f"unsupported reproduction selection policy: {selection_policy}",
+        )
 
 
 def _entry_contexts(log: LogContext) -> tuple[EntryContext, ...]:
@@ -415,7 +421,7 @@ def _trace_resource(
         if value.entry.context.id in state.selected_entries
     )
     if not in_scope:
-        if len(state.selected_entries) == 1:
+        if state.entry_target:
             _verified_boundary(state, "cross_entry", owner_entry, resource, artifact)
             if consumer is None:
                 execution_id = (
@@ -429,12 +435,15 @@ def _trace_resource(
                     "outside_entry",
                 )
             return
-        reason = (
-            "cross_log_generated_input"
-            if len(state.selected_entries) > 1
-            else "missing_producer"
+        _record_failure(
+            state,
+            _Failure(
+                owner_entry.context.id,
+                artifact,
+                None,
+                "cross_log_generated_input",
+            ),
         )
-        _record_failure(state, _Failure(owner_entry.context.id, artifact, None, reason))
         return
     if len(in_scope) != 1:
         _record_failure(
@@ -1118,10 +1127,7 @@ def _portable_resource_artifact(resource: InputResource, project_root: Path) -> 
     try:
         relative = target.relative_to(project_root.resolve()).as_posix()
     except ValueError:
-        raise ActionError(
-            "reproduction.artifact.outside_project",
-            f"generated artifact is outside the project: {target}",
-        ) from None
+        return resource.location
     return f"<project>/{relative}"
 
 

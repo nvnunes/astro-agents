@@ -1518,6 +1518,91 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 1)
 
+    def test_origin_ignores_confirmed_producer_from_another_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            source = root / "output/logs/other/e001/data/catalog.csv"
+            write(source, "id\n1\n")
+            (entry.parent / "data/catalog.csv").unlink()
+            data_path = entry.parent / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
+            catalog["location"] = source.as_posix()
+            write(data_path, json.dumps(data, indent=2) + "\n")
+
+            other_entry = root / "docs/other/entries/2026-08-29-e001-other"
+            output_key = "<project>/output/logs/other/e001/data/catalog.csv"
+            script = other_entry / "scripts/build.py"
+            write(root / "docs/other.md", "# Other\n\n## Entries\n")
+            write(script, "# retained producer\n")
+            write(
+                other_entry / "e001.md",
+                "# Other entry\n\n"
+                "## Build catalog\n\n"
+                "`Steps:`\n\n"
+                "```bash\n"
+                "./pyrun scripts/build.py "
+                f"--output-data '{output_key}'\n"
+                "```\n\n"
+                "`Results:`\n\n"
+                "The catalog was generated.\n",
+            )
+            recipe = PYRUN_STATE.ExecutionRecipe(
+                "scripts/build.py",
+                ("--output-data", output_key),
+                (),
+                (),
+                ((output_key, "file"),),
+            )
+            observed = PYRUN_STATE.ObservedExecution(
+                DATA.Fingerprint(
+                    "sha256", digest=hashlib.sha256(script.read_bytes()).hexdigest()
+                ),
+                (),
+                (),
+                (
+                    (
+                        output_key,
+                        DATA.Fingerprint(
+                            "sha256",
+                            digest=hashlib.sha256(source.read_bytes()).hexdigest(),
+                        ),
+                    ),
+                ),
+            )
+            execution = PYRUN_STATE.PyrunExecution(
+                True,
+                False,
+                "2030-01-01T00:00:00Z",
+                PYRUN_STATE.PYRUN_RUNNER,
+                PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,
+                PYRUN_STATE.PYRUN_EXECUTION_CONTRACT,
+                recipe,
+                observed,
+            )
+            identity = PYRUN_STATE.execution_id(recipe)
+            other_state = PYRUN_STATE.PyrunFile(
+                other_entry / PYRUN_STATE.PYRUN_FILENAME,
+                other_entry,
+                {identity: execution},
+            )
+            write(
+                other_state.path,
+                PYRUN_STATE.validated_pyrun_serialization(
+                    other_state, project_root=root
+                ),
+            )
+
+            evaluation = _evaluate(summary)
+
+            provenance = next(
+                check
+                for check in evaluation.result.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+
     def test_invalid_input_preserves_unrelated_inputs_and_commands(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

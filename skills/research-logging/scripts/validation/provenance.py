@@ -379,7 +379,12 @@ def require_origin_boundary(
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
     producer_index: ProducerIndex | None = None,
 ) -> None:
-    """Reject an origin only when it hides confirmed ``pyrun`` production."""
+    """Reject an origin only when it hides confirmed selected-log production.
+
+    ``invocations`` and ``producer_index`` must contain commands from only the
+    log being validated. Origin boundaries deliberately do not consult or
+    import another log's execution state.
+    """
 
     if not resource.origin:
         raise ValueError("origin-boundary validation requires origin: true")

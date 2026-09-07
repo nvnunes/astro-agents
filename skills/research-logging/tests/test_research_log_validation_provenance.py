@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from research_log_data import (  # noqa: E402
+    build_identity_pattern_directory,
     build_local_input,
     data_file_from_inputs,
 )
@@ -458,7 +459,142 @@ class ProvenanceLineageTests(unittest.TestCase):
             ).invocations
 
             result = PROVENANCE.evaluate_provenance(target, commands)
+            self.assertEqual(len(result.producers), 1)
+            self.assertFalse(result.lineage)
 
+    def test_external_origin_directory_is_a_whole_directory_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            source_root = root / "output/logs/other/e001/data/source"
+            target = entry_root / "data/final.csv"
+            write(source_root / "first.csv", "value\n1\n")
+            write(source_root / "second.csv", "value\n2\n")
+            write(target, "value\n1\n")
+            source = build_local_input(
+                "source",
+                "directory",
+                source_root.as_posix(),
+                entry_root=entry_root,
+                origin=True,
+            )
+            context = _context(root, (source,))
+            commands = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/run.py --input-directory '<source>' --output-data data/final.csv
+```
+<!-- command-1 input-directory = input-directory -->
+""",
+                context,
+            ).invocations
+
+            result = PROVENANCE.evaluate_provenance(target, commands)
+            expected_members = tuple(
+                path.resolve().as_posix()
+                for path in (source_root / "first.csv", source_root / "second.csv")
+            )
+
+            self.assertEqual(
+                tuple(relationship.path for relationship in commands[0].inputs),
+                expected_members,
+            )
+            self.assertTrue(
+                all(
+                    relationship.input_resource == source
+                    and relationship.origin
+                    and relationship.proof == "directory"
+                    for relationship in commands[0].inputs
+                )
+            )
+            self.assertEqual(len(commands[0].collections), 1)
+            self.assertEqual(commands[0].collections[0].mechanism, "directory")
+            self.assertEqual(commands[0].collections[0].members, expected_members)
+            self.assertEqual(
+                commands[0].collections[0].root,
+                source_root.resolve().as_posix(),
+            )
+            self.assertEqual(len(result.producers), 1)
+            self.assertFalse(result.lineage)
+
+    def test_external_origin_directory_member_is_an_exact_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            source_root = root / "output/logs/other/e001/data/source"
+            selected = source_root / "selected.csv"
+            target = entry_root / "data/final.csv"
+            write(selected, "value\n1\n")
+            write(source_root / "sibling.csv", "value\n2\n")
+            write(target, "value\n1\n")
+            source = build_local_input(
+                "source",
+                "directory",
+                source_root.as_posix(),
+                entry_root=entry_root,
+                origin=True,
+            )
+            context = _context(root, (source,))
+            commands = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/run.py --input-data '<source>/selected.csv' --output-data data/final.csv
+```
+""",
+                context,
+            ).invocations
+
+            result = PROVENANCE.evaluate_provenance(target, commands)
+
+            self.assertEqual(
+                tuple(relationship.path for relationship in commands[0].inputs),
+                (selected.resolve().as_posix(),),
+            )
+            self.assertEqual(commands[0].inputs[0].input_resource, source)
+            self.assertTrue(commands[0].inputs[0].origin)
+            self.assertFalse(commands[0].collections)
+            self.assertEqual(len(result.producers), 1)
+            self.assertFalse(result.lineage)
+
+    def test_managed_origin_aggregate_preserves_its_member_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "docs/log/entries/entry"
+            source_root = root / "external/gnao-baseline/v1"
+            selected = source_root / "build.log"
+            target = entry_root / "data/final.csv"
+            write(source_root / "build.h5", "state\n")
+            write(selected, "complete\n")
+            write(source_root / "maps-001.h5", "maps\n")
+            write(source_root / "scratch.txt", "ignored\n")
+            write(target, "value\n1\n")
+            source = build_identity_pattern_directory(
+                "baseline",
+                source_root.as_posix(),
+                ("build.h5", "build.log", "maps-*.h5"),
+                entry_root=entry_root,
+                origin=True,
+            )
+            context = _context(root, (source,))
+            commands = COMMAND.discover_commands(
+                """```bash
+./pyrun scripts/run.py --input-data '<baseline>/build.log' --output-data data/final.csv
+```
+""",
+                context,
+            ).invocations
+
+            result = PROVENANCE.evaluate_provenance(target, commands)
+
+            self.assertEqual(
+                tuple(relationship.path for relationship in commands[0].inputs),
+                (selected.resolve().as_posix(),),
+            )
+            self.assertEqual(commands[0].inputs[0].input_resource, source)
+            self.assertEqual(
+                commands[0].inputs[0].input_resource.fingerprint.algorithm,
+                "identity-patterns-sha256-v1",
+            )
+            self.assertTrue(commands[0].inputs[0].origin)
+            self.assertFalse(commands[0].collections)
             self.assertEqual(len(result.producers), 1)
             self.assertFalse(result.lineage)
 

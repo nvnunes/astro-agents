@@ -24,6 +24,7 @@ from validation.pyrun_state import (
     validated_pyrun_serialization,
 )
 from validation.targeted_refresh import (
+    _observe,
     refresh_confirmed_provenance,
     refresh_promoted_provenance,
 )
@@ -31,6 +32,22 @@ from validation.targeted_refresh import (
 
 class TargetedProvenanceRefreshTests(unittest.TestCase):
     maxDiff = None
+
+    def test_directory_observation_includes_file_content(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "nested").mkdir()
+            (root / "nested" / "result.txt").write_text(
+                "result\n", encoding="utf-8"
+            )
+
+            first = _observe(root)
+            (root / "nested" / "result.txt").write_text(
+                "changed\n", encoding="utf-8"
+            )
+            second = _observe(root)
+
+            self.assertNotEqual(first, second)
 
     def test_narrow_refresh_matches_complete_current_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

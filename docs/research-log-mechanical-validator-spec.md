@@ -3899,6 +3899,9 @@ individual Markdown document name, so a split entry whose documents use suffixes
 such as `e002a.md` through `e002h.md` remains one execution-state owner. Output
 support for that owner is projected from the commands in all of its indexed
 documents rather than from any single document.
+Targeted refresh observes a directory output with the same recursive
+content-bearing directory fingerprint as ordinary validation and `pyrun`;
+changing any regular-file member changes the observed directory fingerprint.
 
 The reproduction promotion transaction may also request the bounded targeted
 refresh of Evidence checks whose resolved source is a promoted artifact. It

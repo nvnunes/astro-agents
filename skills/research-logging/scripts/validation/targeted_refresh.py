@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
 from research_log_data import (
@@ -889,8 +889,15 @@ def _observe(path: Path) -> Fingerprint:
         digest, _ = observe_file_content(path)
         return Fingerprint("sha256", digest=digest)
     if path.is_dir():
-        _, entries, _ = observe_directory_tree(path)
-        return compose_directory_fingerprint(entries)
+        _, members, _ = observe_directory_tree(path)
+        entries = []
+        for member in members:
+            if member.type == "directory":
+                entries.append(member)
+                continue
+            digest, _ = observe_file_content(path / PurePosixPath(member.path))
+            entries.append(type(member)(member.path, "file", digest))
+        return compose_directory_fingerprint(tuple(entries))
     raise TargetedRefreshError(f"provenance path is unavailable: {path}")
 
 

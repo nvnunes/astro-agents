@@ -44,8 +44,13 @@ class ReproductionPublicationTests(unittest.TestCase):
                 validation.canonical_json() + "\n", encoding="utf-8"
             )
             run_id = "reproduce-20300101t000000z-symlink"
-            run_folder = external_tmp / f"reproduce-study-{run_id}"
-            run_folder.mkdir()
+            run_folder = (
+                external_tmp
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-study-{run_id}"
+            )
+            run_folder.mkdir(parents=True)
             plan = ReproductionPlan(
                 "docs/study.md",
                 {"entry": "e001", "kind": "entry"},
@@ -71,8 +76,7 @@ class ReproductionPublicationTests(unittest.TestCase):
                     "verify_reproduction_runtime_snapshot"
                 ),
                 mock.patch(
-                    "log_commands.reproduction_publication."
-                    "project_reproduction_state",
+                    "log_commands.reproduction_publication.project_reproduction_state",
                     return_value=ReproductionStateProjection(
                         frozenset({("e001", "data/result.csv")}), {}, {}
                     ),
@@ -92,7 +96,7 @@ class ReproductionPublicationTests(unittest.TestCase):
 
             self.assertEqual(
                 published.results.runs[0].folder.path,
-                f"tmp/reproduce-study-{run_id}",
+                f"tmp/reproduction/2030-01-01/reproduce-study-{run_id}",
             )
 
     def test_distinct_entry_publications_merge_in_both_orders(self) -> None:
@@ -141,7 +145,13 @@ class ReproductionPublicationTests(unittest.TestCase):
                 ):
                     for index, entry in enumerate(order, 1):
                         run_id = f"reproduce-2030010{index}t000000z-{entry}"
-                        run_folder = root / "tmp" / f"reproduce-study-{run_id}"
+                        run_folder = (
+                            root
+                            / "tmp"
+                            / "reproduction"
+                            / f"2030-01-0{index}"
+                            / f"reproduce-study-{run_id}"
+                        )
                         run_folder.mkdir(parents=True)
                         plan = ReproductionPlan(
                             "docs/study.md",
@@ -211,7 +221,13 @@ class ReproductionPublicationTests(unittest.TestCase):
             validation_text = validation.canonical_json() + "\n"
             validation_path.write_text(validation_text, encoding="utf-8")
             run_id = "reproduce-20300101t000000z-publication"
-            run_folder = root / "tmp" / f"reproduce-study-{run_id}"
+            run_folder = (
+                root
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-study-{run_id}"
+            )
             run_folder.mkdir(parents=True)
             plan = ReproductionPlan(
                 "docs/study.md",

@@ -56,9 +56,15 @@ class ReproductionPromotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             run_id, _legacy = _staged_run(fixture, content=b"changed\n")
-            run_root = fixture.project / "tmp" / f"reproduce-study-e001-{run_id}"
-            source = run_root / "workspace" / fixture.output.relative_to(
+            run_root = (
                 fixture.project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-study-e001-{run_id}"
+            )
+            source = (
+                run_root / "workspace" / fixture.output.relative_to(fixture.project)
             )
             source.parent.mkdir(parents=True)
             source.write_bytes(b"changed\n")
@@ -143,7 +149,13 @@ class ReproductionPromotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             run_id, _staged = _staged_run(fixture, content=b"changed\n")
-            run_root = fixture.project / "tmp" / f"reproduce-study-e001-{run_id}"
+            run_root = (
+                fixture.project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-study-e001-{run_id}"
+            )
             path = run_root / "run.json"
             record = json.loads(path.read_text(encoding="utf-8"))
             materials = [
@@ -180,7 +192,13 @@ class ReproductionPromotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             run_id, _staged = _staged_run(fixture, content=b"changed\n")
-            run_root = fixture.project / "tmp" / f"reproduce-study-e001-{run_id}"
+            run_root = (
+                fixture.project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-study-e001-{run_id}"
+            )
             path = run_root / "staging.json"
             staging = json.loads(path.read_text(encoding="utf-8"))
             staging["executions"][0]["outputs"][0]["staged"] = "../../outside"
@@ -201,14 +219,20 @@ def _staged_run(
     fixture: _Fixture, *, content: bytes, complete: bool = True
 ) -> tuple[str, Path]:
     run_id = "reproduce-20300101t000000z-promotion"
-    run_root = fixture.project / "tmp" / f"reproduce-study-e001-{run_id}"
+    run_root = (
+        fixture.project
+        / "tmp"
+        / "reproduction"
+        / "2030-01-01"
+        / f"reproduce-study-e001-{run_id}"
+    )
     run_root.mkdir(parents=True)
     record = _accepted_record(
         fixture.log,
         fixture.plan,
         run_id,
         run_root,
-        fixture.project,
+        accepted_at="2030-01-01T00:00:00Z",
     )
     (run_root / "run.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",

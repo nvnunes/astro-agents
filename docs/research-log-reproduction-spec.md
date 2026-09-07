@@ -899,7 +899,7 @@ Each run directory contains one canonical `run.json` using
     "finished_at": null
   },
   "paths": {
-    "run": "tmp/reproduce-research-e003-reproduce-...",
+    "run": "tmp/reproduction/2030-01-01/reproduce-research-e003-reproduce-...",
     "workspace": "workspace",
     "diagnostics": "diagnostics",
     "staging": "executions"
@@ -1274,7 +1274,7 @@ The complete v1 reason vocabulary is `baseline_unavailable`,
         "skipped": 0
       },
       "folder": {
-        "path": "tmp/reproduce-research-e003-reproduce-...",
+        "path": "tmp/reproduction/2030-01-01/reproduce-research-e003-reproduce-...",
         "availability": "available"
       }
     }
@@ -1370,25 +1370,38 @@ run directory until a researcher deletes the directory manually.
 The run directory is one of:
 
 ```text
-<project>/tmp/reproduce-<log>-<run-id>/
-<project>/tmp/reproduce-<log>-<entry>-<run-id>/
+<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<run-id>/
+<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<entry>-<run-id>/
 ```
 
-`<log>` and `<entry>` are stable normalized filesystem-safe identifiers. The
-directory contains the durable run state, one project-layout `workspace/`, and
-one `research-log-reproduction-staging/2` manifest. The historical filename
-`staging.json` is retained for compatibility, but the v2 manifest is a durable
-comparison and run-output index rather than a copied staging bundle. Each
-execution record contains exactly `bytes`, `complete`, `diagnostics`, `entry`,
-`execution_id`, `outputs`, and `path`; `path` is `workspace`. Each output records
-its artifact identity, declared kind, availability, exact workspace-relative
-path, outcome and reason, selected comparison profile, and retained and
-regenerated fingerprints. The full record is written atomically before any
-matching confirmation.
+`YYYY-MM-DD` is the UTC calendar date of the run's immutable `accepted_at`
+timestamp. A run that crosses midnight remains under its acceptance date. The
+date organizes independent runs and does not identify a reproduction batch.
+Each run is a direct child of its date directory; there are no intermediate log
+or entry directories. `<log>` and `<entry>` are stable normalized
+filesystem-safe identifiers.
+
+Acceptance creates only the shared `reproduction/` root, the applicable date
+directory, and the accepted run directory. A dry run or read-only lookup
+creates none of them. Existing-run lookup takes only the immutable run ID and
+scans the immediate date directories for the exact matching leaf. Zero matches
+is not found; more than one match is an integrity failure. There is no date
+argument, persistent run index, or legacy-path lookup.
+
+The directory contains the durable run state, one project-layout `workspace/`,
+and one `research-log-reproduction-staging/2` manifest. The historical
+filename `staging.json` is retained for compatibility, but the v2 manifest is
+a durable comparison and run-output index rather than a copied staging bundle.
+Each execution record contains exactly `bytes`, `complete`, `diagnostics`,
+`entry`, `execution_id`, `outputs`, and `path`; `path` is `workspace`. Each
+output records its artifact identity, declared kind, availability, exact
+workspace-relative path, outcome and reason, selected comparison profile, and
+retained and regenerated fingerprints. The full record is written atomically
+before any matching confirmation.
 
 Reproduction must never overwrite or delete a retained run directory or staged
 bundle. There is no discard, cleanup, or supersede command. A researcher may
-delete material directly from `<project>/tmp`.
+delete material directly from `<project>/tmp/reproduction`.
 
 ### Promotion
 

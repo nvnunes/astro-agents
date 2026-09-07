@@ -50,20 +50,31 @@ class ReproductionJobTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
             run_id = "reproduce-20300101t000000z-fixture"
-            logical_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
-            logical_root.mkdir()
+            logical_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
+            logical_root.mkdir(parents=True)
             atomic_write_text(
                 logical_root / "run.json",
                 json.dumps(
-                    _accepted_record(log, _plan(), run_id, logical_root, project),
+                    _accepted_record(
+                        log,
+                        _plan(),
+                        run_id,
+                        logical_root,
+                        accepted_at="2030-01-01T00:00:00Z",
+                    ),
                     indent=2,
                     sort_keys=True,
                 )
                 + "\n",
             )
             unrelated = external_tmp / (
-                "reproduce-research-e003-"
-                "reproduce-20300102t000000z-incompatible"
+                "reproduce-research-e003-reproduce-20300102t000000z-incompatible"
             )
             unrelated.mkdir()
             (unrelated / "run.json").write_text(
@@ -71,6 +82,35 @@ class ReproductionJobTests(unittest.TestCase):
             )
 
             self.assertEqual(_find_run(log, run_id), logical_root.resolve())
+
+    def test_run_lookup_rejects_duplicate_run_id_across_dates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-fixture"
+            leaf = f"reproduce-research-e003-{run_id}"
+            for run_date in ("2030-01-01", "2030-01-02"):
+                run_root = project / "tmp" / "reproduction" / run_date / leaf
+                run_root.mkdir(parents=True)
+                record = _accepted_record(
+                    log,
+                    _plan(),
+                    run_id,
+                    run_root,
+                    accepted_at=f"{run_date}T00:00:00Z",
+                )
+                atomic_write_text(
+                    run_root / "run.json",
+                    json.dumps(record, indent=2, sort_keys=True) + "\n",
+                )
+
+            with self.assertRaisesRegex(ActionError, "expected one run, found 2"):
+                _find_run(log, run_id)
 
     def test_scope_locks_allow_distinct_entries_and_reject_overlaps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -146,9 +186,7 @@ class ReproductionJobTests(unittest.TestCase):
                 verify.assert_called_once_with(log, plan)
                 self.assertEqual(
                     tuple(
-                        sorted(
-                            path.relative_to(project) for path in project.rglob("*")
-                        )
+                        sorted(path.relative_to(project) for path in project.rglob("*"))
                     ),
                     before,
                 )
@@ -164,7 +202,13 @@ class ReproductionJobTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             plan = _plan()
             run_id = "reproduce-20300101t000000z-fixture"
-            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
             run_root.mkdir(parents=True)
 
             with mock.patch(
@@ -176,7 +220,6 @@ class ReproductionJobTests(unittest.TestCase):
                     plan,
                     run_id,
                     run_root,
-                    project,
                 )
 
             expected = json.loads(
@@ -195,12 +238,16 @@ class ReproductionJobTests(unittest.TestCase):
             (project / ".git").mkdir()
             log_root = project / "docs" / "research"
             log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(
-                parents=True
-            )
+            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
-            run_root = project / "tmp" / "reproduce-research-e003-fixture"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / "reproduce-research-e003-reproduce-20300101t000000z-fixture"
+            )
             run_root.mkdir(parents=True)
             for name in names:
                 with self.subTest(name=name):
@@ -216,7 +263,7 @@ class ReproductionJobTests(unittest.TestCase):
                         _plan(),
                         cast(str, expected["run_id"]),
                         run_root,
-                        project,
+                        accepted_at="2030-01-01T00:00:00Z",
                     )
                     cast(dict[str, object], record["progress"]).update(
                         {
@@ -231,9 +278,7 @@ class ReproductionJobTests(unittest.TestCase):
                             "latest_execution_diagnostic": expected[
                                 "latest_execution_diagnostic"
                             ],
-                            "operational_failure": expected[
-                                "operational_failure"
-                            ],
+                            "operational_failure": expected["operational_failure"],
                             "phase": expected["phase"],
                             "status": expected["status"],
                         }
@@ -256,14 +301,20 @@ class ReproductionJobTests(unittest.TestCase):
             log_root.mkdir(parents=True)
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
-            run_root = project / "tmp" / "reproduce-research-fixture"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / "reproduce-research-fixture"
+            )
             run_root.mkdir(parents=True)
             record = _accepted_record(
                 LogContext(summary, log_root),
                 _plan(),
                 "reproduce-20300101t000000z-fixture",
                 run_root,
-                project,
+                accepted_at="2030-01-01T00:00:00Z",
             )
             record["unknown"] = True
             path = run_root / "run.json"
@@ -297,6 +348,10 @@ class ReproductionJobTests(unittest.TestCase):
                     return_value="reproduce-20300101t000000z-fixture",
                 ),
                 mock.patch(
+                    "log_commands.reproduction_jobs._utc_now",
+                    return_value="2030-01-01T00:00:00Z",
+                ),
+                mock.patch(
                     "log_commands.reproduction_jobs._acquire_scope_locks",
                     return_value=(),
                 ),
@@ -306,7 +361,13 @@ class ReproductionJobTests(unittest.TestCase):
                     log, entry="e003", include_slow=False, recheck=True
                 )
 
-            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
             record = _load_run(run_root / "run.json")
             self.assertEqual(record["schema"], RUN_SCHEMA)
             self.assertEqual(
@@ -346,7 +407,13 @@ class ReproductionJobTests(unittest.TestCase):
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
             run_id = "reproduce-20300101t000000z-fixture"
-            run_root = project / "tmp" / f"reproduce-research-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-{run_id}"
+            )
             run_root.mkdir(parents=True)
             plan = _empty_plan()
             record = _accepted_record(
@@ -354,7 +421,7 @@ class ReproductionJobTests(unittest.TestCase):
                 plan,
                 run_id,
                 run_root,
-                project,
+                accepted_at="2030-01-01T00:00:00Z",
             )
             atomic_write_text(
                 run_root / "run.json",
@@ -472,12 +539,24 @@ class ReproductionJobTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
             run_id = "reproduce-20300101t000000z-fixture"
-            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
             run_root.mkdir(parents=True)
             atomic_write_text(
                 run_root / "run.json",
                 json.dumps(
-                    _accepted_record(log, _plan(), run_id, run_root, project),
+                    _accepted_record(
+                        log,
+                        _plan(),
+                        run_id,
+                        run_root,
+                        accepted_at="2030-01-01T00:00:00Z",
+                    ),
                     indent=2,
                     sort_keys=True,
                 )
@@ -496,9 +575,9 @@ class ReproductionJobTests(unittest.TestCase):
             stopped = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(stopped["status"], "stopped")
             self.assertEqual(
-                cast(
-                    Mapping[str, object], stopped["latest_execution_diagnostic"]
-                )["code"],
+                cast(Mapping[str, object], stopped["latest_execution_diagnostic"])[
+                    "code"
+                ],
                 "supervisor_lost",
             )
             terminate.assert_called_once_with(run_id)
@@ -540,9 +619,21 @@ class ReproductionJobTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
             run_id = "reproduce-20300101t000000z-fixture"
-            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
             run_root.mkdir(parents=True)
-            record = _accepted_record(log, _plan(), run_id, run_root, project)
+            record = _accepted_record(
+                log,
+                _plan(),
+                run_id,
+                run_root,
+                accepted_at="2030-01-01T00:00:00Z",
+            )
             state = cast(dict[str, object], record["state"])
             state.update(
                 {
@@ -598,9 +689,21 @@ class ReproductionJobTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
             run_id = "reproduce-20300101t000000z-fixture"
-            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root = (
+                project
+                / "tmp"
+                / "reproduction"
+                / "2030-01-01"
+                / f"reproduce-research-e003-{run_id}"
+            )
             run_root.mkdir(parents=True)
-            record = _accepted_record(log, _plan(), run_id, run_root, project)
+            record = _accepted_record(
+                log,
+                _plan(),
+                run_id,
+                run_root,
+                accepted_at="2030-01-01T00:00:00Z",
+            )
             cast(dict[str, object], record["state"]).update(
                 {"phase": None, "status": "stopped"}
             )

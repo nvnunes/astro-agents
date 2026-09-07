@@ -63,6 +63,7 @@ class _Fixture:
         self.project = root / "project"
         self.project.mkdir()
         (self.project / ".git").mkdir()
+        (self.project / "tmp").mkdir()
         environment = self.project / ".conda" / "bin"
         environment.mkdir(parents=True)
         (environment / "python").symlink_to(Path(sys.executable).resolve())
@@ -156,7 +157,9 @@ class _Fixture:
         suffix = hashlib.sha256(str(self.project).encode()).hexdigest()[:12]
         run_id = f"reproduce-controlled-{suffix}"
         return prepare_output_workspace(
-            self.project, self.project / "tmp" / run_id, run_id
+            self.project,
+            self.project / "tmp" / "reproduction" / "2026-09-06" / run_id,
+            run_id,
         )
 
 

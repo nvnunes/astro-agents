@@ -16,7 +16,11 @@ from validation.pyrun_state import PYRUN_EXECUTION_RE
 
 from .context import ENTRY_ID_RE
 from .model import ActionError
-from .reproduction_paths import resolve_project_tmp
+from .reproduction_paths import (
+    REPRODUCTION_ROOT_NAME,
+    is_canonical_run_path,
+    resolve_project_tmp,
+)
 from .reproduction_planner import ReproductionStateProjection
 
 RESULT_SCHEMA = "research-log-reproduction-result/1"
@@ -25,9 +29,7 @@ MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
 MAX_RUN_RESULTS = 10_000
 MAX_QUERY_RESULTS = 50
-TIMESTAMP_RE = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z"
-)
+TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 OUTCOMES = ("matched", "changed", "failed", "comparison_failed", "skipped")
 RUN_STATUSES = ("complete", "failed", "stopped")
@@ -164,7 +166,7 @@ class RunFolder:
     def __post_init__(self) -> None:
         _choice(self.availability, ("available", "unknown"), "folder.availability")
         path = _portable_path(self.path, "folder.path")
-        if not path.startswith("tmp/reproduce-"):
+        if not is_canonical_run_path(path):
             raise ReproductionResultError("run folder path is not canonical")
 
     def as_dict(self) -> dict[str, str]:
@@ -239,9 +241,10 @@ class ReproductionResults:
         }
 
     def serialized(self) -> str:
-        text = json.dumps(
-            self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True
-        ) + "\n"
+        text = (
+            json.dumps(self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
         if len(text.encode("utf-8")) > MAX_RESULT_BYTES:
             raise ReproductionResultError("reproduction result exceeds 64 MiB")
         return text
@@ -373,17 +376,29 @@ def reconcile_run_folders(
             results.artifacts,
             tuple(_run_with_folder(run, "unknown") for run in results.runs),
         )
+    storage_root = temporary_root / REPRODUCTION_ROOT_NAME
+    try:
+        if storage_root.is_symlink() or (
+            storage_root.exists() and not storage_root.is_dir()
+        ):
+            raise OSError("reproduction storage root is unavailable")
+    except OSError:
+        return ReproductionResults(
+            results.summary,
+            results.updated_at,
+            results.artifacts,
+            tuple(_run_with_folder(run, "unknown") for run in results.runs),
+        )
     retained: list[RunResult] = []
     for run in results.runs:
         parts = PurePosixPath(run.folder.path).parts
         target = temporary_root.joinpath(*parts[1:])
         try:
-            parent_available = target.parent.is_dir() and not target.parent.is_symlink()
             exists = target.exists() or target.is_symlink()
         except OSError:
             retained.append(_run_with_folder(run, "unknown"))
             continue
-        if not exists and parent_available:
+        if not exists:
             continue
         availability = (
             "available"
@@ -498,9 +513,7 @@ def compose_reproduction_report(
     lines.append("| --- | --- | --- | --- | --- |")
     for run in results.runs:
         target = (
-            f"entry {run.target['entry']}"
-            if run.target["kind"] == "entry"
-            else "log"
+            f"entry {run.target['entry']}" if run.target["kind"] == "entry" else "log"
         )
         folder = _folder_label(run.folder, folder_links_from)
         lines.append(
@@ -535,9 +548,9 @@ def query_artifacts(
         {
             **item.as_dict(),
             "currentness": (
-                (currentness or {}).get(
-                    (item.entry, item.artifact), ArtifactCurrentness(True)
-                ).reason
+                (currentness or {})
+                .get((item.entry, item.artifact), ArtifactCurrentness(True))
+                .reason
                 or "current"
             ),
         }
@@ -688,7 +701,7 @@ def _folder(value: object) -> RunFolder:
         item["availability"], ("available", "unknown"), "folder.availability"
     )
     path = _portable_path(item["path"], "folder.path")
-    if not path.startswith("tmp/reproduce-"):
+    if not is_canonical_run_path(path):
         raise ReproductionResultError("run folder path is not canonical")
     return RunFolder(path, availability)
 
@@ -793,9 +806,7 @@ def _choice(value: object, choices: Iterable[str], subject: str) -> str:
 
 
 def _mapping(value: object, subject: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or not all(
-        isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ReproductionResultError(f"{subject} must be an object")
     return cast(Mapping[str, Any], value)
 
@@ -850,9 +861,7 @@ def _folder_label(folder: RunFolder, report_root: Path | None) -> str:
     if folder.availability != "available" or report_root is None:
         return f"`{folder.path}` ({folder.availability})"
     project_root = report_root
-    while project_root.parent != project_root and not (
-        project_root / ".git"
-    ).exists():
+    while project_root.parent != project_root and not (project_root / ".git").exists():
         project_root = project_root.parent
     target = project_root / PurePosixPath(folder.path)
     relative = os.path.relpath(target, start=report_root).replace(os.sep, "/")

@@ -81,17 +81,13 @@ class ReproductionResultContractTests(unittest.TestCase):
         self.assertEqual(merged.runs[0].run_id, run.run_id)
         self.assertEqual(
             next(
-                item
-                for item in merged.artifacts
-                if item.artifact == "data/matched.csv"
+                item for item in merged.artifacts if item.artifact == "data/matched.csv"
             ).outcome,
             "changed",
         )
         self.assertEqual(
             next(
-                item
-                for item in merged.artifacts
-                if item.artifact == "data/failed.json"
+                item for item in merged.artifacts if item.artifact == "data/failed.json"
             ).run_id,
             current.runs[0].run_id,
         )
@@ -139,9 +135,7 @@ class ReproductionResultContractTests(unittest.TestCase):
         decoded = ReproductionResults.from_json(result.serialized())
 
         self.assertEqual(decoded.artifacts[0].artifact, artifact.artifact)
-        with self.assertRaisesRegex(
-            ReproductionResultError, "not a canonical path"
-        ):
+        with self.assertRaisesRegex(ReproductionResultError, "not a canonical path"):
             ArtifactResult(
                 "e001",
                 "/Volumes/Data/fixture/../build.log",
@@ -174,13 +168,13 @@ class ReproductionResultContractTests(unittest.TestCase):
                 external = root / "external"
                 external.mkdir()
                 (root / "tmp").symlink_to(external, target_is_directory=True)
-                run_root = external / Path(current.runs[0].folder.path).name
-                run_root.mkdir()
+                run_root = external.joinpath(
+                    *Path(current.runs[0].folder.path).parts[1:]
+                )
+                run_root.mkdir(parents=True)
 
                 available = reconcile_run_folders(current, project_root=root)
-                self.assertEqual(
-                    available.runs[0].folder.availability, "available"
-                )
+                self.assertEqual(available.runs[0].folder.availability, "available")
                 run_root.rmdir()
                 absent = reconcile_run_folders(current, project_root=root)
                 self.assertEqual(absent.runs, ())
@@ -247,9 +241,7 @@ class ReproductionReportTests(unittest.TestCase):
             )
 
             report = compose_reproduction_report(
-                ReproductionResults(
-                    "docs/study.md", "2030-01-01T00:00:00Z", (), ()
-                ),
+                ReproductionResults("docs/study.md", "2030-01-01T00:00:00Z", (), ()),
                 context=load_report_context(summary),
             )
 
@@ -265,9 +257,7 @@ class ReproductionReportTests(unittest.TestCase):
         )
         context = _context()
         currentness = {
-            ("e003", "data/matched.csv"): ArtifactCurrentness(
-                False, "execution_reran"
-            )
+            ("e003", "data/matched.csv"): ArtifactCurrentness(False, "execution_reran")
         }
 
         report = compose_reproduction_report(
@@ -334,7 +324,10 @@ def _run(run_id: str, accepted: str, *, count: int = 1) -> RunResult:
             "comparison_failed": 0,
             "skipped": 0,
         },
-        RunFolder(f"tmp/reproduce-research-{run_id}", "available"),
+        RunFolder(
+            f"tmp/reproduction/{accepted[:10]}/reproduce-research-{run_id}",
+            "available",
+        ),
     )
 
 

@@ -660,7 +660,10 @@ class ReproductionPlanningTests(unittest.TestCase):
                             "finished_at": "2026-09-06T00:01:00Z",
                             "folder": {
                                 "availability": "unknown",
-                                "path": "tmp/reproduce-study-current",
+                                "path": (
+                                    "tmp/reproduction/2030-01-01/"
+                                    "reproduce-study-current"
+                                ),
                             },
                             "include_slow": False,
                             "run_id": "reproduce-20260906t000000z-current",

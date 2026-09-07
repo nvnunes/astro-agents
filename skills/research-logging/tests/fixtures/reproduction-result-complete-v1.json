@@ -97,7 +97,7 @@
       "finished_at": "2030-01-01T00:05:00Z",
       "folder": {
         "availability": "available",
-        "path": "tmp/reproduce-research-reproduce-20300101t000000z-fixture"
+        "path": "tmp/reproduction/2030-01-01/reproduce-research-reproduce-20300101t000000z-fixture"
       },
       "include_slow": false,
       "run_id": "reproduce-20300101t000000z-fixture",

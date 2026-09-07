@@ -913,6 +913,16 @@ Retained scripts and inputs are read in place under confinement. Only generated
 outputs and runtime state are written into the project-local run folder; the
 project itself is not copied.
 
+Run folders live directly beneath the UTC acceptance date:
+
+```text
+<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/
+```
+
+The date is organizational only. Status, stop, resume, inspection, and
+promotion continue to select a run by its immutable run ID without requiring a
+date.
+
 Preview one exact scope without writing anything:
 
 ```bash
@@ -973,11 +983,11 @@ the affected log as a separate operation. Validation findings or an operational
 validation failure remain visible in validation's own report but do not change
 the completed reproduction result or roll back confirmations.
 
-Regenerated files remain together in the project `tmp` run folder. They do not
-replace retained research automatically. If you decide to adopt one complete
-execution output set, a research agent can use the separate explicit `log
-reproduce promote` action under your direction. Promotion copies every related
-output together and leaves the run folder intact.
+Regenerated files remain together in the dated project `tmp/reproduction` run
+folder. They do not replace retained research automatically. If you decide to
+adopt one complete execution output set, a research agent can use the separate
+explicit `log reproduce promote` action under your direction. Promotion copies
+every related output together and leaves the run folder intact.
 
 ## Validating a research log
 

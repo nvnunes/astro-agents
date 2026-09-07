@@ -42,7 +42,11 @@ from .reproduction_execution import (
     populate_output_workspace,
     preflight_execution_safety,
 )
-from .reproduction_paths import resolve_project_tmp
+from .reproduction_paths import (
+    canonical_run_path,
+    iter_canonical_run_roots,
+    run_leaf,
+)
 from .reproduction_planner import (
     INCREMENTAL_SELECTION,
     RECHECK_SELECTION,
@@ -95,14 +99,21 @@ def launch_reproduction(
     )
     project = resolve_project_root(log.root)
     run_id = _new_run_id()
-    run_root = _new_run_root(project, log, entry, run_id)
+    accepted_at = _utc_now()
+    run_root = _new_run_root(project, log, entry, run_id, accepted_at)
     lock_fds = _acquire_scope_locks(log, entry)
     try:
         with operation_lock(log.root, "reproduction-publication.lock"):
             with operation_lock(project, "reproduction-promotion-index.lock"):
                 _require_no_promotion_conflict(log, plan)
                 run_root.mkdir(parents=True)
-                accepted = _accepted_record(log, plan, run_id, run_root, project)
+                accepted = _accepted_record(
+                    log,
+                    plan,
+                    run_id,
+                    run_root,
+                    accepted_at=accepted_at,
+                )
                 atomic_write_text(run_root / "run.json", _canonical(accepted))
         _spawn_supervisor(log, run_root, lock_fds, resume=False)
     except BaseException:
@@ -806,9 +817,10 @@ def _accepted_record(
     plan: ReproductionPlan,
     run_id: str,
     run_root: Path,
-    project: Path,
+    *,
+    accepted_at: str | None = None,
 ) -> dict[str, object]:
-    now = _utc_now()
+    now = accepted_at or _utc_now()
     plan_value = plan.as_dict()
     plan_value.pop("schema")
     return {
@@ -816,7 +828,7 @@ def _accepted_record(
         "include_slow": plan.include_slow,
         "paths": {
             "diagnostics": "diagnostics",
-            "run": run_root.relative_to(project).as_posix(),
+            "run": canonical_run_path(now, run_root.name).as_posix(),
             "staging": "executions",
             "workspace": "workspace",
         },
@@ -1011,7 +1023,7 @@ def _validate_run_members(value: Mapping[str, object]) -> None:
         raise ActionError("reproduction.run.invalid", "slow policy is invalid")
     _validate_progress(value.get("progress"))
     _validate_timestamps(value.get("timestamps"))
-    _validate_paths(value.get("paths"))
+    _validate_paths(value)
     state = cast(Mapping[str, object], value["state"])
     current = state.get("current_execution")
     if current is not None and (
@@ -1068,7 +1080,8 @@ def _validate_timestamps(value: object) -> None:
         raise ActionError("reproduction.run.invalid", "run timestamp is invalid")
 
 
-def _validate_paths(value: object) -> None:
+def _validate_paths(record: Mapping[str, object]) -> None:
+    value = record.get("paths")
     if not isinstance(value, Mapping) or set(value) != {
         "diagnostics",
         "run",
@@ -1082,6 +1095,22 @@ def _validate_paths(value: object) -> None:
         or value.get("workspace") != "workspace"
     ):
         raise ActionError("reproduction.run.invalid", "run paths are invalid")
+    timestamps = cast(Mapping[str, object], record["timestamps"])
+    target = cast(Mapping[str, object], record["target"])
+    summary = record.get("summary")
+    run_id = record.get("run_id")
+    accepted_at = timestamps.get("accepted_at")
+    entry = target.get("entry")
+    if not all(isinstance(item, str) for item in (summary, run_id, accepted_at)):
+        raise ActionError("reproduction.run.invalid", "run paths are invalid")
+    expected_leaf = run_leaf(
+        Path(cast(str, summary)).stem,
+        cast(str | None, entry),
+        cast(str, run_id),
+    )
+    expected = canonical_run_path(cast(str, accepted_at), expected_leaf).as_posix()
+    if value.get("run") != expected:
+        raise ActionError("reproduction.run.invalid", "run path is not canonical")
 
 
 def _validate_failure(value: object) -> None:
@@ -1144,24 +1173,20 @@ def _write_run(root: Path, record: Mapping[str, object]) -> None:
 def _find_run(log: LogContext, run_id: str) -> Path:
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
-    try:
-        tmp = resolve_project_tmp(resolve_project_root(log.root))
-    except OSError:
-        raise ActionError("reproduction.run.missing", f"run not found: {run_id}")
     matches: list[Path] = []
-    for index, candidate in enumerate(
-        sorted(tmp.iterdir(), key=lambda item: item.name)
-    ):
-        if index >= MAX_RUN_DIRECTORIES:
-            raise ActionError(
-                "reproduction.run.resource_limit", "run scan limit exceeded"
-            )
-        if (
-            not candidate.name.startswith("reproduce-")
-            or not candidate.name.endswith(f"-{run_id}")
-            or candidate.is_symlink()
-            or not candidate.is_dir()
-        ):
+    try:
+        candidates = iter_canonical_run_roots(
+            resolve_project_root(log.root), max_entries=MAX_RUN_DIRECTORIES
+        )
+    except OSError as error:
+        code = (
+            "reproduction.run.resource_limit"
+            if "scan limit" in str(error)
+            else "reproduction.run.missing"
+        )
+        raise ActionError(code, str(error)) from error
+    for candidate in candidates:
+        if not candidate.name.endswith(f"-{run_id}"):
             continue
         path = candidate / "run.json"
         if path.is_file() and not path.is_symlink():
@@ -1170,34 +1195,30 @@ def _find_run(log: LogContext, run_id: str) -> Path:
                 log
             ):
                 matches.append(candidate.resolve())
-    if len(matches) != 1:
+    if not matches:
+        raise ActionError("reproduction.run.missing", f"run not found: {run_id}")
+    if len(matches) > 1:
         raise ActionError(
-            "reproduction.run.missing", f"expected one run, found {len(matches)}"
+            "reproduction.run.integrity",
+            f"expected one run, found {len(matches)}: {run_id}",
         )
     return matches[0]
 
 
 def _new_run_root(
-    project: Path, log: LogContext, entry: str | None, run_id: str
+    project: Path,
+    log: LogContext,
+    entry: str | None,
+    run_id: str,
+    accepted_at: str,
 ) -> Path:
-    name = _safe_component(log.root.name)
-    parts = ["reproduce", name]
-    if entry is not None:
-        parts.append(_safe_component(entry))
-    parts.append(run_id)
-    return project / "tmp" / "-".join(parts)
+    leaf = run_leaf(log.root.name, entry, run_id)
+    return project / canonical_run_path(accepted_at, leaf)
 
 
 def _new_run_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%Sz").lower()
     return f"reproduce-{stamp}-{secrets.token_hex(6)}"
-
-
-def _safe_component(value: str) -> str:
-    selected = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    if not selected:
-        raise ActionError("reproduction.run.path_invalid", "empty run path component")
-    return selected[:64]
 
 
 def _summary_identity(log: LogContext) -> str:

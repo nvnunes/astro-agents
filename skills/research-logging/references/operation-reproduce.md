@@ -88,6 +88,11 @@ The same command may retry a run whose sole operational failure was
 reproduction-result publication; that retry reuses durable comparisons and
 terminal attempts rather than rerunning commands.
 
+Accepted run folders live at
+`<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`,
+where the date comes from immutable UTC `accepted_at`. All lifecycle commands
+still use only `--run-id`; agents do not derive or supply the date.
+
 A scheduled monitor is optional. Offer to create one only after a run is
 accepted, and create it only after the user confirms. It should report
 meaningful status changes, completion, failure, or required user action and

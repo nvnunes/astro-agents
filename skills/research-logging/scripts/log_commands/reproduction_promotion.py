@@ -39,7 +39,7 @@ from .model import ActionError
 from .reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _find_run, _load_run, _plan_from_record
-from .reproduction_paths import resolve_project_tmp
+from .reproduction_paths import iter_canonical_run_roots
 from .reproduction_planner import (
     project_reproduction_state,
     verify_reproduction_snapshot,
@@ -326,15 +326,10 @@ def _require_no_active_input_overlap(
     promoted = {item.destination.resolve() for item in outputs}
     project = resolve_project_root(log.root)
     try:
-        tmp = resolve_project_tmp(project)
+        run_roots = iter_canonical_run_roots(project, max_entries=MAX_ACTIVE_RUNS)
     except OSError as error:
         raise ActionError("reproduction.promotion.state_invalid", str(error)) from error
-    for index, run_root in enumerate(sorted(tmp.iterdir(), key=lambda path: path.name)):
-        if index >= MAX_ACTIVE_RUNS:
-            raise ActionError(
-                "reproduction.promotion.resource_limit",
-                "active run scan limit exceeded",
-            )
+    for run_root in run_roots:
         path = run_root / "run.json"
         if run_root.is_symlink() or not path.is_file() or path.is_symlink():
             continue

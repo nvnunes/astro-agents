@@ -8,8 +8,11 @@ Reproduce may create or update only these generated paths:
 
 - `<log>/reproduction/results.json`;
 - `<log>/reproduction.md`;
-- `<project>/tmp/reproduce-<log>-<run-id>/` for a log run, or
-  `<project>/tmp/reproduce-<log>-<entry>-<run-id>/` for an entry run; and
+- `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<run-id>/` for a log
+  run, or
+  `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<entry>-<run-id>/`
+  for an entry run, where the date is the UTC date of immutable
+  `accepted_at`; and
 - the existing operation-lock paths used to protect the selected log or entry
   and serialize reproduction publication.
 
@@ -17,6 +20,12 @@ Reproduce may create or update only these generated paths:
 artifact outcomes and run history. `reproduction.md` is its human-only
 projection. Agents do not parse either file during ordinary work; use `log
 reproduce report` and the bounded artifact `list` and `show` routes.
+
+Each run is a direct child of its acceptance-date directory. Reproduce resolves
+existing runs by run ID alone through a bounded scan of those date directories;
+it has no date argument, run index, or legacy lookup. A real acceptance creates
+only the shared root, required date directory, and run directory. Dry runs and
+read-only lookups create nothing.
 
 The project `tmp` run folder contains the immutable run plan, lifecycle status,
 logs, completed execution checkpoints, durable per-execution comparisons, and

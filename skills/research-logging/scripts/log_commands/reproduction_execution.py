@@ -43,6 +43,7 @@ from validation.pyrun_state import (
 from .context import EntryContext, LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import ReproductionPlan
+from .reproduction_paths import canonical_run_root
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 RUNNER_MARKER = "RESEARCH_LOG_REPRODUCTION_RUN_ID"
@@ -280,19 +281,18 @@ def prepare_output_workspace(
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
     source = project_root.resolve()
-    temporary_root = (source / "tmp").resolve()
-    if run_root.parent.resolve() != temporary_root:
+    try:
+        target_root = canonical_run_root(run_root, source, require_exists=False)
+    except OSError as error:
         raise ActionError(
             "reproduction.run.path_invalid",
-            "run directory must be an immediate child of the project tmp root",
-        )
-    target_root = run_root.resolve()
+            "run directory must use the canonical dated reproduction path",
+        ) from error
     if target_root.exists() or target_root.is_symlink():
         raise ActionError(
             "reproduction.run.exists", f"run directory already exists: {run_root}"
         )
-    temporary_root.mkdir(parents=True, exist_ok=True)
-    target_root.mkdir()
+    target_root.mkdir(parents=True)
     return _populate_output_workspace(source, target_root, run_id, cleanup_root=True)
 
 
@@ -304,12 +304,12 @@ def populate_output_workspace(
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
     source = project_root.resolve()
-    temporary_root = (source / "tmp").resolve()
-    root = run_root.resolve()
-    if root.parent != temporary_root or root.is_symlink() or not root.is_dir():
+    try:
+        root = canonical_run_root(run_root, source, require_exists=True)
+    except OSError as error:
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is invalid"
-        )
+        ) from error
     allowed = {"run.json", "supervisor.json", "supervisor.log"}
     if any(path.name not in allowed for path in root.iterdir()):
         raise ActionError(

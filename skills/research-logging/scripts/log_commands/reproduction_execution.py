@@ -35,11 +35,12 @@ from validation.output_bindings import OutputBindingError, project_output_bindin
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
+    PyrunFile,
     load_pyrun_state,
     script_target_path,
 )
 
-from .context import LogContext, resolve_entry
+from .context import EntryContext, LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import ReproductionPlan
 
@@ -1020,13 +1021,23 @@ def _generated_output_paths(
     """Map retained generated identities to run-local graph paths."""
 
     result: dict[Path, tuple[Path, str]] = {}
+    entries: dict[str, EntryContext] = {}
+    states: dict[Path, PyrunFile] = {}
     for planned in plan.executions:
-        entry = resolve_entry(log, _required_string(planned, "entry"))
-        state = load_pyrun_state(
-            entry.root / "pyrun.json",
-            entry_root=entry.root,
-            project_root=workspace.source_project,
-        )
+        entry_id = _required_string(planned, "entry")
+        entry = entries.get(entry_id)
+        if entry is None:
+            entry = resolve_entry(log, entry_id)
+            entries[entry_id] = entry
+        entry_root = entry.root.resolve()
+        state = states.get(entry_root)
+        if state is None:
+            state = load_pyrun_state(
+                entry.root / "pyrun.json",
+                entry_root=entry.root,
+                project_root=workspace.source_project,
+            )
+            states[entry_root] = state
         execution = state.executions.get(_required_string(planned, "execution_id"))
         if execution is None:
             continue

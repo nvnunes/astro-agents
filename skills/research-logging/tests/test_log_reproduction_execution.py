@@ -21,6 +21,7 @@ from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionCheckpoint,
     ExecutionControl,
+    _generated_output_paths,
     _seatbelt_profile,
     execute_planned_recipe,
     execute_reproduction_plan,
@@ -159,6 +160,29 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_generated_output_projection_loads_each_entry_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            executions = tuple(
+                {
+                    "entry": "e001",
+                    "execution_id": fixture.identity,
+                    "order": order,
+                }
+                for order in range(1, 4)
+            )
+            plan = replace(fixture.plan, executions=executions)
+
+            with mock.patch(
+                "log_commands.reproduction_execution.load_pyrun_state",
+                wraps=load_pyrun_state,
+            ) as loader:
+                projected = _generated_output_paths(fixture.log, plan, workspace)
+
+            self.assertEqual(loader.call_count, 1)
+            self.assertEqual(len(projected), 1)
+
     def test_output_workspace_does_not_copy_retained_project_material(
         self,
     ) -> None:

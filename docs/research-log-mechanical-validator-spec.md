@@ -3894,6 +3894,9 @@ never writes a file itself, and is not a general validation mode.
 Indexed entries without `data.json` or `pyrun.json` retain the same valid empty
 state used by ordinary validation; their absence cannot abort a targeted refresh
 unless a refreshed check actually requires that missing declaration or support.
+Candidate confirmation state is matched to its canonical entry root, not to an
+individual Markdown document name, so a split entry whose documents use suffixes
+such as `e002a.md` through `e002h.md` remains one execution-state owner.
 
 The reproduction promotion transaction may also request the bounded targeted
 refresh of Evidence checks whose resolved source is a promoted artifact. It

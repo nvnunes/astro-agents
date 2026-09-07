@@ -36,8 +36,14 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = _log(root)
+            suffixed_entry = entry.with_name("e001a.md")
+            entry.rename(suffixed_entry)
+            entry = suffixed_entry
             summary.write_text(
-                summary.read_text(encoding="utf-8").replace(
+                summary.read_text(encoding="utf-8")
+                .replace("ref entry = e001;", "ref entry = e001a;")
+                .replace("e001.md", "e001a.md")
+                .replace(
                     "# Study\n\n",
                     "# Study\n\n"
                     "Validation: [latest completed report](study/validation.md)\n\n",
@@ -57,8 +63,8 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             )
             summary.write_text(
                 summary.read_text(encoding="utf-8").replace(
-                    "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n",
-                    "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n"
+                    "- [Study trial](study/entries/2026-08-29-e001-study/e001a.md)\n",
+                    "- [Study trial](study/entries/2026-08-29-e001-study/e001a.md)\n"
                     "- [Notes](study/entries/2026-08-29-e002-notes/e002.md)\n",
                 ),
                 encoding="utf-8",
@@ -73,10 +79,13 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             )
             evidence_path = entry.parent / "evidence.json"
             evidence_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence_payload["records"][0]["document"] = (
+                "entries/2026-08-29-e001-study/e001a.md"
+            )
             evidence_payload["records"].append(
                 {
                     "id": "results-diff",
-                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "document": "entries/2026-08-29-e001-study/e001a.md",
                     "kind": "artifact",
                     "sources": [{"source": "<results>", "locator": None}],
                     "transformation": None,
@@ -95,7 +104,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             direct = next(
                 check
                 for check in prior.checks
-                if check.identity == "provenance:e001:success-rate"
+                if check.identity == "provenance:e001a:success-rate"
             )
             self.assertEqual(direct.failure.code, "provenance.output.unconfirmed")
 
@@ -105,7 +114,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 entry.read_text(encoding="utf-8"),
                 CommandContext(
                     log_id=summary.with_suffix("").as_posix(),
-                    entry="e001",
+                    entry="e001a",
                     document=entry.relative_to(summary.with_suffix("")).as_posix(),
                     entry_root=entry_root,
                     log_root=summary.with_suffix(""),
@@ -191,7 +200,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             partial_direct = next(
                 check
                 for check in partial.checks
-                if check.identity == "provenance:e001:success-rate"
+                if check.identity == "provenance:e001a:success-rate"
             )
             self.assertEqual(partial_direct.status.value, "fail")
             self.assertEqual(

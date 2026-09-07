@@ -83,6 +83,7 @@ class _RefreshState:
     invocations: tuple[Invocation, ...]
     producer_index: ProducerIndex
     entries: Mapping[str, _EntryState]
+    execution_entries: Mapping[str, _EntryState]
     owners: Mapping[str, _EntryState]
 
 
@@ -501,71 +502,135 @@ def _load_refresh_state(
     root = project_root(summary)
     entries: dict[str, _EntryState] = {}
     documents: list[tuple[Invocation, ...]] = []
+    candidate_roots = _candidate_state_roots(candidate_states)
     for target in index_entry_documents(summary_text):
-        document = (summary.parent / target).resolve()
-        entry = document.stem.lower()
-        entry_root = document.parent
-        try:
-            data_path = entry_root / "data.json"
-            data = (
-                load_data_file(data_path, entry_root=entry_root)
-                if data_path.is_file()
-                else None
-            )
-            text = document.read_text(encoding="utf-8")
-            discovery = discover_commands(
-                text,
-                CommandContext(
-                    log_id=log_root.as_posix(),
-                    entry=entry,
-                    document=document.relative_to(log_root).as_posix(),
-                    entry_root=entry_root,
-                    log_root=log_root,
-                    project_root=root,
-                    data_file=data,
-                ),
-            )
-        except (OSError, UnicodeError, MechanicalContractError) as error:
-            raise TargetedRefreshError(str(error)) from error
-        if discovery.failures:
-            first = discovery.failures[0]
-            raise TargetedRefreshError(
-                f"current command discovery failed: {first.error.code}"
-            )
-        documents.append(discovery.invocations)
-        try:
-            pyrun_path = entry_root / "pyrun.json"
-            if entry in candidate_states:
-                pyrun = candidate_states[entry]
-                serialized = validated_pyrun_serialization(
-                    pyrun, project_root=root
-                )
-            elif pyrun_path.exists() or pyrun_path.is_symlink():
-                pyrun = load_pyrun_state(
-                    pyrun_path,
-                    entry_root=entry_root,
-                    project_root=root,
-                )
-                serialized = pyrun_path.read_text(encoding="utf-8")
-            else:
-                pyrun = empty_pyrun_state(entry_root)
-                serialized = pyrun.serialized()
-        except (OSError, UnicodeError, MechanicalContractError) as error:
-            raise TargetedRefreshError(str(error)) from error
-        entries[entry] = _EntryState(
-            entry,
-            entry_root,
-            data,
-            pyrun,
-            hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        selected, invocations = _load_refresh_entry(
+            summary,
+            target,
+            log_root=log_root,
+            project=root,
+            candidate_roots=candidate_roots,
         )
+        entries[selected.entry] = selected
+        documents.append(invocations)
     try:
         invocations = order_invocations(documents)
         producer_index = build_producer_index(invocations)
     except MechanicalContractError as error:
         raise TargetedRefreshError(str(error)) from error
+    execution_entries = _candidate_execution_entries(entries, candidate_states)
     owners = {value.owner: value for value in entries.values()}
-    return _RefreshState(root, invocations, producer_index, entries, owners)
+    return _RefreshState(
+        root, invocations, producer_index, entries, execution_entries, owners
+    )
+
+
+def _candidate_state_roots(
+    candidate_states: Mapping[str, PyrunFile],
+) -> dict[Path, tuple[str, PyrunFile]]:
+    roots: dict[Path, tuple[str, PyrunFile]] = {}
+    for entry_id, candidate in candidate_states.items():
+        candidate_root = candidate.entry_root.resolve()
+        prior = roots.get(candidate_root)
+        if prior is not None and prior[0] != entry_id:
+            raise TargetedRefreshError(
+                "multiple candidate entry identities share one entry root"
+            )
+        roots[candidate_root] = (entry_id, candidate)
+    return roots
+
+
+def _load_refresh_entry(
+    summary: Path,
+    target: str,
+    *,
+    log_root: Path,
+    project: Path,
+    candidate_roots: Mapping[Path, tuple[str, PyrunFile]],
+) -> tuple[_EntryState, tuple[Invocation, ...]]:
+    document = (summary.parent / target).resolve()
+    entry = document.stem.lower()
+    entry_root = document.parent
+    try:
+        data_path = entry_root / "data.json"
+        data = (
+            load_data_file(data_path, entry_root=entry_root)
+            if data_path.is_file()
+            else None
+        )
+        text = document.read_text(encoding="utf-8")
+        discovery = discover_commands(
+            text,
+            CommandContext(
+                log_id=log_root.as_posix(),
+                entry=entry,
+                document=document.relative_to(log_root).as_posix(),
+                entry_root=entry_root,
+                log_root=log_root,
+                project_root=project,
+                data_file=data,
+            ),
+        )
+        pyrun, serialized = _load_refresh_pyrun(
+            entry_root, project, candidate_roots
+        )
+    except (OSError, UnicodeError, MechanicalContractError) as error:
+        raise TargetedRefreshError(str(error)) from error
+    if discovery.failures:
+        first = discovery.failures[0]
+        raise TargetedRefreshError(
+            f"current command discovery failed: {first.error.code}"
+        )
+    return (
+        _EntryState(
+            entry,
+            entry_root,
+            data,
+            pyrun,
+            hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        ),
+        discovery.invocations,
+    )
+
+
+def _load_refresh_pyrun(
+    entry_root: Path,
+    project: Path,
+    candidate_roots: Mapping[Path, tuple[str, PyrunFile]],
+) -> tuple[PyrunFile, str]:
+    selected = candidate_roots.get(entry_root.resolve())
+    if selected is not None:
+        pyrun = selected[1]
+        return pyrun, validated_pyrun_serialization(pyrun, project_root=project)
+    pyrun_path = entry_root / "pyrun.json"
+    if pyrun_path.exists() or pyrun_path.is_symlink():
+        pyrun = load_pyrun_state(
+            pyrun_path,
+            entry_root=entry_root,
+            project_root=project,
+        )
+        return pyrun, pyrun_path.read_text(encoding="utf-8")
+    pyrun = empty_pyrun_state(entry_root)
+    return pyrun, pyrun.serialized()
+
+
+def _candidate_execution_entries(
+    entries: Mapping[str, _EntryState],
+    candidate_states: Mapping[str, PyrunFile],
+) -> dict[str, _EntryState]:
+    selected: dict[str, _EntryState] = {}
+    for entry_id, candidate in candidate_states.items():
+        matches = {
+            item.root.resolve(): item
+            for item in entries.values()
+            if item.root.resolve() == candidate.entry_root.resolve()
+        }
+        if len(matches) != 1:
+            raise TargetedRefreshError(
+                f"candidate entry root is not indexed: {entry_id}"
+            )
+        selected[entry_id] = next(iter(matches.values()))
+    return selected
 
 
 def _affected_checks(
@@ -575,11 +640,11 @@ def _affected_checks(
 ) -> tuple[MechanicalCheck, ...]:
     changed_producers: set[str] = set()
     for entry, identities in changed_execution_ids.items():
-        selected = state.entries.get(entry)
+        selected = state.execution_entries.get(entry)
         if selected is None or not identities <= set(selected.state.executions):
             raise TargetedRefreshError("changed execution identity is unavailable")
         for invocation in state.invocations:
-            if invocation.entry != entry:
+            if invocation.material_owner != selected.owner:
                 continue
             try:
                 recipe = recipe_from_invocation(

@@ -44,6 +44,25 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            narrative = (
+                summary.with_suffix("")
+                / "entries"
+                / "2026-08-29-e002-notes"
+                / "e002.md"
+            )
+            narrative.parent.mkdir(parents=True)
+            narrative.write_text(
+                "# Entry e002\n\n## Notes\n\nNarrative-only context.\n",
+                encoding="utf-8",
+            )
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace(
+                    "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n",
+                    "- [Study trial](study/entries/2026-08-29-e001-study/e001.md)\n"
+                    "- [Notes](study/entries/2026-08-29-e002-notes/e002.md)\n",
+                ),
+                encoding="utf-8",
+            )
             entry.write_text(
                 entry.read_text(encoding="utf-8").replace(
                     "The success rate was",

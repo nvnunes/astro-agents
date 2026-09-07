@@ -3891,6 +3891,9 @@ scope aggregates through the ordinary generated-record contract. Any command,
 material, support, or dependency inconsistency aborts the refresh. This service
 never evaluates Structure, Evidence, Hygiene, or unrelated Provenance checks,
 never writes a file itself, and is not a general validation mode.
+Indexed entries without `data.json` or `pyrun.json` retain the same valid empty
+state used by ordinary validation; their absence cannot abort a targeted refresh
+unless a refreshed check actually requires that missing declaration or support.
 
 The reproduction promotion transaction may also request the bounded targeted
 refresh of Evidence checks whose resolved source is a promoted artifact. It

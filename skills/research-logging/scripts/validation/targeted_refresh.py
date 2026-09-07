@@ -50,6 +50,7 @@ from .provenance import (
 )
 from .pyrun_state import (
     PyrunFile,
+    empty_pyrun_state,
     execution_id,
     legacy_output_projection,
     load_pyrun_state,
@@ -67,7 +68,7 @@ class TargetedRefreshError(ValueError):
 class _EntryState:
     entry: str
     root: Path
-    data: DataFile
+    data: DataFile | None
     state: PyrunFile
     record_digest: str
 
@@ -505,7 +506,12 @@ def _load_refresh_state(
         entry = document.stem.lower()
         entry_root = document.parent
         try:
-            data = load_data_file(entry_root / "data.json", entry_root=entry_root)
+            data_path = entry_root / "data.json"
+            data = (
+                load_data_file(data_path, entry_root=entry_root)
+                if data_path.is_file()
+                else None
+            )
             text = document.read_text(encoding="utf-8")
             discovery = discover_commands(
                 text,
@@ -528,16 +534,22 @@ def _load_refresh_state(
             )
         documents.append(discovery.invocations)
         try:
-            pyrun = candidate_states.get(entry) or load_pyrun_state(
-                entry_root / "pyrun.json",
-                entry_root=entry_root,
-                project_root=root,
-            )
-            serialized = (
-                validated_pyrun_serialization(pyrun, project_root=root)
-                if entry in candidate_states
-                else (entry_root / "pyrun.json").read_text(encoding="utf-8")
-            )
+            pyrun_path = entry_root / "pyrun.json"
+            if entry in candidate_states:
+                pyrun = candidate_states[entry]
+                serialized = validated_pyrun_serialization(
+                    pyrun, project_root=root
+                )
+            elif pyrun_path.exists() or pyrun_path.is_symlink():
+                pyrun = load_pyrun_state(
+                    pyrun_path,
+                    entry_root=entry_root,
+                    project_root=root,
+                )
+                serialized = pyrun_path.read_text(encoding="utf-8")
+            else:
+                pyrun = empty_pyrun_state(entry_root)
+                serialized = pyrun.serialized()
         except (OSError, UnicodeError, MechanicalContractError) as error:
             raise TargetedRefreshError(str(error)) from error
         entries[entry] = _EntryState(
@@ -612,6 +624,7 @@ def _refresh_direct_check(
     entry = state.entries.get(entry_id)
     if entry is None:
         raise TargetedRefreshError(f"unknown entry in check: {check.identity}")
+    data = _require_entry_data(entry, check.identity)
     dependencies: list[Mapping[str, object]] = [
         (
             _current_artifact_dependency(dependency, entry)
@@ -632,7 +645,7 @@ def _refresh_direct_check(
                     f"invalid input dependency: {check.identity}"
                 )
             local_name = name.rsplit(":", 1)[-1]
-            resource = entry.data.by_name.get(local_name)
+            resource = data.by_name.get(local_name)
             if resource is None:
                 raise TargetedRefreshError(
                     f"missing declared input {name!r}: {check.identity}"
@@ -696,12 +709,13 @@ def _current_artifact_dependency(
     raw_inputs = dependency.get("inputs")
     if not isinstance(artifacts, list) or not isinstance(raw_inputs, list):
         raise TargetedRefreshError("artifact dependency is invalid")
+    data = _require_entry_data(entry, "artifact dependency")
     inputs = []
     for raw in raw_inputs:
         if not isinstance(raw, Mapping) or not isinstance(raw.get("name"), str):
             raise TargetedRefreshError("artifact input dependency is invalid")
         name = cast(str, raw["name"])
-        resource = entry.data.by_name.get(name.rsplit(":", 1)[-1])
+        resource = data.by_name.get(name.rsplit(":", 1)[-1])
         if resource is None:
             raise TargetedRefreshError(
                 f"artifact input declaration is unavailable: {name}"
@@ -714,6 +728,14 @@ def _current_artifact_dependency(
             }
         )
     return {"artifacts": list(artifacts), "inputs": inputs}
+
+
+def _require_entry_data(entry: _EntryState, subject: str) -> DataFile:
+    if entry.data is None:
+        raise TargetedRefreshError(
+            f"entry data is unavailable for {subject}: {entry.entry}"
+        )
+    return entry.data
 
 
 def _entry_for(invocation: Invocation, state: _RefreshState) -> _EntryState:

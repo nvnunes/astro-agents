@@ -51,7 +51,10 @@ from .context import (
 )
 from .model import ActionError
 from .reproduction_contract import (
+    LEGACY_SOURCE_SNAPSHOT_SCHEMA,
+    SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
+    canonical_execution_source_digest,
     canonical_record_digest,
     source_snapshot,
 )
@@ -835,10 +838,11 @@ def _project_plan(
     authority_files = [
         {"path": _canonical_path(path, state.project_root), "sha256": _digest(path)}
         for path in sorted(state.authority_paths, key=lambda item: item.as_posix())
+        if path.name != "pyrun.json"
     ]
     execution_snapshot = [
         {
-            "digest": canonical_record_digest(owner.execution.as_dict()),
+            "digest": canonical_execution_source_digest(owner.execution.as_dict()),
             "entry": owner.entry.context.id,
             "execution_id": identity,
         }
@@ -1010,21 +1014,16 @@ def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> Non
         )
 
 
-def verify_reproduction_publication_snapshot(
+def verify_reproduction_runtime_snapshot(
     log: LogContext, plan: ReproductionPlan
 ) -> None:
-    """Recheck publication inputs while allowing unrelated entry publication.
+    """Verify immutable run sources while allowing owned confirmation writes."""
 
-    A log run owns the whole log and therefore retains the exact admitted
-    validation and source projections. Distinct entry runs may publish in
-    either order; their own authority, execution, and material snapshots remain
-    exact while shared generated validation state is rebased under the brief
-    publication mutex.
-    """
-
-    if plan.target.get("kind") != "entry":
+    if plan.source_snapshot.get("schema") == LEGACY_SOURCE_SNAPSHOT_SCHEMA:
         verify_reproduction_snapshot(log, plan)
         return
+    if plan.source_snapshot.get("schema") != SOURCE_SNAPSHOT_SCHEMA:
+        raise ActionError("reproduction.source.invalid", "unknown source snapshot")
     project_root = resolve_project_root(log.root)
     _recheck_authority_files(plan, project_root)
     _recheck_executions(plan, log, project_root)
@@ -1089,9 +1088,17 @@ def _recheck_executions(
                 project_root=project_root,
             )
         execution = loaded[entry_id].executions.get(identity)
+        digest = (
+            canonical_execution_source_digest(execution.as_dict())
+            if execution is not None
+            and plan.source_snapshot.get("schema") == SOURCE_SNAPSHOT_SCHEMA
+            else canonical_record_digest(execution.as_dict())
+            if execution is not None
+            else None
+        )
         if (
             execution is None
-            or canonical_record_digest(execution.as_dict()) != expected
+            or digest != expected
         ):
             raise ActionError(
                 "reproduction.source.changed",

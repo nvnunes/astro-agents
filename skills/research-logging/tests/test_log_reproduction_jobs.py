@@ -11,7 +11,7 @@ from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.model import ActionError
-from log_commands.reproduction_contract import ReproductionPlan
+from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
 from log_commands.reproduction_execution import ExecutionBatch
 from log_commands.reproduction_jobs import (
     RUN_SCHEMA,
@@ -228,7 +228,12 @@ class ReproductionJobTests(unittest.TestCase):
                     cast(dict[str, object], record["state"]).update(
                         {
                             "current_execution": expected["current_execution"],
-                            "latest_failure": expected["latest_failure"],
+                            "latest_execution_diagnostic": expected[
+                                "latest_execution_diagnostic"
+                            ],
+                            "operational_failure": expected[
+                                "operational_failure"
+                            ],
                             "phase": expected["phase"],
                             "status": expected["status"],
                         }
@@ -330,7 +335,7 @@ class ReproductionJobTests(unittest.TestCase):
         text = format_reproduction_status(fixture)
 
         self.assertIn("failed", text)
-        self.assertIn("Latest failure:", text)
+        self.assertIn("Operational failure:", text)
 
     def test_supervisor_publishes_artifact_failures_as_complete_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -383,6 +388,10 @@ class ReproductionJobTests(unittest.TestCase):
                     return_value=object(),
                 ),
                 mock.patch(
+                    "log_commands.reproduction_jobs.load_recorded_comparisons",
+                    return_value=(),
+                ),
+                mock.patch(
                     "log_commands.reproduction_jobs.execute_reproduction_plan",
                     return_value=ExecutionBatch((), (), (), False),
                 ),
@@ -391,14 +400,24 @@ class ReproductionJobTests(unittest.TestCase):
                     return_value=(),
                 ),
                 mock.patch(
+                    "log_commands.reproduction_jobs."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
                     "log_commands.reproduction_jobs.publish_completed_reproduction",
                     return_value=SimpleNamespace(results=SimpleNamespace(runs=(run,))),
                 ),
+                mock.patch(
+                    "log_commands.validation_adapter.evaluate_validation",
+                    side_effect=ActionError(
+                        "validation.failed", "validation did not complete"
+                    ),
+                ) as validate,
             ):
                 supervise_reproduction(
                     LogContext(summary, log_root),
                     run_root,
-                    resume=False,
+                    mode="fresh",
                     inherited_locks=(),
                 )
 
@@ -408,6 +427,8 @@ class ReproductionJobTests(unittest.TestCase):
                 cast(Mapping[str, int], status["artifact_outcomes"])["failed"],
                 1,
             )
+            self.assertIsNone(status["operational_failure"])
+            validate.assert_called_once_with(summary)
 
     def test_active_promotion_output_rejects_intersecting_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -475,7 +496,9 @@ class ReproductionJobTests(unittest.TestCase):
             stopped = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(stopped["status"], "stopped")
             self.assertEqual(
-                cast(Mapping[str, object], stopped["latest_failure"])["code"],
+                cast(
+                    Mapping[str, object], stopped["latest_execution_diagnostic"]
+                )["code"],
                 "supervisor_lost",
             )
             terminate.assert_called_once_with(run_id)
@@ -487,16 +510,83 @@ class ReproductionJobTests(unittest.TestCase):
                     return_value=(),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_jobs.verify_reproduction_snapshot"
+                    "log_commands.reproduction_jobs."
+                    "verify_reproduction_runtime_snapshot"
                 ),
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
                 self.assertEqual(resume_reproduction(log, run_id), run_id)
 
-            spawn.assert_called_once_with(log, run_root.resolve(), (), resume=True)
+            spawn.assert_called_once_with(
+                log,
+                run_root.resolve(),
+                (),
+                resume=True,
+                retry_publication=False,
+            )
             resumed = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(resumed["phase"], "accepted")
             self.assertIsNone(resumed["status"])
+
+    def test_resume_retries_failed_publication_without_starting_a_new_run(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-fixture"
+            run_root = project / "tmp" / f"reproduce-research-e003-{run_id}"
+            run_root.mkdir(parents=True)
+            record = _accepted_record(log, _plan(), run_id, run_root, project)
+            state = cast(dict[str, object], record["state"])
+            state.update(
+                {
+                    "phase": None,
+                    "status": "failed",
+                    "operational_failure": {
+                        "code": "reproduction.publication.failed",
+                        "execution_id": None,
+                        "message": "publication failed",
+                        "recorded_at": "2030-01-01T00:00:05Z",
+                    },
+                }
+            )
+            cast(dict[str, object], record["timestamps"])["finished_at"] = (
+                "2030-01-01T00:00:05Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                self.assertEqual(resume_reproduction(log, run_id), run_id)
+
+            spawn.assert_called_once_with(
+                log,
+                run_root.resolve(),
+                (),
+                resume=True,
+                retry_publication=True,
+            )
+            resumed = _status_projection(_load_run(run_root / "run.json"))
+            self.assertIsNone(resumed["operational_failure"])
+            self.assertEqual(resumed["phase"], "accepted")
 
     def test_resume_refuses_changed_snapshot_and_preserves_stopped_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -528,7 +618,8 @@ class ReproductionJobTests(unittest.TestCase):
                     return_value=(),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_jobs.verify_reproduction_snapshot",
+                    "log_commands.reproduction_jobs."
+                    "verify_reproduction_runtime_snapshot",
                     side_effect=ActionError(
                         "reproduction.source.changed", "source changed"
                     ),
@@ -551,7 +642,7 @@ def _plan() -> ReproductionPlan:
         {"entry": "e003", "kind": "entry"},
         False,
         {},
-        {"materials": []},
+        source_snapshot(authority_files=(), executions=(), materials=()),
         (),
         (
             {
@@ -574,7 +665,7 @@ def _empty_plan() -> ReproductionPlan:
         {"entry": None, "kind": "log"},
         False,
         {},
-        {"materials": []},
+        source_snapshot(authority_files=(), executions=(), materials=()),
         (),
         (),
         (),

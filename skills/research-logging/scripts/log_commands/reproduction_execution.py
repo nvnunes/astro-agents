@@ -160,6 +160,9 @@ class ExecutionControl:
     confinement: ConfinementBackend | None = None
     generated_paths: Mapping[Path, tuple[Path, str]] | None = None
     source: _ExecutionSource | None = None
+    prior_attempts: frozenset[str] = frozenset()
+    prior_failures: frozenset[str] = frozenset()
+    attempt_completed: Callable[[ExecutionAttempt], None] = lambda _attempt: None
     progress: Callable[[str, str, ExecutionAttempt | None], None] = (
         lambda _event, _execution_id, _attempt: None
     )
@@ -713,9 +716,9 @@ def execute_reproduction_plan(
 ) -> ExecutionBatch:
     """Execute every runnable component without crossing dependency failures."""
 
-    from .reproduction_planner import verify_reproduction_snapshot
+    from .reproduction_planner import verify_reproduction_runtime_snapshot
 
-    verify_reproduction_snapshot(log, plan)
+    verify_reproduction_runtime_snapshot(log, plan)
     ordered = sorted(plan.executions, key=_execution_order)
     _require_execution_order(ordered)
     attempts: list[ExecutionAttempt] = []
@@ -743,6 +746,12 @@ def execute_reproduction_plan(
                 }
             )
             unavailable.add(reference)
+            continue
+        if reference in control.prior_attempts or reference in control.prior_failures:
+            reused.append(reference)
+            if reference in control.prior_failures:
+                unavailable.add(reference)
+            control.progress("reused", identity, None)
             continue
         checkpoint = _load_checkpoint(workspace, entry_id, identity)
         if checkpoint is not None and checkpoint.state == "complete":
@@ -776,6 +785,7 @@ def execute_reproduction_plan(
         )
         attempts.append(attempt)
         control.progress("finished", identity, attempt)
+        control.attempt_completed(attempt)
         if attempt.stopped:
             return ExecutionBatch(tuple(attempts), tuple(reused), tuple(skips), True)
         if attempt.checkpoint.state != "complete":

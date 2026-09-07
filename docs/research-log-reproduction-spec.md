@@ -73,8 +73,8 @@ The initial implementation must use these versions:
 | Durable run state | `research-log-reproduction-run/1` |
 | Run status projection | `research-log-reproduction-status/1` |
 | Dry-run plan | `research-log-reproduction-plan/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/1` |
-| Staging manifest | `research-log-reproduction-staging/1` |
+| Source snapshot | `research-log-reproduction-source-snapshot/2` |
+| Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 
 Execution IDs version only their identity algorithm and canonicalization.
@@ -198,7 +198,7 @@ discarding available run history or current artifact state.
 - **Scope lock:** the one existing research-log operation lock held for the
   selected entry or log throughout an active run.
 - **Publication mutex:** the brief log-local lock used to serialize shared
-  result, report, validation-refresh, and active-operation-state writes.
+  reproduction-result and report writes.
 
 ## Authority And Boundaries
 
@@ -240,8 +240,9 @@ The CLI owns discovery, planning, ordering, execution, comparison, durable
 state, and publication. An agent must not select cases, infer dependencies,
 judge equivalence, orchestrate child processes, or edit the machine records.
 
-Reproduction may change only its generated state, a confirmation-only field in
-`pyrun.json`, and the surgically affected validation state defined below. It
+Reproduction may change only its generated state and a confirmation-only field
+in `pyrun.json`. After a completed run, it invokes ordinary validation as a
+separate operation; validation alone owns its generated state. Reproduction
 must not edit research prose, Markdown commands, evidence presentation,
 `data.json` declarations, retained artifacts, or other human-authored log
 content. Promotion is the separate researcher-directed exception for replacing
@@ -497,11 +498,13 @@ must not change it. Ordinary `pyrun` reads and writes only its entry-local
 state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
 An ordinary successful publication is confirmed. A complete unconfirmed
-recipe remains runnable. Reproduction changes `confirmed` to true only when
-every output in that execution has the `matched` outcome in one completed run.
-That confirmation-only mutation preserves the recipe, observations, policy,
-versions, and `last_run_at`. Any changed, failed, comparison-failed, or skipped
-output leaves it unconfirmed.
+recipe remains runnable. Reproduction changes `confirmed` to true immediately
+after every output in that execution has the `matched` outcome in one completed
+attempt and the complete comparison has been durably recorded. That
+confirmation-only mutation preserves the recipe, observations, policy,
+versions, and `last_run_at`. It is not rolled back by a later execution,
+reproduction-publication, or validation failure. Any changed, failed,
+comparison-failed, or skipped output leaves it unconfirmed.
 
 ### Slow Policy
 
@@ -801,15 +804,24 @@ owns that projection's construction; reproduction treats it as an opaque
 currentness token.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/1` and has exactly `schema`,
+`research-log-reproduction-source-snapshot/2` and has exactly `schema`,
 `authority_files`, `executions`, and `materials`. `authority_files` records the
-canonical path and SHA-256 bytes of every `evidence.json`, `data.json`, and
-`pyrun.json` loaded for the plan. `executions` records each selected execution
-ID and the SHA-256 digest of its canonical execution record. `materials`
-records every current script, participating code file, direct input, retained
-boundary, and comparison baseline by canonical identity, role, kind, and
-closed fingerprint. All arrays are unique and canonically sorted. This snapshot
-is the exact acceptance, final-publication, and resume comparison boundary.
+canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
+for the plan. `executions` records each selected execution ID and the SHA-256
+digest of its canonical execution record after omitting only the mutable
+`confirmed` field. `materials` records every current script, participating code
+file, direct input, retained boundary, and comparison baseline by canonical
+identity, role, kind, and closed fingerprint. All arrays are unique and
+canonically sorted.
+
+At acceptance, the CLI verifies both the validation snapshot and the complete
+source snapshot. At execution, resume, and final reproduction-publication
+boundaries it rechecks the source snapshot only; comparison and confirmation
+remain inside the same accepted scope lock. This permits the run's own
+confirmation writes while still rejecting any change to a recipe, observation,
+policy, input, script, code path, data declaration, evidence root, or comparison
+baseline. The validation snapshot remains the immutable record of the admission
+decision; it is not a runtime publication dependency.
 
 Dry run is completely write-free. It creates no run ID, lock, output workspace,
 staging directory, checkpoint, result, report, cache, or other state. Because
@@ -861,7 +873,8 @@ Each run directory contains one canonical `run.json` using
     "status": null,
     "phase": "executing",
     "current_execution": "pyrun-exec/v1:...",
-    "latest_failure": null
+    "latest_execution_diagnostic": null,
+    "operational_failure": null
   },
   "progress": {
     "completed_executions": 2,
@@ -904,9 +917,14 @@ not change after acceptance.
 `complete`, `stopped`, or `failed`. `state.phase` is one of `accepted`,
 `planning`, `preflight`, `executing`, `comparing`, `publishing`, `stopping`, or
 null; it is null in terminal state. `current_execution` is an execution ID only
-while one execution is active and otherwise null. `latest_failure` is null or
-one object with exactly `code`, `message`, `execution_id`, and `recorded_at`;
-`execution_id` may be null for a run-level failure.
+while one execution is active and otherwise null.
+`latest_execution_diagnostic` is null or the latest execution-level failure or
+stop diagnostic. `operational_failure` is null unless a run-level error
+prevents reproduction from reaching its completed publication endpoint. Each
+non-null diagnostic has exactly
+`code`, `message`, `execution_id`, and `recorded_at`; `execution_id` may be null
+for a run-level diagnostic. A complete run always has a null
+`operational_failure`, even when one or more artifact outcomes are failures.
 
 `progress` has exactly the fields shown. Every outcome count is a nonnegative
 integer. `timestamps` has exactly the fields shown; absent lifecycle events are
@@ -928,7 +946,8 @@ The run record therefore durably retains:
   policy;
 - accepted source and validation snapshots;
 - immutable deterministic execution plan;
-- run status, current phase, current execution, and latest failure;
+- run status, current phase, current execution, latest execution diagnostic,
+  and operational failure;
 - accepted, started, updated, stopped, resumed, and finished timestamps where
   applicable;
 - completed and total execution counts;
@@ -950,8 +969,9 @@ Default status is concise human text. `--json` emits one deterministic
 `research-log-reproduction-status/1` object containing exactly `schema`,
 `run_id`, `summary`, `target`, `include_slow`, `status`, `phase`,
 `current_execution`, `completed_executions`, `total_executions`,
-`artifact_outcomes`, `timestamps`, `latest_failure`, and `surviving_workers`.
-The values are the corresponding strict projection of `run.json`.
+`artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
+`operational_failure`, and `surviving_workers`. The values are the
+corresponding strict projection of `run.json`.
 `surviving_workers` is normally empty and, while stopping cleanup remains
 incomplete, contains the exact sorted worker records still observed alive.
 
@@ -961,8 +981,8 @@ Agents and scheduled monitors must consume JSON rather than parse human text.
 
 Terminal run statuses are:
 
-- `complete`: the job reached its normal endpoint and final publication
-  succeeded;
+- `complete`: the job reached its normal endpoint and reproduction-result
+  publication succeeded;
 - `stopped`: execution is not active, the run retains resumable same-path
   state, and the scope lock has been released; and
 - `failed`: an operational failure prevented final artifact-result
@@ -989,15 +1009,29 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 
 ### Resume
 
-`resume` is available only for `stopped` runs. It reacquires the original scope
-lock, reuses the same run-local output workspace and run paths, skips completed
-execution checkpoints, and reinvokes the stopped execution in place. This
-preserves script-native checkpoint and resume behavior.
+`resume` is available for `stopped` runs and for a `failed` run whose sole
+operational failure is `reproduction.publication.failed`. It reacquires the
+original scope lock and reuses the same run-local output workspace and run
+paths. A stopped run skips completed execution checkpoints and reinvokes only
+its stopped execution in place, preserving script-native checkpoint and resume
+behavior. A publication retry reuses every durable comparison, terminal failed
+attempt, dependency skip, and complete checkpoint; it performs no second
+research-command attempt.
 
 Before executing, resume must verify exact agreement with the recorded recipes,
-scripts, participating code, inputs, retained comparison artifacts, and
-mechanically validated source snapshot. Any difference refuses resume without
-deleting the old run; a new reproduction run is required.
+scripts, participating code, inputs, and retained comparison artifacts. Any
+difference refuses resume without deleting the old run; a new reproduction run
+is required.
+
+### One-Attempt Rule
+
+Within one reproduction run, each compound `(entry, execution_id)` is attempted
+at most once. Multiple artifact cases and dependent branches reuse that one
+terminal result. A failed execution remains failed, its dependents are skipped
+with `dependency_failed`, and independent executions continue. Resuming a
+stopped execution at the unchanged run path continues the same attempt; it is
+not a second attempt. Only a separately requested reproduction run may create a
+new attempt after an execution has terminally failed.
 
 ### Recovery
 
@@ -1295,9 +1329,13 @@ regenerated supporting outputs for that entry. It preserves unrelated entry
 and log cases and never claims log-level completion. Log-level publication
 reconciles the complete selected log closure.
 
-A stopped run or an operational failure before final publication leaves the
-current artifact map unchanged. Terminal lifecycle events may still update the
-run index and human Runs table without publishing partial artifact outcomes.
+A stopped run or an operational failure before final reproduction publication
+leaves the current artifact map unchanged. Confirmations already written for
+matched executions remain intact. A publication failure may be retried from
+the durable run-output manifest through the guarded resume route without
+rerunning terminal execution attempts. Terminal lifecycle events may still
+update the run index and human Runs table without publishing partial artifact
+outcomes.
 
 ### Currentness
 
@@ -1320,11 +1358,11 @@ rewrite results merely to remove them.
 
 ### Staging
 
-Regenerated working outputs are disposable only when every output of their
-execution matched. If any output is changed, missing, partial, failed to
-compare, or otherwise incomplete, reproduction retains the complete available
-execution output set, including matching siblings, partial outputs, captures,
-and diagnostics.
+Reproduction retains every available regenerated output, including matched,
+changed, partial, and comparison-failed outputs, in its original run-local
+workspace path. It never deletes, discards, relocates, or makes a second copy of
+an output after comparison. Captures and diagnostics likewise remain in the
+run directory until a researcher deletes the directory manually.
 
 The run directory is one of:
 
@@ -1334,11 +1372,16 @@ The run directory is one of:
 ```
 
 `<log>` and `<entry>` are stable normalized filesystem-safe identifiers. The
-directory contains the durable run state and one
-`research-log-reproduction-staging/1` manifest. Per-execution subdirectories
-preserve output identities without collision. The manifest records run scope,
-execution IDs, original output identities, availability, outcome, fingerprints,
-and completeness.
+directory contains the durable run state, one project-layout `workspace/`, and
+one `research-log-reproduction-staging/2` manifest. The historical filename
+`staging.json` is retained for compatibility, but the v2 manifest is a durable
+comparison and run-output index rather than a copied staging bundle. Each
+execution record contains exactly `bytes`, `complete`, `diagnostics`, `entry`,
+`execution_id`, `outputs`, and `path`; `path` is `workspace`. Each output records
+its artifact identity, declared kind, availability, exact workspace-relative
+path, outcome and reason, selected comparison profile, and retained and
+regenerated fingerprints. The full record is written atomically before any
+matching confirmation.
 
 Reproduction must never overwrite or delete a retained run directory or staged
 bundle. There is no discard, cleanup, or supersede command. A researcher may
@@ -1394,41 +1437,40 @@ in advisory locks and remain covered by exact snapshot and fingerprint checks.
 ### Shared Publication
 
 Concurrent distinct-entry runs share `reproduction/results.json`,
-`reproduction.md`, validation confirmation state, and active-run indexing.
-Their shared writes must use one brief log-local publication mutex built on the
-existing lock infrastructure. It is not a reproduction scope lock and is not
-held during planning, execution, or comparison.
+`reproduction.md`, and active-run indexing. Their shared writes must use one
+brief log-local publication mutex built on the existing lock infrastructure.
+It is not a reproduction scope lock and is not held during planning, execution,
+comparison, or per-execution confirmation.
 
 Under the mutex, publication must reload current shared state, revalidate the
-accepted snapshot boundary, merge only the completed target or lifecycle
-record, append or update run history, perform the permitted targeted validation
-refresh, compose the human report, and publish the coordinated bundle
-atomically. It must detect conflicting concurrent or manual edits and preserve
-the prior complete bundle on failure.
+runtime source-snapshot boundary, merge only the completed target or lifecycle
+record, append or update run history, compose the human report, and publish the
+two reproduction-owned files atomically. It must detect conflicting concurrent
+or manual edits and preserve the prior complete reproduction bundle on failure.
+It never reads or writes validation state.
 
-### Confirmation And Validation Refresh
+### Confirmation And Post-Reproduction Validation
 
-When every output of an unconfirmed execution matches, reproduction may mark
-that execution confirmed. The same coordinated publication must surgically
-refresh only affected validation Provenance checks, dependency currentness,
-scope aggregates, and their generated human projection. It must preserve every
-unrelated validation check byte-for-byte at the structured-record level where
-its dependency projection is unchanged.
+When every declared output of an unconfirmed execution matches, reproduction
+atomically changes only that execution's `confirmed` field in its entry-local
+`pyrun.json`. The run already holds the owning entry or log scope lock. Each
+confirmation is independent and durable; no later execution or publication
+outcome rolls it back.
 
-The validation subsystem owns check identity, dependency projection,
-aggregation, and the `validation/results.json` schema. Reproduction must call a
-validation-owned targeted-refresh service rather than rewriting validation
-records ad hoc. The service must prove that the validated source snapshot has
-not otherwise changed and that its affected closure is complete. Any unexpected
-change or incoherent refresh aborts the coordinated publication and requires a
-separate ordinary validation run. Reproduction must never broaden the refresh
-into general validation.
+After reproduction-result publication succeeds and the run becomes complete,
+the supervisor releases its reproduction scope lock and invokes ordinary
+mechanical validation for that log as a separate operation. Validation owns
+and publishes `validation/results.json` and `validation.md`; reproduction never
+performs a targeted confirmation refresh. Validation findings or an
+operational validation failure do not change the complete reproduction status,
+confirmations, or reproduction results.
 
-When a newly confirmed execution still depends on another unconfirmed
-execution, the targeted refresh preserves an unconfirmed Provenance finding
-for that upstream producer. This expected partial confirmation does not abort
-publication; a later confirmation of the upstream execution refreshes the
-remaining dependent finding.
+Distinct overlapping entry runs share the log lock and may finish close
+together. Ordinary validation uses the existing exclusive log-operation lock:
+earlier finishers defer when another reproduction still holds a shared log
+lock, and the last finisher performs the single validation run after all such
+reproduction work has ended. Reproduction and validation outcomes remain
+separately visible.
 
 ### Promotion Conflicts
 
@@ -1571,12 +1613,13 @@ implicit extension.
 ## Current Implementation Boundary
 
 The command-oriented execution state, migration, planning, safety, run-local
-execution, comparison, result contract, current projection, bounded read-only
-queries, durable job control, stop and same-path resume, lost-supervisor
-reconciliation, and whole-execution copy-based promotion are implemented.
-Validation-owned targeted refresh covers confirmation-only Provenance changes
-and the Evidence and Provenance closure reached by promoted outputs without
-running general validation. Maintained-corpus initialization and the bounded
-entry-level cutover evaluation are complete. Full maintained-corpus
-reproduction remains gated by the reproduction plan. The frozen
-result and status fixtures remain the compatibility boundary.
+execution, durable comparison records, immediate confirmation, independent
+result publication, current projection, bounded read-only queries, durable job
+control, stop and same-path resume, publication retry, lost-supervisor
+reconciliation, ordinary post-reproduction validation, and whole-execution
+copy-based promotion are implemented. Promotion retains its own approved
+targeted Evidence and Provenance refresh without running general validation;
+reproduction has no targeted-validation path. Maintained-corpus initialization
+and the bounded entry-level cutover evaluation are complete. Full
+maintained-corpus reproduction remains gated by the reproduction plan. The
+frozen result and status fixtures remain the compatibility boundary.

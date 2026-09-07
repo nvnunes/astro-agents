@@ -3881,27 +3881,16 @@ an emitted code without a catalog entry is an implementation error rather than
 a fallback that exposes machine syntax. A clear report says `No mechanical
 findings.`
 
-The validation-owned targeted Provenance refresh accepts candidate
-confirmation-only `pyrun.json` states from the reproduction publication
-transaction. It rediscovers the current recorded commands, reconstructs the
-exact output-support dependency projection, and replaces only direct
-`provenance.output.unconfirmed` checks reached by the newly confirmed
-executions plus summary-Provenance checks that depend on them. It then rebuilds
-scope aggregates through the ordinary generated-record contract. Any command,
-material, support, or dependency inconsistency aborts the refresh. This service
-never evaluates Structure, Evidence, Hygiene, or unrelated Provenance checks,
-never writes a file itself, and is not a general validation mode.
-Indexed entries without `data.json` or `pyrun.json` retain the same valid empty
-state used by ordinary validation; their absence cannot abort a targeted refresh
-unless a refreshed check actually requires that missing declaration or support.
-Candidate confirmation state is matched to its canonical entry root, not to an
-individual Markdown document name, so a split entry whose documents use suffixes
-such as `e002a.md` through `e002h.md` remains one execution-state owner. Output
-support for that owner is projected from the commands in all of its indexed
-documents rather than from any single document.
-Targeted refresh observes a directory output with the same recursive
-content-bearing directory fingerprint as ordinary validation and `pyrun`;
-changing any regular-file member changes the observed directory fingerprint.
+Reproduction does not request or publish a confirmation-only validation
+refresh. After reproduction publishes its own result and reaches `complete`, it
+releases its scope lock and invokes the ordinary log-validation lifecycle as a
+separate operation. That evaluation reads the current `pyrun.json`
+confirmations and publishes the complete validation result and report through
+the same contract as a researcher-requested validation run. Validation findings
+or an operational validation failure do not alter the already completed
+reproduction result or roll back confirmation state. Concurrent entry
+reproductions rely on the existing exclusive log-operation lock so that only
+one ordinary validation runs after the overlapping reproduction work ends.
 
 The reproduction promotion transaction may also request the bounded targeted
 refresh of Evidence checks whose resolved source is a promoted artifact. It

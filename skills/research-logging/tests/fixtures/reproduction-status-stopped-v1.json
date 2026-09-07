@@ -9,12 +9,13 @@
   "completed_executions": 0,
   "current_execution": null,
   "include_slow": false,
-  "latest_failure": {
+  "latest_execution_diagnostic": {
     "code": "stop_requested",
     "execution_id": "pyrun-exec/v1:1111111111111111111111111111111111111111111111111111111111111111",
     "message": "Reproduction was stopped by request.",
     "recorded_at": "2030-01-01T00:00:05Z"
   },
+  "operational_failure": null,
   "phase": null,
   "run_id": "reproduce-20300101t000000z-fixture",
   "schema": "research-log-reproduction-status/1",

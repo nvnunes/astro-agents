@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -18,6 +19,7 @@ from log_commands.reproduction_planner import (
     _admit_validation,
     plan_reproduction,
     project_reproduction_state,
+    verify_reproduction_runtime_snapshot,
 )
 from research_log_data import (
     Fingerprint,
@@ -743,6 +745,40 @@ class ReproductionPlanningTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ActionError, "source changed"):
                     plan_reproduction(fixture.log, entry=entry, include_slow=False)
+
+    def test_runtime_snapshot_allows_only_confirmation_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            final = entry.root / "data" / "final.txt"
+            raw.write_text("raw", encoding="utf-8")
+            final.write_text("final", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "final")
+            identity, execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"final": final}
+            )
+            fixture.write_pyrun(entry, [(identity, execution)])
+            plan = _plan(fixture, entry)
+
+            fixture.write_pyrun(
+                entry, [(identity, replace(execution, confirmed=True))]
+            )
+            verify_reproduction_runtime_snapshot(fixture.log, plan)
+
+            fixture.write_pyrun(
+                entry,
+                [(identity, replace(execution, confirmed=True, slow=True))],
+            )
+            with self.assertRaisesRegex(ActionError, "execution recipe changed"):
+                verify_reproduction_runtime_snapshot(fixture.log, plan)
 
     def test_log_target_orders_cross_entry_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

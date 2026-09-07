@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 PLAN_SCHEMA = "research-log-reproduction-plan/1"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
+LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/2"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 
 
@@ -77,3 +78,13 @@ def canonical_record_digest(value: Mapping[str, Any]) -> str:
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_execution_source_digest(value: Mapping[str, Any]) -> str:
+    """Hash execution source while excluding mutable confirmation state."""
+
+    selected = dict(value)
+    if set(selected) <= {"confirmed"}:
+        raise ValueError("execution source record is incomplete")
+    selected.pop("confirmed", None)
+    return canonical_record_digest(selected)

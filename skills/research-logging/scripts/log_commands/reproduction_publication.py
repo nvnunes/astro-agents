@@ -1,4 +1,4 @@
-"""Coordinated publication of completed reproduction state."""
+"""Independent publication of completed reproduction state."""
 
 from __future__ import annotations
 
@@ -17,24 +17,18 @@ from validation.mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from validation.operation_state import OperationLockError, operation_lock
-from validation.report import compose_validation_report
-from validation.targeted_refresh import (
-    TargetedRefreshError,
-    refresh_confirmed_provenance,
-)
 
 from .context import LogContext, resolve_project_root
 from .model import ActionError
 from .reproduction_comparison import (
     ArtifactComparison,
     ExecutionComparison,
-    prepare_confirmation_updates_locked,
 )
 from .reproduction_contract import ReproductionPlan
 from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
     project_reproduction_state,
-    verify_reproduction_publication_snapshot,
+    verify_reproduction_runtime_snapshot,
 )
 from .reproduction_results import (
     OUTCOMES,
@@ -58,7 +52,6 @@ class PublishedReproduction:
 
     results: ReproductionResults
     report: str
-    validation: MechanicalGeneratedRecord
 
 
 @dataclass(frozen=True)
@@ -78,7 +71,7 @@ def publish_completed_reproduction(
     log: LogContext,
     request: CompletedPublication,
 ) -> PublishedReproduction:
-    """Publish one normally completed target as one rollback-safe transaction."""
+    """Publish one normally completed target without validation or confirmation."""
 
     project_root = resolve_project_root(log.root)
     artifacts = _artifact_results(request)
@@ -87,29 +80,7 @@ def publish_completed_reproduction(
     )
     try:
         with operation_lock(log.root, "reproduction-publication.lock"):
-            verify_reproduction_publication_snapshot(log, request.plan)
-            confirmations = prepare_confirmation_updates_locked(
-                log,
-                request.plan,
-                request.comparisons,
-                project_root=project_root,
-                verify_snapshot=False,
-            )
-            validation = _load_validation(log)
-            _require_admissible_validation(log, validation)
-            if confirmations.states:
-                try:
-                    validation = refresh_confirmed_provenance(
-                        log.summary,
-                        validation,
-                        confirmations.states,
-                        confirmations.execution_ids,
-                        result_date=request.finished_at[:10],
-                    )
-                except TargetedRefreshError as error:
-                    raise ActionError(
-                        "reproduction.validation.refresh_failed", str(error)
-                    ) from error
+            verify_reproduction_runtime_snapshot(log, request.plan)
             result_path = log.root / "reproduction" / "results.json"
             summary = log.summary.resolve().relative_to(project_root).as_posix()
             current = load_results_or_empty(
@@ -141,22 +112,14 @@ def publish_completed_reproduction(
                 folder_links_from=log.root,
             )
             updates: dict[Path, str | None] = {
-                **confirmations.files,
                 result_path: merged.serialized(),
                 log.root / "reproduction.md": report,
             }
-            if confirmations.states:
-                updates[log.root / "validation" / "results.json"] = (
-                    validation.canonical_json() + "\n"
-                )
-                updates[log.root / "validation.md"] = compose_validation_report(
-                    validation, context=context
-                )
-            verify_reproduction_publication_snapshot(log, request.plan)
+            verify_reproduction_runtime_snapshot(log, request.plan)
             atomic_write_texts(updates)
     except (OperationLockError, OSError, PublicationError) as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
-    return PublishedReproduction(merged, report, validation)
+    return PublishedReproduction(merged, report)
 
 
 def _artifact_results(

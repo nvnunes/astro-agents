@@ -5,15 +5,16 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest import mock
 
+from log_commands.model import ActionError
 from log_commands.reproduction_comparison import (
     STAGING_SCHEMA,
     ArtifactComparison,
     ExecutionComparison,
     compare_artifacts,
     compare_execution_outputs,
-    prepare_confirmation_updates_locked,
+    confirm_matching_execution_locked,
+    load_recorded_comparisons,
 )
 from log_commands.reproduction_execution import ExecutionAttempt, ExecutionCheckpoint
 from research_log_data import Fingerprint
@@ -210,7 +211,7 @@ class ArtifactComparisonTests(unittest.TestCase):
 
 
 class ExecutionComparisonTests(unittest.TestCase):
-    def test_wholly_matched_output_is_discarded_from_output_workspace(self) -> None:
+    def test_wholly_matched_output_is_retained_with_durable_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             workspace = fixture.workspace()
@@ -238,8 +239,22 @@ class ExecutionComparisonTests(unittest.TestCase):
             )
 
             self.assertTrue(result.matched)
-            self.assertFalse(regenerated.exists())
-            self.assertIsNone(result.staging)
+            self.assertTrue(regenerated.exists())
+            self.assertEqual(result.staging, "workspace")
+            recorded = load_recorded_comparisons(fixture.plan, workspace)
+            self.assertEqual(recorded, (result,))
+
+            regenerated.write_text("altered after comparison\n")
+            with self.assertRaisesRegex(
+                ActionError, "recorded output changed"
+            ):
+                load_recorded_comparisons(fixture.plan, workspace)
+            self.assertEqual(
+                load_recorded_comparisons(
+                    fixture.plan, workspace, verify_outputs=False
+                ),
+                (result,),
+            )
 
     def test_changed_output_is_staged_without_changing_retained_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -276,11 +291,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertEqual(fixture.output.read_bytes(), retained)
             self.assertEqual(result.artifacts[0].outcome, "changed")
             self.assertIsNotNone(result.staging)
-            staged = workspace.run_root / str(result.staging)
-            self.assertEqual(
-                (staged / "outputs" / "entry" / "data" / "result.txt").read_text(),
-                "changed\n",
-            )
+            self.assertEqual(regenerated.read_text(), "changed\n")
             manifest = json.loads((workspace.run_root / "staging.json").read_text())
             self.assertEqual(manifest["schema"], STAGING_SCHEMA)
             self.assertEqual(manifest["run_id"], workspace.run_id)
@@ -319,13 +330,8 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertEqual(
                 [item.outcome for item in result.artifacts], ["failed", "failed"]
             )
-            staged = workspace.run_root / str(result.staging) / "outputs" / "entry"
-            self.assertEqual(
-                (staged / "data" / "result.txt").read_text(), "partial first\n"
-            )
-            self.assertEqual(
-                (staged / "data" / "second.txt").read_text(), "partial second\n"
-            )
+            self.assertEqual(first_work.read_text(), "partial first\n")
+            self.assertEqual(second_work.read_text(), "partial second\n")
 
     def test_one_change_stages_matching_siblings_together(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -360,15 +366,10 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertEqual(
                 [item.outcome for item in result.artifacts], ["matched", "changed"]
             )
-            staged = workspace.run_root / str(result.staging) / "outputs" / "entry"
-            self.assertEqual(
-                (staged / "data" / "result.txt").read_text(), "retained\n"
-            )
-            self.assertEqual(
-                (staged / "data" / "second.txt").read_text(), "second changed\n"
-            )
+            self.assertEqual(first_work.read_text(), "retained\n")
+            self.assertEqual(second_work.read_text(), "second changed\n")
 
-    def test_confirmation_prepares_only_confirmed_bit_for_transaction(self) -> None:
+    def test_confirmation_changes_only_confirmed_bit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             before = (fixture.entry_root / "pyrun.json").read_text()
@@ -383,22 +384,34 @@ class ExecutionComparisonTests(unittest.TestCase):
             result = ExecutionComparison(
                 "e001", fixture.identity, (artifact,), None, True
             )
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                    },
+                ),
+            )
 
-            with mock.patch(
-                "log_commands.reproduction_planner.verify_reproduction_snapshot"
-            ) as verify:
-                updates = prepare_confirmation_updates_locked(
-                    fixture.log,
-                    fixture.plan,
-                    (result,),
-                    project_root=fixture.project,
-                )
+            changed = confirm_matching_execution_locked(
+                fixture.log,
+                plan,
+                result,
+                project_root=fixture.project,
+            )
+            changed_again = confirm_matching_execution_locked(
+                fixture.log,
+                plan,
+                result,
+                project_root=fixture.project,
+            )
 
-            verify.assert_called_once_with(fixture.log, fixture.plan)
-            self.assertEqual((fixture.entry_root / "pyrun.json").read_text(), before)
-            self.assertEqual(len(updates.files), 1)
-            self.assertEqual(updates.execution_ids, {"e001": {fixture.identity}})
-            candidate = json.loads(next(iter(updates.files.values())))
+            self.assertTrue(changed)
+            self.assertFalse(changed_again)
+            candidate = json.loads(
+                (fixture.entry_root / "pyrun.json").read_text(encoding="utf-8")
+            )
             execution = candidate["executions"][fixture.identity]
             original = json.loads(before)["executions"][fixture.identity]
             self.assertTrue(execution["confirmed"])
@@ -406,6 +419,45 @@ class ExecutionComparisonTests(unittest.TestCase):
                 {key: value for key, value in execution.items() if key != "confirmed"},
                 {key: value for key, value in original.items() if key != "confirmed"},
             )
+
+    def test_matching_comparison_confirms_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            artifact = ArtifactComparison(
+                "data/result.txt",
+                "matched",
+                None,
+                "text",
+                Fingerprint("sha256", digest="a" * 64).as_dict(),
+                Fingerprint("sha256", digest="a" * 64).as_dict(),
+            )
+            result = ExecutionComparison(
+                "e001", fixture.identity, (artifact,), "workspace", True
+            )
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                    },
+                ),
+            )
+
+            changed = confirm_matching_execution_locked(
+                fixture.log,
+                plan,
+                result,
+                project_root=fixture.project,
+            )
+
+            self.assertTrue(changed)
+            state = load_pyrun_state(
+                fixture.entry_root / "pyrun.json",
+                entry_root=fixture.entry_root,
+                project_root=fixture.project,
+            )
+            self.assertTrue(state.executions[fixture.identity].confirmed)
 
 
 def _fingerprint(path: Path) -> Fingerprint:

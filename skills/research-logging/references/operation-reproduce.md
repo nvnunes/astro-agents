@@ -3,9 +3,11 @@
 Use this operation only when the researcher explicitly asks to reproduce a
 maintained research log or one entry. Reproduce is a mechanical CLI workflow,
 separate from Record, Review, and Validate. It starts from evidence declared in
-`evidence.json`, plans and executes only from JSON authority, stages all
-regenerated outputs in a disposable project-local run folder, compares them
-with retained artifacts, and publishes generated reproduction state.
+`evidence.json`, plans and executes only from JSON authority, retains all
+regenerated outputs in a project-local run folder, compares them with retained
+artifacts, confirms complete matching executions immediately, and publishes
+generated reproduction state. After successful reproduction publication, the
+CLI invokes ordinary log validation as a separate operation.
 It reads verified scripts, code, inputs, and comparison baselines in place;
 it does not copy the project into that folder.
 
@@ -16,7 +18,10 @@ run.
 
 - Treat the maintained summary, entries, commands, scripts, retained artifacts,
   `data.json`, `evidence.json`, `retention.json`, and authored prose as
-  read-only. Reproduce writes only its generated job, result, and report paths.
+  read-only. Reproduce writes its generated job, result, and report paths and
+  may change only `confirmed: false` to `confirmed: true` for a fully matching
+  execution in `pyrun.json`. The separate post-run validation owns its own
+  generated files.
 - Do not interpret Markdown as execution authority, select commands, repair a
   recipe, judge scientific meaning, or decide whether a changed artifact should
   replace retained research material.
@@ -79,6 +84,9 @@ Use ordinary status for people. Agents and scheduled monitors use `--json` and
 must not parse human text or generated files. `stop` is the sole stopping
 action. It preserves diagnostics and completed checkpoints for an explicit
 same-path `resume`; resume remains guarded by the original source snapshot.
+The same command may retry a run whose sole operational failure was
+reproduction-result publication; that retry reuses durable comparisons and
+terminal attempts rather than rerunning commands.
 
 A scheduled monitor is optional. Offer to create one only after a run is
 accepted, and create it only after the user confirms. It should report
@@ -96,6 +104,8 @@ After completion, retrieve the centralized human projection:
 Present the returned report unchanged. Never hide or soften `changed`,
 `failed`, `comparison_failed`, `skipped`, or stale artifact results. Run status
 describes operational completion and is independent of artifact outcomes.
+Treat the subsequent validation outcome separately: its findings or failure do
+not invalidate completed reproduction work.
 
 For researcher-directed diagnosis, obtain bounded machine detail instead of
 opening generated JSON:
@@ -106,12 +116,12 @@ opening generated JSON:
 ```
 
 Do not select a changed result for adoption. A research agent acting with
-researcher direction may inspect the staged complete execution bundle and then
-copy it into the log through:
+researcher direction may inspect the retained complete execution output set
+and then copy it into the log through:
 
 ```bash
 <skill>/scripts/log reproduce promote --path <log> --run-id <run-id> --execution-id <execution-id>
 ```
 
-Promotion copies every related output together and retains the staged source.
+Promotion copies every related output together and retains the run-local source.
 It does not move or discard the run folder.

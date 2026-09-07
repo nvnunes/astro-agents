@@ -51,11 +51,8 @@ from .provenance import (
 from .pyrun_state import (
     PyrunFile,
     empty_pyrun_state,
-    execution_id,
     legacy_output_projection,
     load_pyrun_state,
-    recipe_from_invocation,
-    validated_pyrun_serialization,
 )
 from .transformation import compare_presentation, evaluate_transformation
 
@@ -83,56 +80,7 @@ class _RefreshState:
     invocations: tuple[Invocation, ...]
     producer_index: ProducerIndex
     entries: Mapping[str, _EntryState]
-    execution_entries: Mapping[str, _EntryState]
     owners: Mapping[str, _EntryState]
-
-
-def refresh_confirmed_provenance(
-    summary: Path,
-    prior: MechanicalGeneratedRecord,
-    candidate_states: Mapping[str, PyrunFile],
-    changed_execution_ids: Mapping[str, frozenset[str]],
-    *,
-    result_date: str,
-) -> MechanicalGeneratedRecord:
-    """Refresh only direct unconfirmed checks reached by matched executions.
-
-    This service intentionally does not perform general validation. It reuses
-    the prior check inventory, discovers the current command graph, and replaces
-    only Provenance checks whose sole blocker was one newly confirmed execution,
-    plus summary-Provenance checks that depend directly on them.
-    """
-
-    summary = summary.resolve()
-    if Path(prior.summary).resolve() != summary:
-        raise TargetedRefreshError("validation summary identity changed")
-    if set(candidate_states) != set(changed_execution_ids):
-        raise TargetedRefreshError("candidate state and execution sets disagree")
-    state = _load_refresh_state(summary, candidate_states)
-    affected = _affected_checks(prior, state, changed_execution_ids)
-    replacements: dict[str, MechanicalCheck] = {}
-    for check in affected:
-        replacements[check.identity] = _refresh_direct_check(
-            check, state, retain_unconfirmed=True
-        )
-    direct_ids = set(replacements)
-    for check in prior.checks:
-        dependency = _summary_dependency(check)
-        if (
-            dependency in direct_ids
-            and replacements[dependency].status is CheckStatus.PASS
-        ):
-            replacements[check.identity] = MechanicalCheck(
-                check.identity,
-                CheckScope.PROVENANCE,
-                CheckStatus.PASS,
-                check.identity,
-                ({"target": dependency},),
-            )
-    checks = tuple(replacements.get(check.identity, check) for check in prior.checks)
-    return MechanicalGeneratedRecord.build(
-        prior.summary, prior.rules_version, result_date, checks
-    )
 
 
 def refresh_promoted_provenance(
@@ -150,7 +98,7 @@ def refresh_promoted_provenance(
     affected = {path.resolve().as_posix() for path in promoted_materials}
     if not affected:
         raise TargetedRefreshError("promotion has no output material")
-    state = _load_refresh_state(summary, {})
+    state = _load_refresh_state(summary)
     replacements, refreshed_artifacts = _promoted_evidence_replacements(
         prior, affected, state
     )
@@ -491,9 +439,7 @@ def _material_reaches(
         visiting.remove(resolved)
 
 
-def _load_refresh_state(
-    summary: Path, candidate_states: Mapping[str, PyrunFile]
-) -> _RefreshState:
+def _load_refresh_state(summary: Path) -> _RefreshState:
     try:
         summary_text = summary.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -502,14 +448,12 @@ def _load_refresh_state(
     root = project_root(summary)
     entries: dict[str, _EntryState] = {}
     documents: list[tuple[Invocation, ...]] = []
-    candidate_roots = _candidate_state_roots(candidate_states)
     for target in index_entry_documents(summary_text):
         selected, invocations = _load_refresh_entry(
             summary,
             target,
             log_root=log_root,
             project=root,
-            candidate_roots=candidate_roots,
         )
         entries[selected.entry] = selected
         documents.append(invocations)
@@ -518,26 +462,8 @@ def _load_refresh_state(
         producer_index = build_producer_index(invocations)
     except MechanicalContractError as error:
         raise TargetedRefreshError(str(error)) from error
-    execution_entries = _candidate_execution_entries(entries, candidate_states)
     owners = {value.owner: value for value in entries.values()}
-    return _RefreshState(
-        root, invocations, producer_index, entries, execution_entries, owners
-    )
-
-
-def _candidate_state_roots(
-    candidate_states: Mapping[str, PyrunFile],
-) -> dict[Path, tuple[str, PyrunFile]]:
-    roots: dict[Path, tuple[str, PyrunFile]] = {}
-    for entry_id, candidate in candidate_states.items():
-        candidate_root = candidate.entry_root.resolve()
-        prior = roots.get(candidate_root)
-        if prior is not None and prior[0] != entry_id:
-            raise TargetedRefreshError(
-                "multiple candidate entry identities share one entry root"
-            )
-        roots[candidate_root] = (entry_id, candidate)
-    return roots
+    return _RefreshState(root, invocations, producer_index, entries, owners)
 
 
 def _load_refresh_entry(
@@ -546,7 +472,6 @@ def _load_refresh_entry(
     *,
     log_root: Path,
     project: Path,
-    candidate_roots: Mapping[Path, tuple[str, PyrunFile]],
 ) -> tuple[_EntryState, tuple[Invocation, ...]]:
     document = (summary.parent / target).resolve()
     entry = document.stem.lower()
@@ -571,9 +496,7 @@ def _load_refresh_entry(
                 data_file=data,
             ),
         )
-        pyrun, serialized = _load_refresh_pyrun(
-            entry_root, project, candidate_roots
-        )
+        pyrun, serialized = _load_refresh_pyrun(entry_root, project)
     except (OSError, UnicodeError, MechanicalContractError) as error:
         raise TargetedRefreshError(str(error)) from error
     if discovery.failures:
@@ -594,14 +517,8 @@ def _load_refresh_entry(
 
 
 def _load_refresh_pyrun(
-    entry_root: Path,
-    project: Path,
-    candidate_roots: Mapping[Path, tuple[str, PyrunFile]],
+    entry_root: Path, project: Path
 ) -> tuple[PyrunFile, str]:
-    selected = candidate_roots.get(entry_root.resolve())
-    if selected is not None:
-        pyrun = selected[1]
-        return pyrun, validated_pyrun_serialization(pyrun, project_root=project)
     pyrun_path = entry_root / "pyrun.json"
     if pyrun_path.exists() or pyrun_path.is_symlink():
         pyrun = load_pyrun_state(
@@ -614,70 +531,11 @@ def _load_refresh_pyrun(
     return pyrun, pyrun.serialized()
 
 
-def _candidate_execution_entries(
-    entries: Mapping[str, _EntryState],
-    candidate_states: Mapping[str, PyrunFile],
-) -> dict[str, _EntryState]:
-    selected: dict[str, _EntryState] = {}
-    for entry_id, candidate in candidate_states.items():
-        matches = {
-            item.root.resolve(): item
-            for item in entries.values()
-            if item.root.resolve() == candidate.entry_root.resolve()
-        }
-        if len(matches) != 1:
-            raise TargetedRefreshError(
-                f"candidate entry root is not indexed: {entry_id}"
-            )
-        selected[entry_id] = next(iter(matches.values()))
-    return selected
-
-
-def _affected_checks(
-    prior: MechanicalGeneratedRecord,
-    state: _RefreshState,
-    changed_execution_ids: Mapping[str, frozenset[str]],
-) -> tuple[MechanicalCheck, ...]:
-    changed_producers: set[str] = set()
-    for entry, identities in changed_execution_ids.items():
-        selected = state.execution_entries.get(entry)
-        if selected is None or not identities <= set(selected.state.executions):
-            raise TargetedRefreshError("changed execution identity is unavailable")
-        for invocation in state.invocations:
-            if invocation.material_owner != selected.owner:
-                continue
-            try:
-                recipe = recipe_from_invocation(
-                    invocation,
-                    entry_root=selected.root,
-                    project_root=state.project_root,
-                )
-            except MechanicalContractError:
-                continue
-            if execution_id(recipe) in identities:
-                changed_producers.add(invocation.identity)
-    result: list[MechanicalCheck] = []
-    for check in prior.checks:
-        if (
-            check.scope is not CheckScope.PROVENANCE
-            or check.status is not CheckStatus.FAIL
-            or check.failure is None
-            or check.failure.code != "provenance.output.unconfirmed"
-            or not check.identity.startswith("provenance:")
-        ):
-            continue
-        producer = check.failure.observed.get("producer")
-        if isinstance(producer, str) and producer in changed_producers:
-            result.append(check)
-    return tuple(result)
-
-
 def _refresh_direct_check(
     check: MechanicalCheck,
     state: _RefreshState,
     *,
     refresh_artifact_dependency: bool = False,
-    retain_unconfirmed: bool = False,
 ) -> MechanicalCheck:
     if not check.dependencies:
         raise TargetedRefreshError(f"missing artifact dependency: {check.identity}")
@@ -745,7 +603,9 @@ def _refresh_direct_check(
                     }
                 )
     except MechanicalContractError as error:
-        return _direct_refresh_failure(check, error, retain_unconfirmed)
+        raise TargetedRefreshError(
+            f"targeted provenance refresh failed: {error.code}"
+        ) from error
     return MechanicalCheck(
         check.identity,
         CheckScope.PROVENANCE,
@@ -753,19 +613,6 @@ def _refresh_direct_check(
         check.identity,
         tuple(dependencies),
     )
-
-
-def _direct_refresh_failure(
-    check: MechanicalCheck,
-    error: MechanicalContractError,
-    retain_unconfirmed: bool,
-) -> MechanicalCheck:
-    if retain_unconfirmed and error.code == "provenance.output.unconfirmed":
-        return _failure_from_error(check.identity, CheckScope.PROVENANCE, error)
-    raise TargetedRefreshError(
-        f"targeted provenance refresh failed: {error.code}"
-    ) from error
-
 
 def _current_artifact_dependency(
     dependency: Mapping[str, object], entry: _EntryState

@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest import mock
 
 from log_commands.context import LogContext
-from log_commands.reproduction_comparison import ConfirmationUpdates
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_publication import (
@@ -66,17 +65,10 @@ class ReproductionPublicationTests(unittest.TestCase):
                 (),
                 (),
             )
-            no_confirmations = ConfirmationUpdates({}, {}, {})
-
             with (
                 mock.patch(
                     "log_commands.reproduction_publication."
-                    "verify_reproduction_publication_snapshot"
-                ),
-                mock.patch(
-                    "log_commands.reproduction_publication."
-                    "prepare_confirmation_updates_locked",
-                    return_value=no_confirmations,
+                    "verify_reproduction_runtime_snapshot"
                 ),
                 mock.patch(
                     "log_commands.reproduction_publication."
@@ -136,17 +128,10 @@ class ReproductionPublicationTests(unittest.TestCase):
                     {},
                     {},
                 )
-                no_confirmations = ConfirmationUpdates({}, {}, {})
-
                 with (
                     mock.patch(
                         "log_commands.reproduction_publication."
-                        "verify_reproduction_publication_snapshot"
-                    ),
-                    mock.patch(
-                        "log_commands.reproduction_publication."
-                        "prepare_confirmation_updates_locked",
-                        return_value=no_confirmations,
+                        "verify_reproduction_runtime_snapshot"
                     ),
                     mock.patch(
                         "log_commands.reproduction_publication."
@@ -247,17 +232,10 @@ class ReproductionPublicationTests(unittest.TestCase):
                 (),
                 (),
             )
-            no_confirmations = ConfirmationUpdates({}, {}, {})
-
             with (
                 mock.patch(
                     "log_commands.reproduction_publication."
-                    "verify_reproduction_publication_snapshot"
-                ),
-                mock.patch(
-                    "log_commands.reproduction_publication."
-                    "prepare_confirmation_updates_locked",
-                    return_value=no_confirmations,
+                    "verify_reproduction_runtime_snapshot"
                 ),
                 mock.patch(
                     "log_commands.reproduction_publication.project_reproduction_state",

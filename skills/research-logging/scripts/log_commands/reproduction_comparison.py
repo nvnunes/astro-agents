@@ -1,16 +1,14 @@
-"""Bounded exact comparison and durable staging for reproduction outputs."""
+"""Bounded exact comparison and durable reproduction-output records."""
 
 from __future__ import annotations
 
 import codecs
 import csv
-import hashlib
 import itertools
 import json
 import math
 import os
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Sequence, cast
@@ -20,6 +18,7 @@ from research_log_data import (
     compose_directory_fingerprint,
     observe_directory_tree,
     observe_file_content,
+    parse_fingerprint,
 )
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
@@ -33,9 +32,11 @@ from .context import LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import ReproductionPlan
 from .reproduction_execution import ExecutionAttempt, ReproductionWorkspace
+from .storage import atomic_write_text
 
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
-STAGING_SCHEMA = "research-log-reproduction-staging/1"
+LEGACY_STAGING_SCHEMA = "research-log-reproduction-staging/1"
+STAGING_SCHEMA = "research-log-reproduction-staging/2"
 MAX_REGULAR_BYTES = 1 << 40
 MAX_DIRECTORY_MEMBERS = 100_000
 MAX_DIRECTORY_DEPTH = 64
@@ -49,7 +50,6 @@ MAX_ARRAY_MEMBERS = 17_179_869_184
 MAX_IMAGE_PIXELS = 2_147_483_648
 MAX_WORKING_MEMORY = 4 << 30
 MAX_STAGING_MANIFEST_BYTES = 64 << 20
-MAX_RUN_STAGING_BYTES = 1 << 40
 IO_CHUNK_BYTES = 8 << 20
 ARRAY_CHUNK_MEMBERS = 1_048_576
 
@@ -134,7 +134,7 @@ class ArtifactComparison:
 
 @dataclass(frozen=True)
 class ExecutionComparison:
-    """Every artifact result and optional retained diagnostic bundle."""
+    """Every artifact result and its retained run-local output root."""
 
     entry: str
     execution_id: str
@@ -157,15 +157,6 @@ class _StagingRequest:
     source_entry_root: Path
     outputs: Sequence[tuple[str, str]]
     results: tuple[ArtifactComparison, ...]
-
-
-@dataclass(frozen=True)
-class ConfirmationUpdates:
-    """Candidate entry states and bytes for one coordinated publication."""
-
-    files: Mapping[Path, str]
-    states: Mapping[str, PyrunFile]
-    execution_ids: Mapping[str, frozenset[str]]
 
 
 def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
@@ -291,33 +282,16 @@ def compare_execution_outputs(
             )
         )
     complete = attempt.checkpoint.state == "complete"
-    matched = complete and all(item.outcome == "matched" for item in results)
-    staged = None
-    if not matched:
-        staged = _stage_execution(
-            _StagingRequest(
-                plan,
-                workspace,
-                attempt,
-                source_entry.root,
-                execution.recipe.outputs,
-                tuple(results),
-            )
-        )
-    else:
-        _discard_matched_outputs(
+    staged = _record_execution(
+        _StagingRequest(
+            plan,
             workspace,
-            tuple(
-                workspace.map_source(
-                    output_target_path(
-                        artifact,
-                        entry_root=source_entry.root,
-                        project_root=workspace.source_project,
-                    )
-                )
-                for artifact, _kind in execution.recipe.outputs
-            ),
+            attempt,
+            source_entry.root,
+            execution.recipe.outputs,
+            tuple(results),
         )
+    )
     return ExecutionComparison(
         attempt.entry,
         attempt.execution_id,
@@ -327,72 +301,57 @@ def compare_execution_outputs(
     )
 
 
-def prepare_confirmation_updates_locked(
+def confirm_matching_execution_locked(
     log: LogContext,
     plan: ReproductionPlan,
-    results: Sequence[ExecutionComparison],
+    result: ExecutionComparison,
     *,
     project_root: Path,
-    verify_snapshot: bool = True,
-) -> ConfirmationUpdates:
-    """Build exact confirmation writes under the caller's scope lock.
+) -> bool:
+    """Persist one matched execution confirmation under its scope lock."""
 
-    The caller owns either the selected entry lock or the enclosing log lock.
-    Snapshot verification is deliberately adjacent to building the retained
-    transaction. The publication owner combines these bytes with the targeted
-    validation refresh and authoritative reproduction result before writing.
-    """
-
-    from .reproduction_planner import verify_reproduction_snapshot
-
-    if verify_snapshot:
-        verify_reproduction_snapshot(log, plan)
-    selected: dict[str, set[str]] = {}
-    for result in results:
-        if result.matched:
-            selected.setdefault(result.entry, set()).add(result.execution_id)
-    updates: dict[Path, str] = {}
-    states: dict[str, PyrunFile] = {}
-    changed_ids: dict[str, frozenset[str]] = {}
-    for entry_id, identities in sorted(selected.items()):
-        entry = resolve_entry(log, entry_id)
-        state = load_pyrun_state(
-            entry.root / "pyrun.json",
-            entry_root=entry.root,
-            project_root=project_root,
+    if not result.matched:
+        return False
+    planned = {
+        (str(item.get("entry")), str(item.get("execution_id")))
+        for item in plan.executions
+    }
+    if (result.entry, result.execution_id) not in planned:
+        raise ActionError(
+            "reproduction.confirmation.execution_unplanned",
+            f"execution is outside the accepted plan: "
+            f"{result.entry}:{result.execution_id}",
         )
-        missing = sorted(identities - set(state.executions))
-        if missing:
-            raise ActionError(
-                "reproduction.confirmation.execution_missing", ", ".join(missing)
-            )
-        executions = dict(state.executions)
-        changed = False
-        changed_in_entry: set[str] = set()
-        for identity in identities:
-            current = executions[identity]
-            if current.confirmed:
-                continue
-            changed = True
-            changed_in_entry.add(identity)
-            executions[identity] = PyrunExecution(
-                True,
-                current.slow,
-                current.last_run_at,
-                current.runner,
-                current.environment_profile,
-                current.execution_contract,
-                current.recipe,
-                current.observed,
-            )
-        if changed:
-            candidate = PyrunFile(state.path, state.entry_root, executions)
-            states[entry_id] = candidate
-            changed_ids[entry_id] = frozenset(changed_in_entry)
-            updates[state.path] = validated_pyrun_serialization(
-                candidate, project_root=project_root
-            )
-    return ConfirmationUpdates(updates, states, changed_ids)
+    entry = resolve_entry(log, result.entry)
+    state = load_pyrun_state(
+        entry.root / "pyrun.json",
+        entry_root=entry.root,
+        project_root=project_root,
+    )
+    current = state.executions.get(result.execution_id)
+    if current is None:
+        raise ActionError(
+            "reproduction.confirmation.execution_missing", result.execution_id
+        )
+    if current.confirmed:
+        return False
+    executions = dict(state.executions)
+    executions[result.execution_id] = PyrunExecution(
+        True,
+        current.slow,
+        current.last_run_at,
+        current.runner,
+        current.environment_profile,
+        current.execution_contract,
+        current.recipe,
+        current.observed,
+    )
+    candidate = PyrunFile(state.path, state.entry_root, executions)
+    atomic_write_text(
+        state.path,
+        validated_pyrun_serialization(candidate, project_root=project_root),
+    )
+    return True
 
 
 def _profile(expected: Path, regenerated: Path) -> str:
@@ -1051,96 +1010,64 @@ def _directory_members(root: Path) -> tuple[tuple[str, str, Path], ...]:
     return tuple(sorted(result, key=lambda item: item[0]))
 
 
-def _stage_execution(request: _StagingRequest) -> str:
-    plan = request.plan
+def _record_execution(request: _StagingRequest) -> str:
+    """Persist one complete comparison before confirmation or publication."""
+
     workspace = request.workspace
     attempt = request.attempt
-    digest = hashlib.sha256(
-        f"{attempt.entry}\0{attempt.execution_id}".encode("utf-8")
-    ).hexdigest()[:16]
-    relative_bundle = PurePosixPath("executions", f"{attempt.entry}-{digest}")
-    bundle = workspace.run_root.joinpath(*relative_bundle.parts)
-    if bundle.exists() or bundle.is_symlink():
-        raise ActionError(
-            "reproduction.staging.exists", f"staging bundle already exists: {bundle}"
-        )
-    temporary = bundle.with_name(f".{bundle.name}.tmp")
-    if temporary.exists() or temporary.is_symlink():
-        raise ActionError(
-            "reproduction.staging.exists", f"temporary staging exists: {temporary}"
-        )
-    existing_bytes = _recorded_staging_bytes(workspace)
-    temporary.mkdir(parents=True)
     by_artifact = {item.artifact: item for item in request.results}
-    manifest_outputs: list[dict[str, object]] = []
-    copied_bytes = 0
-    try:
-        for artifact, kind in request.outputs:
-            retained = output_target_path(
-                artifact,
-                entry_root=request.source_entry_root,
-                project_root=workspace.source_project,
-            )
-            source = workspace.map_source(retained)
-            available = source.exists() and not source.is_symlink()
-            staged_path = None
-            if available:
-                destination = temporary / "outputs" / _portable_stage_path(artifact)
-                copied_bytes += _copy_available(source, destination, kind)
-                staged_path = destination.relative_to(temporary).as_posix()
-            result = by_artifact[artifact]
-            manifest_outputs.append(
-                {
-                    "artifact": artifact,
-                    "available": available,
-                    "expected": result.expected,
-                    "kind": kind,
-                    "outcome": result.outcome,
-                    "reason": result.reason,
-                    "regenerated": result.regenerated,
-                    "staged": staged_path,
-                }
-            )
-        diagnostics: list[str] = []
-        for value in (attempt.stdout, attempt.stderr):
-            source = workspace.run_root / PurePosixPath(value)
-            if source.is_file() and not source.is_symlink():
-                destination = temporary / "diagnostics" / source.name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
-                copied_bytes += destination.stat().st_size
-                diagnostics.append(destination.relative_to(temporary).as_posix())
-        bundle_record = {
-            "bytes": copied_bytes,
-            "complete": attempt.checkpoint.state == "complete",
-            "diagnostics": diagnostics,
-            "entry": attempt.entry,
-            "execution_id": attempt.execution_id,
-            "outputs": manifest_outputs,
-            "path": relative_bundle.as_posix(),
-        }
-        bundle_text = _canonical_json(bundle_record)
-        if (
-            existing_bytes
-            + copied_bytes
-            + len(bundle_text.encode("utf-8"))
-            > MAX_RUN_STAGING_BYTES
-        ):
-            raise ActionError(
-                "reproduction.staging.resource_limit", "run staging limit exceeded"
-            )
-        (temporary / "bundle.json").write_text(bundle_text, encoding="utf-8")
-        os.replace(temporary, bundle)
-        _sync_directory(bundle.parent)
-        _append_staging_manifest(plan, workspace, bundle_record)
-    except BaseException:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        raise
-    return relative_bundle.as_posix()
+    outputs: list[dict[str, object]] = []
+    retained_bytes = 0
+    for artifact, kind in request.outputs:
+        retained = output_target_path(
+            artifact,
+            entry_root=request.source_entry_root,
+            project_root=workspace.source_project,
+        )
+        source = workspace.map_source(retained)
+        available = source.exists() and not source.is_symlink()
+        staged_path = None
+        if available:
+            try:
+                staged_path = source.relative_to(workspace.work_project).as_posix()
+            except ValueError as error:
+                raise ActionError(
+                    "reproduction.staging.path_invalid", str(source)
+                ) from error
+            retained_bytes += _available_bytes(source, kind)
+        result = by_artifact[artifact]
+        outputs.append(
+            {
+                "artifact": artifact,
+                "available": available,
+                "expected": result.expected,
+                "kind": kind,
+                "outcome": result.outcome,
+                "profile": result.profile,
+                "reason": result.reason,
+                "regenerated": result.regenerated,
+                "staged": staged_path,
+            }
+        )
+    diagnostics = [
+        value
+        for value in (attempt.stdout, attempt.stderr)
+        if _available_run_file(workspace.run_root, value)
+    ]
+    record = {
+        "bytes": retained_bytes,
+        "complete": attempt.checkpoint.state == "complete",
+        "diagnostics": diagnostics,
+        "entry": attempt.entry,
+        "execution_id": attempt.execution_id,
+        "outputs": outputs,
+        "path": "workspace",
+    }
+    _upsert_staging_manifest(request.plan, workspace, record)
+    return "workspace"
 
 
-def _append_staging_manifest(
+def _upsert_staging_manifest(
     plan: ReproductionPlan,
     workspace: ReproductionWorkspace,
     record: Mapping[str, object],
@@ -1175,12 +1102,12 @@ def _append_staging_manifest(
     if not isinstance(executions, list):
         raise ActionError("reproduction.staging.invalid", str(path))
     identity = (record.get("entry"), record.get("execution_id"))
-    if any(
-        (item.get("entry"), item.get("execution_id")) == identity
+    executions[:] = [
+        item
         for item in executions
-        if isinstance(item, dict)
-    ):
-        raise ActionError("reproduction.staging.exists", str(identity))
+        if not isinstance(item, dict)
+        or (item.get("entry"), item.get("execution_id")) != identity
+    ]
     executions.append(dict(record))
     executions.sort(key=lambda item: (item["entry"], item["execution_id"]))
     serialized = _canonical_json(current)
@@ -1188,91 +1115,246 @@ def _append_staging_manifest(
         raise ActionError(
             "reproduction.staging.resource_limit", "staging manifest limit exceeded"
         )
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("x", encoding="utf-8") as handle:
-        handle.write(serialized)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-    _sync_directory(path.parent)
+    atomic_write_text(path, serialized)
 
 
-def _recorded_staging_bytes(workspace: ReproductionWorkspace) -> int:
+def load_recorded_comparisons(
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    *,
+    verify_outputs: bool = True,
+) -> tuple[ExecutionComparison, ...]:
+    """Load every durable v2 execution comparison for publication or resume."""
+
     path = workspace.run_root / "staging.json"
-    if not path.exists():
-        return 0
+    if not path.exists() and not path.is_symlink():
+        return ()
+    if path.is_symlink() or not path.is_file():
+        raise ActionError("reproduction.staging.invalid", str(path))
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        executions = value["executions"]
-        sizes = [item["bytes"] for item in executions]
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raw = path.read_bytes()
+        if len(raw) > MAX_STAGING_MANIFEST_BYTES:
+            raise ValueError("staging manifest crossed its byte bound")
+        value = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ActionError("reproduction.staging.invalid", str(error)) from error
-    if not all(
-        isinstance(size, int) and not isinstance(size, bool) and size >= 0
-        for size in sizes
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"executions", "run_id", "schema", "target"}
+        or value.get("schema") != STAGING_SCHEMA
+        or value.get("run_id") != workspace.run_id
+        or value.get("target") != dict(plan.target)
+        or not isinstance(value.get("executions"), list)
     ):
         raise ActionError("reproduction.staging.invalid", str(path))
-    return sum(cast(list[int], sizes))
-
-
-def _portable_stage_path(artifact: str) -> Path:
-    if artifact.startswith("<project>/"):
-        return Path("project").joinpath(
-            *PurePosixPath(artifact.removeprefix("<project>/")).parts
+    results = tuple(
+        _decode_recorded_comparison(
+            item, workspace, verify_outputs=verify_outputs
         )
-    return Path("entry").joinpath(*PurePosixPath(artifact).parts)
+        for item in cast(list[object], value["executions"])
+    )
+    identities = [(item.entry, item.execution_id) for item in results]
+    if identities != sorted(set(identities)):
+        raise ActionError("reproduction.staging.invalid", "comparison order is invalid")
+    return results
 
 
-def _copy_available(source: Path, destination: Path, kind: str) -> int:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    before = _observed_fingerprint(source)
-    if before is None:
-        raise ActionError("reproduction.staging.source_unavailable", str(source))
+def _decode_recorded_comparison(
+    value: object,
+    workspace: ReproductionWorkspace,
+    *,
+    verify_outputs: bool,
+) -> ExecutionComparison:
+    fields = {
+        "bytes",
+        "complete",
+        "diagnostics",
+        "entry",
+        "execution_id",
+        "outputs",
+        "path",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ActionError("reproduction.staging.invalid", "comparison is invalid")
+    entry = value.get("entry")
+    execution_id = value.get("execution_id")
+    outputs = value.get("outputs")
+    diagnostics = value.get("diagnostics")
+    retained_bytes = value.get("bytes")
+    if (
+        not isinstance(entry, str)
+        or not isinstance(execution_id, str)
+        or not isinstance(outputs, list)
+        or not isinstance(diagnostics, list)
+        or not all(isinstance(item, str) for item in diagnostics)
+        or not isinstance(retained_bytes, int)
+        or isinstance(retained_bytes, bool)
+        or retained_bytes < 0
+        or not isinstance(value.get("complete"), bool)
+        or value.get("path") != "workspace"
+    ):
+        raise ActionError("reproduction.staging.invalid", "comparison is invalid")
+    artifacts = tuple(
+        _decode_recorded_artifact(
+            item, workspace, verify_outputs=verify_outputs
+        )
+        for item in cast(list[object], outputs)
+    )
+    identities = [item.artifact for item in artifacts]
+    if identities != sorted(set(identities)):
+        raise ActionError("reproduction.staging.invalid", "output order is invalid")
+    return ExecutionComparison(
+        entry,
+        execution_id,
+        artifacts,
+        "workspace",
+        cast(bool, value["complete"]),
+    )
+
+
+def _decode_recorded_artifact(
+    value: object,
+    workspace: ReproductionWorkspace,
+    *,
+    verify_outputs: bool,
+) -> ArtifactComparison:
+    fields = {
+        "artifact",
+        "available",
+        "expected",
+        "kind",
+        "outcome",
+        "profile",
+        "reason",
+        "regenerated",
+        "staged",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ActionError("reproduction.staging.invalid", "output is invalid")
+    artifact = value.get("artifact")
+    outcome = value.get("outcome")
+    profile = value.get("profile")
+    reason = value.get("reason")
+    available = value.get("available")
+    staged = value.get("staged")
+    if (
+        not isinstance(artifact, str)
+        or value.get("kind") not in {"file", "directory"}
+        or outcome
+        not in {"matched", "changed", "failed", "comparison_failed", "skipped"}
+        or profile is not None
+        and not isinstance(profile, str)
+        or reason is not None
+        and not isinstance(reason, str)
+        or not isinstance(available, bool)
+        or staged is not None
+        and not isinstance(staged, str)
+        or available != (staged is not None)
+    ):
+        raise ActionError("reproduction.staging.invalid", "output is invalid")
+    current_path = None
+    if staged is not None:
+        current_path = _safe_workspace_path(workspace, staged)
+    expected = _recorded_fingerprint(value.get("expected"), artifact)
+    regenerated = _recorded_fingerprint(value.get("regenerated"), artifact)
+    if verify_outputs:
+        _require_recorded_output_current(
+            current_path,
+            cast(str, value["kind"]),
+            regenerated,
+            available=available,
+        )
+    return ArtifactComparison(
+        artifact,
+        cast(str, outcome),
+        reason,
+        profile,
+        expected,
+        regenerated,
+    )
+
+
+def _recorded_fingerprint(
+    value: object, artifact: str
+) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    return parse_fingerprint(value, artifact).as_dict()
+
+
+def _safe_workspace_path(workspace: ReproductionWorkspace, value: str) -> Path:
+    pure = PurePosixPath(value)
+    if (
+        pure.is_absolute()
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or pure.as_posix() != value
+    ):
+        raise ActionError("reproduction.staging.invalid", "output path is invalid")
+    path = workspace.work_project.joinpath(*pure.parts)
+    try:
+        path.resolve().relative_to(workspace.work_project.resolve())
+    except ValueError as error:
+        raise ActionError(
+            "reproduction.staging.invalid", "output path escapes"
+        ) from error
+    return path
+
+
+def _require_recorded_output_current(
+    path: Path | None,
+    kind: str,
+    regenerated: Mapping[str, object] | None,
+    *,
+    available: bool,
+) -> None:
+    """Reject altered run-local output state instead of permitting a retry."""
+
+    if not available:
+        if path is not None:
+            raise ActionError("reproduction.staging.invalid", "output path is invalid")
+        return
+    assert path is not None
+    if path.is_symlink() or (kind == "file" and not path.is_file()) or (
+        kind == "directory" and not path.is_dir()
+    ):
+        raise ActionError(
+            "reproduction.staging.output_changed", f"recorded output changed: {path}"
+        )
+    current = _observed_fingerprint(path)
+    if regenerated is not None and current != regenerated:
+        raise ActionError(
+            "reproduction.staging.output_changed", f"recorded output changed: {path}"
+        )
+
+
+def _available_bytes(source: Path, kind: str) -> int:
     if kind == "file":
         if not source.is_file():
             raise ActionError("reproduction.staging.kind_changed", str(source))
-        _regular_identity(source)
-        shutil.copy2(source, destination)
-        size = destination.stat().st_size
+        return source.stat().st_size
     elif kind == "directory":
         if not source.is_dir():
             raise ActionError("reproduction.staging.kind_changed", str(source))
         members = _directory_members(source)
-        shutil.copytree(source, destination, symlinks=False)
-        size = sum(
+        return sum(
             path.stat().st_size
             for _, item_kind, path in members
             if item_kind == "file"
         )
-    else:
-        raise ActionError("reproduction.staging.kind_invalid", kind)
-    after = _observed_fingerprint(source)
-    copied = _observed_fingerprint(destination)
-    if before != after or before != copied:
-        raise ActionError(
-            "reproduction.staging.copy_changed", f"staging copy changed: {source}"
-        )
-    return size
+    raise ActionError("reproduction.staging.kind_invalid", kind)
 
 
-def _discard_matched_outputs(
-    workspace: ReproductionWorkspace, outputs: Sequence[Path]
-) -> None:
-    work_root = workspace.work_project.resolve()
-    for path in outputs:
-        absolute = path.absolute()
-        try:
-            absolute.relative_to(work_root)
-        except ValueError as error:
-            raise ActionError(
-                "reproduction.comparison.discard_outside_copy", str(path)
-            ) from error
-        if absolute.is_symlink():
-            raise ActionError("reproduction.output.symlink", str(path))
-        if absolute.is_dir():
-            shutil.rmtree(absolute)
-        elif absolute.exists():
-            absolute.unlink()
+def _available_run_file(run_root: Path, value: str) -> bool:
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+        return False
+    path = run_root.joinpath(*pure.parts)
+    try:
+        path.resolve().relative_to(run_root.resolve())
+    except ValueError:
+        return False
+    return path.is_file() and not path.is_symlink()
 
 
 def _observed_fingerprint(path: Path) -> Mapping[str, object] | None:

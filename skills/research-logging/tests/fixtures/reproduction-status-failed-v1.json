@@ -9,7 +9,8 @@
   "completed_executions": 0,
   "current_execution": null,
   "include_slow": false,
-  "latest_failure": {
+  "latest_execution_diagnostic": null,
+  "operational_failure": {
     "code": "publication_failed",
     "execution_id": null,
     "message": "Final publication failed.",

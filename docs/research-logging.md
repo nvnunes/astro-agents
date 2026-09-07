@@ -948,10 +948,16 @@ Inspect or control an accepted run with its immutable ID:
 <skill>/scripts/log reproduce resume --path <log> --run-id <run-id>
 ```
 
-`stop` preserves the same disposable run folder and completed checkpoints for
+`stop` preserves the same retained run folder and completed checkpoints for
 a guarded resume. An optional scheduled monitor may use `status --json` to
 report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
+
+Each execution is attempted at most once in one run. Its complete comparison is
+recorded before a fully matching execution is confirmed in `pyrun.json`.
+Confirmations remain valid if later work or result publication fails. A guarded
+`resume` may also retry a failed reproduction publication from durable run
+state without rerunning terminal command attempts.
 
 On completion, the generated `<log>/reproduction.md` lists every current
 evidence artifact by entry and status. Retrieve the same centralized human
@@ -960,6 +966,11 @@ Changed, failed, comparison-failed, skipped, and stale artifacts remain
 visible. Bounded `log reproduce artifacts list` and `show` commands provide
 exact machine details for diagnosis without requiring an agent to parse the
 generated files.
+
+After reproduction publication completes, the CLI runs ordinary validation for
+the affected log as a separate operation. Validation findings or an operational
+validation failure remain visible in validation's own report but do not change
+the completed reproduction result or roll back confirmations.
 
 Regenerated files remain together in the project `tmp` run folder. They do not
 replace retained research automatically. If you decide to adopt one complete

@@ -483,7 +483,8 @@ class ReproductionExecutionTests(unittest.TestCase):
             workspace = fixture.workspace()
 
             with mock.patch(
-                "log_commands.reproduction_planner.verify_reproduction_snapshot"
+                "log_commands.reproduction_planner."
+                "verify_reproduction_runtime_snapshot"
             ):
                 result = execute_reproduction_plan(
                     fixture.log,
@@ -671,7 +672,8 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "log_commands.reproduction_planner.verify_reproduction_snapshot"
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
                 ),
                 mock.patch(
                     "log_commands.reproduction_execution.execute_planned_recipe",
@@ -705,6 +707,132 @@ class ReproductionExecutionTests(unittest.TestCase):
                 ),
             )
 
+    def test_plan_reuses_prior_failure_without_retrying_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            independent = "pyrun-exec/v1:" + "2" * 64
+            dependent = "pyrun-exec/v1:" + "3" * 64
+            failed_reference = f"e001:{fixture.identity}"
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "depends_on": [],
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                        "order": 1,
+                        "outputs": ["data/result.txt"],
+                        "slow": False,
+                    },
+                    {
+                        "depends_on": [failed_reference],
+                        "entry": "e001",
+                        "execution_id": dependent,
+                        "order": 2,
+                        "outputs": ["data/dependent.txt"],
+                        "slow": False,
+                    },
+                    {
+                        "depends_on": [],
+                        "entry": "e001",
+                        "execution_id": independent,
+                        "order": 3,
+                        "outputs": ["data/independent.txt"],
+                        "slow": False,
+                    },
+                ),
+            )
+            checkpoint = ExecutionCheckpoint(
+                "e001", independent, "complete", "checkpoint.json", "now", ()
+            )
+            attempt = ExecutionAttempt(
+                "e001",
+                independent,
+                0,
+                False,
+                None,
+                None,
+                checkpoint,
+                (),
+                "stdout",
+                "stderr",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution.execute_planned_recipe",
+                    return_value=attempt,
+                ) as execute,
+            ):
+                result = execute_reproduction_plan(
+                    fixture.log,
+                    plan,
+                    workspace,
+                    ExecutionControl(
+                        confinement=_FixtureConfinement(),
+                        prior_failures=frozenset({failed_reference}),
+                    ),
+                )
+
+            execute.assert_called_once()
+            self.assertEqual(result.reused, (failed_reference,))
+            self.assertEqual(
+                result.dependency_skips,
+                (
+                    {
+                        "depends_on": [failed_reference],
+                        "entry": "e001",
+                        "execution_id": dependent,
+                        "reason": "dependency_failed",
+                    },
+                ),
+            )
+
+    def test_plan_reuses_prior_complete_attempt_without_checkpoint_recheck(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            reference = f"e001:{fixture.identity}"
+            planned = {
+                "depends_on": [],
+                "entry": "e001",
+                "execution_id": fixture.identity,
+                "order": 1,
+                "outputs": ["data/result.txt"],
+                "slow": False,
+            }
+            plan = replace(fixture.plan, executions=(planned,))
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution.execute_planned_recipe"
+                ) as execute,
+            ):
+                result = execute_reproduction_plan(
+                    fixture.log,
+                    plan,
+                    workspace,
+                    ExecutionControl(
+                        confinement=_FixtureConfinement(),
+                        prior_attempts=frozenset({reference}),
+                    ),
+                )
+
+            execute.assert_not_called()
+            self.assertEqual(result.attempts, ())
+            self.assertEqual(result.reused, (reference,))
+
     def test_plan_resume_reuses_unchanged_complete_checkpoint(self) -> None:
         script = (
             "import argparse\n"
@@ -734,7 +862,8 @@ class ReproductionExecutionTests(unittest.TestCase):
             plan = replace(fixture.plan, executions=(planned,))
 
             with mock.patch(
-                "log_commands.reproduction_planner.verify_reproduction_snapshot"
+                "log_commands.reproduction_planner."
+                "verify_reproduction_runtime_snapshot"
             ):
                 result = execute_reproduction_plan(
                     fixture.log,

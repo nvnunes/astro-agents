@@ -5,13 +5,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from research_log_data import Fingerprint, load_data_file
 from test_research_log_validation_engine import _evaluate, _log
 from validation.commands import CommandContext, discover_commands
 from validation.controller import evaluate_current_record
-from validation.errors import MechanicalContractError
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
     PYRUN_EXECUTION_CONTRACT,
@@ -25,7 +23,6 @@ from validation.pyrun_state import (
 )
 from validation.targeted_refresh import (
     _observe,
-    refresh_confirmed_provenance,
     refresh_promoted_provenance,
 )
 
@@ -49,7 +46,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
 
             self.assertNotEqual(first, second)
 
-    def test_narrow_refresh_matches_complete_current_evaluation(self) -> None:
+    def test_promotion_refresh_matches_complete_current_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = _log(root)
@@ -203,56 +200,11 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 },
             )
 
-            upstream_unconfirmed = MechanicalContractError(
-                "provenance.output.unconfirmed",
-                "data/upstream.csv",
-                {"output": "data/upstream.csv", "producer": "upstream"},
-                "Pyrun Output Support Records",
-            )
-            with mock.patch(
-                "validation.targeted_refresh.evaluate_provenance",
-                side_effect=upstream_unconfirmed,
-            ):
-                partial = refresh_confirmed_provenance(
-                    summary,
-                    prior,
-                    {"e001": candidate},
-                    {"e001": frozenset({identity})},
-                    result_date="2026-08-30",
-                )
-            partial_direct = next(
-                check
-                for check in partial.checks
-                if check.identity == "provenance:e001a:success-rate"
-            )
-            self.assertEqual(partial_direct.status.value, "fail")
-            self.assertEqual(
-                partial_direct.failure.code, "provenance.output.unconfirmed"
-            )
-            self.assertEqual(partial_direct.failure.observed["producer"], "upstream")
-
-            refreshed = refresh_confirmed_provenance(
-                summary,
-                prior,
-                {"e001": candidate},
-                {"e001": frozenset({identity})},
-                result_date="2026-08-30",
-            )
             candidate.path.write_text(
                 validated_pyrun_serialization(candidate, project_root=root),
                 encoding="utf-8",
             )
             complete = evaluate_current_record(summary, result_date="2026-08-30")
-
-            for refreshed_check, complete_check in zip(
-                refreshed.checks, complete.checks, strict=True
-            ):
-                self.assertEqual(
-                    refreshed_check.as_dict(),
-                    complete_check.as_dict(),
-                    refreshed_check.identity,
-                )
-            self.assertEqual(refreshed.canonical_json(), complete.canonical_json())
 
             results_path = entry_root / "data" / "results.csv"
             results_path.write_text(

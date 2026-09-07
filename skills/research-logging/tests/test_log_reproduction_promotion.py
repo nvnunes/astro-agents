@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from log_commands.reproduction_comparison import STAGING_SCHEMA
+from log_commands.reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from log_commands.reproduction_jobs import _accepted_record
 from log_commands.reproduction_promotion import promote_execution
 from research_log_data import Fingerprint
@@ -51,6 +51,47 @@ class ReproductionPromotionTests(unittest.TestCase):
                 dict(execution.observed.outputs)["data/result.txt"],
                 _fingerprint_bytes(b"changed\n"),
             )
+
+    def test_promotes_v2_workspace_output_by_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            run_id, _legacy = _staged_run(fixture, content=b"changed\n")
+            run_root = fixture.project / "tmp" / f"reproduce-study-e001-{run_id}"
+            source = run_root / "workspace" / fixture.output.relative_to(
+                fixture.project
+            )
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"changed\n")
+            manifest_path = run_root / "staging.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema"] = STAGING_SCHEMA
+            execution = manifest["executions"][0]
+            execution["path"] = "workspace"
+            output = execution["outputs"][0]
+            output["profile"] = "text"
+            output["staged"] = fixture.output.relative_to(fixture.project).as_posix()
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_promotion.verify_reproduction_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_promotion._report_candidates",
+                    return_value={},
+                ),
+            ):
+                promote_execution(
+                    fixture.log,
+                    run_id=run_id,
+                    execution_id=fixture.identity,
+                )
+
+            self.assertEqual(fixture.output.read_bytes(), b"changed\n")
+            self.assertEqual(source.read_bytes(), b"changed\n")
 
     def test_rejects_partial_staging_without_changing_retained_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -204,7 +245,7 @@ def _staged_run(
             }
         ],
         "run_id": run_id,
-        "schema": STAGING_SCHEMA,
+        "schema": LEGACY_STAGING_SCHEMA,
         "target": dict(fixture.plan.target),
     }
     (run_root / "staging.json").write_text(

@@ -36,7 +36,7 @@ from .context import (
     resolve_project_root,
 )
 from .model import ActionError
-from .reproduction_comparison import STAGING_SCHEMA
+from .reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _find_run, _load_run, _plan_from_record
 from .reproduction_paths import resolve_project_tmp
@@ -92,6 +92,12 @@ class _InstalledOutput:
     replacement: Path
 
 
+@dataclass(frozen=True)
+class _StagingBundle:
+    record: Mapping[str, object]
+    schema: str
+
+
 def promote_execution(
     log: LogContext, *, run_id: str, execution_id: str
 ) -> PromotionResult:
@@ -101,10 +107,16 @@ def promote_execution(
     run_record = _load_run(run_root / "run.json")
     plan = _plan_from_record(run_record)
     bundle = _load_bundle(run_root, run_id, execution_id)
-    entry_id = _required_string(bundle, "entry")
+    entry_id = _required_string(bundle.record, "entry")
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
-    outputs = _resolve_outputs(project, entry.root, run_root, execution_id, bundle)
+    outputs = _resolve_outputs(
+        project,
+        entry.root,
+        run_root,
+        execution_id,
+        bundle,
+    )
     verify_reproduction_snapshot(log, plan)
     with entry_lock(entry):
         verify_reproduction_snapshot(log, plan)
@@ -121,9 +133,7 @@ def promote_execution(
     )
 
 
-def _load_bundle(
-    run_root: Path, run_id: str, execution_id: str
-) -> Mapping[str, object]:
+def _load_bundle(run_root: Path, run_id: str, execution_id: str) -> _StagingBundle:
     path = run_root / "staging.json"
     if (
         path.is_symlink()
@@ -146,7 +156,7 @@ def _load_bundle(
         raise ActionError("reproduction.promotion.staging_invalid", str(path))
     executions = value.get("executions")
     if (
-        value.get("schema") != STAGING_SCHEMA
+        value.get("schema") not in {LEGACY_STAGING_SCHEMA, STAGING_SCHEMA}
         or value.get("run_id") != run_id
         or not isinstance(executions, list)
     ):
@@ -178,7 +188,7 @@ def _load_bundle(
         raise ActionError(
             "reproduction.promotion.incomplete", "staged execution is incomplete"
         )
-    return bundle
+    return _StagingBundle(bundle, cast(str, value["schema"]))
 
 
 def _resolve_outputs(
@@ -186,7 +196,7 @@ def _resolve_outputs(
     entry_root: Path,
     run_root: Path,
     execution_id: str,
-    bundle: Mapping[str, object],
+    bundle: _StagingBundle,
 ) -> tuple[_PromotedOutput, ...]:
     state = load_pyrun_state(
         entry_root / "pyrun.json", entry_root=entry_root, project_root=project
@@ -196,33 +206,13 @@ def _resolve_outputs(
         raise ActionError(
             "reproduction.promotion.execution_changed", "execution is no longer current"
         )
-    raw_outputs = bundle.get("outputs")
-    bundle_path = bundle.get("path")
+    raw_outputs = bundle.record.get("outputs")
+    bundle_path = bundle.record.get("path")
     if not isinstance(raw_outputs, list) or not isinstance(bundle_path, str):
         raise ActionError(
             "reproduction.promotion.staging_invalid", "invalid staged output list"
         )
-    records: dict[str, Mapping[str, object]] = {}
-    for value in raw_outputs:
-        if not isinstance(value, Mapping) or set(value) != {
-            "artifact",
-            "available",
-            "expected",
-            "kind",
-            "outcome",
-            "reason",
-            "regenerated",
-            "staged",
-        }:
-            raise ActionError(
-                "reproduction.promotion.staging_invalid", "invalid staged output"
-            )
-        artifact = value.get("artifact")
-        if not isinstance(artifact, str) or artifact in records:
-            raise ActionError(
-                "reproduction.promotion.staging_invalid", "duplicate staged output"
-            )
-        records[artifact] = value
+    records = _index_staged_outputs(raw_outputs, bundle.schema)
     expected = dict(execution.recipe.outputs)
     if set(records) != set(expected):
         raise ActionError(
@@ -262,6 +252,36 @@ def _resolve_outputs(
             _PromotedOutput(artifact, kind, staged, destination, fingerprint)
         )
     return tuple(results)
+
+
+def _index_staged_outputs(
+    raw_outputs: Sequence[object], staging_schema: str
+) -> Mapping[str, Mapping[str, object]]:
+    records: dict[str, Mapping[str, object]] = {}
+    output_fields = {
+        "artifact",
+        "available",
+        "expected",
+        "kind",
+        "outcome",
+        "reason",
+        "regenerated",
+        "staged",
+    }
+    if staging_schema == STAGING_SCHEMA:
+        output_fields.add("profile")
+    for value in raw_outputs:
+        if not isinstance(value, Mapping) or set(value) != output_fields:
+            raise ActionError(
+                "reproduction.promotion.staging_invalid", "invalid staged output"
+            )
+        artifact = value.get("artifact")
+        if not isinstance(artifact, str) or artifact in records:
+            raise ActionError(
+                "reproduction.promotion.staging_invalid", "duplicate staged output"
+            )
+        records[artifact] = value
+    return records
 
 
 def _begin_promotion(

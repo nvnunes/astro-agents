@@ -20,6 +20,7 @@ LOCATOR = importlib.import_module("validation.locator")
 CACHE = importlib.import_module("validation.validation_cache")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 PRESENTATION = importlib.import_module("validation.presentation")
+HUMAN = importlib.import_module("validation.human_projection")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -1123,6 +1124,62 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 _evaluate(summary).result.completion,
                 RESULTS.CompletionState.COMPLETE_CLEAR,
             )
+            complete_document = entry.read_text(encoding="utf-8")
+            result_record["confirmed"] = False
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            write(
+                entry,
+                complete_document.replace(
+                    "./pyrun scripts/preprocess.py --input-data '<catalog>' "
+                    "--output-data data/intermediate.csv\n",
+                    "",
+                ),
+            )
+
+            collected = _evaluate(summary).result
+            provenance = [
+                check
+                for check in collected.checks
+                if check.identity.startswith("provenance:e001:success-rate")
+            ]
+            self.assertEqual(
+                {check.failure.code for check in provenance if check.failure},
+                {"lineage.missing", "provenance.output.unconfirmed"},
+            )
+            primary = next(
+                check
+                for check in provenance
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(primary.failure.code, "lineage.missing")
+            self.assertEqual(
+                HUMAN.provenance_artifact_counts(collected)[
+                    RESULTS.CheckStatus.FAIL.value
+                ],
+                1,
+            )
+            self.assertEqual(
+                HUMAN.provenance_artifact_counts(collected)[
+                    RESULTS.CheckStatus.UNAVAILABLE.value
+                ],
+                0,
+            )
+
+            result_record["confirmed"] = True
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            confirmed = _evaluate(summary).result
+            self.assertEqual(
+                {
+                    check.failure.code
+                    for check in confirmed.checks
+                    if check.identity.startswith("provenance:e001:success-rate")
+                    and check.failure
+                },
+                {"lineage.missing"},
+            )
+            write(entry, complete_document)
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
             original = catalog.read_bytes()
             write(catalog, "id\n2\n")
             self.assertNotEqual(
@@ -2023,8 +2080,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             with mock.patch.object(
                 ENGINE,
-                "evaluate_provenance",
-                wraps=ENGINE.evaluate_provenance,
+                "evaluate_complete_provenance",
+                wraps=ENGINE.evaluate_complete_provenance,
             ) as evaluate:
                 evaluation = _evaluate(summary)
 

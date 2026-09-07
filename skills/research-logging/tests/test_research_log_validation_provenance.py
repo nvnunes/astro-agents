@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import tempfile
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from research_log_data import (  # noqa: E402
     build_local_input,
@@ -73,7 +75,173 @@ def _invocation(
     )
 
 
+def _unconfirmed_support(invocation: Any, material: str) -> Any:
+    raise PROVENANCE.ProvenanceV2Error(
+        "provenance.output.unconfirmed",
+        material,
+        {"producer": invocation.identity},
+        "Pyrun Output Support Records",
+    )
+
+
 class ProvenanceLineageTests(unittest.TestCase):
+    def test_missing_output_does_not_hide_independent_lineage_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.csv"
+            missing_input = root / "missing-input.csv"
+            write(missing_input, "value\n1\n")
+            final = replace(
+                _invocation("final", 0, outputs=(target.resolve().as_posix(),)),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        missing_input.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+
+            result = PROVENANCE.evaluate_complete_provenance(target, (final,))
+
+            self.assertEqual(
+                {finding.code for finding in result.findings},
+                {"lineage.missing", "provenance.output.missing"},
+            )
+
+    def test_collected_findings_continue_across_independent_input_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.csv"
+            missing = root / "missing.csv"
+            ambiguous = root / "ambiguous.csv"
+            for path in (target, missing, ambiguous):
+                write(path, "value\n1\n")
+            first = _invocation(
+                "first", 0, outputs=(ambiguous.resolve().as_posix(),)
+            )
+            second = _invocation(
+                "second", 1, outputs=(ambiguous.resolve().as_posix(),)
+            )
+            final = replace(
+                _invocation("final", 2, outputs=(target.resolve().as_posix(),)),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        missing.resolve().as_posix(), "input", "option"
+                    ),
+                    COMMAND.MaterialRelationship(
+                        ambiguous.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+            result = PROVENANCE.evaluate_complete_provenance(
+                target,
+                (first, second, final),
+                producer_validator=_unconfirmed_support,
+            )
+
+            self.assertEqual(
+                {finding.code for finding in result.findings},
+                {
+                    "lineage.ambiguous",
+                    "lineage.missing",
+                    "provenance.output.unconfirmed",
+                },
+            )
+
+    def test_collected_findings_stop_a_cycle_edge_and_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.csv"
+            intermediate = root / "intermediate.csv"
+            independent = root / "independent.csv"
+            for path in (target, intermediate, independent):
+                write(path, "value\n1\n")
+            earlier = replace(
+                _invocation(
+                    "cycle", 0, outputs=(intermediate.resolve().as_posix(),)
+                ),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        target.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+            final = replace(
+                _invocation("cycle", 1, outputs=(target.resolve().as_posix(),)),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        intermediate.resolve().as_posix(), "input", "option"
+                    ),
+                    COMMAND.MaterialRelationship(
+                        independent.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+
+            result = PROVENANCE.evaluate_complete_provenance(
+                target,
+                (earlier, final),
+                producer_validator=_unconfirmed_support,
+            )
+
+            self.assertEqual(
+                {finding.code for finding in result.findings},
+                {
+                    "lineage.cycle",
+                    "lineage.missing",
+                    "provenance.output.unconfirmed",
+                },
+            )
+
+    def test_collected_findings_report_directory_conflict_after_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry_root = root / "entry"
+            target = entry_root / "data" / "target.csv"
+            bundle = entry_root / "data" / "bundle"
+            member = bundle / "member.csv"
+            sibling = bundle / "sibling.csv"
+            for path in (target, member, sibling):
+                write(path, "value\n1\n")
+            resource = build_local_input(
+                "bundle", "directory", "data/bundle", entry_root=entry_root
+            )
+            owner = _invocation(
+                "owner",
+                0,
+                outputs=(member.resolve().as_posix(),),
+                directories=(bundle.resolve().as_posix(),),
+            )
+            conflict = _invocation(
+                "conflict", 1, outputs=(sibling.resolve().as_posix(),)
+            )
+            final = replace(
+                _invocation("final", 2, outputs=(target.resolve().as_posix(),)),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        member.resolve().as_posix(),
+                        "input",
+                        "directory",
+                        target="bundle",
+                        named_input="bundle",
+                        input_resource=resource,
+                    ),
+                ),
+            )
+
+            result = PROVENANCE.evaluate_complete_provenance(
+                target,
+                (owner, conflict, final),
+                producer_validator=_unconfirmed_support,
+            )
+
+            self.assertEqual(
+                {finding.code for finding in result.findings},
+                {
+                    "directory.producer.conflict",
+                    "provenance.output.unconfirmed",
+                },
+            )
+
     def test_producer_index_preserves_outputs_overlap_and_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

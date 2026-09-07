@@ -106,9 +106,10 @@ from .presentation import (
 )
 from .provenance import (
     ProducerIndex,
+    ProvenanceFinding,
     ProvenanceResult,
     build_producer_index,
-    evaluate_provenance,
+    evaluate_complete_provenance,
     require_origin_boundary,
 )
 from .pyrun_outputs import (
@@ -135,7 +136,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/end-to-end-provenance-2"
+RULES_VERSION = "research-log-mechanical/end-to-end-provenance-3"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -1605,19 +1606,23 @@ def _record_provenance(
             for material in sorted(materials, key=lambda item: item.input_name)
         ],
     }
+    findings: list[ProvenanceFinding] = []
     try:
         dependencies: list[Mapping[str, object]] = [artifact_dependency]
         for material in materials:
             if material.origin:
-                require_origin_boundary(
-                    material.path,
-                    material.resource,
-                    state.invocations,
-                    confirmed_record=lambda invocation, output: (
-                        _has_confirmed_output_record(invocation, output, state)
-                    ),
-                    producer_index=state.producer_index,
-                )
+                try:
+                    require_origin_boundary(
+                        material.path,
+                        material.resource,
+                        state.invocations,
+                        confirmed_record=lambda invocation, output: (
+                            _has_confirmed_output_record(invocation, output, state)
+                        ),
+                        producer_index=state.producer_index,
+                    )
+                except MechanicalContractError as error:
+                    findings.append(_provenance_finding(error))
                 dependencies.append(
                     {"kind": "origin", "material": material.path.as_posix()}
                 )
@@ -1626,7 +1631,7 @@ def _record_provenance(
             result = state.provenance_results.get(material_identity)
             if result is None:
                 state.provenance_traversals += 1
-                result = evaluate_provenance(
+                result = evaluate_complete_provenance(
                     material.path,
                     state.invocations,
                     producer_validator=lambda invocation, output: (
@@ -1640,14 +1645,33 @@ def _record_provenance(
                 state.provenance_results[material_identity] = result
             else:
                 state.provenance_traversals_reused += 1
+            findings.extend(result.findings)
             dependencies.append(
                 {
                     "dependency_projection": result.dependency_projection,
                     "material": result.material,
                 }
             )
+        findings = _ordered_provenance_findings(findings, state)
+        if findings:
+            primary, *additional = findings
+            _append_provenance_findings(
+                identity,
+                additional,
+                state,
+                dependencies=(artifact_dependency,),
+            )
+            return _provenance_finding_check(
+                identity, primary, state, dependencies=dependencies
+            )
         return _pass_check(identity, CheckScope.PROVENANCE, dependencies=dependencies)
     except MechanicalContractError as error:
+        _append_provenance_findings(
+            identity,
+            _ordered_provenance_findings(findings, state),
+            state,
+            dependencies=(artifact_dependency,),
+        )
         blockers = _command_blockers(error.subject, state)
         if error.code in {"producer.missing", "lineage.missing"} and blockers:
             return _blocked_check(
@@ -1663,6 +1687,105 @@ def _record_provenance(
             error,
             dependencies=(artifact_dependency,),
         )
+
+
+def _ordered_provenance_findings(
+    findings: Sequence[ProvenanceFinding], state: _ScanState
+) -> list[ProvenanceFinding]:
+    """Deduplicate findings and prefer actual failures over confirmation state."""
+
+    unique: dict[str, ProvenanceFinding] = {}
+    for finding in findings:
+        key = canonical_json(finding.as_dict())
+        unique.setdefault(key, finding)
+    return sorted(
+        unique.values(),
+        key=lambda finding: (
+            _provenance_finding_priority(finding, state),
+            canonical_json(finding.as_dict()),
+        ),
+    )
+
+
+def _provenance_finding_priority(
+    finding: ProvenanceFinding, state: _ScanState
+) -> int:
+    if finding.code in {"producer.missing", "lineage.missing"} and _command_blockers(
+        finding.subject, state
+    ):
+        return 2
+    if finding.code == "provenance.output.unconfirmed":
+        return 1
+    return 0
+
+
+def _append_provenance_findings(
+    identity: str,
+    findings: Sequence[ProvenanceFinding],
+    state: _ScanState,
+    *,
+    dependencies: Sequence[Mapping[str, object]],
+) -> None:
+    """Append non-primary findings without replacing the primary conclusion."""
+
+    for number, finding in enumerate(findings, 1):
+        state.checks.append(
+            _provenance_finding_check(
+                f"{identity}:finding:{number}",
+                finding,
+                state,
+                dependencies=dependencies,
+            )
+        )
+
+
+def _provenance_finding_check(
+    identity: str,
+    finding: ProvenanceFinding,
+    state: _ScanState,
+    *,
+    dependencies: Sequence[Mapping[str, object]],
+) -> MechanicalCheck:
+    """Project one collected traversal finding into validation state."""
+
+    blockers = _command_blockers(finding.subject, state)
+    if finding.code in {"producer.missing", "lineage.missing"} and blockers:
+        return _blocked_check(
+            identity,
+            CheckScope.PROVENANCE,
+            finding.subject,
+            blockers,
+            dependencies=dependencies,
+        )
+
+    return _failure_check(
+        identity,
+        CheckScope.PROVENANCE,
+        _FailureSpec(
+            finding.code,
+            finding.subject,
+            finding.observed,
+            finding.rule,
+            status=(
+                CheckStatus.UNAVAILABLE
+                if finding.outcome == "unavailable"
+                or finding.code == "provenance.observation.unavailable"
+                else CheckStatus.FAIL
+            ),
+        ),
+        dependencies=dependencies,
+    )
+
+
+def _provenance_finding(error: MechanicalContractError) -> ProvenanceFinding:
+    observed = (
+        dict(error.observed)
+        if isinstance(error.observed, Mapping)
+        else {"value": error.observed}
+    )
+    return ProvenanceFinding(
+        error.code, error.subject, observed, error.rule, error.outcome
+    )
 
 
 def _evaluate_summary(text: str, state: _ScanState) -> None:

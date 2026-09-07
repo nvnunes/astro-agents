@@ -22,12 +22,35 @@ class ProvenanceV2Error(MechanicalContractError):
 
 @dataclass(frozen=True)
 class ProvenanceResult:
-    """Successful evidence-rooted provenance projection."""
+    """Complete bounded evidence-rooted provenance projection."""
 
     material: str
     producers: tuple[str, ...]
     lineage: tuple[tuple[str, str], ...]
+    findings: tuple[ProvenanceFinding, ...]
     dependency_projection: str
+
+
+@dataclass(frozen=True)
+class ProvenanceFinding:
+    """One independently established finding from graph traversal."""
+
+    code: str
+    subject: str
+    observed: Mapping[str, object]
+    rule: str
+    outcome: str = "fail"
+
+    def as_dict(self) -> Mapping[str, object]:
+        """Return the deterministic dependency projection for this finding."""
+
+        return {
+            "code": self.code,
+            "observed": dict(self.observed),
+            "outcome": self.outcome,
+            "rule": self.rule,
+            "subject": self.subject,
+        }
 
 
 @dataclass(frozen=True)
@@ -174,8 +197,19 @@ class _WalkState:
     lineage_seen: set[tuple[str, str]]
     visiting: set[str]
     support: list[Mapping[str, object]]
+    findings: list[ProvenanceFinding]
+    finding_seen: set[str]
+    collect_findings: bool
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
     confirmed_record: Callable[[Invocation, str], bool] | None
+
+
+@dataclass(frozen=True)
+class _EvaluationConfig:
+    producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
+    confirmed_record: Callable[[Invocation, str], bool] | None
+    producer_index: ProducerIndex | None
+    collect_findings: bool
 
 
 def evaluate_provenance(
@@ -186,10 +220,50 @@ def evaluate_provenance(
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
     producer_index: ProducerIndex | None = None,
 ) -> ProvenanceResult:
-    """Require one producer and trace only its mechanically proved inputs."""
+    """Require one producer and raise the first provenance failure."""
+
+    return _evaluate_provenance(
+        material,
+        invocations,
+        _EvaluationConfig(
+            producer_validator, confirmed_record, producer_index, False
+        ),
+    )
+
+
+def evaluate_complete_provenance(
+    material: Path | str,
+    invocations: Sequence[Invocation],
+    *,
+    producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None = None,
+    confirmed_record: Callable[[Invocation, str], bool] | None = None,
+    producer_index: ProducerIndex | None = None,
+) -> ProvenanceResult:
+    """Collect every independently reachable bounded provenance failure."""
+
+    return _evaluate_provenance(
+        material,
+        invocations,
+        _EvaluationConfig(
+            producer_validator, confirmed_record, producer_index, True
+        ),
+    )
+
+
+def _evaluate_provenance(
+    material: Path | str,
+    invocations: Sequence[Invocation],
+    config: _EvaluationConfig,
+) -> ProvenanceResult:
+    """Evaluate one evidence-rooted graph under an explicit failure policy.
+
+    With collection enabled, a failure stops only the edge that cannot be
+    followed safely and every other reachable branch is evaluated. When
+    disabled, the first failure preserves the strict direct-check contract.
+    """
 
     canonical = Path(material).resolve().as_posix()
-    producer_index = producer_index or build_producer_index(invocations)
+    producer_index = config.producer_index or build_producer_index(invocations)
     state = _WalkState(
         producer_index,
         [],
@@ -198,8 +272,11 @@ def evaluate_provenance(
         set(),
         set(),
         [],
-        producer_validator,
-        confirmed_record,
+        [],
+        set(),
+        config.collect_findings,
+        config.producer_validator,
+        config.confirmed_record,
     )
     _walk_material(canonical, None, state, starting=True, depth=0)
     payload = {
@@ -211,13 +288,15 @@ def evaluate_provenance(
             for identity in state.producers
         ],
         "support": state.support,
-        "version": "end-to-end-provenance-1",
+        "findings": [item.as_dict() for item in state.findings],
+        "version": "end-to-end-provenance-2",
     }
     dependency = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     return ProvenanceResult(
         canonical,
         tuple(state.producers),
         tuple(state.lineage),
+        tuple(state.findings),
         dependency,
     )
 
@@ -355,18 +434,25 @@ def _walk_material(
     starting: bool,
     depth: int,
 ) -> None:
-    if depth > MAX_LINEAGE_DEPTH:
-        _fail(
-            "provenance.resource.too_large",
-            material,
-            {"depth": depth, "limit": MAX_LINEAGE_DEPTH},
-        )
-    producer = _unique_producer(material, consumer, state, starting=starting)
-    _require_producer_ready(material, producer, state)
+    try:
+        if depth > MAX_LINEAGE_DEPTH:
+            _fail(
+                "provenance.resource.too_large",
+                material,
+                {"depth": depth, "limit": MAX_LINEAGE_DEPTH},
+            )
+        producer = _unique_producer(material, consumer, state, starting=starting)
+    except MechanicalContractError as error:
+        _record_finding(state, error)
+        return
+    if not _check_producer_ready(material, producer, state):
+        return
     _record_producer_lineage(producer, consumer, state)
     state.visiting.add(producer.identity)
-    _walk_invocation(producer, state, depth)
-    state.visiting.remove(producer.identity)
+    try:
+        _walk_invocation(producer, state, depth)
+    finally:
+        state.visiting.remove(producer.identity)
 
 
 def _unique_producer(
@@ -447,16 +533,52 @@ def _starting_directory_producer(
     return exact[0]
 
 
-def _require_producer_ready(
+def _check_producer_ready(
     material: str, producer: Invocation, state: _WalkState
-) -> None:
-    _require_declared_producer_ready(
-        material, producer, state.producer_index
-    )
+) -> bool:
+    output_available = True
+    if not state.collect_findings:
+        _require_declared_producer_ready(material, producer, state.producer_index)
+    else:
+        path = Path(material)
+        if not path.is_file() and not path.is_dir():
+            output_available = False
+            _record_finding(
+                state,
+                _provenance_error(
+                    "provenance.output.missing",
+                    material,
+                    {"producer": producer.identity},
+                ),
+            )
+        if _requires_local_script(producer) and producer.script_identity is None:
+            _record_finding(
+                state,
+                _provenance_error(
+                    "invocation.executable.unresolved",
+                    producer.identity,
+                    {"script": producer.script},
+                ),
+            )
+        try:
+            _validate_output_directories(producer, state.producer_index)
+        except MechanicalContractError as error:
+            _record_finding(state, error)
     if producer.identity in state.visiting:
-        _fail("lineage.cycle", material, {"invocation": producer.identity})
-    if state.producer_validator is not None:
-        state.support.append(state.producer_validator(producer, material))
+        _record_finding(
+            state,
+            _provenance_error(
+                "lineage.cycle", material, {"invocation": producer.identity}
+            ),
+        )
+        return False
+    if state.producer_validator is not None and output_available:
+        try:
+            state.support.append(state.producer_validator(producer, material))
+        except MechanicalContractError as error:
+            _record_finding(state, error)
+            state.support.append({"finding": _finding(error).as_dict()})
+    return True
 
 
 def _require_declared_producer_ready(
@@ -498,19 +620,25 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
         return
     for relationship in invocation.inputs:
         if relationship.origin and relationship.input_resource is not None:
-            require_origin_boundary(
-                relationship.path,
-                relationship.input_resource,
-                state.producer_index.invocations,
-                confirmed_record=state.confirmed_record,
-                producer_index=state.producer_index,
-            )
+            try:
+                require_origin_boundary(
+                    relationship.path,
+                    relationship.input_resource,
+                    state.producer_index.invocations,
+                    confirmed_record=state.confirmed_record,
+                    producer_index=state.producer_index,
+                )
+            except MechanicalContractError as error:
+                _record_finding(state, error)
             continue
         if (
             relationship.input_resource is not None
             and relationship.input_resource.kind == "directory"
         ):
-            _walk_directory_input(relationship, invocation, state, depth)
+            try:
+                _walk_directory_input(relationship, invocation, state, depth)
+            except MechanicalContractError as error:
+                _record_finding(state, error)
             continue
         _walk_material(
             relationship.path,
@@ -707,10 +835,39 @@ def _frozen_output_index(
     return {key: tuple(items) for key, items in values.items()}
 
 
-def _fail(code: str, subject: str, observed: object) -> NoReturn:
-    raise ProvenanceV2Error(
+def _record_finding(state: _WalkState, error: MechanicalContractError) -> None:
+    """Record one finding or preserve strict first-failure evaluation."""
+
+    if not state.collect_findings:
+        raise error
+    finding = _finding(error)
+    identity = canonical_json(finding.as_dict())
+    if identity not in state.finding_seen:
+        state.findings.append(finding)
+        state.finding_seen.add(identity)
+
+
+def _finding(error: MechanicalContractError) -> ProvenanceFinding:
+    observed = (
+        dict(error.observed)
+        if isinstance(error.observed, Mapping)
+        else {"value": error.observed}
+    )
+    return ProvenanceFinding(
+        error.code, error.subject, observed, error.rule, error.outcome
+    )
+
+
+def _provenance_error(
+    code: str, subject: str, observed: object
+) -> ProvenanceV2Error:
+    return ProvenanceV2Error(
         code,
         subject,
         observed,
         "Recorded-Command Provenance And Material Graph",
     )
+
+
+def _fail(code: str, subject: str, observed: object) -> NoReturn:
+    raise _provenance_error(code, subject, observed)

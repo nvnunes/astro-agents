@@ -64,7 +64,7 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/end-to-end-provenance-2` |
+| Mechanical rules | `research-log-mechanical/end-to-end-provenance-3` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
@@ -3082,6 +3082,16 @@ and confirm that every reached output was produced with the current bytes of
 its script and direct inputs under a command signature still present in the
 entry. Failure of any link fails the starting artifact's Provenance.
 
+Validation reports the complete bounded set of independently established
+failures reachable from each starting artifact. A failure stops only the graph
+edge that cannot be followed safely. Missing or ambiguous producers and
+directory conflicts end their affected edge because no unique producer may be
+selected; a cycle ends its repeated edge; other independent inputs, evidence
+roots, and entries continue. Output-support failure does not hide the declared
+inputs of a uniquely identified producer. Validation records the support
+failure and continues through those inputs. Whole-log evaluation stops only
+when malformed or unavailable log-wide state prevents safe graph construction.
+
 Evidence and direct presentations begin graph traversal. The validator reuses
 the already constructed command/material graph; it does not build a second
 lineage model from output records. For each reached generated artifact:
@@ -3287,14 +3297,14 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Missing item or raw input | any | any | any | Fail undeclared or missing-token validation before lineage. |
 | Declared and used | 0 | yes | n/a | Terminal origin after current fingerprint validation. |
 | Declared and used | 0 | no | n/a | Fail `lineage.missing`. |
-| Declared and used | 1 | no | missing, unconfirmed, or unequal | Fail Provenance. |
+| Declared and used | 1 | no | missing, unconfirmed, or unequal | Fail Provenance and continue through the unique producer's declared inputs. |
 | Declared and used | 1 | no | exact confirmed match | Trace to the unique producer's inputs. |
 | Declared and used | 1 | yes | confirmed producer | Fail `data.origin.invalid`. |
 | Declared and used | more than 1 | either | n/a | Fail `lineage.ambiguous`. |
 | Declared but unused | any | either | n/a | Report `orphan.input.unused`; create no graph edge. |
-| Reached producer | n/a | n/a | exact confirmed match, no inputs | Terminate at the artifact-producer relationship. |
+| Reached producer | n/a | n/a | any support state, no inputs | Record any support failure and terminate at the artifact-producer relationship. |
 | Reached producer | n/a | n/a | unresolved candidate | Fail `material.candidate.unresolved`. |
-| Reached producer | n/a | n/a | exact confirmed match, one or more inputs | Follow every declared input under the rows above. |
+| Reached producer | n/a | n/a | any support state, one or more inputs | Record any support failure and follow every declared input under the rows above. |
 
 ### Directory Truth Table
 
@@ -3420,6 +3430,13 @@ A failed prerequisite is not restated as several speculative mismatches. A
 dependent result is `not_applicable` when a stable prerequisite failed and
 `unavailable` when its prerequisite is temporarily unavailable. The dependency
 note names the governing result.
+
+This prerequisite rule does not suppress independently established graph
+findings. One evidence-rooted artifact may therefore have several Provenance
+checks: one primary conclusion and additional findings for distinct reachable
+support, lineage, origin, cycle, or directory conditions. An actual failure is
+primary over `provenance.output.unconfirmed`; deterministic human artifact
+counts still count the affected artifact once at its worst status.
 
 When an invocation has unresolved material candidates, a reached candidate
 artifact, candidate-directory descendant, or input-use classification

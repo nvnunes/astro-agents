@@ -1026,6 +1026,12 @@ complete a required observation, it reports an incomplete run rather than
 treating the unchecked area as valid. A reported finding is a successful
 validation result, not a tool failure.
 
+One completed evaluation reports every independently checkable failure in the
+bounded evidence-rooted graph. A missing or ambiguous relationship stops only
+the affected edge; validation continues through the graph's other inputs,
+evidence artifacts, and entries. This avoids requiring successive validation
+runs merely to reveal deeper unchanged problems.
+
 A completed published mechanical evaluation writes the human-facing
 `<log>/validation.md` report. It shows when mechanical validation last
 completed, summarizes the four check areas, and groups findings by entry and

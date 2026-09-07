@@ -912,6 +912,67 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(admitted, record)
             self.assertEqual(snapshot["rules_version"], RULES_VERSION)
 
+    def test_validation_admission_blocks_graph_failure_beside_unconfirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            fixture.entry(1)
+            artifact = "/result.csv"
+            checks = (
+                MechanicalCheck(
+                    "conformance:log",
+                    CheckScope.CONFORMANCE,
+                    CheckStatus.PASS,
+                    "conformance:log",
+                ),
+                MechanicalCheck(
+                    "evidence:e001:result",
+                    CheckScope.EVIDENCE,
+                    CheckStatus.PASS,
+                    "evidence:e001:result",
+                ),
+                MechanicalCheck(
+                    "provenance:e001:result",
+                    CheckScope.PROVENANCE,
+                    CheckStatus.FAIL,
+                    artifact,
+                    ({"artifacts": [artifact]},),
+                    FailurePayload(
+                        "lineage.missing",
+                        artifact,
+                        {"consumer": "fixture"},
+                        "Recorded-Command Provenance And Material Graph",
+                    ),
+                ),
+                MechanicalCheck(
+                    "provenance:e001:result:finding:1",
+                    CheckScope.PROVENANCE,
+                    CheckStatus.FAIL,
+                    artifact,
+                    ({"artifacts": [artifact]},),
+                    FailurePayload(
+                        "provenance.output.unconfirmed",
+                        artifact,
+                        {"output": "data/result.csv", "producer": "fixture"},
+                        "Pyrun Output Support Records",
+                    ),
+                ),
+            )
+            record = MechanicalGeneratedRecord.build(
+                fixture.summary.resolve().as_posix(),
+                RULES_VERSION,
+                "2026-09-06",
+                checks,
+            )
+            path = fixture.log_root / "validation" / "results.json"
+            path.parent.mkdir()
+            path.write_text(record.canonical_json() + "\n", encoding="utf-8")
+
+            with mock.patch(
+                "log_commands.reproduction_planner.evaluate_current_record",
+                return_value=record,
+            ), self.assertRaisesRegex(ActionError, "Provenance validation failed"):
+                _admit_validation(fixture.log)
+
     def test_equal_execution_ids_in_distinct_entries_remain_distinct_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))

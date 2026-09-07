@@ -1144,6 +1144,40 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             ]
             self.assertEqual(set(code), {"scripts/child.py", "scripts/child_helper.py"})
 
+    def test_preserves_imported_package_resource_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = make_repo(Path(temporary))
+            entry = make_entry(root)
+            package = entry / "scripts" / "resource_package"
+            package.mkdir()
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "payload.txt").write_text("resource\n", encoding="utf-8")
+            (entry / "scripts" / "read_resource.py").write_text(
+                "from importlib.resources import files\n"
+                "from pathlib import Path\n"
+                "resource = files('resource_package').joinpath('payload.txt')\n"
+                "value = resource.read_text()\n"
+                "Path('data/resource.txt').write_text(value)\n",
+                encoding="utf-8",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/read_resource.py",
+                    "--output-file",
+                    "data/resource.txt",
+                ],
+                entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (entry / "data" / "resource.txt").read_text(encoding="utf-8"),
+                "resource\n",
+            )
+
     def test_records_spawn_and_fork_imports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

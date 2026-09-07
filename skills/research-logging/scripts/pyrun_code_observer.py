@@ -61,6 +61,14 @@ class _RecordingLoader(importlib.abc.Loader):
         executor(module)
         self._recorder.record(getattr(module, "__file__", None))
 
+    def get_resource_reader(
+        self, fullname: str
+    ) -> importlib.abc.ResourceReader | None:
+        """Preserve package-resource access exposed by the delegated loader."""
+
+        reader = getattr(self._delegate, "get_resource_reader", None)
+        return reader(fullname) if reader is not None else None
+
 
 class _RecordingFinder(importlib.abc.MetaPathFinder):
     """Wrap regular filesystem source loaders without changing their search."""

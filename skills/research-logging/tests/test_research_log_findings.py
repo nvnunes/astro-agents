@@ -549,6 +549,54 @@ class FindingsCliTests(unittest.TestCase):
                 old_identity,
             )
 
+    def test_validate_batch_accepts_split_entry_document_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = mechanical_log(root)
+            split_entry = entry.with_name("e001a.md")
+            entry.rename(split_entry)
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("e001.md", "e001a.md"),
+                encoding="utf-8",
+            )
+            evidence = entry.parent / "evidence.json"
+            evidence.write_text(
+                evidence.read_text(encoding="utf-8").replace(
+                    "e001.md", "e001a.md"
+                ),
+                encoding="utf-8",
+            )
+            completed = run_log(
+                root, "validate", "--path", str(summary.with_suffix(""))
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            projection = json.loads(
+                (
+                    summary.with_suffix("") / "validation" / "batches.json"
+                ).read_text(encoding="utf-8")
+            )
+            selected = next(
+                value for value in projection["chains"] if value["entry"] == "e001a"
+            )
+
+            checked = run_log(
+                root,
+                "validate-batch",
+                "--path",
+                str(summary.with_suffix("")),
+                "--projection",
+                projection["projection_id"],
+                "--entry",
+                "e001a",
+                "--chain",
+                selected["chain_id"],
+            )
+
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            payload = json.loads(checked.stdout)
+            self.assertEqual(payload["status"], "complete_clear")
+            self.assertEqual(payload["current_membership"][0]["entry"], "e001a")
+
     def test_validate_batch_rejects_unplaceable_and_superseded_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

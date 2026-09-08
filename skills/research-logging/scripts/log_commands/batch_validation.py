@@ -12,7 +12,12 @@ from validation.filesystem import BoundedTraversalError, bounded_descendants
 from validation.json_codec import canonical_json
 from validation.mechanical_results import CompletionState
 
-from .context import EntryContext, LogContext, resolve_entry
+from .context import (
+    EntryContext,
+    LogContext,
+    parse_entry_document_name,
+    resolve_entry,
+)
 from .findings import batch_findings, load_batch_projection
 from .model import ActionError
 
@@ -33,7 +38,7 @@ def validate_batch(
     assert isinstance(old, Mapping)
     if "commands" not in old:
         return _incomplete(published, old, reason="membership_unresolvable"), False
-    context = resolve_entry(log, entry)
+    context = _resolve_entry_root(log, entry)
     for attempt in range(2):
         before = _source_snapshot(context, old)
         evaluation = evaluate_entry_record(
@@ -93,6 +98,15 @@ def validate_batch(
         }
         return result, True
     raise AssertionError("bounded retry loop did not return")
+
+
+def _resolve_entry_root(log: LogContext, entry: str) -> EntryContext:
+    """Resolve one batch document ID to its owning stable entry directory."""
+
+    identity = parse_entry_document_name(f"{entry}.md")
+    if identity is None:
+        raise ActionError("entry.id.invalid", f"invalid entry ID: {entry}")
+    return resolve_entry(log, identity.id)
 
 
 def _current_groups(

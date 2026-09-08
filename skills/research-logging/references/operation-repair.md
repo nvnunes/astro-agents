@@ -47,7 +47,11 @@ definition mode, not Repair.
 
 For each authorized chain:
 
-1. Inspect the selected chain and only needed current records.
+1. Inspect the selected chain and only needed current records. For
+   `producer.missing` or `lineage.missing`, inspect discovery findings for the
+   apparent producer before changing registrations or provenance structure.
+   Establish why the command was excluded, correct that cause within the
+   authorized scope, then reassess the original finding.
 2. If choosing a provenance shape, read `references/provenance-patterns.md`
    and only the matching card. Otherwise, skip the catalog.
 3. Apply the correction through the owning command or permitted edit.
@@ -55,6 +59,12 @@ For each authorized chain:
 5. Continue to another independent authorized chain. Pause only when requested
    or when a research-owned decision remains.
 
+- For `material.candidate.unresolved`, inspect the reported argument selectors
+  and read the material-role guidance in `references/file-entry-commands.md`.
+  Resource registration does not assign an input/output role.
+- If a failed correction prints a diagnostic ID, use its printed text-inspection
+  command for omitted details. This snapshot is not a validation result; do not
+  rerun the correction to display more fields.
 - Group batches by likely shared cause. Explain a representative correction
   and its safety conditions; reuse that understanding for subsequent cases.
   Check each case against those conditions; investigate and explain material

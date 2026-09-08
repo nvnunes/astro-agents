@@ -1,4 +1,4 @@
-"""Read-only, indexed views of tool-owned validation snapshots.
+"""Read-only, indexed views of validation snapshots and authoring diagnostics.
 
 No query opens published records or research sources. Continuations pin exact
 result IDs; result listings also pin the store generation. Only explicit export

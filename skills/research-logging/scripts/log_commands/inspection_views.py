@@ -22,6 +22,12 @@ def _lines(value: Any, indent: str, command: str) -> list[str]:
         ]
     if isinstance(value, dict):
         lines = []
+        if value.get("status") == "rejected" and "declared_outputs" in value:
+            identity = shlex.quote(str(value["identity"]))
+            lines.append(
+                f"{indent}Inspect rejected command: "
+                f"log results command {command} --command {identity}"
+            )
         for key, item in value.items():
             if item is None:
                 continue

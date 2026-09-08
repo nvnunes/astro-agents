@@ -1,4 +1,4 @@
-"""Ingest already evaluated full and batch snapshots into the inspection cache."""
+"""Retain evaluated validation snapshots and observed authoring diagnostics."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ def _chain(writer: ContentWriter, chain: dict[str, Any]) -> None:
             "commands", str(command["identity"]), command, (entry, identity, "")
         )
     for finding in findings:
+        _rejected_commands(writer, finding)
         writer.entity(
             "findings",
             str(finding["identity"]),
@@ -63,16 +64,38 @@ def _chain(writer: ContentWriter, chain: dict[str, Any]) -> None:
         )
 
 
+def _rejected_commands(writer: ContentWriter, finding: dict[str, Any]) -> None:
+    """Expose rejected commands as inspection entities, never graph members."""
+    observed = finding.get("observed", {})
+    if not isinstance(observed, dict):
+        return
+    command = observed.get("rejected_command")
+    commands = _objects(observed.get("rejected_commands"))
+    if isinstance(command, dict):
+        commands.append(command)
+    for command in commands:
+        writer.entity(
+            "commands", str(command["identity"]), command,
+            (str(command["entry"]), "", str(command["code"])),
+        )
+
+
 def _content(
     writer: ContentWriter,
     record: dict[str, Any],
     projection: dict[str, Any],
     outcome: dict[str, Any],
 ) -> dict[str, int]:
+    for command in _objects(outcome.get("diagnostics")):
+        writer.entity(
+            "commands", str(command["identity"]), command,
+            (str(command["entry"]), "", str(command["code"])),
+        )
     chains = _objects(projection.get("chains")) + _objects(projection.get("unresolved"))
     for chain in chains:
         _chain(writer, chain)
     for check in _objects(record.get("checks")):
+        _rejected_commands(writer, _finding(check))
         writer.entity("checks", str(check["identity"]), check)
     # Batch reconciliation may return a related finding outside current chains.
     for finding in _objects(outcome.get("findings")):
@@ -81,6 +104,7 @@ def _content(
             (writer.result_id, str(finding["identity"])),
         ).fetchone()
         if not exists:
+            _rejected_commands(writer, finding)
             writer.entity(
                 "findings",
                 str(finding["identity"]),
@@ -112,7 +136,7 @@ def _metadata(
     request: dict[str, str],
 ) -> dict[str, Any]:
     kind = request.get("kind", "full")
-    return {
+    metadata = {
         "schema": RESULT_SCHEMA,
         "result_id": str(uuid.uuid4()),
         "summary": str(summary),
@@ -141,6 +165,12 @@ def _metadata(
         "evaluated_checks": len(record.get("checks", [])),
         "returned_scope": "reconciled chains" if kind == "batch" else "full log",
     }
+    if kind == "diagnostic":
+        metadata.update(
+            evaluated_scope=None, evaluated_checks=None,
+            returned_scope="authoring diagnostics; no validation performed",
+        )
+    return metadata
 
 
 def save_result(

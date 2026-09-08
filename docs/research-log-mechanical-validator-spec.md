@@ -3380,6 +3380,22 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 
 ### Diagnostics
 
+For `material.candidate.unresolved`, retain the unresolved argument selectors
+and values, command location, and successfully resolved output declarations as
+diagnostic-only metadata. Rejected commands remain outside the producer graph.
+Missing-producer and lineage findings may identify these commands only through
+an exact resolved output path or an owning output directory. Authoring errors
+retain their primary code and report matching diagnostics in bounded text;
+cached finding and command views expose the same discovery evidence
+without reevaluation. Older results may lack this diagnostic metadata.
+Inspection marks these commands `status: rejected`; their diagnostic records do
+not change projected chain membership.
+Authoring failures with these diagnostics retain a `diagnostic` snapshot and
+print an exact bounded text-inspection command. Complete structured detail is
+available only through explicitly requested inspection JSON or export. Cache
+failure preserves the original error without dumping the complete payload;
+`--dry-run` retains no snapshot.
+
 | Code | Scope | Condition |
 | --- | --- | --- |
 | `data.file.location_invalid` | conformance | `data.json` is outside one entry root or a parent/log-level surface exists. |
@@ -4100,8 +4116,12 @@ the latest published validation. The inspection database and its companions
 are generated, Git-ignored state. Keep the latest full result and the latest
 result for each requested batch, keyed by origin projection, entry, and chain.
 Validating batch A replaces A's cached result and leaves B's available.
+The same store retains at most one latest authoring `diagnostic` snapshot per
+log. It contains already observed rejected-command details, not a validation
+result; capturing or inspecting it performs no reevaluation. A new diagnostic
+replaces the previous diagnostic without removing full or batch results.
 A successfully stored and published full validation replaces the full result
-and clears the previous batch results. Explicit cache clearing also invalidates
+and clears the previous batch and diagnostic results. Explicit cache clearing also invalidates
 cached IDs. Execution history records outcomes and decisions in its own text;
 result IDs provide optional detail, not the sole record of completed work.
 Reevaluation creates a new result for the observed sources; it does not restore
@@ -4131,8 +4151,8 @@ reject symlinked store paths and unsafe companions.
 An inspection encountering a journal requiring recovery reports the database error;
 only an explicit writable store operation may recover it.
 
-Storage follows the active full result and batches, rather than accumulating
-validation history. Reuse freed database pages on replacement. Do not add
+Storage keeps the active full result, batches, and latest diagnostic, rather than
+accumulating history. Reuse freed database pages on replacement. Do not add
 age-based eviction, configurable retention, or per-result deletion commands.
 Resource limits follow the bounded validation inputs and query views; there
 is no separate archival quota. Superseded IDs are never reused or silently
@@ -4160,7 +4180,7 @@ values are explicit nulls with a reason, never inferred from old publications:
 | Field | Meaning |
 | --- | --- |
 | `result_id`, `sequence`, `schema` | Stable identity, commit ordering, and retained-result version. |
-| `summary`, `kind` | Resolved logical-log summary path; kind is `full` or `batch`. |
+| `summary`, `kind` | Resolved logical-log summary path; kind is `full`, `batch`, or `diagnostic`. |
 | `started_at`, `finished_at`, `stored_at` | UTC timestamps for this evaluation and its store commit. |
 | `result_date`, `rules_version`, `source_schemas` | Existing calendar/report date and versions used; the report date is not the evaluation timestamp. |
 | `status`, `reason` | Existing completion classification and any incomplete reason. |
@@ -4169,6 +4189,12 @@ values are explicit nulls with a reason, never inferred from old publications:
 | `projection_id` | Projection produced by this evaluation, when available; distinct from the batch's origin. |
 | `evaluated_scope`, `evaluated_checks` | Full log or selected entry and its check count. |
 | `returned_scope`, `finding_count` | Full result or reconciled chain selection and its distinct returned findings. |
+
+For `diagnostic`, `status` is `failed` and `reason` is the authoring error code.
+Evaluation, report, and projection fields are unavailable, including null
+`evaluated_scope` and `evaluated_checks`; timestamps describe diagnostic capture
+and persistence. `returned_scope` explicitly states that no validation occurred.
+Rejected commands are inspectable records, not evaluated findings.
 
 Preserve every evaluated check in retained content. A batch's ordinary view
 selects reconciled chains and related unresolved findings, just as today;
@@ -4179,7 +4205,7 @@ and what remained unavailable; it never uses a clear postcondition for missing
 coverage.
 
 Full validation publishes through its existing bundle transaction, then replaces
-the cached full result and clears prior batches in one SQLite transaction.
+the cached full result and clears prior batches and diagnostics in one SQLite transaction.
 Keep the existing log-operation lock through that update. A failed publication
 leaves the prior cache untouched. A cache write failure preserves the validation
 outcome and exit status, but reports `results.store.write_failed` on stderr;
@@ -4225,9 +4251,9 @@ log validate --root PROJECT [existing options] [--format text|json]
 log validate-batch --path LOG --projection PROJECTION_ID
   --entry ENTRY --chain CHAIN_ID [--format text|json]
 
-log results list --path LOG [--kind full|batch] [--entry ENTRY]
+log results list --path LOG [--kind full|batch|diagnostic] [--entry ENTRY]
   [--chain CHAIN_ID] [--projection PROJECTION_ID] [--limit N] [--cursor CURSOR]
-log results show --path LOG (--id RESULT_ID | --latest --kind full|batch)
+log results show --path LOG (--id RESULT_ID | --latest --kind full|batch|diagnostic)
   [--view summary|codes|findings|chains|commands|artifacts|collections|overlaps]
   [--entry ENTRY] [--chain CHAIN_ID] [--code CODE] [--limit N] [--cursor CURSOR]
 log results finding --path LOG --id RESULT_ID --finding CHECK_ID

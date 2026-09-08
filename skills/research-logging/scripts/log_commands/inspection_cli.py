@@ -19,7 +19,7 @@ def run_results(arguments: Sequence[str]) -> int:
     """Dispatch an explicitly selected read-only inspection view or full export."""
     parser = argparse.ArgumentParser(
         prog="log results",
-        description="Inspect cached validation; never reevaluate sources.",
+        description="Inspect retained validation or diagnostics without reevaluation.",
     )
     actions = parser.add_subparsers(dest="action", required=True)
     for action in (
@@ -43,6 +43,9 @@ def run_results(arguments: Sequence[str]) -> int:
     output_format = values.pop("format")
     query = Query(**values)
     result = inspect_result(log.root, query)
+    if output_format == "text" and result.get("next_cursor"):
+        result["next_command"] = _next_command(args, result)
+        result.pop("next_cursor")
     if args.action == "export":
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:
@@ -50,9 +53,28 @@ def run_results(arguments: Sequence[str]) -> int:
     return 0
 
 
+def _next_command(args: argparse.Namespace, result: dict[str, Any]) -> str:
+    """Pin text continuations to this result and preserve its query selectors."""
+    values = vars(args).copy()
+    action = values.pop("action")
+    values.pop("latest", None)
+    if "result_id" in values:
+        values.pop("result_id")
+        values["id"] = result["result_id"]
+    values["cursor"] = result["next_cursor"]
+    command = ["log", "results", action]
+    for key, value in values.items():
+        if value is None:
+            continue
+        if key == "entity":
+            key = "ref" if action == "value" else action
+        command.extend(("--" + key.replace("_", "-"), str(value)))
+    return shlex.join(command)
+
+
 def _selectors(parser: argparse.ArgumentParser, action: str) -> None:
     if action in {"list", "show"}:
-        parser.add_argument("--kind", choices=("full", "batch"))
+        parser.add_argument("--kind", choices=("full", "batch", "diagnostic"))
         for flag in ("entry", "chain", "projection"):
             parser.add_argument("--" + flag)
     if action == "show":

@@ -39,6 +39,10 @@ The inspection cache keeps the latest full observation and latest result per
 batch. A new check replaces that batch's result; a completed full validation
 replaces the full result and clears prior batches. Batch checking writes this
 cache only, preserving published validation and research-owned state.
+Failed authoring commands may also retain the latest `diagnostic` snapshot per
+log in this cache. Its rejected-command details are not validation evidence.
+New diagnostics preserve full and batch results; full publication clears old
+diagnostics. Use the printed text-inspection command for omitted details.
 Inspection never evaluates research files. Cache-write failure warns without
 discarding the validation outcome and supplies no new result ID.
 

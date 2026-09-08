@@ -13,6 +13,10 @@ from research_log_data import (
     load_data_file,
     observe_fingerprint,
 )
+from validation.command_diagnostics import (
+    RejectedProducerIndex,
+    rejected_producer_message,
+)
 from validation.commands import (
     CommandContext,
     CommandDiscoveryFailure,
@@ -31,6 +35,7 @@ from validation.output_support import (
 from validation.provenance import (
     ProducerIndex,
     ProvenanceResult,
+    ProvenanceV2Error,
     build_producer_index,
     evaluate_provenance,
     require_declared_producer,
@@ -63,6 +68,26 @@ class LogMaterials:
     failures: Mapping[Path, tuple[CommandDiscoveryFailure, ...]]
     _support: dict[str, PyrunOutputsFile] = field(default_factory=dict)
     _producer_index: ProducerIndex | None = field(default=None, init=False, repr=False)
+    _rejected_index: RejectedProducerIndex | None = field(
+        default=None, init=False, repr=False
+    )
+
+    def _explain_producer_failure(self, error: ProvenanceV2Error) -> None:
+        """Attach relevant discovery failures without changing producer admission."""
+        if error.code not in {"producer.missing", "lineage.missing"}:
+            return
+        if self._rejected_index is None:
+            self._rejected_index = RejectedProducerIndex()
+            for failures in self.failures.values():
+                for failure in failures:
+                    self._rejected_index.add(failure.error.observed)
+        related = self._rejected_index.related(error.subject)
+        if related:
+            raise ActionError(
+                error.code, f"{error}\n{rejected_producer_message(related)}",
+                records=related,
+                diagnostic_log=self.log.root,
+            ) from error
 
     def confirmed(self, invocation: Invocation, material: str) -> bool:
         """Return confirmed support using the validator's exact output identity."""
@@ -128,6 +153,9 @@ class LogMaterials:
                     confirmed_record=self.confirmed,
                     producer_index=self._index(),
                 )
+        except ProvenanceV2Error as error:
+            self._explain_producer_failure(error)
+            raise
         except FingerprintCacheError as error:
             raise ActionError(
                 "provenance.observation.unavailable", str(error)
@@ -143,12 +171,16 @@ class LogMaterials:
     def require_pending_generated(self, resource: InputResource) -> Invocation:
         """Require one producer while leaving absent execution proof pending."""
 
-        producer = require_declared_producer(
-            resource.canonical_target,
-            self.invocations,
-            producer_index=self._index(),
-            allow_missing=resource.fingerprint.digest is None,
-        )
+        try:
+            producer = require_declared_producer(
+                resource.canonical_target,
+                self.invocations,
+                producer_index=self._index(),
+                allow_missing=resource.fingerprint.digest is None,
+            )
+        except ProvenanceV2Error as error:
+            self._explain_producer_failure(error)
+            raise
         root = self._root(producer)
         resolved = resolve_output_support(
             producer,

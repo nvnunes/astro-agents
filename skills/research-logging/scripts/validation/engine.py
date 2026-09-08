@@ -6,7 +6,7 @@ import hashlib
 import re
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, NoReturn, Sequence, cast
 
@@ -25,6 +25,7 @@ from research_log_data import (
     verify_fingerprint,
 )
 
+from .command_diagnostics import RejectedProducerIndex
 from .commands import (
     CommandContext,
     Invocation,
@@ -239,6 +240,9 @@ class _ScanState:
     entries: list[_Entry] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
     producer_index: ProducerIndex | None = None
+    rejected_producers: RejectedProducerIndex = field(
+        default_factory=RejectedProducerIndex
+    )
     complete_provenance_context: CompleteProvenanceContext | None = None
     command_candidate_dependencies: dict[str, set[str]] = field(default_factory=dict)
     command_blocker_candidates: (
@@ -838,6 +842,7 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 _register_invocation_blockers(invocation, identity, state)
             documents.append(tuple(valid_invocations))
             for failure in discovery.failures:
+                state.rejected_producers.add(failure.error.observed)
                 identity = _command_check_identity(
                     entry.id, failure.fence, failure.ordinal
                 )
@@ -1919,6 +1924,13 @@ def _ordered_provenance_findings(
 
     unique: dict[str, ProvenanceFinding] = {}
     for finding in findings:
+        if finding.code in {"producer.missing", "lineage.missing"}:
+            related = state.rejected_producers.related(finding.subject)
+            if related:
+                finding = replace(
+                    finding,
+                    observed={**finding.observed, "rejected_commands": list(related)},
+                )
         key = canonical_json(finding.as_dict())
         unique.setdefault(key, finding)
     prepared = [

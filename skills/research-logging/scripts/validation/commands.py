@@ -604,7 +604,15 @@ def _build_invocation(
         _fail(
             "material.candidate.unresolved",
             context.document,
-            {"candidates": list(candidates)},
+            {
+                "candidates": [item["resolved"] for item in candidates],
+                "rejected_command": {
+                    **_rejected_command(
+                        context, position, relationships, collections, candidates
+                    ),
+                    "script": script,
+                },
+            },
         )
     inputs = tuple(item for item in relationships if item.direction == "input")
     outputs = tuple(item for item in relationships if item.direction == "output")
@@ -645,7 +653,7 @@ def _build_invocation(
         inputs,
         outputs,
         collections,
-        candidates,
+        (),
         _material_owner(context),
         recipe_parameters,
         command.environment,
@@ -841,15 +849,64 @@ def _observe_script(path: Path) -> ScriptObservation:
     )
 
 
+def _rejected_command(
+    context: CommandContext,
+    position: _InvocationPosition,
+    relationships: Sequence[MaterialRelationship],
+    collections: Sequence[MaterialCollection],
+    candidates: Sequence[Mapping[str, str]],
+) -> dict[str, object]:
+    """Preserve resolved declarations for diagnosis without admitting an invocation."""
+    directories = {
+        item.root
+        for item in collections
+        if item.direction == "output" and item.mechanism == "directory"
+        and item.root is not None
+    }
+    members = {
+        member for item in collections
+        if item.direction == "output" and item.mechanism == "directory"
+        for member in item.members
+    }
+    covered = members | directories
+    outputs = {
+        item.path for item in relationships
+        if item.direction == "output" and item.path not in covered
+    }
+    return {
+        "identity": (
+            f"entry:{context.entry}:command:{position.fence}:{position.ordinal}"
+        ),
+        "entry": context.entry,
+        "document": context.document,
+        "fence": position.fence,
+        "ordinal": position.ordinal,
+        "status": "rejected",
+        "code": "material.candidate.unresolved",
+        "arguments": [
+            {"selector": item["selector"], "value": item["value"]}
+            for item in candidates
+        ],
+        "declared_outputs": [
+            {"path": path, "kind": kind}
+            for kind, paths in (("file", outputs), ("directory", directories))
+            for path in sorted(paths)
+        ],
+        "guidance": "Declare each argument's actual role with --other-inputs or "
+        "--other-outputs; registration alone does not assign a role.",
+    }
+
+
 def _relationships(
     command: _ParsedCommand,
     context: CommandContext,
 ) -> tuple[
-    tuple[MaterialRelationship, ...], tuple[MaterialCollection, ...], tuple[str, ...]
+    tuple[MaterialRelationship, ...], tuple[MaterialCollection, ...],
+    tuple[dict[str, str], ...],
 ]:
     relationships: list[MaterialRelationship] = []
     collections: list[MaterialCollection] = []
-    candidates: list[str] = []
+    candidates: list[dict[str, str]] = []
     runner_roles = command.runner_roles
     state = _RoleState(context, relationships, collections)
     for target, value in command.capture_outputs:
@@ -915,14 +972,14 @@ def _collect_argument(
     target: str,
     role: str | None,
     state: _RoleState,
-    candidates: list[str],
+    candidates: list[dict[str, str]],
 ) -> None:
     if role is not None:
         _apply_role(value, role, target, state)
         return
     candidate = _candidate(value, state.context)
     if candidate is not None:
-        candidates.append(candidate)
+        candidates.append({"selector": target, "value": value, "resolved": candidate})
 
 
 def _candidate(value: str, context: CommandContext) -> str | None:

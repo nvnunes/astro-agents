@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 AUTHORING_RESULT_SCHEMA = "research-log-authoring-result/1"
 
@@ -135,6 +136,12 @@ class ActionResult:
 class ActionError(Exception):
     """One bounded authoring conflict or failed precondition."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self, code: str, message: str,
+        *, records: tuple[dict[str, object], ...] | None = None,
+        diagnostic_log: Path | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.records = records
+        self.diagnostic_log = diagnostic_log

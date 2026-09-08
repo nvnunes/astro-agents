@@ -89,18 +89,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
     except (ActionError, OSError, UnicodeError) as error:
-        return _report_failure(family, selected_task, error)
+        return _report_failure(
+            family, selected_task, error, dry_run="--dry-run" in arguments
+        )
     except ValueError as error:
         if not hasattr(error, "code"):
             raise
-        return _report_failure(family, selected_task, error)
+        return _report_failure(
+            family, selected_task, error, dry_run="--dry-run" in arguments
+        )
 
 
-def _report_failure(family: str, selected_task: str, error: Exception) -> int:
+def _report_failure(
+    family: str, selected_task: str, error: Exception, *, dry_run: bool = False,
+) -> int:
     """Emit one bounded expected operational or contract failure."""
 
     code = getattr(error, "code", f"{family}.failed")
     print(f"log: {code}: {error}", file=sys.stderr)
+    if isinstance(error, ActionError) and error.records is not None:
+        from .diagnostic_errors import report_diagnostic
+
+        if dry_run:
+            print("Diagnostic not cached (--dry-run).")
+        else:
+            report_diagnostic(error)
+        return 2
     if family in AUTHORING_FAMILIES:
         print(
             json.dumps(

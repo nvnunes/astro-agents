@@ -1,14 +1,17 @@
 ---
 name: plan-writing
-description: Write, revise, or review plans, implementation plans, execution plans, roadmaps, sequencing notes, migration plans, and next-step planning documents. Use when output should organize future work, not document current architecture or review current state.
+description: Write, develop, shard, revise, or review implementation plans, roadmaps, migration plans, and sequencing documents. Use for initial design or substantive changes to future scope and contracts; use plan-execution for implementing a plan, resuming work, or routine status/progress updates.
 ---
 
 # Plan Writing
 
-Use this skill for planning documents and task sequencing.
+Use this skill for plan design through optional sharding. Pair with
+`$technical-writing`, then read `references/plan.md` for structure and scope.
 
-Pair with `$technical-writing` for common prose discipline, then read `references/plan.md` for plan structure and scope rules.
+Plan the smallest coherent work that achieves the requested outcome. Preserve
+user decisions and the detail needed to execute and verify it; keep durable
+architecture in its owning docs.
 
-Plan the smallest coherent body of work that achieves the requested outcome. Include requested tasks and necessary dependencies; do not turn adjacent possibilities into planned or deferred work.
-
-Preserve the detail needed to execute and verify that scope. Keep durable architecture in its owning docs.
+Hand off authorized implementation to `$plan-execution`. Routine progress
+updates stay there; consequential scope or contract redesign returns here.
+Writing a plan does not itself authorize implementation.

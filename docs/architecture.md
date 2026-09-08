@@ -35,6 +35,12 @@ Current user-facing skills include the `technical-writing` base skill, narrower 
 
 Shared runtime behavior should be represented as a skill or kept inside the owning skill package. Avoid hidden cross-skill shared references for normal skill operation.
 
+`plan-writing` owns plan design through optional sharding. `plan-execution`
+owns authorized implementation, continuation, routine progress, and completion.
+Their discovery descriptions and entrypoints define the handoff; substantive
+scope or contract redesign returns to plan-writing. Detailed procedures belong
+in those skill packages, not in the project brief or usage examples.
+
 ## Docs As Source Of Truth
 
 The `docs/` family owns durable source-of-truth material for `astro-agents` itself.

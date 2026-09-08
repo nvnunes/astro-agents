@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Execution"
+  short_description: "Execute plans and maintain progress"
+  default_prompt: "Use $plan-execution to carry out the authorized work in the selected plan and maintain its progress."

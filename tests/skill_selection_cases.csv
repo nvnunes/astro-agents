@@ -73,3 +73,13 @@ negative-research-log-review-vs-documentation-surface,research-logging,documenta
 negative-research-log-reference-vs-science,research-logging,science-writing,false,negative,Find and summarize references for a manuscript literature review; do not update a research log
 negative-science-vs-research-log,science-writing,research-logging,false,negative,Capture these experiment notes in the adaptive optics research log
 negative-technical-vs-readme,technical-writing,readme-writing,false,negative,Rewrite this README.md introduction for new users
+explicit-plan-execution,plan-execution,plan-execution,true,explicit,Use $plan-execution to implement Phase 2 of this approved plan
+implicit-plan-execution,plan-execution,plan-execution,true,implicit,Implement Part 2.A of the existing implementation plan
+implicit-plan-resume,plan-execution,plan-execution,true,implicit,Resume the active Part of this plan from its continuation note
+implicit-plan-status,plan-execution,plan-execution,true,implicit,Mark this Part complete in the plan using its recorded passing checks
+implicit-plan-shard,plan-writing,plan-writing,true,implicit,Split the fully developed phases of this long plan into independently usable documents
+implicit-plan-redesign,plan-writing,plan-writing,true,implicit,Redesign the remaining phases around the newly agreed storage contract
+negative-plan-writing-vs-execution,plan-writing,plan-execution,false,negative,Implement the next Part of this approved plan
+negative-plan-writing-vs-status,plan-writing,plan-execution,false,negative,Update only the plan status row using the recorded successful outcome
+negative-plan-execution-vs-design,plan-execution,plan-writing,false,negative,Write an implementation plan for this proposed migration
+negative-plan-execution-vs-redesign,plan-execution,plan-writing,false,negative,Revise the plan design to change its scope and public API contract

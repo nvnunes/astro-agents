@@ -64,6 +64,8 @@ Start with the skill name when you know the intended skill:
 - `$code-quality-review Review the current source-code quality.`
 - `$documentation-surface-review Review this project's documentation surface.`
 - `$project-upgrade-planning Plan this project's astro-agents upgrade.`
+- `$plan-writing Develop a plan for this migration.`
+- `$plan-execution Implement Part 1.A of the approved plan.`
 - `$research-logging Record an entry in the telemetry research log.`
 - `$science-writing Revise manuscript.tex for scientific clarity and claim discipline.`
 
@@ -106,7 +108,8 @@ For example:
 - For general technical prose, use `$technical-writing`.
 - For project documentation such as `docs/architecture.md`, `docs/testing.md`, `docs/development.md`, and similar long-lived project documents, use `$project-docs-writing`.
 - For `README.md`, use `$readme-writing`.
-- For plan documents or phased execution docs when they are created or revised, use `$plan-writing`.
+- For plan design, substantive scope/contract revisions, or sharding, use `$plan-writing`.
+- For implementing or resuming a plan and routine progress/status updates, use `$plan-execution`.
 ```
 
 ### Research Logs

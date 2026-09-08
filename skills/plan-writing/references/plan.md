@@ -1,7 +1,9 @@
 # Plan
 
 ## Purpose
-Write working plans for execution, re-entry, and decision continuity. Inherit prose discipline from `skills/technical-writing/references/base.md`.
+Design working plans through optional sharding. Execution, continuation, and
+routine progress updates belong to `$plan-execution`. Inherit prose discipline
+from `skills/technical-writing/references/base.md`.
 
 ## Scope
 - Include a task, constraint, or note only when it serves the requested outcome, a necessary dependency, an explicit user requirement, or a concrete risk supported by inspected evidence.
@@ -18,6 +20,9 @@ Write working plans for execution, re-entry, and decision continuity. Inherit pr
 - Prefer lists for discrete actions, outputs, and checks when as clear as prose: numbered when order matters, bulleted otherwise. Use paragraphs for connected explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
 - State each requirement once. Place evidence collection, validation, and documentation at the steps that produce or need them.
+- Link consequential decisions to known downstream phase/Part/task consumers.
+  Maintain those links as the plan develops or moves, so later reconciliation
+  stays bounded. Do not build a separate dependency registry.
 - Attach notes and unresolved choices to the work they affect. Distinguish choices that block progress from details that can be resolved during implementation.
 
 ## Execution Detail
@@ -38,7 +43,46 @@ When a plan contains consequential design choices that need user input, suggest 
 - Once the necessary choices are resolved, integrate them into executable plan prose. Remove temporary decision notes only after their substance is preserved.
 - If decisions belong in a design document, include that documentation work at the appropriate plan level. Keep the agreed details there until transferred, then link to the document.
 
-Draft directly when the work does not require this decision process.
+Draft directly when this decision process is unnecessary. Develop stubs before
+considering extraction.
+
+## Sharding
+
+Consider extracting substantial, fully developed phases from long plans.
+Weigh length against cohesion: centralized design may work better together.
+Keep small plans together; ask the human when the tradeoff is unclear. Do not
+use a fixed word count or create a file for every stub.
+
+For a sharded plan:
+
+- Start the main document with a linked-phase/status table. Keep its phase
+  progress only there and retain undesigned stubs. No prerequisites/count columns.
+- Make each phase independently executable: objective, scope, constraints and decisions,
+  tasks, dependencies, commands or precise references, checks/reviews, and
+  stopping conditions. Use direct authoritative links rather than requiring
+  the main-plan body to recover instructions.
+- Keep task/Part progress in the phase. Preserve identifiers, replace extracted
+  content with links, and repair affected references and shared-constraint links.
+
+## Verification And Handoff
+
+Choose technical reviews during design: scope, purpose, and milestone. Preserve
+project requirements and distinguish iteration checks from completion gates.
+For each necessary gate, state what must pass, what failure blocks, and what
+independent work may continue. Avoid generic review-after-every-step rules.
+
+Place cheap representative checks before expensive work whose approach depends
+on consequential assumptions, including output persistence when relevant.
+Execution must check current conditions because planning observations can age;
+keep these checks scoped, without a separate assumption register.
+
+Record the review/commit policy. Default: complete each Part's required checks,
+human review, feedback resolution, then commit before the next Part. Honor
+user overrides for less frequent commits or unattended commits without human
+review; do not ask repeatedly. Human checkpoints do not add technical reviews.
+
+Hand off authorized work to `$plan-execution`, which owns execution notes and
+history. A ready plan is not authorization to implement it.
 
 ## Revision
 - Preserve explicit user decisions, necessary implementation detail, and unresolved questions that affect execution.

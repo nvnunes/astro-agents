@@ -400,7 +400,7 @@ def _metadata_candidates(
     fingerprints = {item.artifact: item.fingerprint for item in outputs}
     candidate_execution = PyrunExecution(
         True,
-        execution.slow,
+        execution.auto_reproduce,
         execution.last_run_at,
         execution.runner,
         execution.environment_profile,

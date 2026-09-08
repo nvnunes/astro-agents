@@ -23,7 +23,7 @@ from validation.pyrun_state import (
     publish_execution_locked,
     retire_execution_locked,
     script_target_path,
-    update_slow_locked,
+    update_auto_reproduce_locked,
     validate_output_paths,
 )
 
@@ -51,13 +51,13 @@ def _execution(
     recipe: ExecutionRecipe | None = None,
     *,
     confirmed: bool = True,
-    slow: bool = False,
+    auto_reproduce: bool = True,
     last_run_at: str | None = "2030-01-01T00:00:00Z",
 ) -> PyrunExecution:
     recipe = recipe or _recipe()
     return PyrunExecution(
         confirmed,
-        slow,
+        auto_reproduce,
         last_run_at,
         PYRUN_RUNNER,
         PYRUN_ENVIRONMENT_PROFILE,
@@ -166,10 +166,12 @@ class PyrunStateContractTests(unittest.TestCase):
 
     def test_identity_excludes_policy_observation_and_versions(self) -> None:
         recipe = _recipe()
-        first = _execution(recipe, confirmed=False, slow=False, last_run_at=None)
+        first = _execution(
+            recipe, confirmed=False, auto_reproduce=True, last_run_at=None
+        )
         second = PyrunExecution(
             True,
-            True,
+            False,
             "2031-02-03T04:05:06Z",
             PYRUN_RUNNER,
             PYRUN_ENVIRONMENT_PROFILE,
@@ -198,7 +200,14 @@ class PyrunStateContractTests(unittest.TestCase):
             canonical = state.serialized()
             cases: list[tuple[str, str]] = []
             cases.append((canonical.rstrip("\n"), "noncanonical"))
-            cases.append((canonical.replace('"slow": false', '"slow": null'), "slow"))
+            cases.append(
+                (
+                    canonical.replace(
+                        '"auto_reproduce": true', '"auto_reproduce": null'
+                    ),
+                    "auto_reproduce",
+                )
+            )
             cases.append(
                 (
                     canonical.replace(
@@ -226,8 +235,8 @@ class PyrunStateContractTests(unittest.TestCase):
                         load_pyrun_state(path, entry_root=entry, project_root=root)
 
             path.write_text(
-                '{"executions":{},"schema":"research-log-pyrun/v1",'
-                '"schema":"research-log-pyrun/v1"}\n',
+                '{"executions":{},"schema":"research-log-pyrun/v2",'
+                '"schema":"research-log-pyrun/v2"}\n',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(PyrunStateError, "duplicate JSON key"):
@@ -338,15 +347,15 @@ class PyrunStateLifecycleTests(unittest.TestCase):
                 entry / PYRUN_FILENAME, entry_root=entry, project_root=root
             ).executions[identity]
 
-            changed = update_slow_locked(
-                entry, (identity,), slow=True, project_root=root
+            changed = update_auto_reproduce_locked(
+                entry, (identity,), auto_reproduce=False, project_root=root
             ).executions[identity]
-            self.assertEqual(changed.slow, True)
+            self.assertFalse(changed.auto_reproduce)
             self.assertEqual(
                 changed,
                 PyrunExecution(
                     before.confirmed,
-                    True,
+                    False,
                     before.last_run_at,
                     before.runner,
                     before.environment_profile,
@@ -361,7 +370,7 @@ class PyrunStateLifecycleTests(unittest.TestCase):
             ).executions[identity]
             self.assertTrue(confirmed.confirmed)
             self.assertIsNone(confirmed.last_run_at)
-            self.assertTrue(confirmed.slow)
+            self.assertFalse(confirmed.auto_reproduce)
 
             retired = retire_execution_locked(
                 entry, identity, project_root=root

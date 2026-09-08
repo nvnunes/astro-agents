@@ -161,7 +161,7 @@ class Invocation:
     material_owner: str
     recipe_parameters: tuple[str, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
-    slow: bool = False
+    auto_reproduce: bool = True
     authored_group: tuple[str, ...] = ()
 
 
@@ -195,7 +195,7 @@ class _ParsedCommand:
     static_projection: tuple[str, ...] = ()
     recipe_parameters: tuple[str, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
-    slow: bool = False
+    auto_reproduce: bool = True
     authored_group: tuple[str, ...] = ()
 
 
@@ -538,7 +538,7 @@ def _parse_command(
         runner_roles,
         recipe_parameters,
         environment,
-        slow,
+        auto_reproduce,
     ) = _pyrun_layout(
         ordinary, executable_index
     )
@@ -556,7 +556,7 @@ def _parse_command(
         static_projection,
         recipe_parameters,
         environment,
-        slow,
+        auto_reproduce,
         authored_group,
     )
 
@@ -585,7 +585,7 @@ def _pyrun_layout(
         dict(layout.roles),
         layout.recipe_parameters,
         layout.environment,
-        layout.slow,
+        layout.auto_reproduce,
     )
 
 
@@ -650,7 +650,7 @@ def _build_invocation(
         _material_owner(context),
         command.recipe_parameters,
         command.environment,
-        command.slow,
+        command.auto_reproduce,
         command.authored_group,
     )
 

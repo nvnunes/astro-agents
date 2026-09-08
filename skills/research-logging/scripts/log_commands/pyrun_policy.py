@@ -19,7 +19,7 @@ from validation.pyrun_state import (
     execution_id,
     load_pyrun_state,
     recipe_from_invocation,
-    update_slow_locked,
+    update_auto_reproduce_locked,
 )
 
 from .context import EntryContext, resolve_project_root
@@ -28,10 +28,10 @@ from .scaffold import observe_entries
 from .storage import entry_lock
 
 
-def update_slow(
-    entry: EntryContext, *, execution_id_value: str, slow: bool
+def update_auto_reproduce(
+    entry: EntryContext, *, execution_id_value: str, auto_reproduce: bool
 ) -> ActionResult:
-    """Apply one Markdown-first ``slow`` classification under the entry lock."""
+    """Apply one Markdown-first automatic-reproduction policy under lock."""
 
     project_root = resolve_project_root(entry.root)
     with entry_lock(entry):
@@ -75,10 +75,11 @@ def update_slow(
         selected = _authored_invocation_group(invocation, recipes)
         selected_ids: list[str] = []
         for current, recipe in selected:
-            if current.slow != slow:
+            if current.auto_reproduce != auto_reproduce:
                 raise ActionError(
                     "pyrun.update.markdown_disagreement",
-                    "edit only the Markdown --slow token before updating state",
+                    "edit only the Markdown --auto-reproduce=false token "
+                    "before updating state",
                 )
             identity = execution_id(recipe)
             recorded = state.executions.get(identity)
@@ -89,13 +90,16 @@ def update_slow(
                 )
             if identity not in selected_ids:
                 selected_ids.append(identity)
-        changed = any(state.executions[key].slow != slow for key in selected_ids)
+        changed = any(
+            state.executions[key].auto_reproduce != auto_reproduce
+            for key in selected_ids
+        )
         if changed:
             try:
-                update_slow_locked(
+                update_auto_reproduce_locked(
                     entry.root,
                     tuple(selected_ids),
-                    slow=slow,
+                    auto_reproduce=auto_reproduce,
                     project_root=project_root,
                 )
             except PyrunStateError as error:
@@ -104,7 +108,11 @@ def update_slow(
     return ActionResult(
         "pyrun.update",
         "updated" if changed else "unchanged",
-        "pyrun.slow.updated" if changed else "pyrun.slow.unchanged",
+        (
+            "pyrun.auto_reproduce.updated"
+            if changed
+            else "pyrun.auto_reproduce.unchanged"
+        ),
         changed,
         (relative,),
     )

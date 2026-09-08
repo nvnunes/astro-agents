@@ -28,8 +28,6 @@ from validation.human_projection import (
     load_report_context,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
 
 class ReproductionResultContractTests(unittest.TestCase):
     def test_evidence_comparison_details_round_trip_durably(self) -> None:
@@ -72,17 +70,8 @@ class ReproductionResultContractTests(unittest.TestCase):
 
         self.assertEqual(decoded.artifacts[0].comparison, comparison)
 
-    def test_frozen_result_fixtures_are_exact_canonical_contracts(self) -> None:
-        for path in sorted(FIXTURES.glob("reproduction-result-*.json")):
-            with self.subTest(path=path.name):
-                text = path.read_text(encoding="utf-8")
-                result = ReproductionResults.from_json(text)
-                self.assertEqual(result.serialized(), text)
-
     def test_unknown_field_and_noncanonical_order_are_rejected(self) -> None:
-        value = json.loads(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        value = _complete_results().as_dict()
         value["extra"] = True
         with self.assertRaises(ReproductionResultError):
             ReproductionResults.from_json(_canonical(value))
@@ -94,9 +83,7 @@ class ReproductionResultContractTests(unittest.TestCase):
     def test_merge_replaces_only_selected_cases_and_preserves_other_entries(
         self,
     ) -> None:
-        current = ReproductionResults.from_json(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        current = _complete_results()
         changed = ArtifactResult(
             "e003",
             "data/matched.csv",
@@ -188,9 +175,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             )
 
     def test_reconciliation_removes_only_conclusively_absent_run_folders(self) -> None:
-        current = ReproductionResults.from_json(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        current = _complete_results()
         with self.subTest("missing beneath accessible tmp"):
             from tempfile import TemporaryDirectory
 
@@ -222,7 +207,7 @@ class ReproductionResultContractTests(unittest.TestCase):
         unknown = RunResult(
             current.runs[0].run_id,
             current.runs[0].target,
-            current.runs[0].include_slow,
+            current.runs[0].include_all,
             current.runs[0].status,
             current.runs[0].accepted_at,
             current.runs[0].finished_at,
@@ -242,9 +227,7 @@ class ReproductionResultContractTests(unittest.TestCase):
     def test_projection_ignores_unreachable_and_derives_timestamp_staleness(
         self,
     ) -> None:
-        current = ReproductionResults.from_json(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        current = _complete_results()
         matched = next(
             item for item in current.artifacts if item.artifact == "data/matched.csv"
         )
@@ -263,9 +246,7 @@ class ReproductionResultContractTests(unittest.TestCase):
         )
 
     def test_comparison_definition_change_makes_prior_result_stale(self) -> None:
-        current = ReproductionResults.from_json(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        current = _complete_results()
         matched = next(
             item for item in current.artifacts if item.artifact == "data/matched.csv"
         )
@@ -313,9 +294,7 @@ class ReproductionReportTests(unittest.TestCase):
     def test_report_lists_every_entry_bolds_nonmatches_and_hides_reason_codes(
         self,
     ) -> None:
-        result = ReproductionResults.from_json(
-            (FIXTURES / "reproduction-result-complete-v1.json").read_text()
-        )
+        result = _complete_results()
         context = _context()
         currentness = {
             ("e003", "data/matched.csv"): ArtifactCurrentness(False, "execution_reran")
@@ -390,6 +369,76 @@ def _run(run_id: str, accepted: str, *, count: int = 1) -> RunResult:
             "available",
         ),
     )
+
+
+def _complete_results() -> ReproductionResults:
+    run_id = "reproduce-20300101t000000z-fixture"
+    recorded_at = "2030-01-01T00:05:00Z"
+    specs = (
+        (
+            "data/changed.bin",
+            "1",
+            "changed",
+            "content_changed",
+            "opaque_file",
+            "a",
+            "b",
+        ),
+        (
+            "data/comparison.dat",
+            "2",
+            "comparison_failed",
+            "unsupported_format",
+            "opaque_file",
+            "c",
+            "d",
+        ),
+        ("data/failed.json", "3", "failed", "dependency_cycle", None, None, None),
+        ("data/matched.csv", "4", "matched", None, "table", "e", "e"),
+        ("data/skipped.png", "5", "skipped", "dependency_failed", None, None, None),
+    )
+    artifacts = tuple(
+        ArtifactResult(
+            "e003",
+            artifact,
+            "pyrun-exec/v1:" + digit * 64,
+            outcome,
+            reason,
+            recorded_at,
+            run_id,
+            (
+                ComparisonRecord(
+                    profile,
+                    Fingerprint("sha256", digest=expected * 64),
+                    Fingerprint("sha256", digest=regenerated * 64),
+                )
+                if profile is not None
+                else None
+            ),
+        )
+        for artifact, digit, outcome, reason, profile, expected, regenerated in specs
+    )
+    run = RunResult(
+        run_id,
+        {"entry": None, "kind": "log"},
+        False,
+        "complete",
+        "2030-01-01T00:00:00Z",
+        recorded_at,
+        {
+            "changed": 1,
+            "comparison_failed": 1,
+            "failed": 1,
+            "matched": 1,
+            "skipped": 1,
+        },
+        RunFolder(
+            "tmp/reproduction/2030-01-01/"
+            "reproduce-research-reproduce-20300101t000000z-fixture",
+            "available",
+        ),
+    )
+    return ReproductionResults("docs/research.md", recorded_at, artifacts, (run,))
 
 
 def _context() -> ReportContext:

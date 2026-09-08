@@ -422,7 +422,7 @@ def confirm_matching_execution_locked(
     executions = dict(state.executions)
     executions[result.execution_id] = PyrunExecution(
         True,
-        current.slow,
+        current.auto_reproduce,
         current.last_run_at,
         current.runner,
         current.environment_profile,

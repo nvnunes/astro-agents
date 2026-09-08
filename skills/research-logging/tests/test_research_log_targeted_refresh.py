@@ -150,7 +150,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             identity = execution_id(recipe)
             execution = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 PYRUN_RUNNER,
                 PYRUN_ENVIRONMENT_PROFILE,
@@ -189,7 +189,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 {
                     identity: PyrunExecution(
                         True,
-                        execution.slow,
+                        execution.auto_reproduce,
                         execution.last_run_at,
                         execution.runner,
                         execution.environment_profile,
@@ -232,7 +232,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             )
             promoted_execution = PyrunExecution(
                 True,
-                execution.slow,
+                execution.auto_reproduce,
                 execution.last_run_at,
                 execution.runner,
                 execution.environment_profile,
@@ -278,7 +278,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             )
             changed_execution = PyrunExecution(
                 True,
-                promoted_execution.slow,
+                promoted_execution.auto_reproduce,
                 promoted_execution.last_run_at,
                 promoted_execution.runner,
                 promoted_execution.environment_profile,

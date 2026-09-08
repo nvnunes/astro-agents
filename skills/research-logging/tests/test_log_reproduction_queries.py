@@ -15,9 +15,14 @@ from log_commands.reproduction_queries import (
     reproduction_report,
     show_reproduction_artifact,
 )
-from log_commands.reproduction_results import ReproductionResults
-
-FIXTURES = Path(__file__).parent / "fixtures"
+from log_commands.reproduction_results import (
+    ArtifactResult,
+    ComparisonRecord,
+    ReproductionResults,
+    RunFolder,
+    RunResult,
+)
+from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
@@ -30,7 +35,7 @@ class ReproductionQueryTests(unittest.TestCase):
             reproduction = log_root / "reproduction"
             reproduction.mkdir(parents=True)
             summary.write_text("# Research\n", encoding="utf-8")
-            text = (FIXTURES / "reproduction-result-complete-v1.json").read_text()
+            text = _results().serialized()
             (reproduction / "results.json").write_text(text, encoding="utf-8")
             results = ReproductionResults.from_json(text)
             reachable = frozenset(
@@ -128,7 +133,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), '{"schema":"fixture"}\n')
         dry_run.assert_called_once_with(
-            log, entry="e003", include_slow=False, recheck=True
+            log, entry="e003", include_all=False, recheck=True
         )
 
         output = StringIO()
@@ -147,7 +152,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), "reproduce-fixture\n")
         launch.assert_called_once_with(
-            log, entry=None, include_slow=False, recheck=True
+            log, entry=None, include_all=False, recheck=True
         )
 
         rejected = (
@@ -180,6 +185,42 @@ class ReproductionQueryTests(unittest.TestCase):
             with self.subTest(action=arguments[0]), redirect_stderr(StringIO()):
                 with self.assertRaises(SystemExit):
                     main(["reproduce", *arguments, "--recheck"])
+
+
+def _results() -> ReproductionResults:
+    run_id = "reproduce-20300101t000000z-fixture"
+    recorded_at = "2030-01-01T00:05:00Z"
+    changed = ArtifactResult(
+        "e003",
+        "data/changed.bin",
+        "pyrun-exec/v1:" + "1" * 64,
+        "changed",
+        "content_changed",
+        recorded_at,
+        run_id,
+        ComparisonRecord(
+            "opaque_file",
+            Fingerprint("sha256", digest="a" * 64),
+            Fingerprint("sha256", digest="b" * 64),
+        ),
+    )
+    run = RunResult(
+        run_id,
+        {"entry": None, "kind": "log"},
+        False,
+        "complete",
+        "2030-01-01T00:00:00Z",
+        recorded_at,
+        {
+            "changed": 1,
+            "comparison_failed": 0,
+            "failed": 0,
+            "matched": 0,
+            "skipped": 0,
+        },
+        RunFolder("tmp/reproduction/2030-01-01/reproduce-query", "available"),
+    )
+    return ReproductionResults("docs/research.md", recorded_at, (changed,), (run,))
 
 
 if __name__ == "__main__":

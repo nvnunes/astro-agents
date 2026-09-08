@@ -18,7 +18,7 @@ PYRUN_ROLE_OPTIONS = {
     "--other-outputs": "output",
 }
 PYRUN_ENV_OPTION = "--env"
-PYRUN_SLOW_OPTION = "--slow"
+PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
 PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
     PYRUN_CODE_ENVIRONMENT
 )
@@ -53,7 +53,7 @@ class PyrunLayout:
     roles: tuple[tuple[str, str], ...]
     environment: tuple[tuple[str, str], ...]
     recipe_parameters: tuple[str, ...]
-    slow: bool
+    auto_reproduce: bool
 
 
 @dataclass
@@ -63,7 +63,7 @@ class _RunnerState:
     environment: dict[str, str] = field(default_factory=dict)
     signature_prefix: list[str] = field(default_factory=list)
     recipe_prefix: list[str] = field(default_factory=list)
-    slow: bool = False
+    auto_reproduce: bool = True
 
 
 def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
@@ -79,11 +79,25 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
     state = _RunnerState()
     runner_options = PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys() | {
         PYRUN_ENV_OPTION,
-        PYRUN_SLOW_OPTION,
+        PYRUN_DISABLE_AUTO_REPRODUCE_OPTION,
     }
-    while index < len(arguments) and arguments[index] in runner_options:
+    while index < len(arguments):
+        option = arguments[index]
+        if (
+            option.startswith("--auto-reproduce")
+            and option != PYRUN_DISABLE_AUTO_REPRODUCE_OPTION
+            or option in {"--slow", "--no-slow"}
+        ):
+            raise PyrunContractError("invalid automatic-reproduction option")
+        if option not in runner_options:
+            break
         index = _consume_runner_option(arguments, index, state)
-    if state.captures or state.declarations or state.environment or state.slow:
+    if (
+        state.captures
+        or state.declarations
+        or state.environment
+        or not state.auto_reproduce
+    ):
         if index >= len(arguments) or arguments[index] != "--":
             raise PyrunContractError("runner options require -- before the script")
         _validate_captures(state.captures)
@@ -111,7 +125,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         roles,
         tuple(sorted(state.environment.items())),
         tuple((*state.recipe_prefix, *script_arguments)),
-        state.slow,
+        state.auto_reproduce,
     )
 
 
@@ -119,10 +133,10 @@ def _consume_runner_option(
     arguments: Sequence[str], index: int, state: _RunnerState
 ) -> int:
     option = arguments[index]
-    if option == PYRUN_SLOW_OPTION:
-        if state.slow:
-            raise PyrunContractError("duplicate --slow declaration")
-        state.slow = True
+    if option == PYRUN_DISABLE_AUTO_REPRODUCE_OPTION:
+        if not state.auto_reproduce:
+            raise PyrunContractError("duplicate --auto-reproduce=false declaration")
+        state.auto_reproduce = False
         return index + 1
     if index + 1 >= len(arguments):
         raise PyrunContractError(f"{option} lacks target")

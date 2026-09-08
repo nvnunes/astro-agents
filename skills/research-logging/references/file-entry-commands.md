@@ -226,12 +226,12 @@ symlink, or recorded command, run the command from the entry root and confirm
 its saved outputs can be read before presenting them. `pyrun` updates the
 entry-root `pyrun.json` only after successful execution and complete output
 observation, provided the script and direct input bytes also remained stable
-across execution; do not edit that file by hand. Add `--slow` before `--` only
-for simulation, model-training, or comparable commands that should not be
-included casually in default reproduction:
+across execution; do not edit that file by hand. Add
+`--auto-reproduce=false` before `--` only for simulation, model training, or
+comparable commands that should not run during automatic reproduction:
 
 ```bash
-./pyrun --slow -- scripts/run_simulation.py --output-data data/result.json
+./pyrun --auto-reproduce=false -- scripts/run_simulation.py --output-data data/result.json
 ```
 
 Put complete commands under `Steps:` in the descriptive section that uses the

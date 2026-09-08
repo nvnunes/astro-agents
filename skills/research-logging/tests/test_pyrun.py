@@ -320,17 +320,23 @@ class PyrunResolutionTests(unittest.TestCase):
             ),
         )
 
-    def test_slow_is_policy_outside_recipe_parameters(self) -> None:
+    def test_auto_reproduce_is_policy_outside_recipe_parameters(self) -> None:
         layout = PYRUN_MODULE.parse_pyrun_arguments(
-            ["--slow", "--", "scripts/model.py", "--mode", "exact"]
+            ["--auto-reproduce=false", "--", "scripts/model.py", "--mode", "exact"]
         )
 
-        self.assertTrue(layout.slow)
+        self.assertFalse(layout.auto_reproduce)
         self.assertEqual(layout.recipe_parameters, ("--mode", "exact"))
         self.assertEqual(layout.parameters, ("--mode", "exact"))
         for arguments in (
-            ["--slow", "scripts/model.py"],
-            ["--slow", "--slow", "--", "scripts/model.py"],
+            ["--auto-reproduce=false", "scripts/model.py"],
+            [
+                "--auto-reproduce=false",
+                "--auto-reproduce=false",
+                "--",
+                "scripts/model.py",
+            ],
+            ["--auto-reproduce=true", "--", "scripts/model.py"],
         ):
             with self.assertRaises(PYRUN_MODULE.PyrunContractError):
                 PYRUN_MODULE.parse_pyrun_arguments(arguments)
@@ -575,7 +581,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
             record = execution_for_output(entry, "data/environment.json")
             self.assertEqual(record["recipe"]["environment"], {"MODE": "exact"})
 
-    def test_slow_policy_does_not_change_execution_identity(self) -> None:
+    def test_auto_reproduce_policy_does_not_change_execution_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -588,7 +594,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
             tail = [
                 "scripts/build_slow.py",
                 "value",
-                "data/slow.txt",
+                "data/nonautomatic.txt",
             ]
 
             ordinary = run(
@@ -604,13 +610,13 @@ class PyrunOutputSupportTests(unittest.TestCase):
             )
             self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
             identity = next(iter(execution_records(entry)))
-            self.assertFalse(execution_records(entry)[identity]["slow"])
+            self.assertTrue(execution_records(entry)[identity]["auto_reproduce"])
 
             marked = run(
                 [
                     sys.executable,
                     str(PYRUN),
-                    "--slow",
+                    "--auto-reproduce=false",
                     "--other-outputs",
                     "@2",
                     "--",
@@ -621,7 +627,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
 
             self.assertEqual(marked.returncode, 0, marked.stderr)
             self.assertEqual(set(execution_records(entry)), {identity})
-            self.assertTrue(execution_records(entry)[identity]["slow"])
+            self.assertFalse(execution_records(entry)[identity]["auto_reproduce"])
             self.assertRegex(
                 execution_records(entry)[identity]["last_run_at"],
                 r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
@@ -970,7 +976,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v1")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v2")
             record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["confirmed"], True)
             self.assertEqual(record["recipe"]["script"], "scripts/build.py")

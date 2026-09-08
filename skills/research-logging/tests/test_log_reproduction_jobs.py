@@ -154,8 +154,8 @@ class ReproductionJobTests(unittest.TestCase):
             before = tuple(
                 sorted(path.relative_to(project) for path in project.rglob("*"))
             )
-            for include_slow in (False, True):
-                plan = replace(_plan(), include_slow=include_slow)
+            for include_all in (False, True):
+                plan = replace(_plan(), include_all=include_all)
                 with (
                     mock.patch(
                         "log_commands.reproduction_jobs.plan_reproduction",
@@ -171,7 +171,7 @@ class ReproductionJobTests(unittest.TestCase):
                     observed = dry_run_reproduction(
                         log,
                         entry="e003",
-                        include_slow=include_slow,
+                        include_all=include_all,
                         recheck=True,
                     )
 
@@ -179,7 +179,7 @@ class ReproductionJobTests(unittest.TestCase):
                 planner.assert_called_once_with(
                     log,
                     entry=mock.ANY,
-                    include_slow=include_slow,
+                    include_all=include_all,
                     selection_policy="recheck",
                 )
                 safety.assert_called_once_with()
@@ -222,13 +222,7 @@ class ReproductionJobTests(unittest.TestCase):
                     run_root,
                 )
 
-            expected = json.loads(
-                (
-                    Path(__file__).parent
-                    / "fixtures"
-                    / "reproduction-status-accepted-v1.json"
-                ).read_text(encoding="utf-8")
-            )
+            expected = _status_fixture("accepted")
             self.assertEqual(_status_projection(record), expected)
 
     def test_frozen_status_fixtures_cover_active_and_terminal_lifecycle(self) -> None:
@@ -251,13 +245,7 @@ class ReproductionJobTests(unittest.TestCase):
             run_root.mkdir(parents=True)
             for name in names:
                 with self.subTest(name=name):
-                    expected = json.loads(
-                        (
-                            Path(__file__).parent
-                            / "fixtures"
-                            / f"reproduction-status-{name}-v1.json"
-                        ).read_text(encoding="utf-8")
-                    )
+                    expected = _status_fixture(name)
                     record = _accepted_record(
                         LogContext(summary, log_root),
                         _plan(),
@@ -358,7 +346,7 @@ class ReproductionJobTests(unittest.TestCase):
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
                 run_id = launch_reproduction(
-                    log, entry="e003", include_slow=False, recheck=True
+                    log, entry="e003", include_all=False, recheck=True
                 )
 
             run_root = (
@@ -379,19 +367,13 @@ class ReproductionJobTests(unittest.TestCase):
             planner.assert_called_once_with(
                 log,
                 entry=mock.ANY,
-                include_slow=False,
+                include_all=False,
                 selection_policy="recheck",
             )
             spawn.assert_called_once()
 
     def test_human_status_exposes_failure(self) -> None:
-        fixture = json.loads(
-            (
-                Path(__file__).parent
-                / "fixtures"
-                / "reproduction-status-failed-v1.json"
-            ).read_text(encoding="utf-8")
-        )
+        fixture = _status_fixture("failed")
 
         text = format_reproduction_status(fixture)
 
@@ -754,12 +736,107 @@ def _plan() -> ReproductionPlan:
                 "execution_id": execution,
                 "order": 1,
                 "outputs": ["data/result.txt"],
-                "slow": False,
+                "auto_reproduce": True,
             },
         ),
         (),
         (),
     )
+
+
+def _status_fixture(name: str) -> dict[str, object]:
+    execution = "pyrun-exec/v1:" + "1" * 64
+    timestamps: dict[str, str | None] = {
+        "accepted_at": "2030-01-01T00:00:00Z",
+        "finished_at": None,
+        "resumed_at": None,
+        "started_at": None,
+        "stopped_at": None,
+        "updated_at": "2030-01-01T00:00:00Z",
+    }
+    value: dict[str, object] = {
+        "artifact_outcomes": {
+            "changed": 0,
+            "comparison_failed": 0,
+            "failed": 0,
+            "matched": 0,
+            "skipped": 0,
+        },
+        "completed_executions": 0,
+        "current_execution": None,
+        "include_all": False,
+        "latest_execution_diagnostic": None,
+        "operational_failure": None,
+        "phase": name,
+        "run_id": "reproduce-20300101t000000z-fixture",
+        "schema": "research-log-reproduction-status/2",
+        "status": None,
+        "summary": "docs/research.md",
+        "surviving_workers": [],
+        "target": {"entry": "e003", "kind": "entry"},
+        "timestamps": timestamps,
+        "total_executions": 1,
+    }
+    if name != "accepted":
+        timestamps["started_at"] = "2030-01-01T00:00:01Z"
+    updated = {
+        "planning": "01",
+        "preflight": "02",
+        "executing": "02",
+        "comparing": "04",
+        "stopping": "04",
+        "publishing": "05",
+        "stopped": "05",
+        "complete": "06",
+        "failed": "06",
+    }.get(name)
+    if updated is not None:
+        timestamps["updated_at"] = f"2030-01-01T00:00:{updated}Z"
+    if name in {"executing", "comparing"}:
+        value["current_execution"] = execution
+    if name in {"publishing", "complete"}:
+        value["completed_executions"] = 1
+        cast(dict[str, int], value["artifact_outcomes"])["matched"] = 1
+    if name == "stopping":
+        value["latest_execution_diagnostic"] = {
+            "code": "worker_cleanup_incomplete",
+            "execution_id": execution,
+            "message": "One worker survived shutdown.",
+            "recorded_at": "2030-01-01T00:00:04Z",
+        }
+        value["surviving_workers"] = [
+            {
+                "execution_id": execution,
+                "last_observed_at": "2030-01-01T00:00:04Z",
+                "parent_worker_id": None,
+                "pid": 4321,
+                "registered_at": "2030-01-01T00:00:02Z",
+                "state": "running",
+                "worker_id": "worker-4321",
+            }
+        ]
+    if name == "stopped":
+        value["phase"] = None
+        value["status"] = "stopped"
+        timestamps["stopped_at"] = "2030-01-01T00:00:05Z"
+        value["latest_execution_diagnostic"] = {
+            "code": "stop_requested",
+            "execution_id": execution,
+            "message": "Reproduction was stopped by request.",
+            "recorded_at": "2030-01-01T00:00:05Z",
+        }
+    if name in {"complete", "failed"}:
+        value["phase"] = None
+        value["status"] = name
+        timestamps["finished_at"] = "2030-01-01T00:00:06Z"
+    if name == "failed":
+        value["operational_failure"] = {
+            "code": "publication_failed",
+            "execution_id": None,
+            "message": "Final publication failed.",
+            "recorded_at": "2030-01-01T00:00:06Z",
+        }
+    return value
 
 
 def _empty_plan() -> ReproductionPlan:

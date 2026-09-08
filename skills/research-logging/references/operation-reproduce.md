@@ -30,8 +30,8 @@ run.
 - Whole-artifact exact comparison remains the default. Reproduce may apply an
   authored evidence-scoped rule, but it never creates, changes, or guesses that
   rule or its evidence-level tolerance.
-- Never add `--include-slow` unless the researcher explicitly authorizes the
-  slow executions for that run. Omission is the normal default.
+- Never add `--include-all` unless the researcher explicitly authorizes the
+  non-automatic executions for that run. Omission is the normal default.
 - Do not invoke promotion automatically. Promotion is a separate, explicit
   research mutation performed only with researcher direction.
 
@@ -45,14 +45,14 @@ checkpoint, result, report, or other state:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-slow] [--recheck] --dry-run
+  [--include-all] [--recheck] --dry-run
 ```
 
 Launch the same scope by omitting `--dry-run`:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-slow] [--recheck]
+  [--include-all] [--recheck]
 ```
 
 Without `--entry`, the target is exactly the named log. With `--entry`, the
@@ -66,9 +66,10 @@ executions are selected. When the researcher explicitly asks to recheck, check
 again, or rerun already-current reproduction results, add `--recheck`. State
 whether the preview or launch uses incremental or recheck selection.
 
-The default run skips executions recorded as slow. `--include-slow` includes
-them and requires separate explicit researcher authorization. A request to
-recheck does not authorize slow execution. A real launch prints a run ID after
+The default run excludes executions with `auto_reproduce: false`.
+`--include-all` includes them and requires separate explicit researcher
+authorization. A request to recheck does not authorize non-automatic
+execution. A real launch prints a run ID after
 durable acceptance and returns immediately. The background job is CLI-owned
 and does not depend on the launching agent or terminal remaining active.
 

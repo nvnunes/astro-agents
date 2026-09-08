@@ -116,7 +116,7 @@ class _Fixture:
         inputs: dict[str, Path],
         outputs: dict[str, Path],
         *,
-        slow: bool = False,
+        auto_reproduce: bool = True,
         confirmed: bool = False,
         last_run_at: str | None = None,
     ) -> tuple[str, PyrunExecution]:
@@ -142,11 +142,11 @@ class _Fixture:
         )
         execution = PyrunExecution(
             confirmed,
-            slow,
+            auto_reproduce,
             last_run_at,
             "research-log-pyrun-runner/1",
             "pyrun-standard/v1",
-            "research-log-pyrun-execution/1",
+            "research-log-pyrun-execution/2",
             recipe,
             observed,
         )
@@ -167,7 +167,7 @@ def _plan(
     fixture: _Fixture,
     entry: EntryContext,
     *,
-    include_slow: bool = False,
+    include_all: bool = False,
     recheck: bool = False,
 ):
     admission = _admission(fixture)
@@ -178,7 +178,7 @@ def _plan(
         return plan_reproduction(
             fixture.log,
             entry=entry,
-            include_slow=include_slow,
+            include_all=include_all,
             selection_policy=RECHECK_SELECTION if recheck else "incremental",
         )
 
@@ -206,11 +206,13 @@ class ReproductionPlanningTests(unittest.TestCase):
                 plan_reproduction(
                     fixture.log,
                     entry=None,
-                    include_slow=False,
+                    include_all=False,
                     selection_policy=cast(SelectionPolicy, "unsupported"),
                 )
 
-    def test_default_stops_at_slow_boundary_and_include_slow_runs_it(self) -> None:
+    def test_default_stops_at_nonautomatic_boundary_and_include_all_runs_it(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -229,13 +231,17 @@ class ReproductionPlanningTests(unittest.TestCase):
                 ],
             )
             fixture.evidence(entry, "final")
-            slow = fixture.execution(
-                entry, "simulate", {"raw": raw}, {"seed": seed}, slow=True
+            excluded = fixture.execution(
+                entry,
+                "simulate",
+                {"raw": raw},
+                {"seed": seed},
+                auto_reproduce=False,
             )
             analysis = fixture.execution(
                 entry, "analyze", {"seed": seed}, {"final": final}
             )
-            fixture.write_pyrun(entry, [slow, analysis])
+            fixture.write_pyrun(entry, [excluded, analysis])
 
             ordinary = _plan(fixture, entry)
             self.assertEqual(
@@ -244,15 +250,15 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(value["kind"], value["name"]) for value in ordinary.boundaries],
-                [("slow", "seed")],
+                [("non_automatic", "seed")],
             )
             self.assertFalse((fixture.log_root / "reproduction").exists())
             self.assertFalse((fixture.log_root / ".cache").exists())
 
-            complete = _plan(fixture, entry, include_slow=True)
+            complete = _plan(fixture, entry, include_all=True)
             self.assertEqual(
                 [value["execution_id"] for value in complete.executions],
-                [slow[0], analysis[0]],
+                [excluded[0], analysis[0]],
             )
             recheck = _plan(fixture, entry, recheck=True)
             self.assertEqual(
@@ -260,11 +266,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [analysis[0]],
             )
             complete_recheck = _plan(
-                fixture, entry, include_slow=True, recheck=True
+                fixture, entry, include_all=True, recheck=True
             )
             self.assertEqual(
                 [value["execution_id"] for value in complete_recheck.executions],
-                [slow[0], analysis[0]],
+                [excluded[0], analysis[0]],
             )
             self.assertEqual(
                 [value["kind"] for value in complete.boundaries], ["origin"]
@@ -304,11 +310,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                 execution_id(producer_recipe),
                 PyrunExecution(
                     False,
-                    False,
+                    True,
                     None,
                     "research-log-pyrun-runner/1",
                     "pyrun-standard/v1",
-                    "research-log-pyrun-execution/1",
+                    "research-log-pyrun-execution/2",
                     producer_recipe,
                     ObservedExecution(
                         _fingerprint(producer_script),
@@ -424,7 +430,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 return_value=(admission, mock.sentinel.record),
             ):
                 plan = plan_reproduction(
-                    fixture.log, entry=None, include_slow=False
+                    fixture.log, entry=None, include_all=False
                 )
 
             self.assertEqual(
@@ -461,7 +467,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [(external.as_posix(), "origin")],
             )
 
-    def test_direct_slow_evidence_is_reported_as_skipped(self) -> None:
+    def test_direct_nonautomatic_evidence_is_reported_as_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -477,10 +483,14 @@ class ReproductionPlanningTests(unittest.TestCase):
                 ],
             )
             fixture.evidence(entry, "result")
-            slow = fixture.execution(
-                entry, "simulate", {"raw": raw}, {"result": result}, slow=True
+            excluded = fixture.execution(
+                entry,
+                "simulate",
+                {"raw": raw},
+                {"result": result},
+                auto_reproduce=False,
             )
-            fixture.write_pyrun(entry, [slow])
+            fixture.write_pyrun(entry, [excluded])
 
             plan = _plan(fixture, entry)
 
@@ -490,7 +500,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     (value["disposition"], value["reason"])
                     for value in plan.cases
                 ],
-                [("skipped", "slow")],
+                [("skipped", "non_automatic")],
             )
 
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
@@ -569,7 +579,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             external = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 execution[1].runner,
                 execution[1].environment_profile,
@@ -665,13 +675,14 @@ class ReproductionPlanningTests(unittest.TestCase):
                                     "reproduce-study-current"
                                 ),
                             },
-                            "include_slow": False,
+                            "executions": [],
+                            "include_all": False,
                             "run_id": "reproduce-20260906t000000z-current",
                             "status": "complete",
                             "target": {"entry": entry.id, "kind": "entry"},
                         }
                     ],
-                    "schema": "research-log-reproduction-result/1",
+                    "schema": "research-log-reproduction-result/2",
                     "summary": "docs/study.md",
                     "updated_at": "2026-09-06T00:01:00Z",
                 },
@@ -695,7 +706,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     "cases",
                     "executions",
                     "failures",
-                    "include_slow",
+                    "include_all",
                     "schema",
                     "source_snapshot",
                     "summary",
@@ -747,7 +758,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(ActionError, "source changed"):
-                    plan_reproduction(fixture.log, entry=entry, include_slow=False)
+                    plan_reproduction(fixture.log, entry=entry, include_all=False)
 
     def test_runtime_snapshot_allows_only_confirmation_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -778,7 +789,14 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             fixture.write_pyrun(
                 entry,
-                [(identity, replace(execution, confirmed=True, slow=True))],
+                [
+                    (
+                        identity,
+                        replace(
+                            execution, confirmed=True, auto_reproduce=False
+                        ),
+                    )
+                ],
             )
             with self.assertRaisesRegex(ActionError, "execution recipe changed"):
                 verify_reproduction_runtime_snapshot(fixture.log, plan)
@@ -824,7 +842,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             upstream_execution = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 upstream[1].runner,
                 upstream[1].environment_profile,
@@ -848,11 +866,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "log_commands.reproduction_planner._admit_validation",
                 return_value=(admission, mock.sentinel.record),
             ):
-                plan = plan_reproduction(fixture.log, entry=None, include_slow=False)
+                plan = plan_reproduction(fixture.log, entry=None, include_all=False)
                 recheck = plan_reproduction(
                     fixture.log,
                     entry=None,
-                    include_slow=False,
+                    include_all=False,
                     selection_policy=RECHECK_SELECTION,
                 )
 
@@ -1005,7 +1023,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "log_commands.reproduction_planner._admit_validation",
                 return_value=(admission, mock.sentinel.record),
             ):
-                plan = plan_reproduction(fixture.log, entry=None, include_slow=False)
+                plan = plan_reproduction(fixture.log, entry=None, include_all=False)
 
             self.assertEqual(len(plan.executions), 2)
             self.assertEqual(
@@ -1021,7 +1039,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             entry = fixture.entry(1)
             with operation_lock(fixture.log_root, "entry-e001.lock"):
                 with self.assertRaisesRegex(ActionError, "active operation"):
-                    plan_reproduction(fixture.log, entry=entry, include_slow=False)
+                    plan_reproduction(fixture.log, entry=entry, include_all=False)
 
 
 if __name__ == "__main__":

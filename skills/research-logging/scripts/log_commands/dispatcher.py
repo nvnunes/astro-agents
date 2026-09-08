@@ -453,40 +453,24 @@ def _add_data_update_parser(
 def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log pyrun")
     actions = parser.add_subparsers(dest="action", required=True)
-    migrate = actions.add_parser(
-        "migrate", help="Convert a complete project to command-oriented state"
-    )
-    migrate.add_argument("--root", required=True, type=Path)
-    migrate.add_argument(
-        "--retire-legacy",
-        action="append",
-        default=[],
-        help="researcher-approved legacy migration case ID; repeat as needed",
-    )
-    _mutation_argument(migrate)
     update = actions.add_parser(
         "update", help="Apply one Markdown-first execution policy change"
     )
     _entry_arguments(update)
     update.add_argument("--execution-id", required=True)
-    policy = update.add_mutually_exclusive_group(required=True)
-    policy.add_argument("--slow", action="store_true")
-    policy.add_argument("--no-slow", action="store_true")
+    update.add_argument(
+        "--auto-reproduce",
+        required=True,
+        choices=("true", "false"),
+        help="exact automatic-reproduction policy",
+    )
     args = parser.parse_args(arguments)
-    if args.action == "migrate":
-        from . import pyrun_migration
-
-        return pyrun_migration.migrate_project(
-            args.root,
-            dry_run=args.dry_run,
-            approved_retirements=tuple(args.retire_legacy),
-        )
     from . import pyrun_policy
 
-    return pyrun_policy.update_slow(
+    return pyrun_policy.update_auto_reproduce(
         resolve_entry(resolve_log(args.path), args.entry),
         execution_id_value=args.execution_id,
-        slow=args.slow,
+        auto_reproduce=args.auto_reproduce == "true",
     )
 
 
@@ -704,7 +688,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log reproduce")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
-    parser.add_argument("--include-slow", action="store_true")
+    parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(arguments)
@@ -715,7 +699,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         plan = dry_run_reproduction(
             log,
             entry=args.entry,
-            include_slow=args.include_slow,
+            include_all=args.include_all,
             recheck=args.recheck,
         )
         print(plan.serialized())
@@ -724,7 +708,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             launch_reproduction(
                 log,
                 entry=args.entry,
-                include_slow=args.include_slow,
+                include_all=args.include_all,
                 recheck=args.recheck,
             )
         )

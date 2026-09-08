@@ -61,8 +61,8 @@ from .reproduction_publication import (
 from .reproduction_results import OUTCOMES
 from .storage import atomic_write_text
 
-RUN_SCHEMA = "research-log-reproduction-run/1"
-STATUS_SCHEMA = "research-log-reproduction-status/1"
+RUN_SCHEMA = "research-log-reproduction-run/2"
+STATUS_SCHEMA = "research-log-reproduction-status/2"
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -86,7 +86,7 @@ PUBLICATION_RETRY = "publication"
 
 
 def launch_reproduction(
-    log: LogContext, *, entry: str | None, include_slow: bool, recheck: bool = False
+    log: LogContext, *, entry: str | None, include_all: bool, recheck: bool = False
 ) -> str:
     """Accept one immutable plan and hand its scope lock to a supervisor."""
 
@@ -94,7 +94,7 @@ def launch_reproduction(
     plan = plan_reproduction(
         log,
         entry=selected,
-        include_slow=include_slow,
+        include_all=include_all,
         selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
     )
     project = resolve_project_root(log.root)
@@ -124,7 +124,7 @@ def launch_reproduction(
 
 
 def dry_run_reproduction(
-    log: LogContext, *, entry: str | None, include_slow: bool, recheck: bool = False
+    log: LogContext, *, entry: str | None, include_all: bool, recheck: bool = False
 ) -> ReproductionPlan:
     """Return one stable, write-free plan after the runtime safety preflight."""
 
@@ -132,7 +132,7 @@ def dry_run_reproduction(
     plan = plan_reproduction(
         log,
         entry=selected,
-        include_slow=include_slow,
+        include_all=include_all,
         selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
     )
     preflight_execution_safety()
@@ -825,7 +825,7 @@ def _accepted_record(
     plan_value.pop("schema")
     return {
         "checkpoints": [],
-        "include_slow": plan.include_slow,
+        "include_all": plan.include_all,
         "paths": {
             "diagnostics": "diagnostics",
             "run": canonical_run_path(now, run_root.name).as_posix(),
@@ -875,7 +875,7 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         "cases",
         "executions",
         "failures",
-        "include_slow",
+        "include_all",
         "schema",
         "source_snapshot",
         "summary",
@@ -887,7 +887,7 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
     plan = ReproductionPlan(
         cast(str, value["summary"]),
         cast(Mapping[str, object], value["target"]),
-        cast(bool, value["include_slow"]),
+        cast(bool, value["include_all"]),
         cast(Mapping[str, object], value["validation_snapshot"]),
         cast(Mapping[str, object], value["source_snapshot"]),
         tuple(cast(Sequence[Mapping[str, object]], value["cases"])),
@@ -908,7 +908,7 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
         "artifact_outcomes": progress["artifact_outcomes"],
         "completed_executions": progress["completed_executions"],
         "current_execution": state["current_execution"],
-        "include_slow": record["include_slow"],
+        "include_all": record["include_all"],
         "latest_execution_diagnostic": state["latest_execution_diagnostic"],
         "operational_failure": state["operational_failure"],
         "phase": state["phase"],
@@ -951,7 +951,7 @@ def _load_run(path: Path) -> dict[str, object]:
         raise ActionError("reproduction.run.invalid", str(error)) from error
     fields = {
         "checkpoints",
-        "include_slow",
+        "include_all",
         "paths",
         "plan",
         "progress",
@@ -1019,8 +1019,8 @@ def _validate_run_members(value: Mapping[str, object]) -> None:
             raise ActionError("reproduction.run.invalid", "entry target is invalid")
     elif target != {"entry": None, "kind": "log"}:
         raise ActionError("reproduction.run.invalid", "log target is invalid")
-    if not isinstance(value.get("include_slow"), bool):
-        raise ActionError("reproduction.run.invalid", "slow policy is invalid")
+    if not isinstance(value.get("include_all"), bool):
+        raise ActionError("reproduction.run.invalid", "selection policy is invalid")
     _validate_progress(value.get("progress"))
     _validate_timestamps(value.get("timestamps"))
     _validate_paths(value)

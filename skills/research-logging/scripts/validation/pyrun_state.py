@@ -31,11 +31,11 @@ from .pyrun_outputs import (
 if TYPE_CHECKING:
     from .commands import Invocation
 
-PYRUN_SCHEMA = "research-log-pyrun/v1"
+PYRUN_SCHEMA = "research-log-pyrun/v2"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
-PYRUN_EXECUTION_CONTRACT = "research-log-pyrun-execution/1"
+PYRUN_EXECUTION_CONTRACT = "research-log-pyrun-execution/2"
 PYRUN_EXECUTION_PREFIX = "pyrun-exec/v1:"
 PYRUN_EXECUTION_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
 PYRUN_BACKUP_RE = re.compile(r"pyrun\.json(?:\.[2-9][0-9]*)?\.bak\Z")
@@ -107,7 +107,7 @@ class PyrunExecution:
     """One complete current execution recipe and its observed state."""
 
     confirmed: bool
-    slow: bool
+    auto_reproduce: bool
     last_run_at: str | None
     runner: str
     environment_profile: str
@@ -126,7 +126,7 @@ class PyrunExecution:
             "observed": self.observed.as_dict(),
             "recipe": self.recipe.as_dict(),
             "runner": self.runner,
-            "slow": self.slow,
+            "auto_reproduce": self.auto_reproduce,
         }
 
 
@@ -237,14 +237,14 @@ def ordinary_execution(
     recipe: ExecutionRecipe,
     observed: ObservedExecution,
     *,
-    slow: bool,
+    auto_reproduce: bool,
     last_run_at: str,
 ) -> PyrunExecution:
     """Build the versioned state established by a successful ordinary run."""
 
     return PyrunExecution(
         confirmed=True,
-        slow=slow,
+        auto_reproduce=auto_reproduce,
         last_run_at=last_run_at,
         runner=PYRUN_RUNNER,
         environment_profile=PYRUN_ENVIRONMENT_PROFILE,
@@ -483,14 +483,14 @@ def publish_execution_locked(
         ) from error
 
 
-def update_slow_locked(
+def update_auto_reproduce_locked(
     entry_root: Path,
     execution_ids: tuple[str, ...],
     *,
-    slow: bool,
+    auto_reproduce: bool,
     project_root: Path | None = None,
 ) -> PyrunFile:
-    """Atomically change only ``slow`` for exact current executions."""
+    """Atomically change only automatic-reproduction policy."""
 
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
@@ -506,7 +506,7 @@ def update_slow_locked(
         value = executions[key]
         executions[key] = PyrunExecution(
             value.confirmed,
-            slow,
+            auto_reproduce,
             value.last_run_at,
             value.runner,
             value.environment_profile,
@@ -567,7 +567,7 @@ def confirm_execution_locked(
     executions = dict(current.executions)
     executions[execution_id_value] = PyrunExecution(
         True,
-        value.slow,
+        value.auto_reproduce,
         value.last_run_at,
         value.runner,
         value.environment_profile,
@@ -655,16 +655,19 @@ def _decode_execution(
         "observed",
         "recipe",
         "runner",
-        "slow",
+        "auto_reproduce",
     }
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
     confirmed = value.get("confirmed")
-    slow = value.get("slow")
+    auto_reproduce = value.get("auto_reproduce")
     timestamp = value.get("last_run_at")
-    if not isinstance(confirmed, bool) or not isinstance(slow, bool):
-        _invalid(subject, {"confirmed": confirmed, "slow": slow})
+    if not isinstance(confirmed, bool) or not isinstance(auto_reproduce, bool):
+        _invalid(
+            subject,
+            {"auto_reproduce": auto_reproduce, "confirmed": confirmed},
+        )
     if timestamp is not None and not _valid_timestamp(timestamp):
         _invalid(subject, {"last_run_at": timestamp})
     if (
@@ -684,7 +687,7 @@ def _decode_execution(
     )
     return PyrunExecution(
         confirmed,
-        slow,
+        auto_reproduce,
         cast(str | None, timestamp),
         PYRUN_RUNNER,
         PYRUN_ENVIRONMENT_PROFILE,

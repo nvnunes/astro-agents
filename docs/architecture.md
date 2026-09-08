@@ -252,7 +252,7 @@ Future validation changes must preserve these invariants:
 - **Command-owned execution state:** entry-root `pyrun.json` records one stable
   execution identity for each exact command recipe, including its complete
   output set, observed inputs and code, confirmation state, latest run time,
-  and slow classification. One shell loop produces one execution identity per
+  and automatic-reproduction policy. One shell loop produces one execution identity per
   child `pyrun` invocation. Validation reads this state but does not write it;
   Reproduction executes it directly without using Markdown as authority. The
   bounded historical migration is defined by

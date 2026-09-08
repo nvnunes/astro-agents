@@ -131,8 +131,10 @@ from .pyrun_outputs import (
 from .pyrun_state import (
     PYRUN_FILENAME,
     PyrunFile,
+    execution_id,
     legacy_output_projection,
     load_pyrun_state,
+    recipe_from_invocation,
 )
 from .retention import RetentionFile, load_retention_file
 from .selection_codec import encode_selection
@@ -1043,8 +1045,43 @@ def _validate_execution_bindings(
             "sha256": state.output_file_observations.get(record_path),
         }
     }
+    authored_policy: dict[str, bool] = {}
+    for invocation in state.invocations:
+        if invocation.material_owner != owner:
+            continue
+        try:
+            recipe = recipe_from_invocation(
+                invocation,
+                entry_root=execution_state.entry_root,
+                project_root=state.project_root,
+            )
+        except MechanicalContractError:
+            continue
+        authored_policy[execution_id(recipe)] = invocation.auto_reproduce
     for identity, execution in sorted(execution_state.executions.items()):
         subject = f"{execution_state.path}:executions[{identity!r}]"
+        expected_policy = authored_policy.get(identity)
+        if (
+            expected_policy is not None
+            and expected_policy != execution.auto_reproduce
+        ):
+            state.checks.append(
+                _error_check(
+                    f"conformance:{entry_id}:pyrun-policy:{identity}",
+                    CheckScope.CONFORMANCE,
+                    EngineV2Error(
+                        "pyrun.policy.mismatch",
+                        subject,
+                        {
+                            "entry": entry_id,
+                            "markdown_auto_reproduce": expected_policy,
+                            "recorded_auto_reproduce": execution.auto_reproduce,
+                        },
+                        "Pyrun Execution Policy",
+                    ),
+                    dependencies=(dependency,),
+                )
+            )
         try:
             projection = project_output_bindings(
                 execution.recipe.parameters,

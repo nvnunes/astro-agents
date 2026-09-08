@@ -41,7 +41,7 @@ requirements.
 - [Migration](#migration) defines the metadata-only cutover and its independent
   remediation gate.
 - [Discovery And Planning](#discovery-and-planning) defines targets, admission,
-  graph traversal, slow boundaries, cycles, and dry runs.
+  graph traversal, non-automatic boundaries, cycles, and dry runs.
 - [Durable Reproduction Jobs](#durable-reproduction-jobs) defines launch,
   status, stop, resume, recovery, and exit semantics.
 - [Execution Safety](#execution-safety) defines run-local execution, network
@@ -66,15 +66,15 @@ The initial implementation must use these versions:
 
 | Surface | Version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v1` |
+| Execution-state file | `research-log-pyrun/v2` |
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
-| Execution contract | `research-log-pyrun-execution/1` |
-| Reproduction result | `research-log-reproduction-result/1` |
-| Durable run state | `research-log-reproduction-run/1` |
-| Run status projection | `research-log-reproduction-status/1` |
-| Dry-run plan | `research-log-reproduction-plan/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/2` |
+| Execution contract | `research-log-pyrun-execution/2` |
+| Reproduction result | `research-log-reproduction-result/2` |
+| Durable run state | `research-log-reproduction-run/2` |
+| Run status projection | `research-log-reproduction-status/2` |
+| Dry-run plan | `research-log-reproduction-plan/2` |
+| Source snapshot | `research-log-reproduction-source-snapshot/3` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -197,7 +197,7 @@ discarding available run history or current artifact state.
 - **Evidence root:** a retained source artifact selected by an `evidence.json`
   record in the requested target.
 - **Retained boundary:** a fingerprint-verified input whose producer is outside
-  the permitted execution scope or is skipped by the default slow policy.
+  the permitted execution scope or is excluded from automatic reproduction.
 - **Scope lock:** the one existing research-log operation lock held for the
   selected entry or log throughout an active run.
 - **Publication mutex:** the brief log-local lock used to serialize shared
@@ -271,15 +271,15 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v1",
+  "schema": "research-log-pyrun/v2",
   "executions": {
     "pyrun-exec/v1:0123456789abcdef...": {
       "confirmed": true,
-      "slow": false,
+      "auto_reproduce": true,
       "last_run_at": "2030-01-01T00:00:00Z",
       "runner": "research-log-pyrun-runner/1",
       "environment_profile": "pyrun-standard/v1",
-      "execution_contract": "research-log-pyrun-execution/1",
+      "execution_contract": "research-log-pyrun-execution/2",
       "recipe": {
         "script": "scripts/run_study.py",
         "parameters": [
@@ -329,11 +329,12 @@ exactly:
 ```
 
 Top-level keys are exactly `schema` and `executions`. Execution-map keys are
-unique execution IDs. Every execution value has exactly `confirmed`, `slow`,
-`last_run_at`, `runner`, `environment_profile`, `execution_contract`, `recipe`,
-and `observed`.
+unique execution IDs. Every execution value has exactly `auto_reproduce`,
+`confirmed`, `last_run_at`, `runner`, `environment_profile`,
+`execution_contract`, `recipe`, and `observed`.
 
-`confirmed` and `slow` are required Booleans. `last_run_at` is either `null` or
+`auto_reproduce` and `confirmed` are required Booleans. `last_run_at` is either
+`null` or
 a UTC RFC 3339 timestamp with whole seconds and `Z`. A metadata-rebuilt
 migration record uses `null` because no ordinary `pyrun` completion time is
 known. Version fields are required nonempty identifiers from the code-owned
@@ -351,7 +352,8 @@ supported sets.
   leading runner-owned stream-capture option and target, followed by `--`, then
   the exact ordered child-process argument tail after the script. Without a
   capture, it contains only that child-process argument tail. It contains no
-  runner role declarations, `--slow`, or explicit environment options.
+  runner role declarations, `--auto-reproduce=false`, or explicit environment
+  options.
 - `environment` maps each explicit normalized `--env NAME=value` variable name
   to its exact value. It contains no inherited or runner-supplied variable.
 - `inputs` is the sorted unique list of directly consumed `data.json` names.
@@ -427,7 +429,8 @@ output map keys are sorted by canonical JSON serialization.
 The projection includes the normalized script, ordered replay parameters,
 explicit environment variables, direct input names, and complete output paths
 and kinds. The replay parameters make each runner-owned stream capture and its
-output identity explicit. It excludes observations, confirmation, slow policy,
+output identity explicit. It excludes observations, confirmation,
+automatic-reproduction policy,
 timestamps, Markdown location, standard-environment profile, schema version,
 runner version, and execution-contract version.
 
@@ -499,7 +502,7 @@ no `pyrun.json` state.
 `last_run_at` records the completion time of the latest successful atomic
 ordinary `pyrun` publication. It is `null` for a metadata-rebuilt migration
 record until a later ordinary publication establishes such a time. Failed
-attempts, reproduction execution, and confirmation-only or slow-only mutations
+attempts, reproduction execution, and confirmation-only or policy-only mutations
 must not change it. Ordinary `pyrun` reads and writes only its entry-local
 state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
@@ -512,24 +515,24 @@ versions, and `last_run_at`. It is not rolled back by a later execution,
 reproduction-publication, or validation failure. Any changed, failed,
 comparison-failed, or skipped output leaves it unconfirmed.
 
-### Slow Policy
+### Automatic-Reproduction Policy
 
-`pyrun --slow -- script.py ...` records `slow: true`. Omitting `--slow`
-records `slow: false`. Slow means that the simulation, model training, or
-similar execution must not be rerun casually. It is an authored policy, not a
-measured duration.
+`pyrun --auto-reproduce=false -- script.py ...` records
+`auto_reproduce: false`. Omitting the option records `auto_reproduce: true`.
+The false value marks work that must not be rerun automatically, such as
+simulation or model training. It is an authored policy, not an inference from
+measured duration. No other spelling or truthy/falsey value is accepted.
 
-Slow is outside identity. A later classification-only change uses exactly one
-of:
+Automatic-reproduction policy is outside identity. A later policy-only change
+uses:
 
 ```text
-log pyrun update --path LOG --entry ENTRY --execution-id ID --slow
-log pyrun update --path LOG --entry ENTRY --execution-id ID --no-slow
+log pyrun update --path LOG --entry ENTRY --execution-id ID --auto-reproduce BOOL
 ```
 
-The operation requires exactly one policy flag, takes the selected entry lock,
-changes only `slow`, and writes atomically. The researcher or authoring agent
-must first edit only the `--slow` token in Markdown. The operation resolves the
+`BOOL` is exactly `true` or `false`. The operation takes the selected entry
+lock, changes only `auto_reproduce`, and writes atomically. The researcher or
+authoring agent must first edit the Markdown option. The operation resolves the
 supplied execution ID to one concrete expanded recipe and its containing
 authored invocation, requires exact structural agreement apart from the
 requested policy difference, and never edits Markdown.
@@ -649,7 +652,7 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-slow] [--recheck] [--dry-run]
+log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--dry-run]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
@@ -717,15 +720,16 @@ dependency projection. Missing or changed participating code affects
 admission, planning, currentness, and guarded resume exactly as the final
 authoring contract requires.
 
-### Slow Boundary
+### Non-Automatic Boundary
 
-By default, planning stops before every required `slow: true` execution. Its
+By default, planning stops before every required `auto_reproduce: false` execution. Its
 retained output may serve as a boundary only when its current fingerprint and
 required provenance state are valid. This boundary is planning metadata, not
 an artifact outcome.
 
-`--include-slow` includes slow executions within the same selected entry or log
-boundary and traverses their upstream closure. Scope is immutable after run
+`--include-all` includes automatic and non-automatic executions within the same
+selected entry or log boundary and traverses their upstream closure. It does
+not widen the target or bypass validation. Scope is immutable after run
 acceptance. The CLI must not prompt to widen it.
 
 ### Selection Policy
@@ -735,15 +739,16 @@ failed, stale, and dependency-affected eligible executions. A current result
 otherwise satisfies its artifact case without new execution work.
 
 `--recheck` selects every eligible execution in the current evidence-relevant
-closure under the chosen entry-or-log target and slow policy, including
+closure under the chosen entry-or-log target and automatic-reproduction policy, including
 executions whose artifact results are already current. It preserves execution
 grouping, dependency order, target boundaries, retained boundaries, and
 artifact-level result identity. It does not bypass validation admission,
 repair a graph failure, or make an otherwise ineligible case runnable.
 
-Slow inclusion and selection policy are independent. `--recheck` alone stops
-at verified retained slow boundaries. `--recheck --include-slow` also selects
-eligible slow executions. Neither flag implies the other.
+All-execution inclusion and selection policy are independent. `--recheck`
+alone stops at verified retained non-automatic boundaries. `--recheck
+--include-all` also selects non-automatic executions. Neither flag implies the
+other.
 
 Recheck is a launch-time planning input. The emitted plan records the exact
 selected cases and executions and is the durable authority for execution and
@@ -778,11 +783,11 @@ graph.
 
 ### Dry Run
 
-`--dry-run` applies the same admission, discovery, graph construction, slow
+`--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. It emits one
-deterministic `research-log-reproduction-plan/1` projection with exactly
-`schema`, `summary`, `target`, `include_slow`, `validation_snapshot`,
+deterministic `research-log-reproduction-plan/2` projection with exactly
+`schema`, `summary`, `target`, `include_all`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
@@ -791,14 +796,14 @@ entry order and artifact path. Each case has exactly `entry`, `artifact`,
 or `failed`, and `reason` is null only when no qualification is needed.
 
 Executions are in deterministic run order and each has exactly `order`,
-`entry`, `execution_id`, `depends_on`, `outputs`, and `slow`. `depends_on` and
+`entry`, `execution_id`, `depends_on`, `outputs`, and `auto_reproduce`. `depends_on` and
 `outputs` are sorted unique identity arrays. A dependency reference is the
 entry-qualified string `<entry>:<execution_id>` because the same stable recipe
 identity may legitimately occur in more than one entry; `execution_id` itself
 remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
-`origin`, `cross_entry`, or `slow`. Fields inapplicable to a boundary kind are
+`origin`, `cross_entry`, or `non_automatic`. Fields inapplicable to a boundary kind are
 null rather than omitted. Failures are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
@@ -810,7 +815,7 @@ owns that projection's construction; reproduction treats it as an opaque
 currentness token.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/2` and has exactly `schema`,
+`research-log-reproduction-source-snapshot/3` and has exactly `schema`,
 `authority_files`, `executions`, and `materials`. `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
 for the plan. `executions` records each selected execution ID and the SHA-256
@@ -849,7 +854,7 @@ CLI. It is immutable and names the durable state, output workspace, diagnostics,
 and staging paths for the life of the run. It is not derived from Markdown or
 an execution recipe.
 
-The accepted target, entry-or-log kind, and slow-inclusion policy are immutable.
+The accepted target, entry-or-log kind, and all-execution inclusion policy are immutable.
 Management commands use only the recorded scope:
 
 ```text
@@ -858,20 +863,20 @@ log reproduce stop --path LOG --run-id RUN_ID
 log reproduce resume --path LOG --run-id RUN_ID
 ```
 
-They must reject `--entry` and `--include-slow`.
+They must reject `--entry` and `--include-all`.
 
 ### Durable State
 
 Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/1`. Its top-level object has exactly:
+`research-log-reproduction-run/2`. Its top-level object has exactly:
 
 ```json
 {
-  "schema": "research-log-reproduction-run/1",
+  "schema": "research-log-reproduction-run/2",
   "run_id": "reproduce-...",
   "summary": "docs/research.md",
   "target": {"kind": "entry", "entry": "e003"},
-  "include_slow": false,
+  "include_all": false,
   "source_snapshot": {},
   "validation_snapshot": {},
   "plan": {},
@@ -916,7 +921,7 @@ Each run directory contains one canonical `run.json` using
 is the stable entry ID for an entry target and null for a log target.
 `source_snapshot` and `validation_snapshot` are byte-for-byte the projections
 defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/1` object without its outer `schema` and must
+`research-log-reproduction-plan/2` object without its outer `schema` and must
 not change after acceptance.
 
 `state.status` is null while active and otherwise one terminal status:
@@ -948,7 +953,7 @@ canonical output identities and observed fingerprints.
 
 The run record therefore durably retains:
 
-- run ID, log, target kind, target entry when applicable, and include-slow
+- run ID, log, target kind, target entry when applicable, and include-all
   policy;
 - accepted source and validation snapshots;
 - immutable deterministic execution plan;
@@ -972,8 +977,8 @@ contract.
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/1` object containing exactly `schema`,
-`run_id`, `summary`, `target`, `include_slow`, `status`, `phase`,
+`research-log-reproduction-status/2` object containing exactly `schema`,
+`run_id`, `summary`, `target`, `include_all`, `status`, `phase`,
 `current_execution`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
 `operational_failure`, and `surviving_workers`. The values are the
@@ -1270,10 +1275,10 @@ The artifact outcomes are:
 Outcome and currentness are separate. Reason codes are a closed versioned
 machine vocabulary. At minimum, cycles use `dependency_cycle` with `failed`,
 and downstream blocking uses `dependency_failed` with `skipped`. A default
-slow or permitted cross-entry dependency is boundary metadata rather than an
-artifact outcome. When the selected evidence root itself is slow or is
+non-automatic or permitted cross-entry dependency is boundary metadata rather than an
+artifact outcome. When the selected evidence root itself is non-automatic or is
 produced outside an entry target, that selected artifact is respectively
-`skipped` with reason `slow` or `outside_entry`.
+`skipped` with reason `non_automatic` or `outside_entry`.
 
 The complete v1 reason vocabulary is `baseline_unavailable`,
 `boundary_changed`, `boundary_unavailable`, `comparator_error`,
@@ -1281,17 +1286,17 @@ The complete v1 reason vocabulary is `baseline_unavailable`,
 `dependency_failed`, `evidence_comparison_failed`, `execution_failed`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
 `multiple_producers`, `output_missing`,
-`outside_entry`, `resource_limit`, `safety_failure`, `slow`, `stop_requested`,
+`outside_entry`, `resource_limit`, `safety_failure`, `non_automatic`, `stop_requested`,
 `unsupported_format`, `worker_cleanup_incomplete`, and `worker_survived`.
 
 ### Authoritative Result
 
 `<log>/reproduction/results.json` is strict canonical UTF-8 JSON using
-`research-log-reproduction-result/1`. It has exactly this shape:
+`research-log-reproduction-result/2`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/1",
+  "schema": "research-log-reproduction-result/2",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1315,7 +1320,7 @@ The complete v1 reason vocabulary is `baseline_unavailable`,
     {
       "run_id": "reproduce-...",
       "target": {"kind": "entry", "entry": "e003"},
-      "include_slow": false,
+      "include_all": false,
       "status": "complete",
       "accepted_at": "2030-01-01T00:00:00Z",
       "finished_at": "2030-01-01T00:05:00Z",

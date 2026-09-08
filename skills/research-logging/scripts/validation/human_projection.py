@@ -545,6 +545,12 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "parameter or runner-owned capture.",
         "path",
     ),
+    "pyrun.policy.mismatch": FindingPresentation(
+        "Reproduction Policy Mismatch",
+        "The Markdown command and its execution record disagree about "
+        "automatic reproduction.",
+        "record",
+    ),
     "pyrun.outputs.invalid": FindingPresentation(
         "Invalid Output-Support Registry",
         "The output-support registry does not satisfy its schema or ownership "

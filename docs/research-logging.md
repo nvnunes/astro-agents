@@ -563,8 +563,8 @@ records log-local Python source files loaded by the command or by an ordinary
 Python child invocation. A logical path through an intentional log symlink
 remains log-local. Changing a recorded helper makes the dependent execution
 support stale; a later successful run refreshes the observed dependency set.
-Use `./pyrun --slow -- ...` for simulation, model-training, and comparable
-commands that should not be included casually in default reproduction.
+Use `./pyrun --auto-reproduce=false -- ...` for simulation, model training,
+and comparable commands that should not run during automatic reproduction.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
@@ -945,15 +945,17 @@ cases. Add `--recheck` when you deliberately want every eligible execution in
 the selected evidence-relevant scope to run again, including executions whose
 results are current.
 
-Executions recorded with `pyrun --slow` are skipped by default. Include them
-only when you explicitly intend the additional simulation or training cost:
+Executions recorded with `auto_reproduce: false` are excluded by default.
+Include them only when you explicitly intend the additional simulation or
+training cost:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --include-slow
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --include-all
 ```
 
-Slow inclusion is independent from recheck selection. `--recheck` alone still
-skips slow executions; use both flags only when both behaviors are intended.
+All-execution inclusion is independent from recheck selection. `--recheck`
+alone still excludes non-automatic executions; use both flags only when both
+behaviors are intended.
 
 An entry target starts from that entry's evidence and never executes a command
 from another entry. A log target follows evidence and dependencies only within

@@ -113,7 +113,7 @@ class _PlanningState:
     project_root: Path
     selected_entries: tuple[str, ...]
     entry_target: bool
-    include_slow: bool
+    include_all: bool
     selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
     owners: Mapping[str, tuple[_Owner, ...]]
@@ -228,7 +228,7 @@ def plan_reproduction(
     log: LogContext,
     *,
     entry: EntryContext | None,
-    include_slow: bool,
+    include_all: bool,
     selection_policy: SelectionPolicy = INCREMENTAL_SELECTION,
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
@@ -251,7 +251,7 @@ def plan_reproduction(
         project_root,
         selected_ids,
         entry is not None,
-        include_slow,
+        include_all,
         selection_policy,
         entries,
         _owner_index(entries, project_root),
@@ -503,15 +503,15 @@ def _trace_resource(
         )
         return
     producer = in_scope[0]
-    if producer.execution.slow and not state.include_slow:
-        _verified_boundary(state, "slow", owner_entry, resource, artifact)
+    if not producer.execution.auto_reproduce and not state.include_all:
+        _verified_boundary(state, "non_automatic", owner_entry, resource, artifact)
         if consumer is None:
             state.cases[(owner_entry.context.id, artifact)] = _case(
                 owner_entry.context.id,
                 artifact,
                 producer.execution_id,
                 "skipped",
-                "slow",
+                "non_automatic",
             )
         return
     if consumer is not None:
@@ -881,7 +881,7 @@ def _project_plan(
                 "outputs": sorted(
                     output for output, _ in owner.execution.recipe.outputs
                 ),
-                "slow": owner.execution.slow,
+                "auto_reproduce": owner.execution.auto_reproduce,
             }
         )
     authority_files = [
@@ -920,7 +920,7 @@ def _project_plan(
             "entry": entry.id if entry is not None else None,
             "kind": "entry" if entry is not None else "log",
         },
-        state.include_slow,
+        state.include_all,
         validation_snapshot,
         snapshot,
         cases,

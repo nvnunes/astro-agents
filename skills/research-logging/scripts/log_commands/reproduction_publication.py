@@ -270,7 +270,7 @@ def _run_result(
     return RunResult(
         request.run_id,
         plan.target,
-        plan.include_slow,
+        plan.include_all,
         "complete",
         request.accepted_at,
         request.finished_at,

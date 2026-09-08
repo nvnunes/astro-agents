@@ -110,7 +110,8 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun [--slow] [--env NAME=value] [--other-inputs <selectors>] "
+        "       pyrun [--auto-reproduce=false] [--env NAME=value] "
+        "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
@@ -267,7 +268,7 @@ def _execution_layout(
         dict(layout.captures),
         dict(layout.roles),
         dict(layout.environment),
-        layout.slow,
+        layout.auto_reproduce,
     )
 
 
@@ -652,7 +653,7 @@ def main(argv: list[str]) -> int:
                 captures,
                 roles,
                 explicit_env,
-                slow,
+                auto_reproduce,
             ) = _execution_layout(argv)
             _require_declared_input_tokens(script_args, roles, data)
             verified: set[str] = set()
@@ -788,7 +789,7 @@ def main(argv: list[str]) -> int:
                     ordinary_execution(
                         recipe,
                         observed,
-                        slow=slow,
+                        auto_reproduce=auto_reproduce,
                         last_run_at=completed_at,
                     ),
                     project_root=root,

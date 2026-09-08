@@ -217,7 +217,7 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
     )
     execution = PYRUN_STATE.PyrunExecution(
         True,
-        False,
+        True,
         "2030-01-01T00:00:00Z",
         PYRUN_STATE.PYRUN_RUNNER,
         PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,
@@ -339,6 +339,36 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_pyrun_policy_mismatch_is_structure_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry_document = _log(root)
+            identity = _replace_with_pyrun_state(
+                entry_document,
+                ("--catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            entry = entry_document.parent
+            path = entry / PYRUN_STATE.PYRUN_FILENAME
+            state = PYRUN_STATE.load_pyrun_state(
+                path, entry_root=entry, project_root=root
+            )
+            changed = dict(state.executions)
+            changed[identity] = replace(
+                changed[identity], auto_reproduce=False
+            )
+            write(path, PYRUN_STATE.PyrunFile(path, entry, changed).serialized())
+
+            evaluation = _evaluate(summary)
+
+            finding = next(
+                check
+                for check in evaluation.result.checks
+                if check.failure is not None
+                and check.failure.code == "pyrun.policy.mismatch"
+            )
+            self.assertEqual(finding.scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertIn(identity, finding.identity)
+
     def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -1731,7 +1761,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             execution = PYRUN_STATE.PyrunExecution(
                 True,
-                False,
+                True,
                 "2030-01-01T00:00:00Z",
                 PYRUN_STATE.PYRUN_RUNNER,
                 PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,

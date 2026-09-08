@@ -114,11 +114,11 @@ class _Fixture:
         self.identity = execution_id(recipe)
         execution = PyrunExecution(
             False,
-            False,
+            True,
             None,
             "research-log-pyrun-runner/1",
             "pyrun-standard/v1",
-            "research-log-pyrun-execution/1",
+            "research-log-pyrun-execution/2",
             recipe,
             observed,
         )
@@ -302,11 +302,11 @@ class ReproductionExecutionTests(unittest.TestCase):
             identity = execution_id(recipe)
             execution = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 "research-log-pyrun-runner/1",
                 "pyrun-standard/v1",
-                "research-log-pyrun-execution/1",
+                "research-log-pyrun-execution/2",
                 recipe,
                 ObservedExecution(
                     _fingerprint(fixture.script),
@@ -357,11 +357,11 @@ class ReproductionExecutionTests(unittest.TestCase):
             identity = execution_id(recipe)
             execution = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 "research-log-pyrun-runner/1",
                 "pyrun-standard/v1",
-                "research-log-pyrun-execution/1",
+                "research-log-pyrun-execution/2",
                 recipe,
                 ObservedExecution(
                     _fingerprint(fixture.script),
@@ -437,11 +437,11 @@ class ReproductionExecutionTests(unittest.TestCase):
             consumer_id = execution_id(consumer_recipe)
             consumer_execution = PyrunExecution(
                 False,
-                False,
+                True,
                 None,
                 "research-log-pyrun-runner/1",
                 "pyrun-standard/v1",
-                "research-log-pyrun-execution/1",
+                "research-log-pyrun-execution/2",
                 consumer_recipe,
                 ObservedExecution(
                     _fingerprint(consume),
@@ -471,7 +471,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": fixture.identity,
                         "order": 1,
                         "outputs": ["data/result.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                     {
                         "depends_on": [first_reference],
@@ -479,7 +479,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": consumer_id,
                         "order": 2,
                         "outputs": ["data/final.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                 ),
             )
@@ -635,7 +635,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": fixture.identity,
                         "order": 1,
                         "outputs": ["data/result.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                     {
                         "depends_on": [failed_reference],
@@ -643,7 +643,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": dependent,
                         "order": 2,
                         "outputs": ["data/dependent.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                     {
                         "depends_on": [],
@@ -651,7 +651,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": other,
                         "order": 3,
                         "outputs": ["data/other.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                 ),
             )
@@ -726,7 +726,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": fixture.identity,
                         "order": 1,
                         "outputs": ["data/result.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                     {
                         "depends_on": [failed_reference],
@@ -734,7 +734,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": dependent,
                         "order": 2,
                         "outputs": ["data/dependent.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                     {
                         "depends_on": [],
@@ -742,7 +742,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                         "execution_id": independent,
                         "order": 3,
                         "outputs": ["data/independent.txt"],
-                        "slow": False,
+                        "auto_reproduce": True,
                     },
                 ),
             )
@@ -809,7 +809,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 "execution_id": fixture.identity,
                 "order": 1,
                 "outputs": ["data/result.txt"],
-                "slow": False,
+                "auto_reproduce": True,
             }
             plan = replace(fixture.plan, executions=(planned,))
 
@@ -853,7 +853,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 "execution_id": fixture.identity,
                 "order": 1,
                 "outputs": ["data/result.txt"],
-                "slow": False,
+                "auto_reproduce": True,
             }
             execute_planned_recipe(
                 fixture.log,

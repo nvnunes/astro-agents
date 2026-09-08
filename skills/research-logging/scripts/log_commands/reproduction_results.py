@@ -24,7 +24,7 @@ from .reproduction_paths import (
 )
 from .reproduction_planner import ReproductionStateProjection
 
-RESULT_SCHEMA = "research-log-reproduction-result/1"
+RESULT_SCHEMA = "research-log-reproduction-result/2"
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
@@ -64,7 +64,7 @@ REASONS = {
     "outside_entry",
     "resource_limit",
     "safety_failure",
-    "slow",
+    "non_automatic",
     "stop_requested",
     "unsupported_format",
     "worker_cleanup_incomplete",
@@ -203,7 +203,7 @@ class RunResult:
 
     run_id: str
     target: Mapping[str, object]
-    include_slow: bool
+    include_all: bool
     status: str
     accepted_at: str
     finished_at: str | None
@@ -213,8 +213,8 @@ class RunResult:
     def __post_init__(self) -> None:
         _run_id(self.run_id)
         _target(self.target)
-        if not isinstance(self.include_slow, bool):
-            raise ReproductionResultError("run include_slow must be boolean")
+        if not isinstance(self.include_all, bool):
+            raise ReproductionResultError("run include_all must be boolean")
         status = _choice(self.status, RUN_STATUSES, "run.status")
         accepted = _timestamp(self.accepted_at, "run.accepted_at")
         finished = (
@@ -236,7 +236,7 @@ class RunResult:
             "artifact_outcomes": dict(self.artifact_outcomes),
             "finished_at": self.finished_at,
             "folder": self.folder.as_dict(),
-            "include_slow": self.include_slow,
+            "include_all": self.include_all,
             "run_id": self.run_id,
             "status": self.status,
             "target": dict(self.target),
@@ -723,7 +723,7 @@ def _decode_run(value: object, index: int) -> RunResult:
         "artifact_outcomes",
         "finished_at",
         "folder",
-        "include_slow",
+        "include_all",
         "run_id",
         "status",
         "target",
@@ -733,9 +733,9 @@ def _decode_run(value: object, index: int) -> RunResult:
     target = _target(item["target"])
     counts = _counts(item["artifact_outcomes"])
     folder = _folder(item["folder"])
-    include_slow = item["include_slow"]
-    if not isinstance(include_slow, bool):
-        raise ReproductionResultError("run include_slow must be boolean")
+    include_all = item["include_all"]
+    if not isinstance(include_all, bool):
+        raise ReproductionResultError("run include_all must be boolean")
     status = _choice(item["status"], RUN_STATUSES, f"runs[{index}].status")
     finished = item["finished_at"]
     if finished is not None:
@@ -747,7 +747,7 @@ def _decode_run(value: object, index: int) -> RunResult:
     return RunResult(
         _run_id(item["run_id"]),
         target,
-        include_slow,
+        include_all,
         status,
         _timestamp(item["accepted_at"], f"runs[{index}].accepted_at"),
         cast(str | None, finished),
@@ -966,7 +966,7 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
     return RunResult(
         run.run_id,
         run.target,
-        run.include_slow,
+        run.include_all,
         run.status,
         run.accepted_at,
         run.finished_at,

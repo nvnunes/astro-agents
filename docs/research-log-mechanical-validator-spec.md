@@ -2888,6 +2888,13 @@ separate Provenance conclusion, and undeclared generated artifacts remain under
 the orphan rules. A script may still accept but ignore a valid output argument;
 static binding validation makes no claim about that runtime behavior.
 
+For every current Markdown command whose structural recipe resolves to a
+recorded execution ID, validation also requires exact automatic-reproduction
+policy agreement. The exact authored `--auto-reproduce=false` option must map
+to `auto_reproduce: false`; omission must map to `true`. Stale policy syntax,
+an unsupported value, or a Markdown/JSON policy mismatch is a Structure
+failure. Policy remains outside execution identity.
+
 `pyrun` also accepts repeatable `--env NAME=value` runner options before the
 required `--` separator. It normalizes them by name into the persisted
 execution signature and child environment. Duplicate names, malformed names,

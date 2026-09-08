@@ -6,9 +6,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-PLAN_SCHEMA = "research-log-reproduction-plan/1"
+PLAN_SCHEMA = "research-log-reproduction-plan/2"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/2"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 
 
@@ -18,7 +18,7 @@ class ReproductionPlan:
 
     summary: str
     target: Mapping[str, object]
-    include_slow: bool
+    include_all: bool
     validation_snapshot: Mapping[str, object]
     source_snapshot: Mapping[str, object]
     cases: tuple[Mapping[str, object], ...]
@@ -34,7 +34,7 @@ class ReproductionPlan:
             "cases": [dict(value) for value in self.cases],
             "executions": [dict(value) for value in self.executions],
             "failures": [dict(value) for value in self.failures],
-            "include_slow": self.include_slow,
+            "include_all": self.include_all,
             "schema": PLAN_SCHEMA,
             "source_snapshot": dict(self.source_snapshot),
             "summary": self.summary,

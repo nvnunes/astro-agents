@@ -50,7 +50,7 @@ class ReproductionRecoveryTests(unittest.TestCase):
             )
             _verify_normalized_pyrun(fixture.project, path, [candidate], file_digest)
 
-            value["executions"][fixture.identity]["slow"] = True
+            value["executions"][fixture.identity]["auto_reproduce"] = False
             path.write_text(
                 json.dumps(value, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",

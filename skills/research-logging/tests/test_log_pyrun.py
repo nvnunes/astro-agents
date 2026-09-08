@@ -50,10 +50,10 @@ def _fixture(root: Path, body: str) -> tuple[Path, Path]:
     return base, entry
 
 
-def _execution(recipe: ExecutionRecipe, *, slow: bool) -> PyrunExecution:
+def _execution(recipe: ExecutionRecipe, *, auto_reproduce: bool) -> PyrunExecution:
     return PyrunExecution(
         False,
-        slow,
+        auto_reproduce,
         None,
         PYRUN_RUNNER,
         PYRUN_ENVIRONMENT_PROFILE,
@@ -100,18 +100,19 @@ class LogPyrunPolicyTests(unittest.TestCase):
         self.assertIn("update", family.stdout)
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertIn("--execution-id", action.stdout)
-        self.assertIn("--slow", action.stdout)
-        self.assertIn("--no-slow", action.stdout)
+        self.assertIn("--auto-reproduce", action.stdout)
+        self.assertNotIn("--slow", action.stdout)
 
-    def test_markdown_first_update_changes_only_slow(self) -> None:
+    def test_markdown_first_update_changes_only_auto_reproduce(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
                 root,
-                "./pyrun --slow -- scripts/build.py --output-data data/result.csv",
+                "./pyrun --auto-reproduce=false -- scripts/build.py "
+                "--output-data data/result.csv",
             )
             recipe = _recipe("data/result.csv")
-            initial = _execution(recipe, slow=False)
+            initial = _execution(recipe, auto_reproduce=True)
             _write_state(entry, (initial,))
             validation = base / "validation/results.json"
             validation.parent.mkdir()
@@ -130,13 +131,14 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 "e001",
                 "--execution-id",
                 identity,
-                "--slow",
+                "--auto-reproduce",
+                "false",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             after = json.loads((entry / "pyrun.json").read_text())
-            self.assertTrue(after["executions"][identity]["slow"])
-            before["executions"][identity]["slow"] = True
+            self.assertFalse(after["executions"][identity]["auto_reproduce"])
+            before["executions"][identity]["auto_reproduce"] = False
             self.assertEqual(after, before)
             self.assertEqual(validation.read_bytes(), before_validation)
 
@@ -146,7 +148,8 @@ class LogPyrunPolicyTests(unittest.TestCase):
             base, entry = _fixture(
                 root,
                 "for case in one two; do\n"
-                "  ./pyrun --slow -- scripts/build.py --case \"$case\" "
+                "  ./pyrun --auto-reproduce=false -- scripts/build.py "
+                "--case \"$case\" "
                 "--output-data \"data/$case.csv\"\n"
                 "done",
             )
@@ -154,7 +157,10 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 _recipe("data/one.csv", case="one"),
                 _recipe("data/two.csv", case="two"),
             )
-            _write_state(entry, tuple(_execution(item, slow=False) for item in recipes))
+            _write_state(
+                entry,
+                tuple(_execution(item, auto_reproduce=True) for item in recipes),
+            )
 
             result = run_log(
                 root,
@@ -166,13 +172,16 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 "e001",
                 "--execution-id",
                 execution_id(recipes[0]),
-                "--slow",
+                "--auto-reproduce",
+                "false",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             state = json.loads((entry / "pyrun.json").read_text())["executions"]
             self.assertEqual(set(state), {execution_id(item) for item in recipes})
-            self.assertTrue(all(item["slow"] for item in state.values()))
+            self.assertTrue(
+                all(not item["auto_reproduce"] for item in state.values())
+            )
 
     def test_update_refuses_policy_recipe_and_argument_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -181,7 +190,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 root, "./pyrun scripts/build.py --output-data data/result.csv"
             )
             recipe = _recipe("data/result.csv")
-            _write_state(entry, (_execution(recipe, slow=False),))
+            _write_state(entry, (_execution(recipe, auto_reproduce=True),))
             identity = execution_id(recipe)
             before = (entry / "pyrun.json").read_bytes()
             common = (
@@ -195,7 +204,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 identity,
             )
 
-            wrong_policy = run_log(root, *common, "--slow")
+            wrong_policy = run_log(root, *common, "--auto-reproduce", "false")
             self.assertEqual(wrong_policy.returncode, 2)
             self.assertIn("pyrun.update.markdown_disagreement", wrong_policy.stderr)
 
@@ -204,7 +213,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 document.read_text().replace("data/result.csv", "data/other.csv"),
                 encoding="utf-8",
             )
-            wrong_recipe = run_log(root, *common, "--no-slow")
+            wrong_recipe = run_log(root, *common, "--auto-reproduce", "true")
             self.assertEqual(wrong_recipe.returncode, 2)
             self.assertIn("pyrun.update.command_unresolved", wrong_recipe.stderr)
 

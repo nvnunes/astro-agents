@@ -17,7 +17,7 @@ from `skills/technical-writing/references/base.md`.
 - Use numbered phases for work with meaningful stages or dependency boundaries. State each phase's action, output, and conditions for proceeding where relevant.
 - Break complex phases into lettered parts that group related work: `Phase 2`, `Part 2.C`.
 - Subdivide a large, coherent part into named, numbered tasks when individual scope, outputs, or tracking help: `Phase 2 > Part 2.C > Task 2.C.1`. Tasks may be sequential or independent. Keep this third level optional.
-- Prefer lists for discrete actions, outputs, and checks when as clear as prose: numbered when order matters, bulleted otherwise. Use paragraphs for connected explanation.
+- Use bullets for discrete requirements, outputs, and checks, numbered lists for ordered actions, and paragraphs for explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
 - State each requirement once. Place evidence collection, validation, and documentation at the steps that produce or need them.
 - Link consequential decisions to known downstream phase/Part/task consumers.
@@ -66,10 +66,10 @@ For a sharded plan:
 
 ## Verification And Handoff
 
-Choose technical reviews during design: scope, purpose, and milestone. Preserve
-project requirements and distinguish iteration checks from completion gates.
-For each necessary gate, state what must pass, what failure blocks, and what
-independent work may continue. Avoid generic review-after-every-step rules.
+- Choose technical reviews during design: scope, purpose, and milestone. Distinguish iteration checks from completion gates; reference applicable project gates without duplicating them.
+- Incorporate reviews completed during planning into the affected instructions. Do not schedule the same review again unless a specific later change will invalidate its conclusions.
+- A final integration step contains only work that requires the assembled result. Keep component checks with their owning work.
+- For each necessary gate, state what must pass, what failure blocks, and what independent work may continue. Avoid generic review-after-every-step rules.
 
 Place cheap representative checks before expensive work whose approach depends
 on consequential assumptions, including output persistence when relevant.
@@ -85,9 +85,9 @@ Hand off authorized work to `$plan-execution`, which owns execution notes and
 history. A ready plan is not authorization to implement it.
 
 ## Revision
-- Preserve explicit user decisions, necessary implementation detail, and unresolved questions that affect execution.
+- Preserve explicit user decisions, necessary implementation detail, and unresolved questions that affect execution; revise wording, length, and organization as needed.
 - Preserve stable phase names and numbering unless the requested change warrants adjustment.
-- Remove speculative additions and repetition rather than retaining everything from an earlier draft.
+- Consolidate repeated requirements under one owner and remove speculative additions.
 - Keep provisional or deferred work distinct from committed deliverables.
 
 ## Final Scope Check

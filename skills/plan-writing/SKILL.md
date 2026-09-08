@@ -9,8 +9,8 @@ Use this skill for plan design through optional sharding. Pair with
 `$technical-writing`, then read `references/plan.md` for structure and scope.
 
 Plan the smallest coherent work that achieves the requested outcome. Preserve
-user decisions and the detail needed to execute and verify it; keep durable
-architecture in its owning docs.
+agreed decisions and necessary execution detail, not the existing wording,
+length, or organization. Keep durable architecture in its owning docs.
 
 Hand off authorized implementation to `$plan-execution`. Routine progress
 updates stay there; consequential scope or contract redesign returns here.

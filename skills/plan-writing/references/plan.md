@@ -23,7 +23,7 @@ from `skills/technical-writing/references/base.md`.
 - Link consequential decisions to known downstream phase/Part/task consumers.
   Maintain those links as the plan develops or moves, so later reconciliation
   stays bounded. Do not build a separate dependency registry.
-- Attach notes and unresolved choices to the work they affect. Distinguish choices that block progress from details that can be resolved during implementation.
+- Mark unresolved choices beside the work they affect; link to planning notes for the discussion. Distinguish choices that block progress from details that can be resolved during implementation.
 
 ## Execution Detail
 - Use concrete action verbs and identify the affected artifacts or behavior.
@@ -39,12 +39,22 @@ When a plan contains consequential design choices that need user input, suggest 
 
 - Capture known scope as lightweight phase, part, or task stubs. Mark unresolved choices without inventing detail.
 - Ask for one consequential decision at a time. Resolve routine implementation details using available evidence and judgment.
-- On receiving an answer, capture the decision and useful rationale in the plan before asking the next question.
-- Once the necessary choices are resolved, integrate them into executable plan prose. Remove temporary decision notes only after their substance is preserved.
+- Apply each answer before asking the next question, following Planning Continuity below.
 - If decisions belong in a design document, include that documentation work at the appropriate plan level. Keep the agreed details there until transferred, then link to the document.
 
 Draft directly when this decision process is unnecessary. Develop stubs before
 considering extraction.
+
+## Planning Continuity
+
+For planning that spans sessions or compactions, keep a compact companion
+note. Small edits need no sidecar.
+
+- **Place:** Keep `<plan-stem>-planning-notes.md` beside the active plan or phase, linked near its top. Use a main-plan note only for cross-phase questions; link rather than duplicate them.
+- **Maintain:** Record unsettled questions, options, checks, and proposals promptly, linked to affected sections. Put resolved decisions and useful rationale into the plan, then remove their discussion. Agreed deferrals belong in the plan with when and how they will be resolved.
+- **Continue:** Retain the current editing location, next action, and essential tools, paths, or non-obvious procedures. Link to existing guidance instead of copying it.
+- **Resume:** Read the note, relevant plan section, and direct dependencies; consult history for specific gaps. Use bounded excerpts and diffs. Do not repeat completed reviews solely after compaction or maintain whole-conversation summaries.
+- **Close:** Delete the note and its link when nothing remains to carry forward.
 
 ## Sharding
 

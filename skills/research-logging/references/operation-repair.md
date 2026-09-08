@@ -143,8 +143,10 @@ do not claim the batch cleared. For malformed state, transaction residue, or
 another defect that has no projection, use the owning bounded decoder or
 command postcondition instead and do not claim `complete_clear`.
 
-Save batch query and validation responses before summarizing. Inspect saved
-responses for more detail; never rerun commands just to display different fields.
+Capture batch-query and validation stdout and stderr directly to separate
+files during execution. Inspect those files selectively; never copy command
+output through agent-authored file edits or rerun commands just to display
+different fields.
 
 Repeat validation only after repairs, relevant state changes, or fixing an
 incomplete check's cause. Otherwise reuse applicable evidence. For joined or

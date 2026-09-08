@@ -16,10 +16,10 @@ Default names:
 
 ## Maintain The Files
 
-Start the current note with the next action and blockers. Keep only what
-continuation needs: owned work, essential tools, paths, environment and
-procedures, applicable check results, and active operation handles. Update
-materially changed information; remove details no longer needed.
+Update the current note by replacing obsolete state, not appending progress
+reports. Put the next action and blockers first. Retain only context needed to
+continue: owned work, essential tools, paths, environment and procedures,
+applicable check results, and active operation handles.
 
 History, not the plan, records execution outcomes: decision rationale,
 completed work, checks, and evidence needed to recover from failed approaches.

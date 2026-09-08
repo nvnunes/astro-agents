@@ -9,9 +9,13 @@ approach or prevent its result, and resolve failures before investing further.
 
 ## Running Operations
 
-Retain handles, completion state, and useful output. Use existing status,
-wait, or recovery interfaces before retrying an uncertain launch; a missing
-output file does not establish that nothing ran.
+For commands that may outlast a tool call, capture output to files at launch.
+Retain the execution handle, output paths, and eventual exit status. Use the
+handle to follow the operation to completion; do not rely on the final tool
+response to preserve its output.
+
+Use existing status, wait, or recovery interfaces before retrying an uncertain
+launch; a missing output file does not establish that nothing ran.
 
 Before stopping or restarting an operation, check its latest status and saved
 results. It may already have completed useful work; use that evidence to avoid

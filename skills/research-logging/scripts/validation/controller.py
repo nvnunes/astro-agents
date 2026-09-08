@@ -209,10 +209,16 @@ def evaluate_current_record(
     return MechanicalGeneratedRecord.from_dict(raw)
 
 
-def evaluate_entry_record(
-    summary: Path, *, result_date: str, entry_id: str
+def evaluate_entries_record(
+    summary: Path, *, result_date: str, entry_ids: frozenset[str]
 ) -> MechanicalEvaluation[MechanicalGeneratedRecord]:
-    """Evaluate one entry without publication, operation locks, or cache writes."""
+    """Evaluate a nonempty entry set once with shared read-only observations.
+
+    The caller owns coverage and source reconciliation. This function does not
+    publish, acquire an operation lock, or write evaluation caches.
+    """
+    if not entry_ids:
+        raise ValidationControllerError("a bounded entry set is required")
 
     summary = summary.resolve()
     _validate_request(summary)
@@ -233,7 +239,7 @@ def evaluate_entry_record(
                     _result_date(result_date),
                     fingerprint_cache=fingerprints,
                     validation_cache=checks,
-                    entry_ids=frozenset({entry_id}),
+                    entry_ids=entry_ids,
                 ),
                 mechanical_policy(),
             )

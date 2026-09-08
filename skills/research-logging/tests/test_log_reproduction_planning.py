@@ -42,6 +42,7 @@ from validation.pyrun_state import (
     PyrunFile,
     execution_id,
 )
+from validation.repair_batches import build_repair_batches
 from validation.source_projection import research_source_projection
 
 
@@ -210,12 +211,13 @@ def _write_projection(
         ).hexdigest(),
         "result_date": record.result_date,
         "rules_version": record.rules_version,
-        "schema": "research-log-batch-projection/1",
+        "schema": "research-log-published-validation/1",
         "source_identity": "source",
         "summary": record.summary,
         "unresolved": unresolved,
     }
-    body["projection_id"] = hashlib.sha256(
+    body["repair_batches"] = build_repair_batches(record, [])
+    body["validation_id"] = hashlib.sha256(
         json.dumps(
             body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
@@ -374,16 +376,10 @@ class ReproductionPlanningTests(unittest.TestCase):
             _apply_validation_admission(state, projection)
 
             self.assertEqual(state.blocked, {("e001", "blocked")})
-            self.assertEqual(
-                state.admitted_batches, {("e002", "independent-chain")}
-            )
+            self.assertEqual(state.admitted_batches, {("e002", "independent-chain")})
             self.assertEqual(
                 state.excluded_batches,
-                {
-                    ("e001", "unresolved-entry"): (
-                        "provenance:e001:blocked",
-                    )
-                },
+                {("e001", "unresolved-entry"): ("provenance:e001:blocked",)},
             )
 
     def test_unknown_selection_policy_is_rejected_before_planning(self) -> None:
@@ -1130,7 +1126,9 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             self.assertEqual(admitted, record)
             self.assertEqual(snapshot["rules_version"], RULES_VERSION)
-            self.assertEqual(projection["schema"], "research-log-batch-projection/1")
+            self.assertEqual(
+                projection["schema"], "research-log-published-validation/1"
+            )
 
     def test_validation_admission_blocks_graph_failure_beside_unconfirmed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

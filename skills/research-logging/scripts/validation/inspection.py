@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .inspection_store import ContentWriter, InspectionError, connection, encode
+from .inspection_store import (
+    ContentWriter,
+    InspectionError,
+    connection,
+    encode,
+    unpack_view,
+)
 
 RESULT_SCHEMA = "research-log-retained-result/1"
 
@@ -75,7 +82,9 @@ def _rejected_commands(writer: ContentWriter, finding: dict[str, Any]) -> None:
         commands.append(command)
     for command in commands:
         writer.entity(
-            "commands", str(command["identity"]), command,
+            "commands",
+            str(command["identity"]),
+            command,
             (str(command["entry"]), "", str(command["code"])),
         )
 
@@ -85,10 +94,12 @@ def _content(
     record: dict[str, Any],
     projection: dict[str, Any],
     outcome: dict[str, Any],
-) -> dict[str, int]:
+) -> None:
     for command in _objects(outcome.get("diagnostics")):
         writer.entity(
-            "commands", str(command["identity"]), command,
+            "commands",
+            str(command["identity"]),
+            command,
             (str(command["entry"]), "", str(command["code"])),
         )
     chains = _objects(projection.get("chains")) + _objects(projection.get("unresolved"))
@@ -113,19 +124,12 @@ def _content(
             )
     for index, overlap in enumerate(_objects(outcome.get("pending_batch_overlaps"))):
         writer.entity("overlaps", str(index), overlap)
-    counts = dict(
-        writer.db.execute(
-            "SELECT kind, count(*) FROM entities WHERE result=? GROUP BY kind",
-            (writer.result_id,),
-        ).fetchall()
-    )
     for code, count in writer.db.execute(
         "SELECT code, count(*) FROM entities "
         "WHERE result=? AND kind='findings' GROUP BY code",
         (writer.result_id,),
     ).fetchall():
         writer.entity("codes", code, {"code": code, "findings": count})
-    return counts
 
 
 def _metadata(
@@ -157,17 +161,30 @@ def _metadata(
         "unavailable_reason": "evaluation_incomplete"
         if outcome["status"] == "incomplete"
         else None,
-        "projection_id": projection.get("projection_id"),
-        "origin_projection_id": request.get("projection"),
+        "validation_id": projection.get("validation_id"),
+        "origin_validation_id": request.get("validation"),
         "requested_entry": request.get("entry"),
         "requested_chain": request.get("chain"),
-        "evaluated_scope": request.get("entry", "full log"),
+        "requested_batch": request.get("batch"),
+        "requested_entries": (
+            json.loads(request["entries"]) if "entries" in request else None
+        ),
+        "evaluated_scope": outcome.get("coverage", {}).get(
+            "entries", request.get("entry", "full log")
+        ),
         "evaluated_checks": len(record.get("checks", [])),
-        "returned_scope": "reconciled chains" if kind == "batch" else "full log",
+        "returned_scope": (
+            "primary repair batch"
+            if "batch" in request
+            else "reconciled chains"
+            if kind == "batch"
+            else "full log"
+        ),
     }
     if kind == "diagnostic":
         metadata.update(
-            evaluated_scope=None, evaluated_checks=None,
+            evaluated_scope=None,
+            evaluated_checks=None,
             returned_scope="authoring diagnostics; no validation performed",
         )
     return metadata
@@ -189,7 +206,14 @@ def save_result(
     metadata = _metadata(summary, outcome, record, projection, request)
     kind, identity = metadata["kind"], metadata["result_id"]
     slot = encode(
-        [kind, request.get("projection"), request.get("entry"), request.get("chain")]
+        [kind, request.get("validation"), "repair_batch", request["batch"]]
+        if "batch" in request
+        else [
+            kind,
+            request.get("validation"),
+            request.get("entry"),
+            request.get("chain"),
+        ]
     )
     with connection(summary.with_suffix(""), writable=True) as db:
         _require_projection(summary, request)
@@ -209,12 +233,29 @@ def save_result(
                 kind,
                 request.get("entry", ""),
                 request.get("chain", ""),
-                request.get("projection", ""),
+                request.get("validation", ""),
                 "{}",
             ),
         )
         writer = ContentWriter(db, identity)
-        metadata["counts"] = _content(writer, record, projection, outcome)
+        _content(writer, record, projection, outcome)
+        from .inspection_batches import store_batches
+
+        metadata["repair_batches"] = store_batches(writer, projection, outcome)
+        if "batch" in request:
+            for entry in metadata["requested_entries"] or [""]:
+                db.execute(
+                    "INSERT INTO batch_requests VALUES (?, ?, ?)",
+                    (identity, request["batch"], entry),
+                )
+        for field in ("requested_entries", "evaluated_scope"):
+            metadata[field] = unpack_view(writer.pack(metadata[field]))
+        metadata["counts"] = dict(
+            db.execute(
+                "SELECT kind, count(*) FROM entities WHERE result=? GROUP BY kind",
+                (identity,),
+            ).fetchall()
+        )
         metadata["finding_count"] = metadata["counts"].get("findings", 0)
         metadata["codes"] = dict(
             db.execute(
@@ -246,8 +287,8 @@ def _require_projection(summary: Path, request: dict[str, str]) -> None:
     )
     if path.is_symlink() or actual != request["published_stat"]:
         raise InspectionError(
-            "findings.projection_superseded",
-            "published projection changed during batch validation",
+            "findings.validation_superseded",
+            "published validation changed during batch validation",
         )
 
 

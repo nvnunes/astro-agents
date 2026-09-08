@@ -302,10 +302,13 @@ Use Repair only when you explicitly ask to correct a research-owned finding,
 causal group, finding class, malformed or legacy state, or recognized
 interrupted-transaction residue. Direct correction language such as “fix” or
 “resolve” is enough when the target and corrected state are clear; diagnosis
-alone remains read-only. A campaign changes one command chain at a time,
-preserves presented evidence and tolerances, skips cases that would require new
-scientific choices, and checks each corrected chain without publishing a new
-full-log validation. Full validation remains a separately requested operation.
+alone remains read-only. A campaign works through repair batches: command chains,
+findings linked by a shared structural defect, and small inspection groups whose
+members still need individual diagnosis. A shared defect may affect several
+entries. Each correction preserves presented evidence and tolerances; cases
+requiring new scientific choices remain for your direction. Checks report
+remaining findings or missing coverage without publishing a new full-log
+validation. Full validation remains a separately requested operation.
 
 ## Entries and section types
 

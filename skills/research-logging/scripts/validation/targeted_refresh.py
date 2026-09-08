@@ -602,6 +602,7 @@ def _refresh_direct_check(
                     {
                         "dependency_projection": provenance.dependency_projection,
                         "material": provenance.material,
+                        "evaluated_materials": list(provenance.evaluated_materials),
                     }
                 )
     except MechanicalContractError as error:

@@ -32,6 +32,7 @@ from .commands import (
     ScriptObservation,
     discover_commands,
     order_invocations,
+    output_arguments,
 )
 from .entry_materials import (
     EntryMaterialPathError,
@@ -148,7 +149,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/evidence-scoped-reproduction-1"
+RULES_VERSION = "research-log-mechanical/directory-ownership-output-arguments-2"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -238,6 +239,8 @@ class _ScanState:
     check_comparison: Mapping[str, CheckComparisonEntry] | None = None
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
+    declared_entries: tuple[str, ...] = ()
+    verified_inputs: list[dict[str, str]] = field(default_factory=list)
     invocations: tuple[Invocation, ...] = ()
     producer_index: ProducerIndex | None = None
     rejected_producers: RejectedProducerIndex = field(
@@ -445,6 +448,9 @@ def _scan(
     }
     return {
         "checks": checks,
+        "entries": tuple(entry.id for entry in state.entries),
+        "declared_entries": state.declared_entries,
+        "verified_inputs": tuple(state.verified_inputs),
         "graph": state.graph,
         "invocations": state.invocations,
         "registries": tuple(
@@ -474,6 +480,7 @@ def _entries(
     entry_ids: frozenset[str] | None = None,
 ) -> list[_Entry]:
     listed = _listed_entry_documents(summary_text, state)
+    state.declared_entries = tuple(document.stem for document in listed)
     if entry_ids is not None:
         listed = tuple(document for document in listed if document.stem in entry_ids)
     if not listed:
@@ -687,13 +694,26 @@ def _read_entry_data(
     if data_file is None:
         return None, None
     for resource in data_file.inputs:
+        registration = {
+            "entry": entry_id, "name": resource.name, "path": resource.canonical_target,
+        }
         try:
             _verify_input(resource, state)
         except MechanicalContractError as error:
+            observed = (
+                dict(error.observed) if isinstance(error.observed, Mapping)
+                else {"value": error.observed}
+            )
+            error = MechanicalContractError(
+                error.code, error.subject, {**observed, "registration": registration},
+                error.rule, outcome=error.outcome,
+            )
             check = _record_entry_surface_error(
                 entry_id, f"input:{resource.name}", error, state
             )
             _add_input_prerequisite_for_root(root, resource, check, state)
+        else:
+            state.verified_inputs.append(registration)
     return data_file, None
 
 
@@ -910,10 +930,26 @@ def _command_candidate_dependency(candidate: str, entry: _Entry) -> str:
 
 
 def _record_raw_output_findings(invocation: Invocation, state: _ScanState) -> None:
-    """Classify each path-authored output as a Structure finding."""
+    """Check each output argument once, independently of directory member count."""
 
-    for number, relationship in enumerate(invocation.outputs, 1):
+    for number, relationship in enumerate(output_arguments(invocation), 1):
+        argument = {
+            "kind": "output_argument",
+            "entry": invocation.entry,
+            "document": invocation.document,
+            "fence": invocation.fence,
+            "ordinal": invocation.ordinal,
+            "target": relationship.target,
+            "path": relationship.path,
+        }
+        identity = _command_check_identity(
+            invocation.entry, invocation.fence, invocation.ordinal
+        ) + f":output:{number}"
+        dependencies = ({"output_argument": argument},)
         if relationship.named_input is not None:
+            state.checks.append(
+                _pass_check(identity, CheckScope.CONFORMANCE, dependencies=dependencies)
+            )
             continue
         error = EngineV2Error(
             "data.output.token_missing",
@@ -922,17 +958,13 @@ def _record_raw_output_findings(invocation: Invocation, state: _ScanState) -> No
                 "command": invocation.identity,
                 "output": relationship.path,
                 "target": relationship.target,
+                "output_argument": argument,
             },
             "Command Tokens And Roles",
         )
         state.checks.append(
             _error_check(
-                _command_check_identity(
-                    invocation.entry, invocation.fence, invocation.ordinal
-                )
-                + f":output:{number}",
-                CheckScope.CONFORMANCE,
-                error,
+                identity, CheckScope.CONFORMANCE, error, dependencies=dependencies
             )
         )
 
@@ -1878,6 +1910,7 @@ def _record_provenance(
                 {
                     "dependency_projection": result.dependency_projection,
                     "material": result.material,
+                    "evaluated_materials": list(result.evaluated_materials),
                 }
             )
         prepared_findings = _ordered_provenance_findings(findings, state)

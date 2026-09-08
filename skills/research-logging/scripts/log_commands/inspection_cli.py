@@ -26,6 +26,7 @@ def run_results(arguments: Sequence[str]) -> int:
         "list",
         "show",
         "finding",
+        "batch",
         "command",
         "artifact",
         "collection",
@@ -75,8 +76,11 @@ def _next_command(args: argparse.Namespace, result: dict[str, Any]) -> str:
 def _selectors(parser: argparse.ArgumentParser, action: str) -> None:
     if action in {"list", "show"}:
         parser.add_argument("--kind", choices=("full", "batch", "diagnostic"))
-        for flag in ("entry", "chain", "projection"):
+        for flag in ("entry", "validation"):
             parser.add_argument("--" + flag)
+        batch = parser.add_mutually_exclusive_group()
+        batch.add_argument("--chain")
+        batch.add_argument("--batch")
     if action == "show":
         selection = parser.add_mutually_exclusive_group(required=True)
         selection.add_argument("--id", dest="result_id")
@@ -118,6 +122,11 @@ def print_producer(value: dict[str, Any], path: Path, output_format: str) -> Non
             f"Result: {identity}\nInspect: {command}\n"
             f"Findings: {command} --view findings"
         )
+        if value.get("batch_id"):
+            print(
+                f"Batch: log results batch --path {shlex.quote(str(log_root))} "
+                f"--id {identity} --batch {shlex.quote(value['batch_id'])}"
+            )
     else:
         print("Result not cached; no result ID.")
 

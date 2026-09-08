@@ -22,22 +22,24 @@ definition mode, not Repair.
   Pin that ID for subsequent views:
 
   ```text
-  <skill>/scripts/log results show --path <log> --id <result-id> --view chains \
+  <skill>/scripts/log results show --path <log> --id <result-id> --view batches \
     [--entry <entry>] [--code <code>]
+  <skill>/scripts/log results batch --path <log> --id <result-id> --batch <batch-id>
   <skill>/scripts/log results finding --path <log> --id <result-id> --finding <check-id>
   ```
 
+  Start with the batch's stated blocker or inspection starting point.
   Retrieve only missing detail using `results command`, `artifact`, or the
-  collection/value command printed in the view. Follow a cursor only when
-  more matching items are needed. For an uncached older publication, use
+  collection/value command printed in the view. Follow a cursor when
+  more matching items are needed. For an uncached current publication, use
   `findings list` or `findings show` with exact selectors; do not run validation
   merely to populate the cache. End repair for no matching findings only when
   a completed evaluation covers the target and remains applicable to its
   current state. An incomplete observation leaves the target unresolved.
   Treat returned conditions as read-only. Do not read or parse `validation.md`,
   `validation/results.json`, `validation/batches.json`, or the inspection database.
-- Inspect the affected files and only enough surrounding log
-  state to establish the intended relationship.
+- Read affected source records only for information the CLI does not provide
+  that is needed to establish a correction or concrete blocker.
 - If the request and retained log do not establish the intended corrected
   state, stop and ask the researcher. Do not choose among plausible IDs,
   sources, transformations, origin boundaries, prose meanings, or structural
@@ -45,9 +47,9 @@ definition mode, not Repair.
 
 ## Apply The Correction
 
-For each authorized chain:
+For each authorized batch:
 
-1. Inspect the selected chain and only needed current records. For
+1. Inspect the selected batch through its CLI text views. For
    `producer.missing` or `lineage.missing`, inspect discovery findings for the
    apparent producer before changing registrations or provenance structure.
    Establish why the command was excluded, correct that cause within the
@@ -56,7 +58,7 @@ For each authorized chain:
    and only the matching card. Otherwise, skip the catalog.
 3. Apply the correction through the owning command or permitted edit.
 4. Run `validate-batch` and record the outcome.
-5. Continue to another independent authorized chain. Pause only when requested
+5. Continue to another independent authorized batch. Pause only when requested
    or when a research-owned decision remains.
 
 - For `material.candidate.unresolved`, inspect the reported argument selectors
@@ -65,11 +67,13 @@ For each authorized chain:
 - If a failed correction prints a diagnostic ID, use its printed text-inspection
   command for omitted details. This snapshot is not a validation result; do not
   rerun the correction to display more fields.
-- Group batches by likely shared cause. Explain a representative correction
-  and its safety conditions; reuse that understanding for subsequent cases.
+- Reuse a diagnosis only when recorded relationships establish a shared cause.
+  Explain a representative correction and its safety conditions; reuse that understanding for subsequent cases.
   Check each case against those conditions; investigate and explain material
   differences instead of repeating the full diagnosis. Keep mutations and
-  postcondition checks bounded to one entry or chain at a time.
+  postcondition checks bounded to the authorized batch's affected records,
+  including multiple entries when required. Inspection groups establish no
+  common cause; correct and assess their members individually.
   Continue independent cases after a skipped or blocked case.
 - Record repeated cases as target, outcome, and exception. Group user-facing
   updates at campaign milestones; preserve required approval stops.
@@ -126,6 +130,12 @@ in the project's temporary-work location. Create the note at campaign start
 and append-only history with the first outcome. At completion, save remaining
 outcomes to history and delete the current note.
 
+Keep every authorized batch in the pending queue, including inspection groups.
+An unknown cause requires inspection. Mark work blocked or skipped only after
+inspection establishes a concrete reason; apply that disposition to a whole
+group only when the reason covers every member. Leave uninspected members
+pending. Report a campaign exhausted only when no authorized work remains pending.
+
 Keep the active batch, next action, and blockers in the current note. Record
 completed/skipped batches once in history with outcomes and evidence links.
 
@@ -143,18 +153,23 @@ completed/skipped batches once in history with outcomes and evidence links.
 
 ## Complete
 
-After correcting one projected command-chain batch, run its lock-free check.
-Use the original published projection, entry, and chain IDs:
+After correcting a projected batch, run its lock-free check using the original
+published validation and requested batch IDs:
 
 ```text
-<skill>/scripts/log validate-batch --path <log> --projection <projection-id> \
-  --entry <entry> --chain <chain-id>
+<skill>/scripts/log validate-batch --path <log> --validation <validation-id> \
+  --batch <batch-id>
 ```
 
+If generated state is outdated, report that a separately authorized full
+validation is required to rebuild it. Do not rerun validation implicitly.
+Use `results show --view chains` only for needed provenance membership.
+
 `complete_clear` or `complete_findings` applies only to the reconciled current
-chain membership. If the result is `incomplete`, report the precise reason and
+batch membership. Inspect remaining findings and overlaps before advancing.
+If the result is `incomplete`, report the precise reason and
 do not claim the batch cleared. For malformed state, transaction residue, or
-another defect that has no projection, use the owning bounded decoder or
+another defect with no published batch, use the owning bounded decoder or
 command postcondition instead and do not claim `complete_clear`.
 
 Read the compact text result and retain its ID with the outcome and next action.
@@ -162,7 +177,7 @@ If producer stdout is lost, list candidate results without reevaluating:
 
 ```text
 <skill>/scripts/log results list --path <log> --kind batch \
-  --projection <projection-id> --entry <entry> --chain <chain-id>
+  --validation <validation-id> --batch <batch-id>
 ```
 
 Match the result's scope and evaluation time to the invocation before using
@@ -177,7 +192,7 @@ a new full validation, or cache clearing can remove its cached detail.
 
 Repeat validation only after repairs, relevant state changes, or fixing an
 incomplete check's cause. Otherwise reuse applicable evidence. For joined or
-overlapping chains, check returned membership and coverage before reusing
+overlapping batches, check returned membership and coverage before reusing
 results; assess uncovered work separately.
 
 Run full `log validate --path <log>` only when the researcher separately asks

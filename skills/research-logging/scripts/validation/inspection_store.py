@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-STORE_VERSION = 1
+STORE_VERSION = 3
 STORE_NAME = "research-log-inspection.sqlite3"
 CHUNK_CHARACTERS = 1024  # At most 4096 UTF-8 bytes.
 MAX_NODE_BYTES = 8 * 1024
@@ -27,9 +27,9 @@ INSERT INTO state VALUES (0);
 CREATE TABLE results (
  id TEXT PRIMARY KEY, sequence INTEGER UNIQUE NOT NULL, slot TEXT UNIQUE NOT NULL,
  kind TEXT NOT NULL, entry TEXT NOT NULL, chain TEXT NOT NULL,
- projection TEXT NOT NULL, metadata TEXT NOT NULL
+ validation TEXT NOT NULL, metadata TEXT NOT NULL
 );
-CREATE INDEX result_selection ON results(kind, entry, chain, projection, sequence);
+CREATE INDEX result_selection ON results(kind, entry, chain, validation, sequence);
 CREATE TABLE entities (
  result TEXT REFERENCES results(id) ON DELETE CASCADE,
  kind TEXT NOT NULL, id TEXT NOT NULL, entry TEXT NOT NULL, chain TEXT NOT NULL,
@@ -98,14 +98,34 @@ def _open(path: Path, writable: bool) -> sqlite3.Connection:
         db.execute("PRAGMA journal_mode=DELETE")
         db.execute("PRAGMA synchronous=FULL")
     version = db.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, STORE_VERSION) or (not writable and version != STORE_VERSION):
+    if version not in (0, 1, 2, STORE_VERSION) or (
+        not writable and version != STORE_VERSION
+    ):
         db.close()
-        raise InspectionError("results.schema.unsupported", f"store version {version}")
-    if version == 0:
+        raise InspectionError(
+            "results.schema.unsupported",
+            f"store version {version}; run full validation to rebuild results",
+        )
+    if writable and version < STORE_VERSION:
+        from .inspection_batches import BATCH_DDL
+
         try:
             db.executescript(
                 "BEGIN IMMEDIATE;"
+                + "".join(
+                    f"DROP TABLE IF EXISTS {table};"
+                    for table in (
+                        "batch_links",
+                        "batch_requests",
+                        "pieces",
+                        "links",
+                        "entities",
+                        "results",
+                        "state",
+                    )
+                )
                 + DDL
+                + BATCH_DDL
                 + f"PRAGMA user_version={STORE_VERSION};COMMIT;"
             )
         except BaseException:

@@ -375,7 +375,7 @@ class LogValidationRouteTests(unittest.TestCase):
                 f"[Study](<{logical.with_suffix('.md').resolve()}>)",
                 batch_payload["report"],
             )
-            self.assertIn("| 2 unassigned | 1 | Clear |", batch_payload["report"])
+            self.assertIn("| 2 inspection | 1 | Clear |", batch_payload["report"])
             self.assertNotIn(
                 "Study: 2 structural groups could not be assigned to command chains.",
                 batch_payload["report"],

@@ -6,123 +6,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest import mock
 
 from research_log_cli_test_support import run_log
 from research_log_validation_test_support import mechanical_log, write
+from validation.repair_batches import build_repair_batches
 
 RESULTS = importlib.import_module("validation.mechanical_results")
-BATCH_VALIDATION = importlib.import_module("log_commands.batch_validation")
+REPAIR_VALIDATION = importlib.import_module("log_commands.repair_validation")
 OPERATION_STATE = importlib.import_module("validation.operation_state")
 
 
 class FindingsCliTests(unittest.TestCase):
-    def test_validate_batch_retries_one_changed_snapshot_then_completes(self) -> None:
-        old = {
-            "chain_id": "old",
-            "commands": [{"document": "entries/e001.md", "fence": 1, "ordinal": 1}],
-            "entry": "e001",
-        }
-        current = {**old, "chain_id": "current", "findings": []}
-        evaluation = SimpleNamespace(
-            result=SimpleNamespace(
-                checks=(),
-                completion=RESULTS.CompletionState.COMPLETE_CLEAR,
-                as_dict=lambda: {"checks": []},
-            ),
-            scan={"graph": None, "invocations": (), "registries": ()},
-        )
-        published = {
-            "batch": old,
-            "projection_id": "projection",
-            "result_date": "2026-09-08",
-        }
-        projection = {"chains": [current], "unresolved": []}
-        log = SimpleNamespace(summary=Path("/project/study.md"))
-
-        with (
-            mock.patch.object(
-                BATCH_VALIDATION, "batch_findings", return_value=published
-            ),
-            mock.patch.object(
-                BATCH_VALIDATION,
-                "load_batch_projection",
-                return_value={"chains": [old]},
-            ),
-            mock.patch.object(BATCH_VALIDATION, "resolve_entry", return_value=object()),
-            mock.patch.object(
-                BATCH_VALIDATION, "evaluate_entry_record", return_value=evaluation
-            ) as evaluated,
-            mock.patch.object(
-                BATCH_VALIDATION, "build_batch_projection", return_value=projection
-            ),
-            mock.patch.object(
-                BATCH_VALIDATION,
-                "_source_snapshot",
-                side_effect=[("before",), ("changed",), ("stable",), ("stable",)],
-            ),
-        ):
-            result, complete = BATCH_VALIDATION.validate_batch(
-                log, projection_id="projection", entry="e001", chain_id="old"
-            )
-
-        self.assertTrue(complete)
-        self.assertEqual(result["status"], "complete_clear")
-        self.assertEqual(evaluated.call_count, 2)
-
-    def test_validate_batch_reports_repeated_source_change_incomplete(self) -> None:
-        old = {
-            "chain_id": "old",
-            "commands": [{"document": "entries/e001.md", "fence": 1, "ordinal": 1}],
-            "entry": "e001",
-        }
-        evaluation = SimpleNamespace(
-            result=SimpleNamespace(
-                checks=(),
-                completion=RESULTS.CompletionState.COMPLETE_CLEAR,
-                as_dict=lambda: {"checks": []},
-            ),
-            scan={"graph": None, "invocations": (), "registries": ()},
-        )
-        published = {
-            "batch": old,
-            "projection_id": "projection",
-            "result_date": "2026-09-08",
-        }
-        log = SimpleNamespace(summary=Path("/project/study.md"))
-        with (
-            mock.patch.object(
-                BATCH_VALIDATION, "batch_findings", return_value=published
-            ),
-            mock.patch.object(
-                BATCH_VALIDATION,
-                "load_batch_projection",
-                return_value={"chains": [old]},
-            ),
-            mock.patch.object(BATCH_VALIDATION, "resolve_entry", return_value=object()),
-            mock.patch.object(
-                BATCH_VALIDATION, "evaluate_entry_record", return_value=evaluation
-            ),
-            mock.patch.object(
-                BATCH_VALIDATION,
-                "build_batch_projection",
-                return_value={"chains": [], "unresolved": []},
-            ),
-            mock.patch.object(
-                BATCH_VALIDATION,
-                "_source_snapshot",
-                side_effect=[("a",), ("b",), ("c",), ("d",)],
-            ),
-        ):
-            result, complete = BATCH_VALIDATION.validate_batch(
-                log, projection_id="projection", entry="e001", chain_id="old"
-            )
-
-        self.assertFalse(complete)
-        self.assertEqual(result["status"], "incomplete")
-        self.assertEqual(result["reason"], "source_changed")
-
     def test_projection_groups_only_unique_same_entry_producer_edges(self) -> None:
         from validation.batch_projection import build_batch_projection
         from validation.commands import Invocation, MaterialRelationship
@@ -149,12 +43,10 @@ class FindingsCliTests(unittest.TestCase):
                 script="scripts/run.py",
                 script_identity=None,
                 inputs=tuple(
-                    MaterialRelationship(path, "input", "option")
-                    for path in inputs
+                    MaterialRelationship(path, "input", "option") for path in inputs
                 ),
                 outputs=tuple(
-                    MaterialRelationship(path, "output", "option")
-                    for path in outputs
+                    MaterialRelationship(path, "output", "option") for path in outputs
                 ),
                 collections=(),
                 candidates=(),
@@ -199,7 +91,7 @@ class FindingsCliTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            projection["projection_id"], reversed_projection["projection_id"]
+            projection["validation_id"], reversed_projection["validation_id"]
         )
 
     def test_projection_preserves_directory_root_without_false_fan_out(self) -> None:
@@ -277,58 +169,6 @@ class FindingsCliTests(unittest.TestCase):
         self.assertIn("directory", chain["signals"])
         self.assertNotIn("fan_out", chain["signals"])
 
-    def test_related_unresolved_uses_artifact_context_not_generic_values(self) -> None:
-        old = {
-            "artifacts": ["/selected.csv"],
-            "chain_id": "selected",
-            "commands": [
-                {
-                    "document": "entries/e001.md",
-                    "entry": "e001",
-                    "fence": 1,
-                    "identity": "selected-command",
-                    "inputs": [],
-                    "ordinal": 1,
-                    "outputs": [{"path": "/selected.csv"}],
-                }
-            ],
-            "entry": "e001",
-        }
-        related = {
-            "code": "lineage.missing",
-            "dependencies": [],
-            "identity": "provenance:e001:selected",
-            "observed": {},
-            "rule": "Provenance",
-            "scope": "provenance",
-            "status": "fail",
-            "subject": "/selected.csv",
-        }
-        unrelated = {
-            "code": "lineage.missing",
-            "dependencies": [],
-            "identity": "provenance:e001:other",
-            "observed": {"owner": "e001"},
-            "rule": "Provenance",
-            "scope": "provenance",
-            "status": "fail",
-            "subject": "/other.csv",
-        }
-        projection = {
-            "unresolved": [
-                {
-                    "entry": "e001",
-                    "findings": [unrelated, related],
-                }
-            ]
-        }
-
-        selected = BATCH_VALIDATION._related_unresolved(old, [old], projection)
-
-        self.assertEqual(
-            [value["identity"] for value in selected], [related["identity"]]
-        )
-
     def test_projection_marks_cross_entry_registry_context_read_only(self) -> None:
         from research_log_data import DataFile, Fingerprint, InputResource
         from validation.batch_projection import build_batch_projection
@@ -389,176 +229,20 @@ class FindingsCliTests(unittest.TestCase):
         self.assertIs(registry[0]["read_only"], True)
 
     def test_batch_snapshot_includes_external_directory_descendants(self) -> None:
+        from log_commands.context import LogContext
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            log_root = root / "log"
-            entry_root = log_root / "entries" / "e001"
+            summary, _ = mechanical_log(root)
             external = root / "external"
-            entry_root.mkdir(parents=True)
             external.mkdir()
-            summary = root / "study.md"
-            summary.write_text("# Study\n", encoding="utf-8")
             source = external / "source.txt"
-            source.write_text("before", encoding="utf-8")
-            context = SimpleNamespace(
-                root=entry_root,
-                log=SimpleNamespace(summary=summary, root=log_root),
-            )
-            batch = {
-                "registry": [
-                    {"kind": "directory", "path": external.as_posix()}
-                ]
-            }
-
-            before = BATCH_VALIDATION._source_snapshot(context, batch)
-            source.write_text("after!", encoding="utf-8")
-            after = BATCH_VALIDATION._source_snapshot(context, batch)
-
+            source.write_text("before")
+            log = LogContext(summary, summary.with_suffix(""))
+            before = REPAIR_VALIDATION._snapshot(log, {"e001"}, {str(external)})
+            source.write_text("after!")
+            after = REPAIR_VALIDATION._snapshot(log, {"e001"}, {str(external)})
             self.assertNotEqual(before, after)
-
-    def test_batch_membership_handles_replacement_split_and_join(self) -> None:
-        from log_commands.batch_validation import _current_groups
-
-        command_a = {"document": "entries/e001.md", "fence": 1, "ordinal": 1}
-        command_b = {"document": "entries/e001.md", "fence": 1, "ordinal": 2}
-        old = {
-            "commands": [command_a, command_b],
-            "entry": "e001",
-        }
-        split = {
-            "chains": [
-                {
-                    "chain_id": "a",
-                    "commands": [command_a],
-                    "entry": "e001",
-                },
-                {
-                    "chain_id": "b",
-                    "commands": [command_b],
-                    "entry": "e001",
-                },
-            ]
-        }
-        self.assertEqual(
-            [value["chain_id"] for value in _current_groups(old, split)],
-            ["a", "b"],
-        )
-        joined = {
-            "chains": [
-                {
-                    "chain_id": "joined",
-                    "commands": [command_a, command_b],
-                    "entry": "e001",
-                }
-            ]
-        }
-        self.assertEqual(
-            [value["chain_id"] for value in _current_groups(old, joined)],
-            ["joined"],
-        )
-        replacement = {
-            "commands": [
-                {
-                    "document": "entries/e001.md",
-                    "fence": 2,
-                    "ordinal": 1,
-                    "outputs": [{"path": "/artifact.csv"}],
-                }
-            ],
-            "entry": "e001",
-        }
-        replaced_old = {
-            "commands": [{"outputs": [{"path": "/artifact.csv"}]}],
-            "entry": "e001",
-        }
-        self.assertEqual(
-            _current_groups(replaced_old, {"chains": [replacement]}),
-            [replacement],
-        )
-
-    def test_validate_batch_only_caches_inspection_and_reconciles_renamed_command(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = mechanical_log(root)
-            completed = run_log(
-                root,
-                "validate",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            log_root = summary.with_suffix("")
-            projection = json.loads(
-                (log_root / "validation/batches.json").read_text(encoding="utf-8")
-            )
-            selected = projection["chains"][0]
-            old_identity = selected["commands"][0]["identity"]
-            before = {
-                path: (path.read_bytes(), path.stat().st_mtime_ns)
-                for path in log_root.rglob("*")
-                if path.is_file()
-                and not path.name.startswith("research-log-inspection.sqlite3")
-                and ("validation" in path.parts or ".cache" in path.parts)
-            }
-
-            with OPERATION_STATE.operation_lock(log_root, "log.lock", mode="exclusive"):
-                checked = run_log(
-                    root,
-                    "validate-batch",
-                    "--format",
-                    "json",
-                    "--path",
-                    str(log_root),
-                    "--projection",
-                    projection["projection_id"],
-                    "--entry",
-                    selected["entry"],
-                    "--chain",
-                    selected["chain_id"],
-                )
-            self.assertEqual(checked.returncode, 0, checked.stderr)
-            self.assertEqual(json.loads(checked.stdout)["status"], "complete_clear")
-            self.assertEqual(
-                before,
-                {
-                    path: (path.read_bytes(), path.stat().st_mtime_ns)
-                    for path in log_root.rglob("*")
-                    if path.is_file()
-                    and not path.name.startswith("research-log-inspection.sqlite3")
-                    and ("validation" in path.parts or ".cache" in path.parts)
-                },
-            )
-
-            entry.write_text(
-                entry.read_text(encoding="utf-8").replace(
-                    "--input-catalog", "--input-source"
-                ),
-                encoding="utf-8",
-            )
-            renamed = run_log(
-                root,
-                "validate-batch",
-                "--format",
-                "json",
-                "--path",
-                str(log_root),
-                "--projection",
-                projection["projection_id"],
-                "--entry",
-                selected["entry"],
-                "--chain",
-                selected["chain_id"],
-            )
-            self.assertEqual(renamed.returncode, 0, renamed.stderr)
-            renamed_payload = json.loads(renamed.stdout)
-            self.assertNotEqual(
-                renamed_payload["current_membership"][0]["commands"][0]["identity"],
-                old_identity,
-            )
 
     def test_validate_batch_accepts_split_entry_document_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -575,6 +259,8 @@ class FindingsCliTests(unittest.TestCase):
                 evidence.read_text(encoding="utf-8").replace("e001.md", "e001a.md"),
                 encoding="utf-8",
             )
+            original = split_entry.read_text()
+            split_entry.write_text(original.replace("--input-catalog", "--catalog"))
             completed = run_log(
                 root,
                 "validate",
@@ -590,9 +276,13 @@ class FindingsCliTests(unittest.TestCase):
                 )
             )
             selected = next(
-                value for value in projection["chains"] if value["entry"] == "e001a"
+                value
+                for value in projection["repair_batches"]
+                if value["entries"] == ["e001a"]
+                and value["grouping_reason"] == "rejected_command"
             )
 
+            split_entry.write_text(original)
             checked = run_log(
                 root,
                 "validate-batch",
@@ -600,81 +290,16 @@ class FindingsCliTests(unittest.TestCase):
                 "json",
                 "--path",
                 str(summary.with_suffix("")),
-                "--projection",
-                projection["projection_id"],
-                "--entry",
-                "e001a",
-                "--chain",
-                selected["chain_id"],
+                "--validation",
+                projection["validation_id"],
+                "--batch",
+                selected["batch_id"],
             )
 
             self.assertEqual(checked.returncode, 0, checked.stderr)
             payload = json.loads(checked.stdout)
             self.assertEqual(payload["status"], "complete_clear")
-            self.assertEqual(payload["current_membership"][0]["entry"], "e001a")
-
-    def test_validate_batch_rejects_unplaceable_and_superseded_targets(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _entry = mechanical_log(root, output_option="results")
-            completed = run_log(
-                root,
-                "validate",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            with OPERATION_STATE.operation_lock(
-                summary.with_suffix(""), "log.lock", mode="exclusive"
-            ):
-                listed = run_log(
-                    root,
-                    "findings",
-                    "list",
-                    "--format",
-                    "json",
-                    "--path",
-                    str(summary.with_suffix("")),
-                )
-            payload = json.loads(listed.stdout)
-            selected = next(
-                value for value in payload["chains"] if value["entry"] == "e001"
-            )
-            incomplete = run_log(
-                root,
-                "validate-batch",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-                "--projection",
-                payload["projection_id"],
-                "--entry",
-                selected["entry"],
-                "--chain",
-                selected["chain_id"],
-            )
-            self.assertEqual(incomplete.returncode, 2)
-            self.assertEqual(json.loads(incomplete.stdout)["status"], "incomplete")
-
-            superseded = run_log(
-                root,
-                "validate-batch",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-                "--projection",
-                "superseded",
-                "--entry",
-                selected["entry"],
-                "--chain",
-                selected["chain_id"],
-            )
-            self.assertEqual(superseded.returncode, 2)
-            self.assertIn("findings.projection_superseded", superseded.stderr)
+            self.assertEqual(payload["coverage"]["entries"], ["e001a"])
 
     def test_list_and_show_read_one_published_finding_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -738,8 +363,8 @@ class FindingsCliTests(unittest.TestCase):
                 "json",
                 "--path",
                 str(summary.with_suffix("")),
-                "--projection",
-                payload["projection_id"],
+                "--validation",
+                payload["validation_id"],
                 "--entry",
                 selected["entry"],
                 "--chain",
@@ -835,12 +460,13 @@ class FindingsCliTests(unittest.TestCase):
                 ).hexdigest(),
                 "result_date": record.result_date,
                 "rules_version": record.rules_version,
-                "schema": "research-log-batch-projection/1",
+                "schema": "research-log-published-validation/1",
                 "source_identity": "source",
                 "summary": record.summary,
                 "unresolved": unresolved,
             }
-            body["projection_id"] = hashlib.sha256(
+            body["repair_batches"] = build_repair_batches(record, [])
+            body["validation_id"] = hashlib.sha256(
                 json.dumps(
                     body,
                     ensure_ascii=False,
@@ -904,7 +530,7 @@ class FindingsCliTests(unittest.TestCase):
                 root, "findings", "list", "--format", "json", "--path", log_path
             )
             self.assertEqual(unavailable.returncode, 2)
-            self.assertIn("findings.projection_unavailable", unavailable.stderr)
+            self.assertIn("findings.validation_unavailable", unavailable.stderr)
 
     def test_query_rejects_malformed_nested_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -921,9 +547,9 @@ class FindingsCliTests(unittest.TestCase):
             body = {
                 key: value
                 for key, value in projection.items()
-                if key != "projection_id"
+                if key != "validation_id"
             }
-            projection["projection_id"] = hashlib.sha256(
+            projection["validation_id"] = hashlib.sha256(
                 json.dumps(
                     body,
                     ensure_ascii=False,
@@ -938,7 +564,7 @@ class FindingsCliTests(unittest.TestCase):
             )
 
             self.assertEqual(queried.returncode, 2)
-            self.assertIn("findings.projection.malformed", queried.stderr)
+            self.assertIn("findings.validation.malformed", queried.stderr)
 
     def test_show_distinguishes_duplicate_unknown_and_nonfinding_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

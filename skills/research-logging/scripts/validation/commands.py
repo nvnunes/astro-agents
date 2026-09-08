@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from research_log_data import (
@@ -323,6 +323,40 @@ def discover_commands(
             duplicate_counts[canonical] = duplicate + 1
             invocations.append(invocation)
     return DiscoveryResult(tuple(invocations), tuple(command_failures))
+
+
+def output_arguments(invocation: Invocation) -> tuple[MaterialRelationship, ...]:
+    """Project output arguments, keeping a directory's expanded members at its root.
+
+    Distinct selectors and distinct repeated values remain separate. This is a
+    declaration view only; the material graph keeps every member relationship.
+    """
+
+    directories = sorted(
+        {
+            (collection.target, collection.root)
+            for collection in invocation.collections
+            if collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+        }
+    )
+    arguments: dict[tuple[str | None, str], MaterialRelationship] = {}
+    for relationship in invocation.outputs:
+        root = next(
+            (
+                root
+                for target, root in directories
+                if target == relationship.target
+                and PurePosixPath(relationship.path).is_relative_to(root)
+                and (relationship.proof == "directory" or relationship.path == root)
+            ),
+            relationship.path,
+        )
+        arguments.setdefault(
+            (relationship.target, root), replace(relationship, path=root)
+        )
+    return tuple(arguments.values())
 
 
 def order_invocations(
@@ -860,17 +894,20 @@ def _rejected_command(
     directories = {
         item.root
         for item in collections
-        if item.direction == "output" and item.mechanism == "directory"
+        if item.direction == "output"
+        and item.mechanism == "directory"
         and item.root is not None
     }
     members = {
-        member for item in collections
+        member
+        for item in collections
         if item.direction == "output" and item.mechanism == "directory"
         for member in item.members
     }
     covered = members | directories
     outputs = {
-        item.path for item in relationships
+        item.path
+        for item in relationships
         if item.direction == "output" and item.path not in covered
     }
     return {
@@ -901,7 +938,8 @@ def _relationships(
     command: _ParsedCommand,
     context: CommandContext,
 ) -> tuple[
-    tuple[MaterialRelationship, ...], tuple[MaterialCollection, ...],
+    tuple[MaterialRelationship, ...],
+    tuple[MaterialCollection, ...],
     tuple[dict[str, str], ...],
 ]:
     relationships: list[MaterialRelationship] = []
@@ -911,7 +949,8 @@ def _relationships(
     state = _RoleState(context, relationships, collections)
     for target, value in command.capture_outputs:
         relationships.append(
-            _relationship(
+            _named_output(value, context, target=target)
+            or _relationship(
                 _RelationshipRequest(
                     value,
                     "output",
@@ -1018,7 +1057,10 @@ def _repeated_collections(
 ) -> tuple[MaterialCollection, ...]:
     groups: dict[tuple[str, str], list[str]] = {}
     for relationship in relationships:
-        if relationship.proof != "option" or relationship.target is None:
+        if (
+            relationship.proof not in {"option", "named-output"}
+            or relationship.target is None
+        ):
             continue
         groups.setdefault((relationship.direction, relationship.target), []).append(
             relationship.path

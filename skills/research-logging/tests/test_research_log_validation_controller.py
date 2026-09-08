@@ -253,6 +253,19 @@ class MechanicalControllerTests(unittest.TestCase):
             ],
             "unresolved": [],
         }
+        projection["repair_batches"] = []
+        for chain in projection["chains"]:
+            members = []
+            for number, finding in enumerate(chain["findings"]):
+                finding["identity"] = f"{chain['chain_id']}:{number}"
+                members.append(finding["identity"])
+            projection["repair_batches"].append(
+                {
+                    "batch_type": "chain",
+                    "grouping_reason": "command_chain",
+                    "primary_finding_ids": members,
+                }
+            )
         row = REPORT.ValidationBatchReportRow(
             "Study | One",
             "/project/docs/study.md",
@@ -265,13 +278,13 @@ class MechanicalControllerTests(unittest.TestCase):
         report = REPORT.compose_validation_batch_report((row,))
 
         self.assertIn(
-            "| [Study \\| One](</project/docs/study.md>) | 3 | 1 | 1 | "
+            "| [Study \\| One](</project/docs/study.md>) | 3 chains | 1 | 1 | "
             "[Human](</project/docs/study/validation.md>) · "
             "[JSON](</project/docs/study/validation/results.json>) |",
             report,
         )
 
-    def test_batch_report_counts_unassigned_structure_groups(self) -> None:
+    def test_batch_report_counts_inspection_groups(self) -> None:
         record = RESULTS.MechanicalGeneratedRecord.build(
             "docs/study.md", "test-rules", "2026-08-30", ()
         )
@@ -281,6 +294,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 {
                     "findings": [
                         {
+                            "identity": "unassigned-1",
                             "code": "command.syntax.invalid",
                             "scope": "conformance",
                             "status": "fail",
@@ -288,36 +302,50 @@ class MechanicalControllerTests(unittest.TestCase):
                     ]
                 }
             ],
+            "repair_batches": [
+                {
+                    "batch_type": "structural",
+                    "grouping_reason": "inspection_group",
+                    "primary_finding_ids": ["unassigned-1"],
+                }
+            ],
         }
         self.assertEqual(
             REPORT.batch_area_results(record, projection),
-            {
-                "Structure": "1 unassigned",
-                "Evidence": "Clear",
-                "Confirmation": "Clear",
-            },
+            {"Structure": "1 inspection", "Evidence": "Clear", "Confirmation": "Clear"},
         )
 
-    def test_batch_report_preserves_chain_and_unassigned_counts(self) -> None:
+    def test_batch_report_preserves_chain_and_inspection_counts(self) -> None:
         record = RESULTS.MechanicalGeneratedRecord.build(
             "docs/study.md", "test-rules", "2026-08-30", ()
         )
-        finding = {
-            "code": "command.syntax.invalid",
-            "scope": "conformance",
-            "status": "fail",
-        }
+        findings = [
+            {
+                "identity": f"finding-{number}",
+                "code": "command.syntax.invalid",
+                "scope": "conformance",
+                "status": "fail",
+            }
+            for number in range(3)
+        ]
         projection = {
-            "chains": [{"chain_id": "chain-1", "findings": [finding]}],
-            "unresolved": [
-                {"findings": [finding]},
-                {"findings": [finding]},
+            "chains": [{"chain_id": "chain-1", "findings": findings[:1]}],
+            "unresolved": [{"findings": findings[1:]}],
+            "repair_batches": [
+                {
+                    "batch_type": "chain" if number == 0 else "structural",
+                    "grouping_reason": "command_chain"
+                    if number == 0
+                    else "inspection_group",
+                    "primary_finding_ids": [finding["identity"]],
+                }
+                for number, finding in enumerate(findings)
             ],
         }
         self.assertEqual(
             REPORT.batch_area_results(record, projection),
             {
-                "Structure": "1 chain + 2 unassigned",
+                "Structure": "1 chain + 2 inspection",
                 "Evidence": "Clear",
                 "Confirmation": "Clear",
             },
@@ -997,9 +1025,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(recomputed["status"], "complete_clear")
             self.assertGreater(recomputed["metrics"]["checks_unchanged"], 0)
             self.assertGreater(recomputed["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(
-                recomputed["metrics"]["fingerprint_cache_file_reuses"], 0
-            )
+            self.assertEqual(recomputed["metrics"]["fingerprint_cache_file_reuses"], 0)
             self.assertGreater(
                 recomputed["metrics"]["fingerprint_cache_file_hashes"], 0
             )

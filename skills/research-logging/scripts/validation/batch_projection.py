@@ -12,8 +12,9 @@ from research_log_data import DataFile, InputResource
 from .commands import Invocation, MaterialRelationship
 from .json_codec import canonical_json
 from .mechanical_results import CheckStatus, MechanicalCheck, MechanicalGeneratedRecord
+from .repair_batches import build_repair_batches
 
-PROJECTION_SCHEMA = "research-log-batch-projection/1"
+PROJECTION_SCHEMA = "research-log-published-validation/1"
 MAX_PROJECTED_CHAINS = 10_000
 MAX_PROJECTED_COMMANDS = 10_000
 _ENTRY_RE = re.compile(r"(?:^|:)(e[0-9]+[a-z]?)(?::|$)", re.IGNORECASE)
@@ -37,12 +38,12 @@ def build_batch_projection(
     """Build the complete deterministic chain and finding projection once."""
 
     if len(invocations) > MAX_PROJECTED_COMMANDS:
-        raise BatchProjectionError("batch projection crossed its command bound")
+        raise BatchProjectionError("published validation crossed its command bound")
     commands = {_command_key(value): _command(value) for value in invocations}
     edges = _command_edges(invocations)
     components = _components(invocations, edges)
     if len(components) > MAX_PROJECTED_CHAINS:
-        raise BatchProjectionError("batch projection crossed its chain bound")
+        raise BatchProjectionError("published validation crossed its chain bound")
     registry_index = _registry_index(registries)
     chains = [
         _chain(component, commands, edges, registry_index) for component in components
@@ -60,8 +61,9 @@ def build_batch_projection(
         "source_identity": source_identity,
         "summary": record.summary,
         "unresolved": unresolved,
+        "repair_batches": build_repair_batches(record, chains),
     }
-    body["projection_id"] = hashlib.sha256(
+    body["validation_id"] = hashlib.sha256(
         canonical_json(body).encode("utf-8")
     ).hexdigest()
     return body
@@ -106,6 +108,7 @@ def _command(invocation: Invocation) -> dict[str, object]:
         "inputs": [_relationship(value) for value in invocation.inputs],
         "ordinal": invocation.ordinal,
         "outputs": [_relationship(value) for value in invocation.outputs],
+        "script": invocation.script,
         "tokens": list(invocation.tokens),
     }
 
@@ -129,9 +132,7 @@ def _command_edges(
                 or producer.identity == consumer.identity
             ):
                 continue
-            edges.add(
-                (_command_key(producer), _command_key(consumer), path)
-            )
+            edges.add((_command_key(producer), _command_key(consumer), path))
     return tuple(sorted(edges))
 
 
@@ -239,8 +240,7 @@ def _chain(
             (
                 "fan_in",
                 any(
-                    _logical_material_count(command, "input") > 1
-                    for command in members
+                    _logical_material_count(command, "input") > 1 for command in members
                 ),
             ),
             (
@@ -282,8 +282,7 @@ def _projected_artifacts(commands: Sequence[Mapping[str, object]]) -> set[str]:
             if isinstance(root, str):
                 result.add(root)
             result.update(
-                str(value)
-                for value in _sequence_items(collection.get("members"))
+                str(value) for value in _sequence_items(collection.get("members"))
             )
     return result
 

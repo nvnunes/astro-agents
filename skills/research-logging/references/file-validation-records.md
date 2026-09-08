@@ -19,9 +19,9 @@ Mechanical Validate may create or update only these generated paths:
   and shared-memory companions.
 
 `validation/results.json` is the authoritative complete machine-readable
-result. `validation/batches.json` is its deterministic command-chain and
-finding projection. Ordinary diagnosis and Repair use cached `log results`
-views. Older uncached publications remain accessible through `log findings`;
+result. `validation/batches.json` contains provenance chains and primary repair
+batches, including inspection groups without an established common cause. Ordinary diagnosis and Repair use cached `log results`
+views. Current uncached publications remain accessible through `log findings`;
 neither operation loads generated files or the cache database directly.
 `validation.md` is a concise validation-only human projection. Validate and
 Repair do not parse it. Reproduction is a separate operation with

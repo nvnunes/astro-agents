@@ -364,7 +364,9 @@ class RecordSurfaceTests(unittest.TestCase):
             "without polling or broadening scope",
         ):
             self.assertIn(phrase, cases)
-        self.assertIn("one entry or chain at a time", " ".join(repair.split()))
+        self.assertIn("authorized batch's affected records", " ".join(repair.split()))
+        self.assertIn("including multiple entries when required", repair)
+        self.assertIn("Leave uninspected members", repair)
         self.assertIn("Skip any case whose correction would require", repair)
 
     def test_record_sequences_separately_requested_validation(self) -> None:

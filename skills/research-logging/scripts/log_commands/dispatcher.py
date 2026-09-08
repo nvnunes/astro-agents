@@ -767,18 +767,14 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
 def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log validate-batch")
     parser.add_argument("--path", required=True, type=Path)
-    parser.add_argument("--projection", required=True)
-    parser.add_argument("--entry", required=True)
-    parser.add_argument("--chain", required=True)
+    parser.add_argument("--validation", required=True)
+    parser.add_argument("--batch", required=True)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
-    from .batch_validation import validate_batch
+    from .repair_validation import validate_repair_batch
 
-    value, complete = validate_batch(
-        resolve_log(args.path),
-        projection_id=args.projection,
-        entry=args.entry,
-        chain_id=args.chain,
+    value, complete = validate_repair_batch(
+        resolve_log(args.path), validation_id=args.validation, batch_id=args.batch
     )
     from .inspection_cli import print_producer
     print_producer(value, args.path, args.format)
@@ -861,7 +857,7 @@ def _dispatch_findings(arguments: Sequence[str]) -> int:
     listing.add_argument("--command", action="append", default=[])
     batch = actions.add_parser("batch", help="Show one complete finding batch")
     batch.add_argument("--path", required=True, type=Path)
-    batch.add_argument("--projection", required=True)
+    batch.add_argument("--validation", required=True)
     batch.add_argument("--entry", required=True)
     batch.add_argument("--chain", required=True)
     showing = actions.add_parser("show", help="Show one published finding")
@@ -888,7 +884,7 @@ def _dispatch_findings(arguments: Sequence[str]) -> int:
     elif args.action == "batch":
         result = batch_findings(
             log,
-            projection_id=args.projection,
+            validation_id=args.validation,
             entry=args.entry,
             chain_id=args.chain,
         )

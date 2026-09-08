@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,13 +34,14 @@ LIST_FIELDS = (
     "status",
     "requested_entry",
     "requested_chain",
-    "origin_projection_id",
-    "projection_id",
+    "origin_validation_id",
+    "validation_id",
 )
 VIEWS = (
     "summary",
     "codes",
     "findings",
+    "batches",
     "chains",
     "commands",
     "artifacts",
@@ -60,8 +61,9 @@ class Query:
     view: str = "summary"
     entry: str | None = None
     chain: str | None = None
+    batch: str | None = None
     code: str | None = None
-    projection: str | None = None
+    validation: str | None = None
     entity: str | None = None
     limit: int = 20
     cursor: str | None = None
@@ -84,7 +86,7 @@ def _where(query: Query, *, listing: bool) -> tuple[str, list[Any]]:
             "kind": query.kind,
             "entry": query.entry,
             "chain": query.chain,
-            "projection": query.projection,
+            "validation": query.validation,
         }
         if listing
         else {"entry": query.entry, "chain": query.chain, "code": query.code}
@@ -129,7 +131,7 @@ def _token(binding: Any, offset: int, total: int, after: str | int) -> str:
 def _metadata(db: sqlite3.Connection, query: Query) -> dict[str, Any]:
     if query.latest:
         where, values = _where(
-            Query(kind=query.kind, projection=query.projection), listing=True
+            Query(kind=query.kind, validation=query.validation), listing=True
         )
         row = db.execute(
             "SELECT metadata FROM results WHERE 1=1"
@@ -205,7 +207,10 @@ def _page(
             else unpack_view(decode_node(row[0]))
         )
         if query.action == "list":
-            item = {key: item[key] for key in LIST_FIELDS}
+            item = {
+                key: item.get(key)
+                for key in (*LIST_FIELDS, "requested_batch", "requested_entries")
+            }
 
         candidate = {**result, "items": [*result["items"], item]}
         # Leave room for a cursor and its shell command in either format.
@@ -232,7 +237,20 @@ def _listing(
     db: sqlite3.Connection, query: Query, base: dict[str, Any]
 ) -> dict[str, Any]:
     generation = db.execute("SELECT generation FROM state").fetchone()[0]
-    where, values = _where(query, listing=True)
+    selector = replace(query, entry=None)
+    where, values = _where(selector, listing=True)
+    if query.entry is not None:
+        where += (
+            " AND (entry=? OR EXISTS (SELECT 1 FROM batch_requests b "
+            "WHERE b.result=results.id AND b.entry=?))"
+        )
+        values.extend((query.entry, query.entry))
+    if query.batch is not None:
+        where += (
+            " AND EXISTS (SELECT 1 FROM batch_requests b "
+            "WHERE b.result=results.id AND b.batch=?)"
+        )
+        values.append(query.batch)
     binding = ["list", generation, where, values]
     return _page(
         db,
@@ -248,23 +266,75 @@ def _listing(
     )
 
 
+def _batch_membership(kind: str) -> str:
+    """Select primary entity links or reverse provenance links for a batch."""
+    if kind == "chains":
+        return (
+            " AND EXISTS (SELECT 1 FROM links b WHERE b.result=e.result "
+            "AND b.kind='batches' AND b.chain=e.id AND b.id=?)"
+        )
+    return (
+        " AND EXISTS (SELECT 1 FROM batch_links b WHERE b.result=e.result "
+        "AND b.kind=e.kind AND b.id=e.id AND b.batch=?)"
+    )
+
+
+def _entity_links(query: Query, kind: str) -> tuple[str, list[Any]]:
+    """Filter membership and batch entry scope independently, including older stores."""
+    table = (
+        "batch_links"
+        if (query.batch and kind != "chains") or kind == "batches"
+        else "links"
+    )
+    selector = replace(query, chain=None) if kind == "batches" else query
+    if table == "batch_links":
+        selector = replace(selector, entry=None)
+    where, values = _where(selector, listing=False)
+    if table == "batch_links" and query.batch:
+        where += " AND batch=?"
+        values.append(query.batch)
+    sql = ""
+    if where:
+        sql += (
+            f" AND EXISTS (SELECT 1 FROM {table} l WHERE l.result=e.result "
+            "AND l.kind=e.kind AND l.id=e.id" + where + ")"
+        )
+    if table == "batch_links" and query.entry is not None:
+        sql += (
+            " AND EXISTS (SELECT 1 FROM batch_links b WHERE b.result=e.result "
+            "AND b.kind='batches' AND b.entry=? AND b.batch="
+            + ("?" if query.batch else "e.id")
+            + ")"
+        )
+        values.append(query.entry)
+        if query.batch:
+            values.append(query.batch)
+    return sql, values
+
+
 def _entities(
     db: sqlite3.Connection, query: Query, base: dict[str, Any], metadata: dict[str, Any]
 ) -> dict[str, Any]:
-    where, values = _where(query, listing=False)
     kind = query.view if query.action == "show" else query.action + "s"
+    if query.action == "batch":
+        kind = "batches"
+    filters, values = _entity_links(query, kind)
     values = [base["result_id"], kind, *values]
-    sql = "SELECT payload, id FROM entities e WHERE result=? AND kind=?"
-    if where:
+    sql = "SELECT payload, id FROM entities e WHERE result=? AND kind=?" + filters
+    if query.batch is not None:
+        sql += _batch_membership(kind)
+        values.append(query.batch)
+    if kind == "batches" and query.chain:
         sql += (
             " AND EXISTS (SELECT 1 FROM links l WHERE l.result=e.result "
-            "AND l.kind=e.kind AND l.id=e.id" + where + ")"
+            "AND l.kind=e.kind AND l.id=e.id AND l.chain=?)"
         )
+        values.append(query.chain)
     if query.entity is not None:
         sql += " AND id=?"
         values.append(query.entity)
     total = None
-    if not where and query.entity is None:
+    if not filters and query.entity is None and not (query.batch or query.chain):
         total = (
             metadata["code_groups"]
             if kind == "codes"
@@ -318,11 +388,43 @@ def _pieces(
     return result
 
 
+def _summary(db: sqlite3.Connection, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return compact stored metadata and primary Structure aggregates."""
+    fields = (
+        "finished_at",
+        "kind",
+        "reason",
+        "validation_id",
+        "origin_validation_id",
+        "evaluated_scope",
+        "evaluated_checks",
+        "returned_scope",
+        "finding_count",
+        "counts",
+        "codes",
+        "code_groups",
+        "repair_batches",
+        "requested_batch",
+    )
+    summary = {key: metadata.get(key) for key in fields}
+    if metadata.get("repair_batches") is not None:
+        from validation.inspection_batches import structure_summary
+
+        summary["Structure"] = (
+            "—"
+            if metadata["status"] == "incomplete"
+            else structure_summary(db, metadata["result_id"])
+        )
+    return summary
+
+
 def inspect_result(log_root: Path, query: Query) -> dict[str, Any]:
     """Retrieve bounded cached data only, including incomplete observations."""
-    if query.code and query.view not in {"findings", "chains"}:
+    if query.batch and query.chain:
+        raise InspectionError("results.selection.invalid", "choose --chain or --batch")
+    if query.code and query.view not in {"findings", "chains", "batches"}:
         raise InspectionError(
-            "results.selection.invalid", "--code selects findings or chains"
+            "results.selection.invalid", "--code selects findings, chains, or batches"
         )
     if query.latest and query.kind is None:
         raise InspectionError("results.selection.invalid", "--latest requires --kind")
@@ -335,6 +437,12 @@ def inspect_result(log_root: Path, query: Query) -> dict[str, Any]:
         if query.action == "list":
             return _listing(db, query, base)
         metadata = _metadata(db, query)
+        batches = query.batch or query.view == "batches" or query.action == "batch"
+        if batches and metadata.get("repair_batches") is None:
+            raise InspectionError(
+                "results.batches.unavailable",
+                "this result has no repair batches; use findings or command inspection",
+            )
         base.update(
             result_id=metadata["result_id"], status=metadata["status"], historical=True
         )
@@ -343,26 +451,16 @@ def inspect_result(log_root: Path, query: Query) -> dict[str, Any]:
         if query.action in {"collection", "value"}:
             return _pieces(db, query, base)
         if query.action == "show" and query.view == "summary":
-            fields = (
-                "finished_at",
-                "kind",
-                "reason",
-                "projection_id",
-                "origin_projection_id",
-                "evaluated_scope",
-                "evaluated_checks",
-                "returned_scope",
-                "finding_count",
-                "counts",
-                "codes",
-                "code_groups",
-            )
-            return {**base, "metadata": {key: metadata.get(key) for key in fields}}
+            return {**base, "metadata": _summary(db, metadata)}
         return _entities(db, query, base, metadata)
 
 
 def _export(db: sqlite3.Connection, metadata: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {**metadata, "entities": {}}
+    for field in ("requested_entries", "evaluated_scope"):
+        value = metadata.get(field)
+        if isinstance(value, dict) and value.get("type") in {"collection", "value"}:
+            result[field] = expand(db, metadata["result_id"], value)
     rows = db.execute(
         "SELECT kind, id, payload FROM entities WHERE result=? ORDER BY kind, id",
         (metadata["result_id"],),

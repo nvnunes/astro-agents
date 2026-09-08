@@ -92,18 +92,17 @@ defect. Then identify every applicable evidence record and obtain researcher
 approval for the exception and any evidence-level tolerance before using the
 data update action.
 
-A generated output belongs in the input registry only when a later recorded
-command or evidence presentation consumes it. Output-only results, scripts,
-command logs, and images remain absent unless they later become material
-inputs.
+Declare each generated output before its recorded producer runs, including
+output-only results, command logs, and images. Use its named token in the
+command. Do not register scripts merely because they are executed.
 
 When one `pyrun` invocation owns an output directory, register that generated
 directory once rather than registering its files separately. Use `<name>` when
 a later command consumes the whole bundle and `<name>/member` when a command or
 evidence record consumes one exact file. The member remains exact, while the
 directory's complete recursive fingerprint and producer establish its identity
-and Provenance. Leave an output-only result unregistered; its exact
-directory-level `pyrun` support establishes the atomic output boundary.
+and Provenance. Declare output-only directories too; their directory-level
+`pyrun` support establishes the atomic output boundary.
 
 If an action fails because existing research-owned state is malformed or
 legacy, report the exact failure and stop. A failed Record command does not

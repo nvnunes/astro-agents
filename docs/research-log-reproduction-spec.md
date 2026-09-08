@@ -819,7 +819,7 @@ null rather than omitted. Failures are sorted artifact projections with exactly
 
 The validation snapshot records `result_path`, `result_date`, `rules_version`,
 `result_digest`, `source_projection_digest`, `projection_path`,
-`projection_digest`, `projection_id`, and `batch_admission`. The admission
+`projection_digest`, `validation_id`, and `batch_admission`. The admission
 projection uses `research-log-reproduction-batch-admission/1` and lists every
 admitted chain plus every excluded chain with its blocking finding IDs. The two
 file digests cover the exact completed result and batch projection;

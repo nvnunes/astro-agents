@@ -707,7 +707,7 @@ def _unused_input_names(
     used = {
         f"{invocation.material_owner}:{relationship.input_resource.name}"
         for invocation in invocations
-        for relationship in invocation.inputs
+        for relationship in (*invocation.inputs, *invocation.outputs)
         if relationship.input_resource is not None
     }
     used.update(name for connection in evidence for name in connection.input_names)

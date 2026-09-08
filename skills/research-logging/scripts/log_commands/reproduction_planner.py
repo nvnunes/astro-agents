@@ -1175,15 +1175,15 @@ def _admit_validation(
     projection = load_batch_projection(log, record=record)
     if projection.get("schema") != PROJECTION_SCHEMA:
         raise ActionError(
-            "reproduction.validation.projection_invalid",
-            "validation batch projection is unsupported",
+            "reproduction.validation.publication_invalid",
+            "published validation is unsupported",
         )
     projection_path = log.root / "validation" / "batches.json"
     source_digest, _ = research_source_projection(log.summary)
     return (
         {
             "projection_digest": _digest(projection_path),
-            "projection_id": projection["projection_id"],
+            "validation_id": projection["validation_id"],
             "projection_path": projection_path.relative_to(log.root).as_posix(),
             "result_date": record.result_date,
             "result_digest": hashlib.sha256(raw).hexdigest(),
@@ -1319,10 +1319,10 @@ def _recheck_validation_result(plan: ReproductionPlan, log: LogContext) -> None:
     if projection_path is None and projection_digest is None:
         return
     if not isinstance(projection_path, str) or not isinstance(projection_digest, str):
-        raise ActionError("reproduction.source.invalid", "invalid batch projection")
+        raise ActionError("reproduction.source.invalid", "invalid published validation")
     if _digest(log.root / projection_path) != projection_digest:
         raise ActionError(
-            "reproduction.source.changed", "validation batch projection changed"
+            "reproduction.source.changed", "published validation changed"
         )
 
 

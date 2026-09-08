@@ -54,8 +54,8 @@ def sample(root: Path, *, members: int = 2, chain: str = "A") -> tuple:
         ],
     }
     projection = {
-        "schema": "research-log-batch-projection/1",
-        "projection_id": "new-projection",
+        "schema": "research-log-published-validation/1",
+        "validation_id": "new-projection",
         "source_identity": "source",
         "unresolved": [],
         "chains": [
@@ -77,7 +77,7 @@ def sample(root: Path, *, members: int = 2, chain: str = "A") -> tuple:
     outcome = {"status": "complete_findings", "published": False, "findings": [finding]}
     request = {
         "kind": "batch",
-        "projection": "published",
+        "validation": "published",
         "entry": "e001",
         "chain": chain,
         "started_at": "2026-09-08T12:00:00Z",
@@ -115,34 +115,35 @@ class InspectionTests(unittest.TestCase):
     def test_default_text_and_explicit_json_batch_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            summary, _ = mechanical_log(root)
+            summary, document = mechanical_log(root)
+            document.write_text(
+                document.read_text().replace("--input-catalog", "--catalog")
+            )
             path = str(summary.with_suffix(""))
             full = run_log(root, "validate", "--path", path)
             self.assertIn("Result:", full.stdout)
             self.assertFalse(full.stdout.startswith("{"))
-            chains = run_log(
-                root, "findings", "list", "--path", path, "--format", "json"
-            )
-            payload = json.loads(chains.stdout)
-            # Cached views retain clear chains omitted by findings list.
             full_id = inspect_result(summary.with_suffix(""), Query(action="list"))[
                 "items"
             ][0]["result_id"]
             saved = inspect_result(
-                summary.with_suffix(""), Query(result_id=full_id, view="chains")
+                summary.with_suffix(""), Query(result_id=full_id, view="batches")
             )
-            selected = saved["items"][0]
+            selected = next(
+                b for b in saved["items"] if b["grouping_reason"] == "rejected_command"
+            )
+            validation_id = inspect_result(
+                summary.with_suffix(""), Query(result_id=full_id)
+            )["metadata"]["validation_id"]
             checked = run_log(
                 root,
                 "validate-batch",
                 "--path",
                 path,
-                "--projection",
-                payload["projection_id"],
-                "--entry",
-                selected["entry"],
-                "--chain",
-                selected["chain_id"],
+                "--validation",
+                validation_id,
+                "--batch",
+                selected["batch_id"],
             )
             self.assertEqual(checked.returncode, 0, checked.stderr)
             self.assertIn("Result:", checked.stdout)
@@ -339,7 +340,7 @@ class InspectionTests(unittest.TestCase):
                     request = {"kind": kind, "started_at": args[4]["started_at"]}
                     if kind == "batch":
                         request.update(
-                            entry="e001", chain="old-A", projection="published"
+                            entry="e001", chain="old-A", validation="published"
                         )
                     identity = save_result(*args[:4], request)
                     arguments = (
@@ -541,7 +542,7 @@ class InspectionTests(unittest.TestCase):
             database = log / ".cache" / STORE_NAME
             before = (database.read_bytes(), database.stat().st_mtime_ns)
             with mock.patch(
-                "validation.controller.evaluate_entry_record",
+                "validation.controller.evaluate_entries_record",
                 side_effect=AssertionError("must not evaluate"),
             ):
                 result = inspect_result(log, Query(result_id=incomplete))

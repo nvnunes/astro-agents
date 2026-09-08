@@ -39,6 +39,7 @@ only with how that skill is used and what researchers should expect from it.
 - Validation: [Mechanical Validation Evaluation And
   Outcomes](#mechanical-validation-evaluation-and-outcomes) and [Current
   Implementation Boundary](#current-implementation-boundary).
+- Published validation: [Published Validation And Repair Batches](#published-validation-and-repair-batches).
 - Inspection interface: [Retained Validation Results](#retained-validation-results).
 - Extension and examples: [Future Command-Discovery Expansion If
   Warranted](#future-command-discovery-expansion-if-warranted), [Conformance
@@ -66,14 +67,14 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/end-to-end-provenance-3` |
+| Mechanical rules | `research-log-mechanical/directory-ownership-output-arguments-2` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
-| Batch projection | `research-log-batch-projection/1` |
+| Published validation | `research-log-published-validation/1` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
-| Batch validation | `research-log-batch-validation/1` |
-| Inspection cache | `research-log-inspection-store/1` (SQLite user version 1) |
+| Batch validation | `research-log-batch-validation/2` |
+| Inspection cache | `research-log-inspection-store/3` (SQLite user version 3) |
 | Cached result and view | `research-log-retained-result/1` and `research-log-result-view/1` |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
@@ -2829,7 +2830,12 @@ Every declared input or output uses its matching named token. Direction comes
 from an input- or output-bearing option, capture, or explicit runner role; a
 token alone does not assign direction. A raw value matching an input is a
 missing token, a raw proven input without an item is undeclared, and a raw
-output path is `data.output.token_missing` in Structure. Legacy path-authored
+output path is `data.output.token_missing` in Structure, once per authored
+output argument rather than per expanded directory member. Distinct selectors
+and repeated arguments with different targets remain separate. Each check
+records the command location, selector and canonical output path, retains a
+positive passing check after token migration, and owns an output-argument repair
+batch. Legacy path-authored
 recipes remain decodable for diagnosis but are not admissible for reproduction.
 
 A path-like argument with no role is not silently dropped. A candidate is
@@ -3203,9 +3209,10 @@ A local directory is either a byte-complete bounded collection with a
 - An origin directory is valid only when no confirmed `pyrun` record identifies
   its root or any member as generated. Its boundary reaches a consumed member
   through the explicit membership edge, not a path-prefix rule.
-- A generated directory must match one exact earlier `output-directory`.
-  Overlapping roots, separate member producers, or a second directory producer
-  fail exclusivity.
+- A consumed generated directory must have one exclusive earlier
+  `output-directory` at its root or an enclosing root, with every consumed
+  member recorded among that producer's outputs. Competing directory or member
+  producers fail exclusivity.
 - One exclusive `pyrun` output-directory and its projected directory-level
   output-support record with the same script, parameters, and material input
   identities form one atomic artifact. The record may remain unconfirmed,
@@ -3215,9 +3222,8 @@ A local directory is either a byte-complete bounded collection with a
   fingerprint. Reaching the root or one exact member connects the complete
   bundle for ownership and Hygiene without claiming that sibling members were
   consumed or presented.
-- Atomic output ownership does not require a generated directory declaration
-  in `data.json`. Register the directory only when a later command or evidence
-  presentation consumes the bundle or one exact member.
+- Declare every output directory in `data.json` and use its named token,
+  including output-only bundles outside evidence closure.
 - Output-directory ownership is invocation-exclusive. Repeated exact outputs
   may share a parent without asserting directory ownership.
 - Command relationship bounds count one authored whole-directory role as one
@@ -3307,7 +3313,9 @@ connected, declared-retained, or orphaned. An exact bundle-member edge remains
 member-specific in the evidence and command graph, but it connects the complete
 bundle membership for ownership and orphan classification.
 `validation/results.json` records authoritative artifact-level orphan
-checks. An unused data item produces one `orphan.input.unused` check; unused
+checks. A named command input, named command output, or evidence reference counts
+as registry use. Output declaration use does not connect an unreached artifact
+to evidence. An unused data item produces one `orphan.input.unused` check; unused
 declarations are reported separately and do not inflate artifact counts.
 
 Complete-graph output reconciliation produces one Provenance condition and one
@@ -3368,11 +3376,11 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | --- | --- | --- | --- |
 | Whole `input-directory` | no root/member producer | origin | Consume all fingerprinted members through the aggregate boundary. |
 | Exact member | no root/member producer | origin | Consume only that member; siblings stay disconnected. |
-| Whole directory | one exact earlier `output-directory` | absent | Trace all members to that producer. |
+| Whole directory or subdirectory | one exclusive earlier `output-directory` at that root or an enclosing root | absent | Require every consumed member in the producer's recorded outputs; trace those members to that producer and use its owning-root support record. |
 | Exact member | one exact earlier `output-directory` | absent | Trace only that member and connect the atomic root for Hygiene; do not claim sibling consumption. |
-| Workflow outside evidence closure | exact exclusive `output-directory` with matching directory support | absent | Treat the output-only directory as one atomic artifact without adding it to `data.json`. |
-| Any directory | overlapping or separate member producers | either | Fail `directory.producer.conflict`. |
-| Generated directory | no exact earlier directory producer | absent | Fail `lineage.missing`. |
+| Workflow outside evidence closure | exact exclusive `output-directory` with matching directory support | absent | Declare the output-only directory in `data.json`, use its named token, and treat it as one atomic artifact. |
+| Any directory | competing directory or member producers | either | Fail `directory.producer.conflict`; a sole enclosing owner is not competition. |
+| Generated directory | no covering earlier directory producer or missing owned member | absent | Fail `directory.producer.conflict` for a consumed directory; do not infer ownership from filesystem containment alone. |
 | Origin directory | confirmed root/member producer | present | Fail `directory.origin.conflict`. |
 | Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
 | Workflow outside evidence closure | atomic output directory | absent | Report one root-level orphan unless the complete bundle is retained. |
@@ -3412,7 +3420,7 @@ failure preserves the original error without dumping the complete payload;
 | `data.target.missing` | provenance | A local input or selected member is absent. |
 | `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
-| `directory.producer.conflict` | provenance | A generated directory lacks one exclusive exact earlier producer. |
+| `directory.producer.conflict` | provenance | A generated directory lacks one exclusive earlier producer covering its root and consumed members. |
 | `directory.origin.conflict` | provenance | An origin directory root or member has a confirmed `pyrun` producer. |
 | `pyrun.outputs.invalid` | provenance | A legacy `pyrun-outputs.json` file or record violates its closed schema. |
 | `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
@@ -3429,7 +3437,7 @@ failure preserves the original error without dumping the complete payload;
 | `retention.declaration.invalid` | conformance | A retention file or record violates shape, path, overlap, eligibility, or redundancy. |
 | `retention.target.missing` | conformance | A retention target is absent. |
 | `orphan.material.unused` | orphan | One retained artifact lies outside the evidence closure and retention. |
-| `orphan.input.unused` | orphan | One data item is not consumed by any command. |
+| `orphan.input.unused` | orphan | One data item has no named command input, named command output, or evidence use. |
 | `hygiene.output.unmatched` | orphan | An output support record has no output in the complete current graph. |
 
 ### Examples
@@ -3597,11 +3605,11 @@ The validation and discovery operations are:
 
 <skill>/scripts/log findings show --path LOG --id CHECK_ID
 
-<skill>/scripts/log findings batch --path LOG --projection PROJECTION_ID
+<skill>/scripts/log findings batch --path LOG --validation VALIDATION_ID
   --entry ENTRY --chain CHAIN_ID
 
-<skill>/scripts/log validate-batch --path LOG --projection PROJECTION_ID
-  --entry ENTRY --chain CHAIN_ID
+<skill>/scripts/log validate-batch --path LOG --validation VALIDATION_ID
+  --batch BATCH_ID
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
@@ -4025,34 +4033,104 @@ artifact and the human row's aggregate status. Other `not_applicable` checks
 remain only in machine-readable results and are omitted from human reports;
 they are not abbreviated as N/A.
 The batch CLI keeps those detailed four-area per-log reports but composes a
-three-column cross-log summary from the batch projection. `Structure` counts
-distinct chains containing failed Conformance, failed Provenance other than
-awaiting confirmation, or Hygiene findings. `Evidence` counts existing
-distinct Evidence finding groups. `Confirmation` counts distinct producing
-commands awaiting confirmation, deduplicated across outputs. Resolved-only
-nonzero counts are bare integers and zero is `Clear`. A completed result with
-structural groups that cannot be assigned to command chains retains both
-quantities in the Structure cell as `N chains + U unassigned`, or
-`U unassigned` when no failed chain was assigned, without repeating that count
-below the table. `—` is reserved for
-an unavailable or otherwise incomplete Structure evaluation. Agents do not
-parse generated reports or recalculate these cells.
+three-column cross-log summary from the published validation. `Structure` counts
+primary repair batches containing failed Conformance, failed Provenance other
+than awaiting confirmation, or Hygiene findings. Show nonzero components in the order `C chains + S structural + I inspection`,
+omitting zero components and using singular labels for one. `structural` counts
+established relationships; `inspection` counts fallback groups. A batch counts
+once within its log, regardless of related chain links or affected entry count.
+Chains with no primary Structure findings do not add pending repair work.
+`Evidence` retains its existing distinct Evidence finding-group count.
+`Confirmation` retains its distinct producing-command count, deduplicated across
+outputs; repair ownership does not alter either counting contract. Their nonzero
+counts remain bare integers. Zero is
+`Clear` only for a completed applicable area evaluation. `—` denotes an
+unavailable or incomplete area. Agents use the generated cells;
+they do not parse reports or recalculate counts.
 
-Every completed publication also writes
-`research-log-batch-projection/1` to `validation/batches.json`. It contains the
-exact result identity, source and rules identities, a content-derived
-`projection_id`, bounded unresolved finding groups, and every same-entry
-command chain. A chain is one connected component of unique producer-to-
-consumer edges; competing writers and cross-entry relationships do not connect
-components. `source_identity` is the SHA-256 identity of the bounded starting
-research-source snapshot accepted for that evaluation. Each chain records its
-commands, material collections, edges, named artifacts, relevant registry
-records, pattern signals, and attached direct findings. Cross-entry registry
-context is marked read-only. The projection is deterministic and atomically
-published with the result and human report.
+#### Published Validation And Repair Batches
+
+Every completed publication writes `research-log-published-validation/1` to
+`validation/batches.json`, atomically with the result and human report. It
+retains the exact result, source, and rules identities and a content-derived
+`validation_id`. `source_identity` is the SHA-256 identity of the bounded
+starting research-source snapshot accepted for that evaluation.
+
+Keep `chains` as the provenance projection: every same-entry connected component
+of unique producer-to-consumer edges, with commands, material collections, edges,
+artifacts, registry context, pattern signals, and attached direct findings.
+Competing writers and cross-entry relationships do not connect these components.
+Cross-entry provenance context remains read-only. Repair grouping does not
+change command admission, chain membership, or reproduction eligibility.
+Retain `unresolved` provenance finding groups for existing admission consumers,
+using the original chain-assignment rules. They are related diagnostic views,
+not additional repair work: `repair_batches` alone owns the primary queue.
+
+Add `repair_batches` separately. Every direct `fail` or `unavailable` finding
+has exactly one primary batch. Related views may reference that finding but
+must not count it as another pending item. Passing and `not_applicable` checks
+remain in the mechanical result, not primary repair membership. A chain with
+no primary findings remains available for provenance inspection without an
+empty repair work item.
+
+| Batch Field | Contract |
+| --- | --- |
+| `batch_id` | `batch-` plus the SHA-256 digest of canonical type, grouping reason, scope, entries, anchors, and primary finding IDs. Arrays are sorted and deduplicated before hashing. Resolve only with its publication's `validation_id`. |
+| `batch_type` | `chain` or `structural`; independent of retained-result `kind`. |
+| `grouping_reason` | `command_chain`, `rejected_command`, `output_argument`, `exact_material`, `competing_ownership`, or `inspection_group`. All except `command_chain` have type `structural`. |
+| `scope`, `entries` | `entries` with a nonempty sorted affected-entry set, or `log` with an empty set for findings without an owning entry. Batches never cross logs. |
+| `anchors` | Typed command locators, output-argument locators (command location plus `target` selector and canonical `path`), canonical material paths and defect codes, or scoped registrations (`entry`, `name`, `path`, and defect code). Primary finding IDs lead to the recorded relationships explaining membership and competing ownership. Empty for fallback groups with no established defect. |
+| `primary_finding_ids` | Nonempty sorted distinct direct-check identities owned by this batch. |
+| `related_chain_ids`, `related_batch_ids` | Inspection links within this published validation; no additional ownership or repair authority. Derive these after batch IDs and exclude them from the ID digest to avoid circular identities. |
+
+Construct batches in this order:
+
+1. Identify explicit structural defects from typed diagnostic and material
+   relationships. A rejected command owns its discovery finding and symptoms
+   explicitly linked to its declared outputs. An exact-material anchor includes
+   the defective relationship or rule, not just a shared path. Competing owners
+   of a declared material or directory form one ownership-conflict anchor.
+   A directory diagnostic with missing ownership or a missing member, but no
+   competing producers, uses an exact-material defect instead.
+2. Attach a finding to a structural anchor only when the recorded relationships
+   establish the shared defect. Directory membership requires declared ownership;
+   shared codes, entry membership, or incidental path prefixes are insufficient.
+   Scoped registration names include their owning entry. Do not merge independent
+   defects because a consumer depends on both. When distinct anchors compete
+   without an established common defect, retain the finding in a fallback group
+   with links to those candidates.
+3. Assign remaining findings to an unambiguous existing chain, preserving its
+   provenance membership. Ambiguous structural candidates stay in fallback groups
+   rather than being hidden by chain assignment.
+4. Partition leftovers by owning entry (or explicit log scope) and error family
+   (the code segment before the first dot). Sort by finding identity and split
+   into groups of at most 50 findings. One finding is a valid group. Mark these
+   groups as inspection starting points with no established common cause;
+   correction, clearance, or a skipped disposition for one member says nothing
+   about its peers.
+
+Index these relationships once during the existing scan; grouping neither
+parses diagnostic prose nor executes research commands. Preserve existing
+publication resource bounds and report a bound failure rather than dropping
+findings. Strongly related batches may exceed the fallback member bound;
+inspection remains paginated. New groups require a fresh full validation.
+Readers accept only the current publication format. A full validation regenerates
+outdated publications and cached results; no compatibility reader translates them.
+
+Representative contract cases:
+
+| Recorded Condition | Expected Grouping And Verification |
+| --- | --- |
+| One rejected builder reports four unresolved argument roles, and findings explicitly reference its declared outputs. | One rejected-command batch owns the discovery finding and linked symptoms. After a synthetic role correction, match the admitted command and evaluated outputs; remaining confirmation findings remain findings. Admission alone does not clear the batch. |
+| Several findings identify the same defective scoped material registration. | One exact-material batch when the relationship proves a shared defect. A same-named registration in another entry remains distinct. Clearance requires the corrected registration and affected checks to be evaluated. |
+| A declared directory owner and a second producer of its member conflict. | One competing-ownership batch includes the explicit conflict and linked symptoms, including affected entries. A path without a declared ownership relationship is not membership evidence. Corrected unique ownership must be evaluated across the required producer context. |
+| A consumer is affected by two independent defective producers. | Separate defects; an ambiguously shared symptom stays in an inspection group with both candidate links. No inferred merged cause. |
+| 51 unrelated findings share an entry and error family. | Deterministic inspection groups of 50 and 1, with independent member reconciliation. |
+
+#### Finding Queries And Batch Verification
 
 `log findings list`, `show`, and `batch` are read-only bounded machine access
-to the latest published result and batch projection. They require an explicit
+to the latest published result and published validation. They require an explicit
 logical log path, use bounded strict UTF-8 decoders, expose the result date
 without claiming research-source currentness, and never validate, publish,
 repair, or inspect research-owned files. `list` returns all matching nonempty
@@ -4061,28 +4139,89 @@ chains within the fixed response bound. Repeatable exact `--entry`,
 `--code`, `--family`, `--subject`, and `--command` selectors intersect across
 families and union within one family; there is no fuzzy matching or pagination.
 `show` accepts one exact finding ID and returns the complete direct check
-without repair advice. `batch` requires the exact current projection, entry,
+without repair advice. `batch` requires the exact current validation, entry,
 and chain IDs and returns that complete chain with all attached findings.
+These chain views are not the primary repair queue; use the retained
+result's batch views for primary ownership.
 
-`log validate-batch` is the Repair campaign's lock-free selected-entry
-check with disposable inspection-result caching. It accepts one published chain identity, takes bounded selected-entry
-source snapshots before and after evaluation, and retries once when that
-selected source changes. It evaluates only the selected entry, builds a fresh
-in-memory projection, and reconciles command identity by document, fence, and
-ordinal anchors with output overlap as the bounded fallback. Rename,
-replacement, split, and join may therefore change current chain IDs without
-losing the requested scope. The result reports current membership, findings,
-and pending overlaps as `complete_clear`, `complete_findings`, or `incomplete`.
-It acquires no operation lock and writes only the inspection cache described
-below. It never replaces published validation or writes evaluation caches or
-research metadata.
+`log validate-batch` is the Repair campaign's lock-free check with disposable
+inspection-result caching. Require `--validation ID --batch ID` for either
+repair-batch type. Both IDs must belong to the accepted current publication;
+batch IDs never retarget to another published validation. The command does not
+accept `--entry` or `--chain`. Outdated publications require a full validation
+before findings inspection or batch checking; these read/check operations never
+start that validation implicitly.
+
+Evaluate the selected affected-entry set and necessary recorded dependencies in
+one request, reusing shared observations rather than scanning once per member.
+Record actual entry, dependency, and rule coverage. Snapshot that covered state
+before and after evaluation and retry once if it changes. Required dependencies
+outside available bounded coverage yield `incomplete`; do not silently broaden
+to a whole-log evaluation. For a log-scoped rule with no bounded evaluator,
+identify the required full validation explicitly. Batch checks acquire no
+operation lock and write only the inspection cache, never published validation,
+evaluation caches, research metadata, or outputs.
+If the retry also observes source changes, retain the last observed findings,
+membership, and evaluated scope for inspection. Mark the outcome and every
+original member `incomplete` with `source_changed`; no member or rule is certified.
+
+Reconcile original members against the fresh evaluation, including command
+admission, renames, splits, joins, and movement into other repair batches.
+Document/fence/ordinal locators and recorded material relationships identify
+the underlying target; output overlap may identify candidates but cannot prove
+clearance when correspondence is ambiguous. A diagnostic anchor may disappear
+after successful correction. Require positive evaluated postconditions:
+
+- Rejected command: identify its admitted counterpart and check the original
+  discovery conditions and affected output relationships.
+- Output argument: evaluate the same command location, selector, and resolved
+  output path with a named declaration. Retain its current chain membership.
+- Exact material: identify the current scoped registration/material and evaluate
+  the rule that diagnosed the defect and its dependent findings.
+- Competing ownership: evaluate the declared material or directory and required
+  producer context, establishing valid ownership after the correction.
+- Inspection group: establish correspondence and an applicable evaluated
+  postcondition independently for every original member.
+
+Use explicit passing checks or an evaluated relationship that establishes the
+rule's postcondition. An absent diagnostic, a changed finding ID, command admission,
+or a `not_applicable` check alone is not proof. If correspondence, dependencies,
+or rules cannot be evaluated, retain that member as incomplete. No verification
+result authorizes choosing an intended repair or confirms research outputs.
+
+Provenance check dependencies include `evaluated_materials`, the canonical paths
+actually visited by that traversal, including reused traversal observations.
+A passing check must still cover the original evidence target and defective
+material. Input-declaration failures retain a scoped `registration` relationship;
+successful input verification supplies that registration's positive postcondition.
+Report missing producer-entry context when a selected evaluation cannot establish
+the required ownership/provenance rule; do not infer global uniqueness from a
+partial producer index.
+
+The version 2 response records original `validation_id` and `batch_id`,
+`current_membership`, returned `findings`, `coverage`, per-member `reconciliation`,
+and `pending_batch_overlaps`. Coverage identifies evaluated entries, dependencies,
+and rules plus missing member, producer-entry, and unavailable-check coverage. Each original finding's reconciliation
+records `clear`, `remaining`, or `incomplete`, the current target and check or
+relationship evidence, any successor finding/batch IDs, and an incomplete reason
+when needed. New IDs carry their fresh validation identity; they are inspection
+references, not invocable published batch IDs until a full publication exists.
+Return newly related findings without expanding repair authority. Links to other
+published pending batches do not certify those batches or clear moved work.
+
+Overall `complete_clear` requires complete applicable coverage, every original
+member clear, and no remaining related findings. `complete_findings` requires
+complete applicable coverage with remaining findings. Any unresolved member or
+missing required coverage yields `incomplete`, retaining observed findings for
+inspection. Synthetic tests must exercise successful corrections for each anchor
+type as well as missing correspondence and partial multi-entry coverage.
 
 Finding queries distinguish absent published state
 (`findings.result.missing`), unsupported schema
 (`findings.result.schema_unsupported`), malformed or inconsistent state
 (`findings.result.malformed`), duplicate identities (`findings.id.duplicate`),
 unknown identities (`findings.id.unknown`), and identities that are not direct
-findings (`findings.id.not_finding`). A superseded batch projection fails
+findings (`findings.id.not_finding`). A superseded published validation fails
 precisely rather than silently retargeting. Expected query failures and
 incomplete batch validation exit 2 and emit no success claim.
 
@@ -4110,12 +4249,17 @@ inspection and persistence, not mechanical findings or repair authority.
 
 Use one tool-owned SQLite database,
 `<log>/.cache/research-log-inspection.sqlite3`, with store schema
-`research-log-inspection-store/1`. It retains immutable evaluation snapshots;
+`research-log-inspection-store/3`. It retains immutable evaluation snapshots;
 `validation/results.json`, `batches.json`, and `validation.md` continue to own
 the latest published validation. The inspection database and its companions
 are generated, Git-ignored state. Keep the latest full result and the latest
-result for each requested batch, keyed by origin projection, entry, and chain.
-Validating batch A replaces A's cached result and leaves B's available.
+result for each original request, keyed by origin validation and requested batch
+ID. Actual evaluated entries and changed membership are result metadata, not
+replacement keys. Validating batch A replaces A’s cached result and leaves B’s
+available, including when A spans entries or its membership changes.
+The store accepts only its current schema. Read-only inspection of an obsolete
+cache reports that validation must rebuild it. On the next cache write, discard obsolete cache contents and initialize the current schema;
+do not migrate old records. Large entry sets use counted references.
 The same store retains at most one latest authoring `diagnostic` snapshot per
 log. It contains already observed rejected-command details, not a validation
 result; capturing or inspecting it performs no reevaluation. A new diagnostic
@@ -4128,8 +4272,8 @@ Reevaluation creates a new result for the observed sources; it does not restore
 a missing historical ID. Inspection reports missing state without implicitly
 evaluating sources, repairing a database, or importing older publications.
 
-Store metadata, checks, commands, artifacts, collections, membership, and
-relationships as independently addressable records. Share repeated context
+Store metadata, repair batches, checks, commands, artifacts, collections,
+membership, and relationships as independently addressable records. Share repeated context
 within a result. Store collection membership as individually selectable members
 and long scalar values in bounded chunks, rather than one command-sized JSON
 blob. Validate source records and their relationships once during ingestion;
@@ -4161,7 +4305,7 @@ or cleared, without maintaining a growing tombstone history.
 
 Full-result replacement must not clear usable batch results on an operational
 failure. An incomplete full evaluation does not start a new published cycle.
-A batch finishing against a superseded full projection cannot repopulate the
+A batch finishing against a superseded full validation cannot repopulate the
 new cycle with an old result.
 
 #### Production, Identity, And Publication
@@ -4185,21 +4329,22 @@ values are explicit nulls with a reason, never inferred from old publications:
 | `result_date`, `rules_version`, `source_schemas` | Existing calendar/report date and versions used; the report date is not the evaluation timestamp. |
 | `status`, `reason` | Existing completion classification and any incomplete reason. |
 | `source_identity` | Accepted source snapshot identity, or unavailable for an unstable/incomplete observation. |
-| `origin_projection_id`, `requested_entry`, `requested_chain` | Original batch request; null for full validation. |
-| `projection_id` | Projection produced by this evaluation, when available; distinct from the batch's origin. |
-| `evaluated_scope`, `evaluated_checks` | Full log or selected entry and its check count. |
-| `returned_scope`, `finding_count` | Full result or reconciled chain selection and its distinct returned findings. |
+| `origin_validation_id`, `requested_entry`, `requested_chain` | Origin published validation for a batch request; null for full validation. Entry/chain fields are null for current requests. |
+| `requested_batch`, `requested_entries` | Batch ID and affected entries from the original publication; null for full validation. Preserve them when reconciliation changes membership. |
+| `validation_id` | Validation map produced by this evaluation, when available; distinct from the batch's origin. |
+| `evaluated_scope`, `evaluated_checks` | Full log or actual evaluated entry set and its check count. Batch coverage also identifies evaluated dependencies/rules and missing coverage. |
+| `returned_scope`, `finding_count` | Full result, primary repair-batch selection and its distinct returned findings. |
 
 For `diagnostic`, `status` is `failed` and `reason` is the authoring error code.
-Evaluation, report, and projection fields are unavailable, including null
+Evaluation, report, and validation identity fields are unavailable, including null
 `evaluated_scope` and `evaluated_checks`; timestamps describe diagnostic capture
 and persistence. `returned_scope` explicitly states that no validation occurred.
 Rejected commands are inspectable records, not evaluated findings.
 
-Preserve every evaluated check in retained content. A batch's ordinary view
-selects reconciled chains and related unresolved findings, just as today;
-passing entry checks or unrelated entry findings do not expand the claimed
-batch postcondition. Include current membership and pending overlaps without
+Preserve every evaluated check in retained content. Batch inspection selects
+reconciled primary members and newly related findings;
+passing or unrelated entry checks do not expand the claimed batch postcondition.
+Include current membership and pending overlaps without
 certifying overlapping batches. An incomplete result says what was observed
 and what remained unavailable; it never uses a clear postcondition for missing
 coverage.
@@ -4236,8 +4381,9 @@ outcome, actual scope, compact counts, saved result ID when available, and
 commands for further inspection. Do not print the complete payload alongside
 the report. No agent flag is required for the ordinary view.
 
-`--format json` on existing commands preserves their existing JSON payload
-schemas; callers that parse today's default JSON must add that flag. In-repository callers and CLI examples use the explicit flag when parsing JSON. JSON consumers needing cached
+`--format json` preserves the current producer schemas; `validate-batch` uses
+version 2 as specified above. Callers
+parsing JSON request that format explicitly. JSON consumers needing cached
 result IDs use `results list --format json`. New inspection queries use schema
 `research-log-result-view/1`; full export uses `research-log-retained-result/1`.
 There is no second producer envelope or additional legacy-format mode.
@@ -4248,14 +4394,18 @@ production rule above.
 ```text
 log validate --path LOG [existing options] [--format text|json]
 log validate --root PROJECT [existing options] [--format text|json]
-log validate-batch --path LOG --projection PROJECTION_ID
-  --entry ENTRY --chain CHAIN_ID [--format text|json]
+log validate-batch --path LOG --validation VALIDATION_ID
+  --batch BATCH_ID [--format text|json]
 
 log results list --path LOG [--kind full|batch|diagnostic] [--entry ENTRY]
-  [--chain CHAIN_ID] [--projection PROJECTION_ID] [--limit N] [--cursor CURSOR]
+  [--chain CHAIN_ID | --batch BATCH_ID] [--validation VALIDATION_ID]
+  [--limit N] [--cursor CURSOR]
 log results show --path LOG (--id RESULT_ID | --latest --kind full|batch|diagnostic)
-  [--view summary|codes|findings|chains|commands|artifacts|collections|overlaps]
-  [--entry ENTRY] [--chain CHAIN_ID] [--code CODE] [--limit N] [--cursor CURSOR]
+  [--validation VALIDATION_ID]
+  [--view summary|codes|findings|batches|chains|commands|artifacts|collections|overlaps]
+  [--entry ENTRY] [--chain CHAIN_ID | --batch BATCH_ID] [--code CODE]
+  [--limit N] [--cursor CURSOR]
+log results batch --path LOG --id RESULT_ID --batch BATCH_ID
 log results finding --path LOG --id RESULT_ID --finding CHECK_ID
 log results command --path LOG --id RESULT_ID --command COMMAND_ID
 log results artifact --path LOG --id RESULT_ID --artifact ARTIFACT_ID
@@ -4265,26 +4415,65 @@ log results value --path LOG --id RESULT_ID --ref VALUE_REF [--cursor CURSOR]
 log results export --path LOG --id RESULT_ID
 ```
 
-`--code` selects the `findings` or `chains` view. Artifact IDs are their exact
-paths; command IDs and finding IDs are the evaluation identities returned in
+`--code` selects the `findings`, `chains`, or `batches` view. Artifact IDs are
+their exact paths; command IDs and finding IDs are the evaluation identities returned in
 those views. Collection and value references are opaque content IDs.
+
+For results with primary repair batches, the cached summary also exposes the
+Structure count using the same finding classification and labels as the cross-log
+report. Compute it from indexed cached membership; do not expand collections or
+reevaluate research sources. Incomplete observations show `—`; diagnostic results
+without repair batches leave this field unavailable.
+
+`--view batches` lists primary repair work, while `--view chains` retains
+provenance membership and related findings. Batch rows show type, grouping reason,
+primary finding count, affected entries, and the blocker or inspection starting
+point, with exact text follow-ups. `results batch` retrieves the selected batch's
+anchors, primary members, relationships, and available reconciliation through
+bounded records and counted references. For a batch evaluation, the original
+requested batch remains selectable even after membership changes. Related fresh
+batch IDs retain their validation identity and do not replace the request ID.
+
+Retained batch fields distinguish the original request from current findings:
+
+| Field or view | Full validation result | Batch-check result |
+| --- | --- | --- |
+| `primary_finding_ids` | Published primary members. | Original requested members, preserved after correction. |
+| `primary_finding_count`, `starting_finding` | Count and inspection start for published members. | Count and inspection start for current returned findings; omit the start when none remain. |
+| `show --view findings --batch ID` | Published primary members. | Current returned findings, including newly related findings. |
+| `reconciliation`, `current_membership` | Absent. | Each original member's outcome and the observed current batches/chains. |
+
+A cleared batch therefore retains its original IDs with a current count of zero.
+Use reconciliation to assess original members and the filtered findings view to
+inspect remaining work; original IDs need not resolve as current findings.
+
+In `show`, `--batch` selects primary members and their linked commands/materials,
+not every finding on a related chain. An entry filter matches a batch's affected
+entries, returning it once with its full scope identified; it does not narrow a
+multi-entry clearance claim. Store indexed entry/batch links and distinct primary
+ownership counts at ingestion. Do not decode an entire published validation or reconstruct
+relationships to answer a filtered view. For a diagnostic result without repair batches, report that batch inspection is
+unavailable; do not present missing grouping as zero pending work.
 
 Queries default to ready-to-read text; `--format json` selects equivalent
 structured views with schema `research-log-result-view/1`. Export alone emits
 the complete retained-result JSON schema, explicitly requested for automation;
 it is not a routine agent view. New inspection commands neither bypass nor
-retarget the existing projection-based batch calls, which continue to reject
-superseded projections. Older published bundles without a retained result
-remain accessible through the legacy findings interface; the new interface
-reports `results.store.missing` or an empty listing, never starts validation.
+retarget the existing validation-based batch calls, which continue to reject
+superseded validations. Current publications without a retained result remain accessible through
+`findings` queries. Results inspection reports missing or outdated cache state
+without starting validation.
 
 `list` queries indexed metadata only, newest commit sequence first. Its exact
 filters intersect and refer to the original request; it shows result ID,
-evaluation times, kind, requested scope, origin projection, and status. This
-is the recovery interface when producer stdout is unavailable. Multiple matches
+evaluation times, kind, requested scope, origin validation, and status. This
+is the recovery interface when producer stdout is unavailable. A `--batch`
+filter matches the original requested batch ID; `--entry` matches the original
+entry selector or an entry in `requested_entries`, not the newly evaluated set.
+Use validation and batch ID together to recover a structural check. Multiple matches
 remain distinct candidates, not evidence that the newest belongs to a particular
-invocation. `show --latest` selects by kind and optional origin projection,
-then applies entry, chain, and code filters to the selected result’s content,
+invocation. `show --latest` selects by kind and optional origin validation,
+then applies entry, chain, batch, and code filters to the selected result’s content,
 just as `show --id` does. It returns the chosen ID; every detail and continuation
 query pins that ID. Historical queries make no currentness
 claim and do not read or hash today's published bundle.
@@ -4293,12 +4482,17 @@ claim and do not read or hash today's published bundle.
 
 Summary shows identity, historical timing, status, actual evaluated scope and
 check count, returned finding count, counts by code, affected-chain/command/
-artifact counts, and overlap count. Empty, incomplete, and clear are distinct.
+artifact counts, and overlap count. Summaries of current validations also show primary batch
+counts by type/grouping reason, batch-size range, assigned direct finding count,
+and fallback finding count. Use these stored aggregates for coverage assessment;
+related links do not multiply counts. Empty, incomplete, and clear are distinct.
 Finding rows provide the exact code, subject or subject reference, observed
 condition, violated rule, and related command locators. Command detail includes
 document/fence/ordinal and scalar command context; large text, relationship
-lists, and collections use counts and exact query references. Cross-entry
-context remains marked read-only. Every reference returned by any view has a
+lists, and collections use counts and exact query references. Provenance-chain
+cross-entry context remains marked read-only. Batch views distinguish affected
+entries from dependency-only context; grouping itself grants no repair authority.
+Every reference returned by any view has a
 supported command that retrieves it within the same result.
 
 Ordinary per-log text reports and new inspection views have a 16 KiB UTF-8

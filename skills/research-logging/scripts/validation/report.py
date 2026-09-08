@@ -150,19 +150,10 @@ def batch_area_results(
     record: MechanicalGeneratedRecord,
     projection: Mapping[str, object],
 ) -> Mapping[str, str]:
-    """Return the chain-aware three-column cross-log summary."""
+    """Count primary repair work, evidence targets, and confirmation commands."""
 
     chains = _batch_groups(projection, "chains")
     unresolved = _batch_groups(projection, "unresolved")
-    structure_chains = {
-        str(chain["chain_id"])
-        for chain in chains
-        if _group_has_structure(chain, status=CheckStatus.FAIL.value)
-    }
-    unassigned_structure_groups = sum(
-        _group_has_structure(group, status=CheckStatus.FAIL.value)
-        for group in unresolved
-    )
     structure_incomplete = any(
         _group_has_structure(chain, status=CheckStatus.UNAVAILABLE.value)
         for chain in chains
@@ -185,23 +176,55 @@ def batch_area_results(
     evidence_incomplete = any(
         group.status is CheckStatus.UNAVAILABLE for group in evidence_groups
     )
-    evidence_count = sum(
-        group.status is CheckStatus.FAIL for group in evidence_groups
-    )
+    evidence_count = sum(group.status is CheckStatus.FAIL for group in evidence_groups)
     return {
         "Structure": (
-            "—"
-            if structure_incomplete
-            else _batch_structure_count(
-                len(structure_chains), unassigned_structure_groups
-            )
+            "—" if structure_incomplete else _repair_structure_count(projection)
         ),
         "Evidence": "—" if evidence_incomplete else _batch_count(evidence_count),
         "Confirmation": _batch_count(len(confirmation_commands)),
     }
 
 
-def _structure_finding(finding: Mapping[str, object]) -> bool:
+def _repair_structure_count(projection: Mapping[str, object]) -> str:
+    findings = {
+        finding["identity"]: finding
+        for group in (
+            *_batch_groups(projection, "chains"),
+            *_batch_groups(projection, "unresolved"),
+        )
+        for finding in _batch_findings(group)
+    }
+    counts = {"chain": 0, "structural": 0, "inspection": 0}
+    for batch in _batch_groups(projection, "repair_batches"):
+        members = batch.get("primary_finding_ids", ())
+        if not isinstance(members, (list, tuple)) or not any(
+            structure_finding(findings.get(identity, {})) for identity in members
+        ):
+            continue
+        category = (
+            "inspection"
+            if batch["grouping_reason"] == "inspection_group"
+            else str(batch["batch_type"])
+        )
+        counts[category] += 1
+    return format_structure_counts(counts)
+
+
+def format_structure_counts(counts: Mapping[str, int]) -> str:
+    """Format completed primary batch counts in the cross-log Structure order."""
+    return (
+        " + ".join(
+            f"{count} {_plural(count, name) if name == 'chain' else name}"
+            for name in ("chain", "structural", "inspection")
+            if (count := counts.get(name, 0))
+        )
+        or "Clear"
+    )
+
+
+def structure_finding(finding: Mapping[str, object]) -> bool:
+    """Classify direct Structure findings independently of primary ownership."""
     if finding.get("status") not in {
         CheckStatus.FAIL.value,
         CheckStatus.UNAVAILABLE.value,
@@ -231,7 +254,7 @@ def _group_has_structure(
     group: Mapping[str, object], *, status: str | None = None
 ) -> bool:
     return any(
-        _structure_finding(finding)
+        structure_finding(finding)
         and (status is None or finding.get("status") == status)
         for finding in _batch_findings(group)
     )
@@ -257,15 +280,6 @@ def _batch_findings(
 
 def _batch_count(count: int) -> str:
     return "Clear" if count == 0 else str(count)
-
-
-def _batch_structure_count(chain_count: int, unassigned_count: int) -> str:
-    if unassigned_count == 0:
-        return _batch_count(chain_count)
-    if chain_count == 0:
-        return f"{unassigned_count} unassigned"
-    chain = "chain" if chain_count == 1 else "chains"
-    return f"{chain_count} {chain} + {unassigned_count} unassigned"
 
 
 def unavailable_explanation(record: MechanicalGeneratedRecord) -> str | None:

@@ -29,6 +29,7 @@ class ProvenanceResult:
     lineage: tuple[tuple[str, str], ...]
     findings: tuple[ProvenanceFinding, ...]
     dependency_projection: str
+    evaluated_materials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class _WalkTrace:
     lineage: tuple[tuple[str, str], ...]
     support: tuple[Mapping[str, object], ...]
     findings: tuple[tuple[str, ProvenanceFinding], ...]
+    evaluated_materials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -259,6 +261,7 @@ class _WalkState:
     origin_boundary_cache: MutableMapping[
         tuple[str, int], ProvenanceFinding | None
     ] | None
+    evaluated_materials: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -375,6 +378,7 @@ def _evaluate_provenance(
         tuple(state.lineage),
         tuple(state.findings),
         dependency,
+        tuple(sorted(state.evaluated_materials)),
     )
 
 
@@ -561,6 +565,7 @@ def _walk_material(
     starting: bool,
     depth: int,
 ) -> None:
+    state.evaluated_materials.add(material)
     try:
         if depth > MAX_LINEAGE_DEPTH:
             _fail(
@@ -673,6 +678,23 @@ def _starting_directory_producer(
             },
         )
     return exact[0]
+
+
+def _covering_directory_producers(
+    material: str, matches: Sequence[DirectoryProducerMatch]
+) -> tuple[Invocation, ...]:
+    """Select declared roots covering a directory; membership is checked separately."""
+
+    return tuple(
+        match.producer
+        for match in matches
+        if any(
+            collection.direction == "output"
+            and collection.mechanism == "directory"
+            and _within(Path(material), _collection_root(match.producer, collection))
+            for collection in match.producer.collections
+        )
+    )
 
 
 def _check_producer_ready(
@@ -825,6 +847,7 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
             (canonical_json(finding.as_dict()), finding)
             for finding in trace_state.findings
         ),
+        tuple(sorted(trace_state.evaluated_materials)),
     )
     cache[identity] = trace
     _merge_walk_trace(trace, state)
@@ -832,6 +855,8 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
 
 def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
     """Replay one cached root trace with normal result-level deduplication."""
+
+    state.evaluated_materials.update(trace.evaluated_materials)
 
     for producer in trace.producers:
         if producer not in state.producer_seen:
@@ -892,6 +917,7 @@ def _walk_directory_input(
 ) -> None:
     resource = relationship.input_resource
     assert resource is not None
+    state.evaluated_materials.add(resource.canonical_target)
     if relationship.origin:
         _require_origin_boundary_cached(relationship.path, resource, state)
         return
@@ -899,30 +925,37 @@ def _walk_directory_input(
         resource.canonical_target,
         before_sequence=consumer.sequence,
     )
-    exact = tuple(match.producer for match in matches if match.exact_directory)
+    owners = _covering_directory_producers(resource.canonical_target, matches)
     producers_within = {
         match.producer.identity for match in matches if match.member_output
     }
-    exact_ids = {invocation.identity for invocation in exact}
+    owner_ids = {invocation.identity for invocation in owners}
     overlapping = {
-        match.producer.identity for match in matches if match.overlapping_directory
+        match.producer.identity
+        for match in matches
+        if match.overlapping_directory and match.producer.identity not in owner_ids
     }
-    conflicts = (producers_within - exact_ids) | overlapping
-    if len(exact) != 1 or conflicts:
+    conflicts = (producers_within - owner_ids) | overlapping
+    if len(owners) != 1 or conflicts:
         _fail(
             "directory.producer.conflict",
             resource.name,
             {
-                "exact_producers": [item.identity for item in exact],
+                "material": resource.canonical_target,
+                "covering_producers": [item.identity for item in owners],
                 "conflicts": sorted(conflicts),
             },
         )
-    owner = exact[0]
+    owner = owners[0]
     if owner not in state.producer_index.outputs.get(relationship.path, ()):
         _fail(
             "directory.producer.conflict",
             resource.name,
-            {"missing_member": relationship.path, "producer": owner.identity},
+            {
+                "material": resource.canonical_target,
+                "missing_member": relationship.path,
+                "producer": owner.identity,
+            },
         )
     _walk_material(
         relationship.path,

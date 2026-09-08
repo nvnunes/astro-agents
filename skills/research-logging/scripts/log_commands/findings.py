@@ -18,6 +18,7 @@ from validation.mechanical_results import (
     MechanicalGeneratedRecord,
     MechanicalResultContractError,
 )
+from validation.repair_batch_contract import valid_repair_projection
 
 from .context import LogContext
 from .model import ActionError
@@ -63,9 +64,7 @@ def list_findings(
         "family": sorted(set(filters.families)),
         "subject": sorted(set(filters.subjects)),
     }
-    chains = [
-        value for value in _all_groups(projection) if _matches(value, selected)
-    ]
+    chains = [value for value in _all_groups(projection) if _matches(value, selected)]
     summaries = [_summary(value, selected) for value in chains]
     result: dict[str, object] = {
         "chains": summaries,
@@ -73,7 +72,7 @@ def list_findings(
         "matched_chains": len(chains),
         "matched_entries": len({str(value["entry"]) for value in chains}),
         "matched_findings": sum(_matching_count(value) for value in summaries),
-        "projection_id": projection["projection_id"],
+        "validation_id": projection["validation_id"],
         "result_date": record.result_date,
         "schema": LIST_SCHEMA,
         "summary": record.summary,
@@ -83,18 +82,18 @@ def list_findings(
 
 
 def batch_findings(
-    log: LogContext, *, projection_id: str, entry: str, chain_id: str
+    log: LogContext, *, validation_id: str, entry: str, chain_id: str
 ) -> dict[str, object]:
     """Return one complete recorded chain and every attached direct finding."""
 
     record = _load_record(log)
     projection = load_batch_projection(log, record=record)
-    current_id = projection["projection_id"]
-    if projection_id != current_id:
+    current_id = projection["validation_id"]
+    if validation_id != current_id:
         raise ActionError(
-            "findings.projection_superseded",
-            f"requested projection {projection_id!r}; "
-            f"current projection is {current_id!r}",
+            "findings.validation_superseded",
+            f"requested validation {validation_id!r}; "
+            f"current published validation is {current_id!r}",
         )
     matches = [
         value
@@ -102,14 +101,12 @@ def batch_findings(
         if value.get("entry") == entry and value.get("chain_id") == chain_id
     ]
     if not matches:
-        raise ActionError(
-            "findings.chain.unknown", f"unknown batch {entry}:{chain_id}"
-        )
+        raise ActionError("findings.chain.unknown", f"unknown batch {entry}:{chain_id}")
     if len(matches) != 1:
-        raise ActionError("findings.projection.malformed", "duplicate batch identity")
+        raise ActionError("findings.validation.malformed", "duplicate batch identity")
     result = {
         "batch": dict(matches[0]),
-        "projection_id": current_id,
+        "validation_id": current_id,
         "result_date": record.result_date,
         "schema": BATCH_SCHEMA,
         "summary": record.summary,
@@ -171,14 +168,17 @@ def load_batch_projection(
     path = log.root / "validation" / "batches.json"
     if path.is_symlink() or not path.is_file():
         raise ActionError(
-            "findings.projection_unavailable",
-            "published validation predates batch projection; "
+            "findings.validation_unavailable",
+            "published validation predates published validation; "
             "full validation is required",
         )
-    value = _read_json(path, maximum_bytes=MAX_PROJECTION_BYTES, label="projection")
+    value = _read_json(
+        path, maximum_bytes=MAX_PROJECTION_BYTES, label="published validation"
+    )
     required = {
         "chains",
-        "projection_id",
+        "validation_id",
+        "repair_batches",
         "record_identity",
         "result_date",
         "rules_version",
@@ -198,13 +198,14 @@ def load_batch_projection(
         or value.get("rules_version") != record.rules_version
     ):
         raise ActionError(
-            "findings.projection.malformed", "current batch projection is malformed"
+            "findings.validation.malformed",
+            "published validation is outdated or malformed; run full validation",
         )
     expected_record = hashlib.sha256(
         record.canonical_json().encode("utf-8")
     ).hexdigest()
-    projected_id = value.get("projection_id")
-    body = {key: item for key, item in value.items() if key != "projection_id"}
+    projected_id = value.get("validation_id")
+    body = {key: item for key, item in value.items() if key != "validation_id"}
     expected_id = hashlib.sha256(
         json.dumps(
             body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -212,12 +213,16 @@ def load_batch_projection(
     ).hexdigest()
     if value.get("record_identity") != expected_record or projected_id != expected_id:
         raise ActionError(
-            "findings.projection.malformed",
-            "current batch projection identity does not match validation",
+            "findings.validation.malformed",
+            "current published validation identity does not match validation",
         )
     if not _valid_projection_groups(value):
         raise ActionError(
-            "findings.projection.malformed", "current batch group is malformed"
+            "findings.validation.malformed", "current batch group is malformed"
+        )
+    if not valid_repair_projection(value, record):
+        raise ActionError(
+            "findings.validation.malformed", "invalid primary repair membership"
         )
     return value
 
@@ -297,8 +302,7 @@ def _valid_projection_groups(projection: Mapping[str, object]) -> bool:
     return all(
         isinstance(value, dict) and _valid_chain(value) for value in chains
     ) and all(
-        isinstance(value, dict) and _valid_unresolved(value)
-        for value in unresolved
+        isinstance(value, dict) and _valid_unresolved(value) for value in unresolved
     )
 
 
@@ -397,12 +401,14 @@ def _valid_command(value: Mapping[str, object]) -> bool:
         "outputs",
         "tokens",
     }
+    if "script" in value:
+        required.add("script")
     collections = value.get("collections")
     return (
         set(value) == required
+        and ("script" not in value or isinstance(value["script"], str))
         and all(
-            isinstance(value.get(key), str)
-            for key in ("document", "entry", "identity")
+            isinstance(value.get(key), str) for key in ("document", "entry", "identity")
         )
         and all(isinstance(value.get(key), int) for key in ("fence", "ordinal"))
         and _string_list(value.get("tokens"))
@@ -410,8 +416,7 @@ def _valid_command(value: Mapping[str, object]) -> bool:
         and _valid_relationships(value.get("outputs"))
         and isinstance(collections, list)
         and all(
-            isinstance(item, dict) and _valid_collection(item)
-            for item in collections
+            isinstance(item, dict) and _valid_collection(item) for item in collections
         )
     )
 
@@ -461,9 +466,7 @@ def _valid_registry(value: Mapping[str, object]) -> bool:
             for key in ("entry", "kind", "location", "name", "path")
         )
         and isinstance(value.get("origin"), bool)
-        and (
-            "fingerprint" not in value or isinstance(value.get("fingerprint"), dict)
-        )
+        and ("fingerprint" not in value or isinstance(value.get("fingerprint"), dict))
         and (
             ("from_entry" not in value and "read_only" not in value)
             or (
@@ -516,9 +519,7 @@ def _finding_matches(
                 for family in filters["family"]
             )
         )
-        and (
-            not filters["subject"] or finding.get("subject") in filters["subject"]
-        )
+        and (not filters["subject"] or finding.get("subject") in filters["subject"])
     )
 
 
@@ -563,7 +564,7 @@ def _require_response_bound(
         return
     raise ActionError(
         "findings.response.too_large",
-        "matching projection exceeds the response bound: "
+        "matching validation exceeds the response bound: "
         f"entries={len({str(value['entry']) for value in groups})} "
         f"chains={len(groups)} findings="
         f"{sum(len(_sequence_items(value.get('findings'))) for value in groups)}",

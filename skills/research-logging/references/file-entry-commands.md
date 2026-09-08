@@ -79,20 +79,21 @@ values only in script constants, implicit defaults, or prose. If explicit
 options would be unwieldy, retain a manifest of resolved settings and expose
 its path in the command.
 
-Expose every retained entry-local output through a stable relative path value
-in the command. When a command deliberately writes elsewhere in the current
-Git project, spell the target as `<project>/...`; raw absolute paths and parent
-traversal are invalid. A collection may use a directory path value. A retained
-command log may instead use an explicit shell capture target. A retained
-manifest is an ordinary named file input and never expands other relationships.
+Declare every retained output at its stable entry-relative location, or at
+`<project>/...` when it belongs elsewhere in the current Git project. Use the
+matching named token in the command, including directory and capture targets.
+A retained manifest is an ordinary named file input and never expands other
+relationships.
 
 Treat one `pyrun` output directory as one artifact only when that invocation
 owns the complete directory. Use a leaf directory for one model and an
 enclosing study directory only when one invocation produces the complete
 study. Do not also declare its members as separate outputs or let another
 invocation write inside the owned directory. `pyrun` records the complete
-directory as one output artifact even when no later work consumes it; do not
-register an output-only bundle merely to establish that ownership.
+directory as one output artifact even when no later work consumes it. Register
+that directory once as a generated artifact. A later command may consume a
+child directory covered by that exclusive producer and its recorded membership;
+do not declare the child as another output of the same invocation.
 
 Make evidence-relevant input and output relationships mechanically visible.
 Prefer a natural option name whose complete leading or trailing token is

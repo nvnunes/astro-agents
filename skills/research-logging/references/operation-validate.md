@@ -104,12 +104,10 @@ explanations for incomplete or blocked results. The batch report likewise
 includes every discovered log and every exceptional explanation even when the
 command exits nonzero.
 
-In the batch table, a completed Structure result counts distinct failed command
-chains. When structural finding groups cannot be assigned safely to a command
-chain, the same cell retains both quantities as `N chains + U unassigned`, or
-`U unassigned` when no failed chain was assigned. Do not repeat the unassigned-
-group count below the table. `—` is reserved for an unavailable or otherwise
-incomplete Structure evaluation; zero remains `Clear`.
+In the cross-log table, Structure counts primary repair batches as chains,
+structural batches, and inspection groups. Related chain links do not add work;
+inspection groups establish no common cause. `—` marks incomplete Structure
+evaluation; completed zero counts remain `Clear`.
 
 Structured fields remain available with `--format json`; they are not an
 additional agent reporting task. Use `results show --path <log> --id <result-id>`
@@ -147,7 +145,7 @@ Pin that ID for subsequent views:
 
 Request only missing command, artifact, collection, or value detail through
 `results` commands. Do not duplicate queryable output in files or parse JSON to
-reconstruct reports. For older publications without a cached result, use
+reconstruct reports. For current publications without a cached result, use
 `log findings list` or `log findings show` with exact selectors; cache absence
 does not authorize another validation. Cached results are historical and can
 be superseded or cleared; record conclusions independently of their IDs.

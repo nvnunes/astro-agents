@@ -5,7 +5,10 @@ Use this prompt to review the project's agent surface as one combined validation
 
 Treat the requested project or target root as the primary review object. Review-system or validation-contract issues are secondary findings and should be included only when they materially affect the completeness, correctness, or discoverability of the requested review.
 
-Treat this file as the main internal workflow reference for `skills/agent-surface-review/SKILL.md`.
+Use this file for an explicitly requested full review selected by
+`skills/agent-surface-review/SKILL.md`. Bounded change reviews use the focused
+route in that entrypoint. This workflow retains the combined documentation
+review and coverage snapshot within the requested target.
 
 ## Inputs
 

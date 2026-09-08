@@ -18,8 +18,19 @@ directly, including:
 - human-facing `README.md` files or `docs/` files that agents are expected to consult
 - project-local validation, review, skill-selection, or source-of-truth instructions
 
-For these changes, use `$agent-surface-review` before treating the work as
-complete.
+For changes to agent instructions, use `$agent-surface-review` before treating the work as
+complete. A bounded change uses its focused route: changed instructions,
+affected contracts, and necessary consumers. An explicitly requested full
+review uses the full workflow. Documentation-only changes use
+`$documentation-surface-review` before completion; documents that
+change agent workflow or validation instructions remain part of the combined
+agent-surface review.
+
+Pair with documentation-surface review when documentation organization,
+source-of-truth ownership, profile, or completeness changes. A routine
+operation-reference edit does not automatically require a full documentation
+architecture review. Keep the project's applicable checks active on either
+route.
 
 Keep project-specific validation commands and completion expectations in this
 document. Shared agent-surface review checks the agent-facing surface; it does
@@ -53,9 +64,15 @@ pytest
 git diff --check
 ```
 
-Document which commands are required for routine changes, which commands are
-required only for specific areas, and when manual review is acceptable because no
-automated check exists.
+Keep the ordinary completion gates here. If detailed guidance becomes long,
+move it into directly linked references and use a change-to-check table with
+the trigger, required check, milestone, and reference. Separate mandatory,
+conditional, and optional checks so readers need not load unrelated workflows.
+State when manual review is appropriate because no automated check exists.
+
+Beside each gate, specify what must pass, what work failure blocks, and what
+independent work can continue. Repeat checks only when relevant state changes
+or a failure remains unresolved.
 
 ## Completion Standard
 

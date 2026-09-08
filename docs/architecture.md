@@ -275,7 +275,7 @@ Future validation changes must preserve these invariants:
 Use skills as the primary way to review the agent surface, code quality, and project upgrades:
 
 - `skills/agent-surface-review/SKILL.md`
-  - combined review of prompts, `AGENTS.md`, `SKILL.md`, instruction scope, workflow behavior, documentation-surface review output, and project-local validation expectations
+  - focused review of changed agent instructions, affected contracts, and necessary consumers; explicit full reviews retain the combined workflow and coverage snapshot
 - `skills/documentation-surface-review/SKILL.md`
   - documentation surface profile selection, profile-scoped documentation review, and documentation completion checks
 - `skills/code-quality-review/SKILL.md`
@@ -283,7 +283,17 @@ Use skills as the primary way to review the agent surface, code quality, and pro
 - `skills/project-upgrade-planning/SKILL.md`
   - review-led upgrade planning against `skills/project-upgrade-planning/references/upgrade-model.md`
 
-Use `docs/testing.md` for the completion bar and validation requirements.
+Use [docs/testing.md](testing.md) as the short validation router. Its linked
+`docs/testing/` references own commands and detailed requirements for agent
+surfaces, research-logging tools, and optional model evaluations. Read only the
+reference selected by the changed scope.
+
+Agent-surface review selects scope before loading its workflow. Documentation
+organization, ownership, profile, or completeness changes trigger the
+applicable documentation-surface review; routine operation-reference changes
+do not automatically load that architecture workflow. Full agent-surface
+review retains the profile-scoped documentation assessment. Local validation
+requirements remain active for either route.
 
 ## Maintenance Expectations
 

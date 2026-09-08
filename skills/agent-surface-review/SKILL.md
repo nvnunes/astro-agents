@@ -5,14 +5,22 @@ description: Review agent surfaces, AGENTS.md files, SKILL.md files, prompt file
 
 # Agent Surface Review
 
-Use this skill for combined agent-surface validation.
+For a bounded change, review the changed instructions, affected contracts,
+and necessary consumers. Select references before loading them:
 
-Start with `references/full-agent-surface-review.md` for the combined workflow. Load narrower references only as needed:
+- `references/prompt-writing-review.md` for prompt and skill quality.
+- `references/scope-and-workflow-review.md` for instruction ownership and
+  workflow behavior.
+- `references/full-agent-surface-review.md` for an explicitly requested full
+  review within the requested target.
+- Pair with `$documentation-surface-review` when documentation organization,
+  ownership, profile, or completeness is affected, or for a full review.
+  A routine operation-reference edit alone does not trigger that workflow.
+- `references/runtime-terminology-guard.md` when runtime or control-flow
+  terminology materially affects the review.
 
-- `references/prompt-writing-review.md` for `AGENTS.md`, `SKILL.md`, and prompt-file quality.
-- `references/scope-and-workflow-review.md` for instruction scope, workflow behavior, scope ownership, and prompt role drift.
-- Pair with `$documentation-surface-review` for documentation surface profile selection and profile-scoped documentation review.
-- `references/runtime-terminology-guard.md` when agent-facing runtime, routing, instruction, context, or control-flow terminology materially affects the review.
-- the target project's local validation source, usually `docs/testing.md`, when judging validation requirements and completion standards.
+Follow the target project's validation requirements, usually in `docs/testing.md`.
 
-Return findings first, ordered by severity, then concrete corrective actions. Keep review path summaries short and name only material sources.
+Return findings by severity, followed by corrective actions. State the reviewed
+scope and include a short review path summary naming only material sources.
+Full reviews use the full reference's output requirements.

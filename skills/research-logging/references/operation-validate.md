@@ -102,6 +102,13 @@ explanations for incomplete or blocked results. The batch report likewise
 includes every discovered log and every exceptional explanation even when the
 command exits nonzero.
 
+In the batch table, a completed Structure result counts distinct failed command
+chains. When structural finding groups cannot be assigned safely to a command
+chain, the same cell retains both quantities as `N chains + U unassigned`, or
+`U unassigned` when no failed chain was assigned. Do not repeat the unassigned-
+group count below the table. `—` is reserved for an unavailable or otherwise
+incomplete Structure evaluation; zero remains `Clear`.
+
 The other structured fields remain available to callers and establish exit
 behavior, but are not an additional agent reporting task. For
 `unsupported_metadata`, stop after presenting the report and request separate

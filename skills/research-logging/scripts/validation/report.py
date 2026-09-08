@@ -159,10 +159,17 @@ def batch_area_results(
         for chain in chains
         if _group_has_structure(chain, status=CheckStatus.FAIL.value)
     }
+    unassigned_structure_groups = sum(
+        _group_has_structure(group, status=CheckStatus.FAIL.value)
+        for group in unresolved
+    )
     structure_incomplete = any(
         _group_has_structure(chain, status=CheckStatus.UNAVAILABLE.value)
         for chain in chains
-    ) or any(_group_has_structure(group) for group in unresolved)
+    ) or any(
+        _group_has_structure(group, status=CheckStatus.UNAVAILABLE.value)
+        for group in unresolved
+    )
     confirmation_commands = {
         producer
         for group in (*chains, *unresolved)
@@ -183,22 +190,15 @@ def batch_area_results(
     )
     return {
         "Structure": (
-            "—" if structure_incomplete else _batch_count(len(structure_chains))
+            "—"
+            if structure_incomplete
+            else _batch_structure_count(
+                len(structure_chains), unassigned_structure_groups
+            )
         ),
         "Evidence": "—" if evidence_incomplete else _batch_count(evidence_count),
         "Confirmation": _batch_count(len(confirmation_commands)),
     }
-
-
-def batch_unresolved_explanation(projection: Mapping[str, object]) -> str | None:
-    """Explain an unresolved structural batch without exposing machine detail."""
-
-    if any(
-        _group_has_structure(group)
-        for group in _batch_groups(projection, "unresolved")
-    ):
-        return "Structure finding scope could not be assigned to a command chain"
-    return None
 
 
 def _structure_finding(finding: Mapping[str, object]) -> bool:
@@ -257,6 +257,15 @@ def _batch_findings(
 
 def _batch_count(count: int) -> str:
     return "Clear" if count == 0 else str(count)
+
+
+def _batch_structure_count(chain_count: int, unassigned_count: int) -> str:
+    if unassigned_count == 0:
+        return _batch_count(chain_count)
+    if chain_count == 0:
+        return f"{unassigned_count} unassigned"
+    chain = "chain" if chain_count == 1 else "chains"
+    return f"{chain_count} {chain} + {unassigned_count} unassigned"
 
 
 def unavailable_explanation(record: MechanicalGeneratedRecord) -> str | None:

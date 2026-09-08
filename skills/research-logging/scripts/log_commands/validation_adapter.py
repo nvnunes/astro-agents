@@ -18,7 +18,6 @@ from validation.report import (
     BATCH_AREA_NAMES,
     ValidationBatchReportRow,
     batch_area_results,
-    batch_unresolved_explanation,
     compose_validation_batch_report,
     unavailable_explanation,
 )
@@ -239,14 +238,6 @@ def _batch_row(
             "Validation did not produce a batch projection",
         )
     log_root = summary.with_suffix("")
-    explanations = tuple(
-        value
-        for value in (
-            unavailable_explanation(outcome.record),
-            batch_unresolved_explanation(outcome.projection),
-        )
-        if value is not None
-    )
     return ValidationBatchReportRow(
         title=title,
         summary=summary.resolve().as_posix(),
@@ -256,7 +247,7 @@ def _batch_row(
         .as_posix(),
         published=bool(outcome.result.get("published")),
         areas=batch_area_results(outcome.record, outcome.projection),
-        explanation="; ".join(explanations) or None,
+        explanation=unavailable_explanation(outcome.record),
     )
 
 

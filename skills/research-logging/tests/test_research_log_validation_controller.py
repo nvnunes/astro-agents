@@ -271,7 +271,7 @@ class MechanicalControllerTests(unittest.TestCase):
             report,
         )
 
-    def test_batch_report_marks_unplaceable_structure_incomplete(self) -> None:
+    def test_batch_report_counts_unassigned_structure_groups(self) -> None:
         record = RESULTS.MechanicalGeneratedRecord.build(
             "docs/study.md", "test-rules", "2026-08-30", ()
         )
@@ -291,11 +291,60 @@ class MechanicalControllerTests(unittest.TestCase):
         }
         self.assertEqual(
             REPORT.batch_area_results(record, projection),
-            {"Structure": "—", "Evidence": "Clear", "Confirmation": "Clear"},
+            {
+                "Structure": "1 unassigned",
+                "Evidence": "Clear",
+                "Confirmation": "Clear",
+            },
         )
+
+    def test_batch_report_preserves_chain_and_unassigned_counts(self) -> None:
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md", "test-rules", "2026-08-30", ()
+        )
+        finding = {
+            "code": "command.syntax.invalid",
+            "scope": "conformance",
+            "status": "fail",
+        }
+        projection = {
+            "chains": [{"chain_id": "chain-1", "findings": [finding]}],
+            "unresolved": [
+                {"findings": [finding]},
+                {"findings": [finding]},
+            ],
+        }
         self.assertEqual(
-            REPORT.batch_unresolved_explanation(projection),
-            "Structure finding scope could not be assigned to a command chain",
+            REPORT.batch_area_results(record, projection),
+            {
+                "Structure": "1 chain + 2 unassigned",
+                "Evidence": "Clear",
+                "Confirmation": "Clear",
+            },
+        )
+
+    def test_batch_report_reserves_dash_for_incomplete_structure(self) -> None:
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md", "test-rules", "2026-08-30", ()
+        )
+        projection = {
+            "chains": [
+                {
+                    "chain_id": "chain-1",
+                    "findings": [
+                        {
+                            "code": "command.syntax.invalid",
+                            "scope": "conformance",
+                            "status": "unavailable",
+                        }
+                    ],
+                }
+            ],
+            "unresolved": [],
+        }
+        self.assertEqual(
+            REPORT.batch_area_results(record, projection),
+            {"Structure": "—", "Evidence": "Clear", "Confirmation": "Clear"},
         )
 
     def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:

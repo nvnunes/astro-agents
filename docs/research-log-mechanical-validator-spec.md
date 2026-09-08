@@ -4007,10 +4007,14 @@ three-column cross-log summary from the batch projection. `Structure` counts
 distinct chains containing failed Conformance, failed Provenance other than
 awaiting confirmation, or Hygiene findings. `Evidence` counts existing
 distinct Evidence finding groups. `Confirmation` counts distinct producing
-commands awaiting confirmation, deduplicated across outputs. Nonzero counts
-are bare integers and zero is `Clear`; an unplaceable structural finding makes
-Structure incomplete and receives a row explanation. Agents do not parse
-generated reports or recalculate these cells.
+commands awaiting confirmation, deduplicated across outputs. Resolved-only
+nonzero counts are bare integers and zero is `Clear`. A completed result with
+structural groups that cannot be assigned to command chains retains both
+quantities in the Structure cell as `N chains + U unassigned`, or
+`U unassigned` when no failed chain was assigned, without repeating that count
+below the table. `—` is reserved for
+an unavailable or otherwise incomplete Structure evaluation. Agents do not
+parse generated reports or recalculate these cells.
 
 Every completed publication also writes
 `research-log-batch-projection/1` to `validation/batches.json`. It contains the

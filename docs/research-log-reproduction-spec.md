@@ -690,10 +690,9 @@ The validation subsystem's persisted batch projection determines finding
 membership and admission. Reproduction must not reconstruct groups or classify
 raw check failures independently. A selected execution output must map to
 exactly one projected chain; a blocking unresolved group or ambiguous mapping
-excludes the affected work. In particular, a
-`summary.reference.target_invalid` check whose exact target is
-`provenance.output.unconfirmed` belongs to the same admissible unconfirmed
-state and does not create an additional admission blocker. A summary-target
+excludes the affected work. Summary provenance that depends on
+`provenance.output.unconfirmed` remains a non-failing dependent check and
+does not create an additional admission blocker. A summary-target
 failure with any other cause remains subject to the normal Structure,
 Evidence, or failed-Provenance-artifact gate.
 

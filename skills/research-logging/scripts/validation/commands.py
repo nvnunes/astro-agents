@@ -648,11 +648,15 @@ def _build_invocation(
                 },
             },
         )
+    # Normalize every authored output alias before collapsing shared graph paths.
+    recipe_parameters = _canonical_recipe_output_parameters(
+        command.recipe_parameters,
+        tuple(item for item in relationships if item.direction == "output"),
+        context,
+    )
+    relationships = tuple(_deduplicate_relationships(relationships, context.document))
     inputs = tuple(item for item in relationships if item.direction == "input")
     outputs = tuple(item for item in relationships if item.direction == "output")
-    recipe_parameters = _canonical_recipe_output_parameters(
-        command.recipe_parameters, outputs, context
-    )
     input_slots = _relationship_slots(inputs, collections, "input")
     output_slots = _relationship_slots(outputs, collections, "output")
     if input_slots > MAX_RELATIONSHIPS or output_slots > MAX_RELATIONSHIPS:
@@ -983,7 +987,6 @@ def _relationships(
         )
     except DataContractError as error:
         _fail(error.code, context.document, error.observed)
-    relationships = _deduplicate_relationships(relationships, context.document)
     return tuple(relationships), tuple(collections), tuple(candidates)
 
 

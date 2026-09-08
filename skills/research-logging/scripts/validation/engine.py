@@ -149,7 +149,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/directory-ownership-output-arguments-2"
+RULES_VERSION = "research-log-mechanical/output-alias-before-dedup-1"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -2821,20 +2821,17 @@ def _summary_provenance(
             CheckScope.PROVENANCE,
             dependencies=({"target": target_check.identity},),
         )
-    if target_check.status is CheckStatus.UNAVAILABLE:
-        return _failure_check(
+    if (
+        target_check.status is CheckStatus.FAIL
+        and target_check.failure is not None
+        and target_check.failure.code == "provenance.output.unconfirmed"
+    ):
+        return _dependent_check(
             check_identity,
             CheckScope.PROVENANCE,
-            _FailureSpec(
-                "summary.reference.target_invalid",
-                identity,
-                {"target_status": target_check.status.value},
-                "Summary Association",
-                target_check.identity,
-                CheckStatus.UNAVAILABLE,
-            ),
+            target_check.identity,
         )
-    if target_check.status is CheckStatus.FAIL:
+    if target_check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}:
         return _failure_check(
             check_identity,
             CheckScope.PROVENANCE,
@@ -2844,6 +2841,7 @@ def _summary_provenance(
                 {"target_status": target_check.status.value},
                 "Summary Association",
                 target_check.identity,
+                target_check.status,
             ),
         )
     return _dependent_check(

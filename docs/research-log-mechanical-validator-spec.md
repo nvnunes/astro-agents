@@ -2348,6 +2348,11 @@ not the supporting sentence, heading, interpretation, or semantic claim.
 Whether surrounding summary prose faithfully
 synthesizes the entry belongs to the Summary Fidelity review lens.
 
+When the referenced provenance check is `provenance.output.unconfirmed`, the
+summary provenance check is `not_applicable` with a dependency on that check.
+It adds no `summary.reference.target_invalid` failure and does not claim a pass.
+Other failed or unavailable provenance targets retain their summary failures.
+
 ### Association Completeness And Conflict Rules
 
 Validation constructs the active association index across one maintained log

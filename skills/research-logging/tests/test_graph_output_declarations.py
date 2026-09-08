@@ -25,6 +25,7 @@ from validation.material_graph import compose_material_graph
 from validation.output_support import resolve_output_support
 from validation.provenance import ProvenanceV2Error, evaluate_complete_provenance
 from validation.pyrun_outputs import empty_pyrun_outputs
+from validation.pyrun_state import execution_id, recipe_from_invocation
 
 
 class DirectoryOwnershipTests(unittest.TestCase):
@@ -114,6 +115,51 @@ class DirectoryOwnershipTests(unittest.TestCase):
 
 
 class OutputArgumentTests(unittest.TestCase):
+    def test_overlapping_output_aliases_preserve_the_execution_recipe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            entry = root / "docs/log/entries/entry"
+            write(entry / "data/bundle/result.csv", "value\n1\n")
+            resources = tuple(
+                build_local_input(name, kind, path, entry_root=entry, origin=False)
+                for name, kind, path in (
+                    ("bundle", "directory", "data/bundle"),
+                    ("result", "file", "data/bundle/result.csv"),
+                )
+            )
+            context = _context(root, resources)
+            arguments = (
+                ('--output-dir "<bundle>"', "--output-dir data/bundle"),
+                (
+                    '--aggregate-output "<result>"',
+                    "--aggregate-output data/bundle/result.csv",
+                ),
+                ('--output-copy="<result>"', "--output-copy=data/bundle/result.csv"),
+            )
+            for ordered in (arguments, tuple(reversed(arguments))):
+                with self.subTest(arguments=ordered):
+                    recipes = []
+                    for index in (0, 1):
+                        text = (
+                            "```bash\n./pyrun scripts/build.py "
+                            + " ".join(pair[index] for pair in ordered)
+                            + "\n```"
+                        )
+                        discovered = discover_commands(text, context)
+                        self.assertFalse(discovered.failures)
+                        invocation = discovered.invocations[0]
+                        self.assertEqual(len(invocation.outputs), 1)
+                        recipes.append(
+                            recipe_from_invocation(
+                                invocation, entry_root=entry, project_root=root
+                            )
+                        )
+                    self.assertEqual(recipes[0], recipes[1])
+                    self.assertEqual(execution_id(recipes[0]), execution_id(recipes[1]))
+                    self.assertEqual(
+                        recipes[0].outputs, (("data/bundle", "directory"),)
+                    )
+
     def test_output_declaration_is_used_without_connecting_an_orphan(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

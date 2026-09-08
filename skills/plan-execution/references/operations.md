@@ -9,10 +9,11 @@ approach or prevent its result, and resolve failures before investing further.
 
 ## Running Operations
 
-For commands that may outlast a tool call, capture output to files at launch.
-Retain the execution handle, output paths, and eventual exit status. Use the
-handle to follow the operation to completion; do not rely on the final tool
-response to preserve its output.
+For commands that may outlast a tool call, use the tool's saved-result and
+recovery interfaces when available. Retain its execution handle and result ID;
+capture output to files at launch when the tool does not retain queryable results.
+Follow the handle to completion and retain the exit status. Do not rely on the
+final tool response to preserve the result or duplicate retrievable payloads.
 
 Use existing status, wait, or recovery interfaces before retrying an uncertain
 launch; a missing output file does not establish that nothing ran.

@@ -33,6 +33,7 @@ FAMILIES = (
     "reproduce",
     "reorganize",
     "retention",
+    "results",
     "validate",
     "validate-batch",
 )
@@ -69,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "discover": _dispatch_discover,
             "findings": _dispatch_findings,
             "reproduce": _dispatch_reproduce,
+            "results": _dispatch_results,
             "validate": _dispatch_validate,
             "validate-batch": _dispatch_validate_batch,
         }
@@ -672,12 +674,14 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     parser.add_argument("--recompute", action="store_true")
     parser.add_argument("--recompute-validation", action="store_true")
     parser.add_argument("--recompute-fingerprints", action="store_true")
+    parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
     from .validation_adapter import ValidationOptions, run_validate
 
     return run_validate(
         path=args.path,
         root=args.root,
+        output_format=args.format,
         options=ValidationOptions(
             result_date=args.date,
             dry_run=args.dry_run,
@@ -752,6 +756,7 @@ def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
     parser.add_argument("--projection", required=True)
     parser.add_argument("--entry", required=True)
     parser.add_argument("--chain", required=True)
+    parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
     from .batch_validation import validate_batch
 
@@ -761,7 +766,8 @@ def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
         entry=args.entry,
         chain_id=args.chain,
     )
-    print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    from .inspection_cli import print_producer
+    print_producer(value, args.path, args.format)
     return 0 if complete else 2
 
 
@@ -847,6 +853,8 @@ def _dispatch_findings(arguments: Sequence[str]) -> int:
     showing = actions.add_parser("show", help="Show one published finding")
     showing.add_argument("--path", required=True, type=Path)
     showing.add_argument("--id", required=True)
+    for subparser in (listing, batch, showing):
+        subparser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
     from .findings import FindingFilters, batch_findings, list_findings, show_finding
 
@@ -872,5 +880,12 @@ def _dispatch_findings(arguments: Sequence[str]) -> int:
         )
     else:
         result = show_finding(log, check_id=args.id)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    from .inspection_cli import print_findings
+    print_findings(result, log.root, args.format)
     return 0
+
+
+def _dispatch_results(arguments: Sequence[str]) -> int:
+    from .inspection_cli import run_results
+
+    return run_results(arguments)

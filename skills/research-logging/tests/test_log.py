@@ -334,7 +334,9 @@ class LogValidationRouteTests(unittest.TestCase):
             root = Path(directory)
             logical, _ = fixture(root)
             common = ("--date", "2026-09-03", "--dry-run", "--recompute")
-            current = run(root, "validate", "--path", str(logical), *common)
+            current = run(
+                root, "validate", "--format", "json", "--path", str(logical), *common
+            )
             self.assertEqual(current.returncode, 0, current.stderr)
             current_payload = json.loads(current.stdout)
             self.assertEqual(current_payload["status"], "complete_findings")
@@ -347,7 +349,9 @@ class LogValidationRouteTests(unittest.TestCase):
                 [logical.with_suffix(".md").resolve().as_posix()],
             )
 
-            batch = run(root, "validate", "--root", str(root), *common)
+            batch = run(
+                root, "validate", "--format", "json", "--root", str(root), *common
+            )
             self.assertEqual(batch.returncode, current.returncode, batch.stderr)
             batch_payload = json.loads(batch.stdout)
             batch_result = batch_payload["results"][0]
@@ -421,10 +425,7 @@ class LogLockTests(unittest.TestCase):
                 entry / "e001.md",
                 entry / "data.json",
             )
-            before = {
-                path: path.read_bytes()
-                for path in tracked
-            }
+            before = {path: path.read_bytes() for path in tracked}
 
             with lock.open("a+b") as handle:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -440,10 +441,16 @@ class LogLockTests(unittest.TestCase):
                     "data/new.txt",
                 )
                 publishing = run_log_process(
-                    root, "validate", "--path", str(logical)
+                    root, "validate", "--format", "json", "--path", str(logical)
                 )
                 dry_run = run_log_process(
-                    root, "validate", "--path", str(logical), "--dry-run"
+                    root,
+                    "validate",
+                    "--format",
+                    "json",
+                    "--path",
+                    str(logical),
+                    "--dry-run",
                 )
                 runner = subprocess.run(
                     [sys.executable, str(PYRUN), "scripts/noop.py"],
@@ -459,10 +466,7 @@ class LogLockTests(unittest.TestCase):
             self.assertEqual(runner.returncode, 1, runner.stderr)
             self.assertIn("operation conflict", runner.stderr)
             self.assertEqual(
-                {
-                    path: path.read_bytes()
-                    for path in tracked
-                },
+                {path: path.read_bytes() for path in tracked},
                 before,
             )
             self.assertFalse((logical / "validation.md").exists())

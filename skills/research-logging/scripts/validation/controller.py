@@ -103,6 +103,9 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         raise ValidationControllerError(
             f"summary must not be a symlink: {request.summary}"
         )
+    from .inspection import retain_result, timestamp
+
+    started_at = timestamp()
     requested_summary = request.summary.absolute()
     requested_log_root = requested_summary.with_suffix("")
     starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None = None
@@ -153,13 +156,19 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 raise ValidationControllerError(
                     "research-log root changed while acquiring its operation lock"
                 )
-            return _run_validation(
+            result = _run_validation(
                 request,
                 summary,
                 log_root,
                 result_date,
                 starting_snapshot=starting_snapshot,
             )
+            if request.publish and "record" in result:
+                result["_inspection_id"] = retain_result(
+                    summary, result, result["record"], result["_batch_projection"],
+                    {"kind": "full", "started_at": started_at},
+                )
+            return result
     except (
         FingerprintCacheError,
         OSError,

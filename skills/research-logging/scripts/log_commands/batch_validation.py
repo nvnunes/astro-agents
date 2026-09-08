@@ -1,4 +1,4 @@
-"""Lock-free ephemeral validation of one projected repair batch."""
+"""Selected-entry batch evaluation with disposable inspection-result caching."""
 
 from __future__ import annotations
 
@@ -25,8 +25,13 @@ BATCH_VALIDATION_SCHEMA = "research-log-batch-validation/1"
 MAX_SNAPSHOT_PATHS = 1_000_000
 
 
-def validate_batch(
-    log: LogContext, *, projection_id: str, entry: str, chain_id: str
+def _evaluate_batch(
+    log: LogContext,
+    *,
+    projection_id: str,
+    entry: str,
+    chain_id: str,
+    observed: dict[str, object],
 ) -> tuple[dict[str, object], bool]:
     """Evaluate one current projected chain and return result plus completeness."""
 
@@ -55,6 +60,10 @@ def validate_batch(
             ).hexdigest(),
         )
         current = _current_groups(old, projection)
+        observed.update(
+            record=evaluation.result.as_dict(),
+            projection={**projection, "chains": current, "unresolved": []},
+        )
         after = _source_snapshot(context, old)
         if before != after:
             if attempt == 0:
@@ -361,3 +370,44 @@ def _incomplete(
         "schema": BATCH_VALIDATION_SCHEMA,
         "status": "incomplete",
     }
+
+
+def validate_batch(
+    log: LogContext, *, projection_id: str, entry: str, chain_id: str
+) -> tuple[dict[str, object], bool]:
+    """Evaluate once and cache the reconciled result without publishing reports.
+
+    The private inspection ID is removed by JSON adapters; default text uses it
+    for follow-up queries. Missing cache persistence only emits a warning.
+    """
+    from validation.inspection import retain_result, timestamp
+    from validation.inspection_store import encode
+
+    request = {
+        "kind": "batch",
+        "projection": projection_id,
+        "entry": entry,
+        "chain": chain_id,
+        "started_at": timestamp(),
+    }
+    path = log.summary.with_suffix("") / "validation/batches.json"
+    if path.is_file():
+        stat = path.stat()
+        request["published_stat"] = encode(
+            [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+        )
+    observed: dict[str, object] = {}
+    result, complete = _evaluate_batch(
+        log,
+        projection_id=projection_id,
+        entry=entry,
+        chain_id=chain_id,
+        observed=observed,
+    )
+    record = observed.get("record", {"checks": []})
+    projection = observed.get("projection", {"chains": [], "unresolved": []})
+    assert isinstance(record, dict) and isinstance(projection, dict)
+    result["_inspection_id"] = retain_result(
+        log.summary, result, record, projection, request
+    )
+    return result, complete

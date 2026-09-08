@@ -48,8 +48,7 @@ The `docs/` family owns durable source-of-truth material for `astro-agents` itse
 Use docs for architecture, usage, testing, glossary, runtime vocabulary, and
 future design notes.
 
-Research logging has three active surfaces with separate authority and one
-target reproduction contract:
+Research logging has four active surfaces with separate authority:
 
 - `skills/research-logging/` is the runtime surface containing
   the operational and authoring instructions used by agents. It is
@@ -60,10 +59,9 @@ target reproduction contract:
 - `docs/research-logging.md` is human-facing researcher documentation. It
   explains how researchers use the skill, what they should expect from it, and
   which research decisions remain theirs.
-- `docs/research-log-reproduction-spec.md` is the target normative contract for
-  command-oriented execution state and mechanical reproduction. Its status
-  section defines the prerequisite and cutover boundary; it is not an active
-  runtime contract before that cutover.
+- `docs/research-log-reproduction-spec.md` is the active normative contract for
+  command-oriented execution state and mechanical reproduction. It owns
+  `pyrun.json`, execution identity, reproduction jobs, comparison, and promotion.
 
 These surfaces must remain conceptually compatible, but they are not mirrors.
 The human guide is not a specification or completeness checklist for the agent
@@ -127,6 +125,8 @@ At the project root:
   - researcher-facing research-log workflow and responsibilities
 - `docs/research-log-mechanical-validator-spec.md`
   - normative mechanical-validator implementation contract
+- `docs/research-log-reproduction-spec.md`
+  - normative execution-state and mechanical-reproduction contract
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`

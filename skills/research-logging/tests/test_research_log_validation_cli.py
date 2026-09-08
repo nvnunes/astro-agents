@@ -59,6 +59,8 @@ class ValidationCliTests(unittest.TestCase):
             accepted = run_log(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--date",
@@ -76,6 +78,8 @@ class ValidationCliTests(unittest.TestCase):
                     separated = run_log(
                         root,
                         "validate",
+                        "--format",
+                        "json",
                         "--path",
                         str(summary.with_suffix("")),
                         "--date",
@@ -83,12 +87,12 @@ class ValidationCliTests(unittest.TestCase):
                         "--dry-run",
                         *cache_flags,
                     )
-                    self.assertEqual(
-                        separated.returncode, 0, separated.stderr
-                    )
+                    self.assertEqual(separated.returncode, 0, separated.stderr)
             rejected = run_log(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--summary",
@@ -111,6 +115,8 @@ class ValidationCliTests(unittest.TestCase):
                 completed = run_log(
                     root,
                     "validate",
+                    "--format",
+                    "json",
                     "--path",
                     str(summary.with_suffix("")),
                     "--date",
@@ -139,6 +145,8 @@ class ValidationCliTests(unittest.TestCase):
             completed = run_log(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--dry-run",
@@ -165,7 +173,7 @@ class ValidationCliTests(unittest.TestCase):
                     good_summary, _ = mechanical_log(root / good_name)
                     (root / bad_name / ".git").rmdir()
                     arguments = [
-                        "validate",
+                        "validate", "--format", "json",
                         "--root",
                         str(root),
                         "--date",
@@ -192,9 +200,7 @@ class ValidationCliTests(unittest.TestCase):
                         payload["report"],
                     )
                     self.assertIn(bad_summary.resolve().as_posix(), payload["report"])
-                    self.assertIn(
-                        "| — | — | — | Not published |", payload["report"]
-                    )
+                    self.assertIn("| — | — | — | Not published |", payload["report"])
                     self.assertIn("Validation could not start:", payload["report"])
                     self.assertEqual(
                         payload["report"].count("Not published"),
@@ -228,6 +234,8 @@ class ValidationCliTests(unittest.TestCase):
             completed = run_log(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--date",
@@ -251,6 +259,8 @@ class ValidationCliTests(unittest.TestCase):
             completed = run_log(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
             )
@@ -259,9 +269,7 @@ class ValidationCliTests(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["status"], "unsupported_metadata")
             self.assertEqual(result["code"], "validation.unsupported_metadata")
-            self.assertIn(
-                "`validation/.cache/upgrade-transactions`", result["report"]
-            )
+            self.assertIn("`validation/.cache/upgrade-transactions`", result["report"])
             self.assertEqual(
                 result["observed"]["paths"],
                 ["validation/.cache/upgrade-transactions"],

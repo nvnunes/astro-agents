@@ -80,7 +80,7 @@ frontmatter is the source of truth for its exact selection boundary.
 
 ### Research logging
 
-Research logging has three distinct surfaces with separate authority:
+Research logging has four distinct surfaces with separate authority:
 
 - [`skills/research-logging/`](skills/research-logging/) is the runtime surface containing
   the operational and authoring instructions used by agents. It is
@@ -88,13 +88,15 @@ Research logging has three distinct surfaces with separate authority:
 - [`docs/research-log-mechanical-validator-spec.md`](docs/research-log-mechanical-validator-spec.md) is the normative
   implementation contract that the mechanical-validation CLI and its
   supporting tools must follow.
+- [`docs/research-log-reproduction-spec.md`](docs/research-log-reproduction-spec.md) is the normative
+  contract for current execution state and mechanical reproduction.
 - [`docs/research-logging.md`](docs/research-logging.md) is human-facing researcher documentation. It
   explains how researchers use the skill, what they should expect from it, and
   which research decisions remain theirs.
 
 Keep these roles separate. The human guide is not a specification or
-completeness checklist for either the agent surface or the validation tools.
-The three surfaces must remain conceptually compatible, but they are not
+completeness checklist for the agent surface, validation tools, or reproduction
+tools. These surfaces must remain conceptually compatible, but they are not
 mirrors and should not be expected to repeat the same detail.
 
 ### Other starting points

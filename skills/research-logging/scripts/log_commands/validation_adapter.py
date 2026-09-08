@@ -38,6 +38,7 @@ class _ValidationOutcome:
     result: dict[str, object]
     record: MechanicalGeneratedRecord | None
     projection: Mapping[str, object] | None
+    inspection_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ def _evaluate_validation(
             recompute_fingerprints=options.recompute_fingerprints,
         )
     )
+    inspection_id = result.pop("_inspection_id", None)
     raw_record = result.get("record")
     raw_projection = result.pop("_batch_projection", None)
     record = (
@@ -83,7 +85,7 @@ def _evaluate_validation(
         else None
     )
     projection = raw_projection if isinstance(raw_projection, Mapping) else None
-    return _ValidationOutcome(_public_result(result), record, projection)
+    return _ValidationOutcome(_public_result(result), record, projection, inspection_id)
 
 
 def _public_result(result: dict[str, object]) -> dict[str, object]:
@@ -127,18 +129,26 @@ def run_validate(
     path: Path | None,
     root: Path | None,
     options: ValidationOptions,
+    output_format: str = "text",
 ) -> int:
     """Validate one resolved log or every log beneath an explicit root."""
 
     if root is None:
         try:
             summary = resolve_log(path).summary
-            result = evaluate_validation(summary, options=options)
+            outcome = _evaluate_validation(summary, options)
+            result = outcome.result
         except (ValidationControllerError, ValueError) as error:
             raise ActionError(
                 str(getattr(error, "code", "validation.failed")), str(error)
             ) from error
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        from .inspection_cli import print_producer
+
+        print_producer(
+            {**result, "_inspection_id": outcome.inspection_id},
+            summary.with_suffix(""),
+            output_format,
+        )
         return 0 if str(result.get("status")) in COMPLETED_STATUSES else 3
 
     try:
@@ -152,12 +162,16 @@ def run_validate(
     results: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
     report_rows: list[ValidationBatchReportRow] = []
+    receipts: list[str] = []
     for summary in summaries:
         title = summary.stem
         try:
             title = _summary_title(summary)
             outcome = _evaluate_validation(summary, options)
             results.append(outcome.result)
+            receipts.append(
+                f"{summary}: {outcome.inspection_id or 'result not cached'}"
+            )
             report_rows.append(_batch_row(title, summary, outcome))
         except (OSError, UnicodeError, ValidationControllerError, ValueError) as error:
             failure: dict[str, object] = {
@@ -173,19 +187,8 @@ def run_validate(
                     "Validation could not start: " + str(failure["message"]),
                 )
             )
-    print(
-        json.dumps(
-            {
-                "failures": failures,
-                "report": compose_validation_batch_report(report_rows),
-                "results": results,
-                "root": root.resolve().as_posix(),
-                "schema": BATCH_RESULT_SCHEMA,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
+    report = compose_validation_batch_report(report_rows)
+    _print_root_result(root, results, failures, (report, receipts), output_format)
     statuses = {str(result.get("status")) for result in results}
     return 0 if not failures and statuses <= COMPLETED_STATUSES else 3
 
@@ -270,3 +273,30 @@ def _blocked_batch_row(
         areas={name: "—" for name in BATCH_AREA_NAMES},
         explanation=explanation,
     )
+
+
+def _print_root_result(
+    root: Path,
+    results: list[dict[str, object]],
+    failures: list[dict[str, object]],
+    presentation: tuple[str, list[str]],
+    output_format: str,
+) -> None:
+    report, receipts = presentation
+    if output_format == "json":
+        print(
+            json.dumps(
+                {
+                    "failures": failures,
+                    "report": report,
+                    "results": results,
+                    "root": root.resolve().as_posix(),
+                    "schema": BATCH_RESULT_SCHEMA,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(report)
+        print("\n".join(receipts))

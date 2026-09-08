@@ -19,10 +19,12 @@ Default names:
 Update the current note by replacing obsolete state, not appending progress
 reports. Put the next action and blockers first. Retain only context needed to
 continue: owned work, essential tools, paths, environment and procedures,
-applicable check results, and active operation handles.
+applicable check results, and active operation handles. Use tool-owned result
+IDs for retrievable detail; do not copy their payloads into the note.
 
 History, not the plan, records execution outcomes: decision rationale,
 completed work, checks, and evidence needed to recover from failed approaches.
+Record outcomes directly in history because cached detail may expire.
 Link details; omit command narration. Group routine outcomes under stable,
 descriptive headings such as `Part 2.B — Entry 004 — Interface approved`.
 Append corrections; never rewrite entries. Link an outcome from the current

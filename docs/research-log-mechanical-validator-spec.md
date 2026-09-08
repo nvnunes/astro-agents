@@ -39,6 +39,7 @@ only with how that skill is used and what researchers should expect from it.
 - Validation: [Mechanical Validation Evaluation And
   Outcomes](#mechanical-validation-evaluation-and-outcomes) and [Current
   Implementation Boundary](#current-implementation-boundary).
+- Inspection interface: [Retained Validation Results](#retained-validation-results).
 - Extension and examples: [Future Command-Discovery Expansion If
   Warranted](#future-command-discovery-expansion-if-warranted), [Conformance
   Examples](#conformance-examples), and [Compatibility And
@@ -57,7 +58,8 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
-| `pyrun` output support | `research-log-pyrun-outputs/v1` |
+| `pyrun` execution state | `research-log-pyrun/v2`; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
 | Directory fingerprints | `research-log-directory-fingerprint/1`, `research-log-identity-files-fingerprint/1`, and `research-log-identity-patterns-fingerprint/1` |
@@ -71,6 +73,8 @@ or evolution requires it.
 | Batch projection | `research-log-batch-projection/1` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Batch validation | `research-log-batch-validation/1` |
+| Inspection cache | `research-log-inspection-store/1` (SQLite user version 1) |
+| Cached result and view | `research-log-retained-result/1` and `research-log-result-view/1` |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
@@ -2470,7 +2474,7 @@ This section defines the command-input, fingerprint, Provenance,
 retention, and Hygiene contract.
 
 The current schema and rules identifiers are listed in `Current Versions`.
-`pyrun-outputs.json` is `pyrun`-owned execution support state, not an authored
+`pyrun.json` is `pyrun`-owned execution support state, not an authored
 registry or a validator-generated report. Disposable per-log validation
 acceleration uses the listed SQLite schema and component versions. A rules
 change makes prior checks ineligible for unchanged
@@ -2933,21 +2937,25 @@ owned descendant directories retain ordinary material behavior.
 
 ### `pyrun` Output-Support Records
 
-`pyrun-outputs.json` is an entry-root mapping keyed by exact output path. It is
-owned and maintained only by `pyrun`; validators read it and agents do not edit
-it. One invocation that produces several outputs writes one record per output,
-deliberately duplicating the invocation support so later command splitting,
-merging, deletion, or output renaming can be reconciled by output identity.
+Current execution state is entry-root `pyrun.json`, with one record per exact
+recipe and its complete output set. The
+[reproduction specification](research-log-reproduction-spec.md#pyrunjson)
+owns its schema, execution identity, confirmation, and publication lifecycle.
+Mechanical validation reads it without execution or mutation and derives an
+output-keyed projection for the graph checks in this section. That internal
+projection is not another persisted execution-state file.
 
-Before running a research command, `pyrun` holds the stable entry-operation
-lock and strictly loads any existing output-support file. If a regular file is
-malformed, `pyrun` moves it without rewriting to the first unused adjacent
-`pyrun-outputs.json.bak`, `pyrun-outputs.json.2.bak`, and so on; writes one
-canonical empty current file; reports `pyrun.outputs.quarantined` with both
-paths and `repair_required:true`; and exits before command execution. It never
-overwrites a backup or infers a merge. These recognized backups are generated
-recovery state and are excluded from the artifact universe. A symlink or
-non-file at the current path is invalid and is not quarantined.
+#### Legacy Output Records And Validation Projection
+
+Mechanical validation may read `pyrun-outputs.json` when no current
+`pyrun.json` exists. If both exist, it reports `pyrun.state.conflict` rather
+than choosing or merging them. This compatibility path reads existing records;
+it never writes, migrates, or confirms them. Ordinary `pyrun` and Reproduce do
+not use it to execute research commands.
+
+The legacy file is a mapping keyed by exact output path. Each output has a
+copy of its invocation support. The following shape also describes validation's
+internal projection of current execution state, not the `pyrun.json` schema:
 
 ```json
 {
@@ -3031,7 +3039,7 @@ the shared fingerprint service and one resolved file observation is reused
 across output records and logical aliases. Execution-linked stability checks
 re-observe the same files before validation completes.
 
-A current record associates with a reconstructed invocation only when its
+A projected output record associates with a reconstructed invocation only when its
 output identity, script path, ordered parameters, and direct input names
 match. Confirmation and output, script, input, and code fingerprints are
 currentness rather than association fields. Associated records for one
@@ -3081,15 +3089,11 @@ excluded before enforcing the 256-item `code` bound. One run accepts at most
 tracing, process polling, open-file polling, post-execution source-tree scan,
 or ordinary static import discovery.
 
-`pyrun` records its current working entry root, resolves the command through
-that entry's `data.json`, and publishes output records and generated-declaration
-fingerprints only after the process
-succeeds, the script and every direct input still have their pre-execution
-identities, code observation completes, and every output can be observed
-completely. Publication replaces only records for outputs produced by that
-invocation and preserves records and declarations for other output keys. The
-registry and execution-state replacement is one guarded, rollback-capable
-publication under an entry-specific lock.
+`pyrun` resolves the command from its working entry and `data.json`. Successful
+execution, stable inputs and code, and complete output observations are required
+before publication. Replacement applies to whole executions and their complete
+output sets, as defined by
+[Atomic Publication And Replacement](research-log-reproduction-spec.md#atomic-publication-and-replacement).
 Failed execution, capture, observation, or publication confirms no record.
 
 Ordinary output parameters use the existing mechanical input/output role
@@ -3202,9 +3206,9 @@ A local directory is either a byte-complete bounded collection with a
 - A generated directory must match one exact earlier `output-directory`.
   Overlapping roots, separate member producers, or a second directory producer
   fail exclusivity.
-- One exclusive `pyrun` output-directory and one exact directory-level
-  `pyrun-outputs.json` record with the same script, parameters, and material
-  input identities form one atomic artifact. The record may remain unconfirmed,
+- One exclusive `pyrun` output-directory and its projected directory-level
+  output-support record with the same script, parameters, and material input
+  identities form one atomic artifact. The record may remain unconfirmed,
   and its output fingerprint may be stale; confirmation and current bytes are
   separate Provenance checks when the artifact is reached. Every regular-file
   descendant observed by the record belongs to the artifact and its recursive
@@ -3283,8 +3287,8 @@ the bundle's complete membership for this redundancy check.
 The Hygiene universe remains bounded regular files under each entry root,
 including first-class `data` and `images`, and excluding entry Markdown,
 `evidence.json`, `data.json`, `retention.json`, `pyrun`,
-`pyrun-outputs.json`, validator output, research-log temporary paths, and
-runtime-cache descendants.
+`pyrun.json`, legacy `pyrun-outputs.json`, their recognized recovery backups,
+validator output, research-log temporary paths, and runtime-cache descendants.
 
 A `<project>/...` output outside an entry participates in Provenance and may be
 registered as a generated input, but its location alone does not add it to the
@@ -3309,7 +3313,7 @@ declarations are reported separately and do not inflate artifact counts.
 Complete-graph output reconciliation produces one Provenance condition and one
 Hygiene condition. A current graph output whose file is absent is
 `provenance.output.missing`: it breaks Provenance and is not a Hygiene finding.
-A record in `pyrun-outputs.json` whose output key is absent from the complete
+A projected output-support record whose output key is absent from the complete
 current graph is an unmatched output. If the file also exists, it is reported
 only as `hygiene.output.unmatched`, not again as an orphan. An unmatched
 directory-output record suppresses descendant orphan findings and produces one
@@ -3394,7 +3398,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
 | `directory.producer.conflict` | provenance | A generated directory lacks one exclusive exact earlier producer. |
 | `directory.origin.conflict` | provenance | An origin directory root or member has a confirmed `pyrun` producer. |
-| `pyrun.outputs.invalid` | provenance | `pyrun-outputs.json` or one record violates its closed schema. |
+| `pyrun.outputs.invalid` | provenance | A legacy `pyrun-outputs.json` file or record violates its closed schema. |
 | `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
 | `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
 | `pyrun.output.binding_invalid` | conformance | One decoded execution has a missing, ambiguous, noncanonical, or otherwise invalid output binding. |
@@ -3565,11 +3569,11 @@ The validation and discovery operations are:
 
 <skill>/scripts/log validate --path LOG
   [--date YYYY-MM-DD] [--recompute] [--recompute-validation]
-  [--recompute-fingerprints] [--dry-run]
+  [--recompute-fingerprints] [--dry-run] [--format text|json]
 
 <skill>/scripts/log validate --root PROJECT
   [--date YYYY-MM-DD] [--recompute] [--recompute-validation]
-  [--recompute-fingerprints] [--dry-run]
+  [--recompute-fingerprints] [--dry-run] [--format text|json]
 
 <skill>/scripts/log findings list --path LOG
   [--entry ENTRY]... [--validation-area AREA]... [--code CODE]...
@@ -3764,7 +3768,7 @@ path checks only for explicitly selected records. It then applies every mapping
 and validates the complete source and destination candidates through the
 production registry, material, evidence-transformation, presentation, and
 same-log consistency contracts before publication. Empty authored registries
-are removed. `pyrun-outputs.json` is never relocated or rewritten to describe a
+are removed. Legacy `pyrun-outputs.json` is never relocated or rewritten to describe a
 new execution. The `pyrun`-owned service may retire only exact source support
 made stale by the selected transfer, and the result reports the destination
 reruns needed to create new support.
@@ -3813,8 +3817,9 @@ final research-owned snapshot checks because direct filesystem edits do not
 participate in advisory CLI locks; a failed final check rolls back any bundle
 whose installation has begun.
 
-The CLI writes one bounded JSON result envelope to standard output when
-evaluation or the unsupported-metadata preflight completes. A completed
+The CLI writes the ready-to-read report and available inspection result ID
+by default. Explicit `--format json` returns the existing bounded JSON envelope
+without additional text on stdout; JSON callers must request that flag. A completed
 published mechanical evaluation uses the validation CLI result schema listed
 in `Current Versions` and contains:
 
@@ -3830,7 +3835,7 @@ in `Current Versions` and contains:
 - `generated.human` and `generated.mechanical`, which name the installed
   generated reports.
 
-The published CLI envelope does not duplicate the complete generated record on
+The explicit JSON CLI envelope does not duplicate the complete generated record on
 standard output. `validation/results.json` owns those checks. An unpublished
 dry-run or incomplete evaluation retains the complete validation-result record
 in its result because no replacement bundle was installed. An
@@ -3857,6 +3862,7 @@ A completed published evaluation owns exactly these active generated paths:
 <log>/validation/batches.json
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
+<log>/.cache/research-log-inspection.sqlite3
 <log>/.cache/research-log-operations/log.lock
 ```
 
@@ -4042,8 +4048,8 @@ families and union within one family; there is no fuzzy matching or pagination.
 without repair advice. `batch` requires the exact current projection, entry,
 and chain IDs and returns that complete chain with all attached findings.
 
-`log validate-batch` is the Repair campaign's lock-free, write-free ephemeral
-check. It accepts one published chain identity, takes bounded selected-entry
+`log validate-batch` is the Repair campaign's lock-free selected-entry
+check with disposable inspection-result caching. It accepts one published chain identity, takes bounded selected-entry
 source snapshots before and after evaluation, and retries once when that
 selected source changes. It evaluates only the selected entry, builds a fresh
 in-memory projection, and reconciles command identity by document, fence, and
@@ -4051,7 +4057,9 @@ ordinal anchors with output overlap as the bounded fallback. Rename,
 replacement, split, and join may therefore change current chain IDs without
 losing the requested scope. The result reports current membership, findings,
 and pending overlaps as `complete_clear`, `complete_findings`, or `incomplete`.
-It acquires no operation lock and writes no result, report, cache, or metadata.
+It acquires no operation lock and writes only the inspection cache described
+below. It never replaces published validation or writes evaluation caches or
+research metadata.
 
 Finding queries distinguish absent published state
 (`findings.result.missing`), unsupported schema
@@ -4076,6 +4084,231 @@ and makes later reuse conservative. Process termination is subject to the
 per-destination atomicity boundary; a later invocation must not interpret a
 partial bundle as current. `validation.md` is composed from the authoritative
 operation records under the same lock.
+
+### Retained Validation Results
+
+Validation caches evaluated snapshots for selective inspection. This changes
+inspection and persistence, not mechanical findings or repair authority.
+
+#### Ownership And Retention
+
+Use one tool-owned SQLite database,
+`<log>/.cache/research-log-inspection.sqlite3`, with store schema
+`research-log-inspection-store/1`. It retains immutable evaluation snapshots;
+`validation/results.json`, `batches.json`, and `validation.md` continue to own
+the latest published validation. The inspection database and its companions
+are generated, Git-ignored state. Keep the latest full result and the latest
+result for each requested batch, keyed by origin projection, entry, and chain.
+Validating batch A replaces A's cached result and leaves B's available.
+A successfully stored and published full validation replaces the full result
+and clears the previous batch results. Explicit cache clearing also invalidates
+cached IDs. Execution history records outcomes and decisions in its own text;
+result IDs provide optional detail, not the sole record of completed work.
+Reevaluation creates a new result for the observed sources; it does not restore
+a missing historical ID. Inspection reports missing state without implicitly
+evaluating sources, repairing a database, or importing older publications.
+
+Store metadata, checks, commands, artifacts, collections, membership, and
+relationships as independently addressable records. Share repeated context
+within a result. Store collection membership as individually selectable members
+and long scalar values in bounded chunks, rather than one command-sized JSON
+blob. Validate source records and their relationships once during ingestion;
+indexed queries decode only selected bounded records. Small ordinary arrays may
+remain inline; collection membership remains behind a counted reference. SQL indexes are
+derived acceleration state; result content is cached evaluation state. Missing
+or corrupt content produces an explicit query error; it does not trigger
+automatic regeneration. No separate archive or index-maintenance CLI is needed.
+
+Use the existing SQLite transaction pattern with foreign keys, rollback
+journaling, and full synchronous commits. One transaction inserts the complete
+result and its listing metadata and removes the superseded batch result.
+Readers see the old result or its complete replacement; interrupted insertion
+preserves the old result and leaves no usable new ID. Concurrent producers
+serialize only the short store transaction, never evaluation. Fail a busy
+store with a precise operational error instead of application-level polling.
+Read queries use a read-only connection and no log-operation lock. Writers
+reject symlinked store paths and unsafe companions.
+An inspection encountering a journal requiring recovery reports the database error;
+only an explicit writable store operation may recover it.
+
+Storage follows the active full result and batches, rather than accumulating
+validation history. Reuse freed database pages on replacement. Do not add
+age-based eviction, configurable retention, or per-result deletion commands.
+Resource limits follow the bounded validation inputs and query views; there
+is no separate archival quota. Superseded IDs are never reused or silently
+redirected. If an ID is unavailable, report that it may have been superseded
+or cleared, without maintaining a growing tombstone history.
+
+Full-result replacement must not clear usable batch results on an operational
+failure. An incomplete full evaluation does not start a new published cycle.
+A batch finishing against a superseded full projection cannot repopulate the
+new cycle with an old result.
+
+#### Production, Identity, And Publication
+
+Each non-dry-run full or batch evaluation attempts to cache its result before
+returning, including mechanically incomplete outcomes. Operational failures
+before an evaluation exists and unsupported-metadata preflight outcomes retain
+no result. Preserve dry-run's no-result-write contract: its default text says
+the result was not cached and has no result ID. No storage change grants batch validation permission to write
+published reports, research metadata, or evaluation caches.
+
+Assign an opaque UUID result ID and monotonic per-store commit sequence (reset by explicit cache deletion). Result
+schema `research-log-retained-result/1` has the following metadata; unavailable
+values are explicit nulls with a reason, never inferred from old publications:
+
+| Field | Meaning |
+| --- | --- |
+| `result_id`, `sequence`, `schema` | Stable identity, commit ordering, and retained-result version. |
+| `summary`, `kind` | Resolved logical-log summary path; kind is `full` or `batch`. |
+| `started_at`, `finished_at`, `stored_at` | UTC timestamps for this evaluation and its store commit. |
+| `result_date`, `rules_version`, `source_schemas` | Existing calendar/report date and versions used; the report date is not the evaluation timestamp. |
+| `status`, `reason` | Existing completion classification and any incomplete reason. |
+| `source_identity` | Accepted source snapshot identity, or unavailable for an unstable/incomplete observation. |
+| `origin_projection_id`, `requested_entry`, `requested_chain` | Original batch request; null for full validation. |
+| `projection_id` | Projection produced by this evaluation, when available; distinct from the batch's origin. |
+| `evaluated_scope`, `evaluated_checks` | Full log or selected entry and its check count. |
+| `returned_scope`, `finding_count` | Full result or reconciled chain selection and its distinct returned findings. |
+
+Preserve every evaluated check in retained content. A batch's ordinary view
+selects reconciled chains and related unresolved findings, just as today;
+passing entry checks or unrelated entry findings do not expand the claimed
+batch postcondition. Include current membership and pending overlaps without
+certifying overlapping batches. An incomplete result says what was observed
+and what remained unavailable; it never uses a clear postcondition for missing
+coverage.
+
+Full validation publishes through its existing bundle transaction, then replaces
+the cached full result and clears prior batches in one SQLite transaction.
+Keep the existing log-operation lock through that update. A failed publication
+leaves the prior cache untouched. A cache write failure preserves the validation
+outcome and exit status, but reports `results.store.write_failed` on stderr;
+default text also says that no new result was cached and supplies no result ID.
+It does not roll back a successfully published bundle. Readers still identify
+any surviving old cache results as historical; batch insertion checks the
+accepted published-file identity inside its write transaction before committing. Failed or interrupted cache
+replacement cannot make an old result look like the new validation's result.
+
+An incomplete full evaluation replaces only the cached full observation,
+explicitly marked incomplete, without clearing batch results from the still
+published cycle. Complete full evaluations, including those with findings,
+start a new cycle. Preserve source-stability checks, bundle rollback, and
+conservative reuse after evaluation-cache failure. An ID identifies a saved
+observation, not present source validity.
+
+The same rule applies to writable full validation invoked after reproduction;
+it does not alter reproduction's independent confirmation/promotion outcome.
+`validate --root` retains one result per evaluated log and preserves per-log
+failure isolation. A compact root report lists each log's ID or precise
+failure; it creates no separate campaign result.
+
+#### Public Commands And Compatibility
+
+Concise, ready-to-read text is the default for `validate`, `validate-batch`,
+`findings list/show/batch`, and the new inspection queries. Producers show the
+outcome, actual scope, compact counts, saved result ID when available, and
+commands for further inspection. Do not print the complete payload alongside
+the report. No agent flag is required for the ordinary view.
+
+`--format json` on existing commands preserves their existing JSON payload
+schemas; callers that parse today's default JSON must add that flag. In-repository callers and CLI examples use the explicit flag when parsing JSON. JSON consumers needing cached
+result IDs use `results list --format json`. New inspection queries use schema
+`research-log-result-view/1`; full export uses `research-log-retained-result/1`.
+There is no second producer envelope or additional legacy-format mode.
+Expected mechanical exit conventions remain unchanged. Query errors exit 2
+with a stable code and bounded explanation; cache-write warnings follow the
+production rule above.
+
+```text
+log validate --path LOG [existing options] [--format text|json]
+log validate --root PROJECT [existing options] [--format text|json]
+log validate-batch --path LOG --projection PROJECTION_ID
+  --entry ENTRY --chain CHAIN_ID [--format text|json]
+
+log results list --path LOG [--kind full|batch] [--entry ENTRY]
+  [--chain CHAIN_ID] [--projection PROJECTION_ID] [--limit N] [--cursor CURSOR]
+log results show --path LOG (--id RESULT_ID | --latest --kind full|batch)
+  [--view summary|codes|findings|chains|commands|artifacts|collections|overlaps]
+  [--entry ENTRY] [--chain CHAIN_ID] [--code CODE] [--limit N] [--cursor CURSOR]
+log results finding --path LOG --id RESULT_ID --finding CHECK_ID
+log results command --path LOG --id RESULT_ID --command COMMAND_ID
+log results artifact --path LOG --id RESULT_ID --artifact ARTIFACT_ID
+log results collection --path LOG --id RESULT_ID --collection COLLECTION_ID
+  [--limit N] [--cursor CURSOR]
+log results value --path LOG --id RESULT_ID --ref VALUE_REF [--cursor CURSOR]
+log results export --path LOG --id RESULT_ID
+```
+
+`--code` selects the `findings` or `chains` view. Artifact IDs are their exact
+paths; command IDs and finding IDs are the evaluation identities returned in
+those views. Collection and value references are opaque content IDs.
+
+Queries default to ready-to-read text; `--format json` selects equivalent
+structured views with schema `research-log-result-view/1`. Export alone emits
+the complete retained-result JSON schema, explicitly requested for automation;
+it is not a routine agent view. New inspection commands neither bypass nor
+retarget the existing projection-based batch calls, which continue to reject
+superseded projections. Older published bundles without a retained result
+remain accessible through the legacy findings interface; the new interface
+reports `results.store.missing` or an empty listing, never starts validation.
+
+`list` queries indexed metadata only, newest commit sequence first. Its exact
+filters intersect and refer to the original request; it shows result ID,
+evaluation times, kind, requested scope, origin projection, and status. This
+is the recovery interface when producer stdout is unavailable. Multiple matches
+remain distinct candidates, not evidence that the newest belongs to a particular
+invocation. `show --latest` selects by kind and optional origin projection,
+then applies entry, chain, and code filters to the selected result’s content,
+just as `show --id` does. It returns the chosen ID; every detail and continuation
+query pins that ID. Historical queries make no currentness
+claim and do not read or hash today's published bundle.
+
+#### View Bounds And Query Cost
+
+Summary shows identity, historical timing, status, actual evaluated scope and
+check count, returned finding count, counts by code, affected-chain/command/
+artifact counts, and overlap count. Empty, incomplete, and clear are distinct.
+Finding rows provide the exact code, subject or subject reference, observed
+condition, violated rule, and related command locators. Command detail includes
+document/fence/ordinal and scalar command context; large text, relationship
+lists, and collections use counts and exact query references. Cross-entry
+context remains marked read-only. Every reference returned by any view has a
+supported command that retrieves it within the same result.
+
+Ordinary per-log text reports and new inspection views have a 16 KiB UTF-8
+response budget. Explicit legacy JSON and full export retain their respective
+machine-record bounds. Listing defaults to 20 items and accepts 1–100. Stop a page
+before exceeding either bound; report total matches, returned count, and an
+opaque continuation cursor for every omitted row. For a summary with too many
+code counts or targets, give the exact count and corresponding paged view.
+Large individual scalar values use `value` references and UTF-8-safe chunks of
+at most 4 KiB. Counts and references replace large values in both text and JSON;
+never silently shorten a command, path, condition, or collection. The root
+producer's comparison lists every discovered log, including its result ID or
+failure; its total output scales with that bounded discovery rather than hiding
+logs to fit the per-log limit. It does not repeat per-log details.
+
+Cursors bind the result ID, view, selectors, and stable order. Listing cursors
+also bind the store generation; replacement or clearing invalidates a listing
+cursor rather than silently skipping removed rows. Reject changed-generation
+or mismatched cursors with `results.cursor.invalid` and direct the caller to
+restart the listing. Detail cursors remain usable while their result exists.
+Do not compute a page by materializing all matching payloads. A summary reads
+stored aggregates; a selected finding/command reads its indexed records;
+a collection reads only the requested member page. Whole-result decoding,
+hashing, and relationship construction belong to ingestion or explicit export,
+not routine queries. No inspection-time source scans or implicit store repair.
+
+Unknown IDs, unsupported schemas, malformed content,
+and store contention use `results.id.missing`, `results.schema.unsupported`,
+`results.store.malformed`, and `results.store.busy`.
+An unavailable store uses `results.store.missing`; unrecovered transaction state
+uses a precise read-only database error; failed persistence uses
+`results.store.write_failed`. Missing entity selectors use
+`results.entity.missing`. Errors distinguish a successfully retrieved incomplete
+evaluation from failed retrieval: inspection of an incomplete result exits zero
+and displays its incomplete status. No persistence failure returns a retained
+success envelope or a usable ID for the failed insertion.
 
 ### Command-Provenance And Hygiene Diagnostics
 
@@ -4200,10 +4433,9 @@ Mechanical validation resolves the local script without executing or
 inspecting its internals. The role-bearing options establish the command graph.
 It resolves `<development-set>` through the entry-root `data.json`, verifies
 its fingerprint and `origin: true`, and does not traverse beyond that origin.
-The entry-root `pyrun-outputs.json` must also contain a confirmed
-`data/results.csv` record whose output bytes, script path and bytes, exact
-parameters, and direct input fingerprints all match this current command and
-filesystem state. The evidence check compares `67.6%`; the Provenance check
+The entry-root `pyrun.json` must contain a confirmed execution owning
+`data/results.csv`, whose output bytes, script path and bytes, exact parameters,
+and direct input fingerprints match this current command and filesystem state. The evidence check compares `67.6%`; the Provenance check
 verifies the complete bounded chain. Neither decides whether success rate is
 scientifically appropriate.
 

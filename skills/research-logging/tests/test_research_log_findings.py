@@ -21,15 +21,15 @@ class FindingsCliTests(unittest.TestCase):
     def test_validate_batch_retries_one_changed_snapshot_then_completes(self) -> None:
         old = {
             "chain_id": "old",
-            "commands": [
-                {"document": "entries/e001.md", "fence": 1, "ordinal": 1}
-            ],
+            "commands": [{"document": "entries/e001.md", "fence": 1, "ordinal": 1}],
             "entry": "e001",
         }
         current = {**old, "chain_id": "current", "findings": []}
         evaluation = SimpleNamespace(
             result=SimpleNamespace(
-                checks=(), completion=RESULTS.CompletionState.COMPLETE_CLEAR
+                checks=(),
+                completion=RESULTS.CompletionState.COMPLETE_CLEAR,
+                as_dict=lambda: {"checks": []},
             ),
             scan={"graph": None, "invocations": (), "registries": ()},
         )
@@ -74,14 +74,14 @@ class FindingsCliTests(unittest.TestCase):
     def test_validate_batch_reports_repeated_source_change_incomplete(self) -> None:
         old = {
             "chain_id": "old",
-            "commands": [
-                {"document": "entries/e001.md", "fence": 1, "ordinal": 1}
-            ],
+            "commands": [{"document": "entries/e001.md", "fence": 1, "ordinal": 1}],
             "entry": "e001",
         }
         evaluation = SimpleNamespace(
             result=SimpleNamespace(
-                checks=(), completion=RESULTS.CompletionState.COMPLETE_CLEAR
+                checks=(),
+                completion=RESULTS.CompletionState.COMPLETE_CLEAR,
+                as_dict=lambda: {"checks": []},
             ),
             scan={"graph": None, "invocations": (), "registries": ()},
         )
@@ -476,12 +476,19 @@ class FindingsCliTests(unittest.TestCase):
             [replacement],
         )
 
-    def test_validate_batch_is_ephemeral_and_reconciles_renamed_command(self) -> None:
+    def test_validate_batch_only_caches_inspection_and_reconciles_renamed_command(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = mechanical_log(root)
             completed = run_log(
-                root, "validate", "--path", str(summary.with_suffix(""))
+                root,
+                "validate",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             log_root = summary.with_suffix("")
@@ -494,15 +501,16 @@ class FindingsCliTests(unittest.TestCase):
                 path: (path.read_bytes(), path.stat().st_mtime_ns)
                 for path in log_root.rglob("*")
                 if path.is_file()
+                and not path.name.startswith("research-log-inspection.sqlite3")
                 and ("validation" in path.parts or ".cache" in path.parts)
             }
 
-            with OPERATION_STATE.operation_lock(
-                log_root, "log.lock", mode="exclusive"
-            ):
+            with OPERATION_STATE.operation_lock(log_root, "log.lock", mode="exclusive"):
                 checked = run_log(
                     root,
                     "validate-batch",
+                    "--format",
+                    "json",
                     "--path",
                     str(log_root),
                     "--projection",
@@ -520,6 +528,7 @@ class FindingsCliTests(unittest.TestCase):
                     path: (path.read_bytes(), path.stat().st_mtime_ns)
                     for path in log_root.rglob("*")
                     if path.is_file()
+                    and not path.name.startswith("research-log-inspection.sqlite3")
                     and ("validation" in path.parts or ".cache" in path.parts)
                 },
             )
@@ -533,6 +542,8 @@ class FindingsCliTests(unittest.TestCase):
             renamed = run_log(
                 root,
                 "validate-batch",
+                "--format",
+                "json",
                 "--path",
                 str(log_root),
                 "--projection",
@@ -561,19 +572,22 @@ class FindingsCliTests(unittest.TestCase):
             )
             evidence = entry.parent / "evidence.json"
             evidence.write_text(
-                evidence.read_text(encoding="utf-8").replace(
-                    "e001.md", "e001a.md"
-                ),
+                evidence.read_text(encoding="utf-8").replace("e001.md", "e001a.md"),
                 encoding="utf-8",
             )
             completed = run_log(
-                root, "validate", "--path", str(summary.with_suffix(""))
+                root,
+                "validate",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             projection = json.loads(
-                (
-                    summary.with_suffix("") / "validation" / "batches.json"
-                ).read_text(encoding="utf-8")
+                (summary.with_suffix("") / "validation" / "batches.json").read_text(
+                    encoding="utf-8"
+                )
             )
             selected = next(
                 value for value in projection["chains"] if value["entry"] == "e001a"
@@ -582,6 +596,8 @@ class FindingsCliTests(unittest.TestCase):
             checked = run_log(
                 root,
                 "validate-batch",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--projection",
@@ -602,7 +618,12 @@ class FindingsCliTests(unittest.TestCase):
             root = Path(directory)
             summary, _entry = mechanical_log(root, output_option="results")
             completed = run_log(
-                root, "validate", "--path", str(summary.with_suffix(""))
+                root,
+                "validate",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             with OPERATION_STATE.operation_lock(
@@ -612,6 +633,8 @@ class FindingsCliTests(unittest.TestCase):
                     root,
                     "findings",
                     "list",
+                    "--format",
+                    "json",
                     "--path",
                     str(summary.with_suffix("")),
                 )
@@ -622,6 +645,8 @@ class FindingsCliTests(unittest.TestCase):
             incomplete = run_log(
                 root,
                 "validate-batch",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--projection",
@@ -637,6 +662,8 @@ class FindingsCliTests(unittest.TestCase):
             superseded = run_log(
                 root,
                 "validate-batch",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--projection",
@@ -654,14 +681,25 @@ class FindingsCliTests(unittest.TestCase):
             root = Path(directory)
             summary, _ = mechanical_log(root, output_option="results")
             completed = run_log(
-                root, "validate", "--path", str(summary.with_suffix(""))
+                root,
+                "validate",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result_path = summary.with_suffix("") / "validation/results.json"
             before = result_path.read_bytes()
 
             listed = run_log(
-                root, "findings", "list", "--path", str(summary.with_suffix(""))
+                root,
+                "findings",
+                "list",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
 
             self.assertEqual(listed.returncode, 0, listed.stderr)
@@ -673,6 +711,8 @@ class FindingsCliTests(unittest.TestCase):
                 root,
                 "findings",
                 "list",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--entry",
@@ -694,6 +734,8 @@ class FindingsCliTests(unittest.TestCase):
                 root,
                 "findings",
                 "batch",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--projection",
@@ -712,6 +754,8 @@ class FindingsCliTests(unittest.TestCase):
                 root,
                 "findings",
                 "show",
+                "--format",
+                "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--id",
@@ -810,7 +854,13 @@ class FindingsCliTests(unittest.TestCase):
             )
 
             completed = run_log(
-                root, "findings", "list", "--path", str(summary.with_suffix(""))
+                root,
+                "findings",
+                "list",
+                "--format",
+                "json",
+                "--path",
+                str(summary.with_suffix("")),
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -825,18 +875,24 @@ class FindingsCliTests(unittest.TestCase):
             summary, _ = mechanical_log(root)
             log_path = str(summary.with_suffix(""))
 
-            missing = run_log(root, "findings", "list", "--path", log_path)
+            missing = run_log(
+                root, "findings", "list", "--format", "json", "--path", log_path
+            )
             self.assertEqual(missing.returncode, 2)
             self.assertIn("findings.result.missing", missing.stderr)
 
             result_path = summary.with_suffix("") / "validation/results.json"
             write(result_path, '{"schema":"research-log-mechanical/2"}\n')
-            unsupported = run_log(root, "findings", "list", "--path", log_path)
+            unsupported = run_log(
+                root, "findings", "list", "--format", "json", "--path", log_path
+            )
             self.assertEqual(unsupported.returncode, 2)
             self.assertIn("findings.result.schema_unsupported", unsupported.stderr)
 
             write(result_path, "{not json}\n")
-            malformed = run_log(root, "findings", "list", "--path", log_path)
+            malformed = run_log(
+                root, "findings", "list", "--format", "json", "--path", log_path
+            )
             self.assertEqual(malformed.returncode, 2)
             self.assertIn("findings.result.malformed", malformed.stderr)
 
@@ -844,7 +900,9 @@ class FindingsCliTests(unittest.TestCase):
                 summary.resolve().as_posix(), "test-rules", "2026-09-05", ()
             )
             write(result_path, record.canonical_json() + "\n")
-            unavailable = run_log(root, "findings", "list", "--path", log_path)
+            unavailable = run_log(
+                root, "findings", "list", "--format", "json", "--path", log_path
+            )
             self.assertEqual(unavailable.returncode, 2)
             self.assertIn("findings.projection_unavailable", unavailable.stderr)
 
@@ -853,7 +911,9 @@ class FindingsCliTests(unittest.TestCase):
             root = Path(directory)
             summary, _ = mechanical_log(root)
             log_path = str(summary.with_suffix(""))
-            completed = run_log(root, "validate", "--path", log_path)
+            completed = run_log(
+                root, "validate", "--format", "json", "--path", log_path
+            )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             projection_path = summary.with_suffix("") / "validation/batches.json"
             projection = json.loads(projection_path.read_text(encoding="utf-8"))
@@ -873,7 +933,9 @@ class FindingsCliTests(unittest.TestCase):
             ).hexdigest()
             write(projection_path, json.dumps(projection) + "\n")
 
-            queried = run_log(root, "findings", "list", "--path", log_path)
+            queried = run_log(
+                root, "findings", "list", "--format", "json", "--path", log_path
+            )
 
             self.assertEqual(queried.returncode, 2)
             self.assertIn("findings.projection.malformed", queried.stderr)
@@ -883,7 +945,9 @@ class FindingsCliTests(unittest.TestCase):
             root = Path(directory)
             summary, _ = mechanical_log(root)
             log_path = str(summary.with_suffix(""))
-            completed = run_log(root, "validate", "--path", log_path)
+            completed = run_log(
+                root, "validate", "--format", "json", "--path", log_path
+            )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result_path = summary.with_suffix("") / "validation/results.json"
             payload = json.loads(result_path.read_text())
@@ -894,12 +958,28 @@ class FindingsCliTests(unittest.TestCase):
             )
 
             unknown = run_log(
-                root, "findings", "show", "--path", log_path, "--id", "absent"
+                root,
+                "findings",
+                "show",
+                "--format",
+                "json",
+                "--path",
+                log_path,
+                "--id",
+                "absent",
             )
             self.assertEqual(unknown.returncode, 2)
             self.assertIn("findings.id.unknown", unknown.stderr)
             not_finding = run_log(
-                root, "findings", "show", "--path", log_path, "--id", passing
+                root,
+                "findings",
+                "show",
+                "--format",
+                "json",
+                "--path",
+                log_path,
+                "--id",
+                passing,
             )
             self.assertEqual(not_finding.returncode, 2)
             self.assertIn("findings.id.not_finding", not_finding.stderr)
@@ -910,6 +990,8 @@ class FindingsCliTests(unittest.TestCase):
                 root,
                 "findings",
                 "show",
+                "--format",
+                "json",
                 "--path",
                 log_path,
                 "--id",

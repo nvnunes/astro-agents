@@ -263,6 +263,14 @@ The file records current executable state, not attempts or history. It has no
 output index, comparison policy, reproduction timestamps, failed attempts, or
 superseded recipes.
 
+Before execution, `pyrun` holds the entry-operation lock and validates current
+state. A malformed regular `pyrun.json` is preserved at the first unused
+`pyrun.json.bak`, `pyrun.json.2.bak`, or later numbered backup. The runner reports
+`pyrun.state.quarantined` with the backup and `repair_required:true`, then exits
+without executing or creating replacement state. A symlink or non-file is
+rejected without quarantine. A legacy `pyrun-outputs.json` requires migration
+before another run.
+
 ### File Shape
 
 The file is strict UTF-8 JSON with no duplicate keys, non-finite numbers,
@@ -1702,9 +1710,17 @@ completion, or required action. It never controls the job.
 
 ## Compatibility And Evolution
 
-The cutover is atomic. `pyrun-outputs.json`, the legacy validation Reproduction
-section, Markdown-derived reproduction recipes, and any transition readers are
-not runtime compatibility surfaces.
+The execution and reproduction cutover is complete. Ordinary `pyrun` and
+Reproduce require `pyrun.json`; neither executes legacy `pyrun-outputs.json`
+records or derives reproduction recipes from Markdown. The legacy validation
+Reproduction section is not a current report surface.
+
+Mechanical validation retains a read-only legacy output-record reader and an
+internal output-keyed projection of current execution state. That bounded
+compatibility path is defined in the
+[mechanical-validator specification](research-log-mechanical-validator-spec.md#pyrun-output-support-records).
+It does not authorize legacy recording or reproduction. Migration converts
+legacy records to current execution state before another run.
 
 The following changes require explicit version review:
 

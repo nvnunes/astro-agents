@@ -16,32 +16,26 @@ definition mode, not Repair.
 - Begin with the requested log and the narrowest authorized finding, causal
   group, or finding class. Do not expand the task to unrelated findings or
   nearby cleanup.
-- For a published validation finding, locate only the relevant bounded group:
+- For a validation finding, use the supplied result ID. Only when none is
+  supplied, obtain one with
+  `<skill>/scripts/log results show --path <log> --latest --kind full`.
+  Pin that ID for subsequent views:
 
   ```text
-  <skill>/scripts/log findings list --path <log> \
-    [--entry <entry>]... [--validation-area <area>]... [--code <code>]... \
-    [--family <family>]... [--subject <subject>]... [--command <command>]...
+  <skill>/scripts/log results show --path <log> --id <result-id> --view chains \
+    [--entry <entry>] [--code <code>]
+  <skill>/scripts/log results finding --path <log> --id <result-id> --finding <check-id>
   ```
 
-  For an exact finding, retrieve the selected complete check:
-
-  ```text
-  <skill>/scripts/log findings show --path <log> --id <check-id>
-  ```
-
-  For a connected command chain, retrieve its complete finding batch:
-
-  ```text
-  <skill>/scripts/log findings batch --path <log> --projection <projection-id> \
-    --entry <entry> --chain <chain-id>
-  ```
-
-  Combine repeatable selectors to narrow rather than loading unrelated groups.
-  A list result with no matching published findings ends the repair without
-  running validation. Treat every returned machine condition as read-only. Do
-  not read or parse `validation.md`, `validation/results.json`, or
-  `validation/batches.json` directly.
+  Retrieve only missing detail using `results command`, `artifact`, or the
+  collection/value command printed in the view. Follow a cursor only when
+  more matching items are needed. For an uncached older publication, use
+  `findings list` or `findings show` with exact selectors; do not run validation
+  merely to populate the cache. End repair for no matching findings only when
+  a completed evaluation covers the target and remains applicable to its
+  current state. An incomplete observation leaves the target unresolved.
+  Treat returned conditions as read-only. Do not read or parse `validation.md`,
+  `validation/results.json`, `validation/batches.json`, or the inspection database.
 - Inspect the affected files and only enough surrounding log
   state to establish the intended relationship.
 - If the request and retained log do not establish the intended corrected
@@ -53,7 +47,7 @@ definition mode, not Repair.
 
 For each authorized chain:
 
-1. Retrieve it once with `findings batch` and inspect only needed current records.
+1. Inspect the selected chain and only needed current records.
 2. If choosing a provenance shape, read `references/provenance-patterns.md`
    and only the matching card. Otherwise, skip the catalog.
 3. Apply the correction through the owning command or permitted edit.
@@ -78,8 +72,18 @@ For each authorized chain:
   same-log producer; do not use it for ordinary pre-production declaration or
   to bypass a missing or ambiguous producer.
 
-- Use the owning `<skill>/scripts/log` action when it can safely express the
-  intended correction. Read only that action's help before invoking it.
+- Choose the command family for the affected material:
+
+  | Affected Material | Command Family |
+  |---|---|
+  | Input registrations and fingerprints | `log data` |
+  | Evidence records and associations | `log evidence` |
+  | Retention declarations | `log retention` |
+  | Recorded execution policy | `log pyrun` |
+
+  If the action is unknown, read that family's `--help`, then the selected
+  action's help. Invoke it through `<skill>/scripts/log` when it can safely
+  express the authorized correction.
 - When no owning action can safely express an explicitly authorized
   correction, edit only the affected non-validation Markdown or JSON. Use its
   decoder, serializer, locks, and validation contracts when available; edit
@@ -121,7 +125,7 @@ completed/skipped batches once in history with outcomes and evidence links.
   or researcher decisions unless the explicit repair request supplies the
   intended replacement.
 - Do not fix unrelated validation or review findings.
-- Never edit generated validation files; only Validate may replace them.
+- Never hand-edit generated validation state; use its owning CLI.
 - Do not infer Replace authorization. If the correction would remove
   superseded experimental work, stop and request explicit Replace authority.
 - Do not reorganize document or entry boundaries unless the researcher also
@@ -129,8 +133,8 @@ completed/skipped batches once in history with outcomes and evidence links.
 
 ## Complete
 
-After correcting one projected command-chain batch, run its lock-free,
-write-free check:
+After correcting one projected command-chain batch, run its lock-free check.
+Use the original published projection, entry, and chain IDs:
 
 ```text
 <skill>/scripts/log validate-batch --path <log> --projection <projection-id> \
@@ -143,10 +147,23 @@ do not claim the batch cleared. For malformed state, transaction residue, or
 another defect that has no projection, use the owning bounded decoder or
 command postcondition instead and do not claim `complete_clear`.
 
-Capture batch-query and validation stdout and stderr directly to separate
-files during execution. Inspect those files selectively; never copy command
-output through agent-authored file edits or rerun commands just to display
-different fields.
+Read the compact text result and retain its ID with the outcome and next action.
+If producer stdout is lost, list candidate results without reevaluating:
+
+```text
+<skill>/scripts/log results list --path <log> --kind batch \
+  --projection <projection-id> --entry <entry> --chain <chain-id>
+```
+
+Match the result's scope and evaluation time to the invocation before using
+its ID; a failed run can leave an older result. If the match is uncertain,
+report the outcome as unknown.
+
+Query the matched ID for additional detail. Do not copy queryable payloads into
+files, parse JSON to rebuild reports, or rerun validation to display different fields.
+JSON output is for scripts that explicitly request it. Record operational errors
+when no result was cached. Keep outcomes in history: another check of this batch,
+a new full validation, or cache clearing can remove its cached detail.
 
 Repeat validation only after repairs, relevant state changes, or fixing an
 incomplete check's cause. Otherwise reuse applicable evidence. For joined or

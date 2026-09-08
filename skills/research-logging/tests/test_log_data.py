@@ -1899,6 +1899,8 @@ class LogDataTests(unittest.TestCase):
             validated = run(
                 root,
                 "validate",
+                "--format",
+                "json",
                 "--path",
                 str(logical),
                 "--dry-run",

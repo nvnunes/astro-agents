@@ -11,6 +11,7 @@ Mechanical Validate may create or update only these generated paths:
 - `<log>/validation/results.json`;
 - `<log>/validation/batches.json`;
 - `<log>/validation.md`;
+- `<log>/.cache/research-log-inspection.sqlite3` and its journal companions;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
   shared-memory companions;
 - `<log>/.cache/research-log-operations/log.lock`; and
@@ -19,8 +20,9 @@ Mechanical Validate may create or update only these generated paths:
 
 `validation/results.json` is the authoritative complete machine-readable
 result. `validation/batches.json` is its deterministic command-chain and
-finding projection. Repair accesses them through `log findings list`, `show`,
-and `batch`; it does not load either file directly in ordinary work.
+finding projection. Ordinary diagnosis and Repair use cached `log results`
+views. Older uncached publications remain accessible through `log findings`;
+neither operation loads generated files or the cache database directly.
 `validation.md` is a concise validation-only human projection. Validate and
 Repair do not parse it. Reproduction is a separate operation with
 `reproduction/results.json` and `reproduction.md`; mechanical validation
@@ -33,7 +35,14 @@ contains no internal failure codes, check identities, raw observed state,
 dependency mappings, passing totals, or repair instructions. A clear completed
 result says `No mechanical findings.`
 
-The cache files are disposable generated acceleration state. The nearest
+The inspection cache keeps the latest full observation and latest result per
+batch. A new check replaces that batch's result; a completed full validation
+replaces the full result and clears prior batches. Batch checking writes this
+cache only, preserving published validation and research-owned state.
+Inspection never evaluates research files. Cache-write failure warns without
+discarding the validation outcome and supplies no new result ID.
+
+All cache files are disposable generated state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every
 `.cache/` directory in source control and research-log discovery. `--dry-run`
 publishes no result or cache changes beyond the generated coordination lock.

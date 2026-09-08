@@ -12,9 +12,11 @@ agent surface and does not depend on this guide. Repair alone may progressively
 consult the relevant section of
 `docs/research-log-mechanical-validator-spec.md` when malformed or legacy state
 prevents an owning CLI action from operating. The mechanical-validation CLI
-and its supporting tools must also adhere to that specification. These three
-surfaces must be conceptually compatible, but they have separate authority and
-do not repeat the same detail.
+and its supporting tools must also adhere to that specification. The
+[reproduction specification](research-log-reproduction-spec.md) separately owns
+current execution state and mechanical reproduction. These surfaces must be
+conceptually compatible, but have separate authority and do not repeat the same
+detail.
 
 ## Workflow at a glance
 
@@ -1066,43 +1068,30 @@ human-readable issue type. Each group shows at most ten targets and states when
 more were omitted. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
 
-The adjacent `<log>/validation/` directory contains machine-readable results
-and their deterministic command-chain batch projection.
-Disposable validator caches live beneath `<log>/.cache/` and the research
-project's `.cache/` directory. Entry-root `pyrun.json` is separate current
-execution state maintained by `pyrun`. Researchers and research
-agents should not edit or ordinarily inspect these generated files directly.
+The tools maintain generated validation files and caches alongside these
+reports. Ask the agent to inspect a finding rather than editing those files.
 Validation reads the research record but changes only its own generated output.
 
 ### Resolving findings
 
 Validation identifies problems; it does not repair the research record. A
-separately authorized Repair operation reviews the named finding, causal group,
-or class and corrects the relevant command, source, or retained-material
-relationship without changing presented evidence. Repair obtains bounded
-finding details through:
+separately authorized Repair operation corrects the named finding or group of
+findings without changing presented evidence or choosing new scientific content.
 
-```bash
-<skill>/scripts/log findings list --path <log> \
-  [--entry <entry-id>]... [--validation-area <area>]... [--code <code>]... \
-  [--family <family>]... [--subject <subject>]... [--command <command>]...
-<skill>/scripts/log findings show --path <log> --id <finding-id>
-<skill>/scripts/log findings batch --path <log> --projection <projection-id> \
-  --entry <entry-id> --chain <chain-id>
-<skill>/scripts/log validate-batch --path <log> --projection <projection-id> \
-  --entry <entry-id> --chain <chain-id>
-```
+You can ask the agent to explain a finding using saved diagnostic details,
+without rerunning validation. If those details are unavailable, the agent
+reports that limitation rather than inferring what an earlier check established.
 
-The list command accepts repeatable exact selectors and returns every match;
-`show` retrieves one exact finding. `batch` returns one connected command-chain
-group from the current published projection. `validate-batch` reconciles that
-group against current command identity and performs an entry-scoped,
-lock-free, write-free check after correction. It may report findings or an
-incomplete scope; it does not replace full validation. A list with no matches
-ends the repair without validation. When incompatible generated metadata stops
-evaluation before a report is published, use the paths identified by the
-validation command for a separately authorized archival or removal action; a
-research operation must not modify them.
+After an authorized repair, the agent checks the affected scope. This preserves
+the published validation report and does not replace full-log validation.
+Incomplete checks leave the affected questions unresolved.
+
+Saved diagnostic details may be replaced or cleared. Keep important conclusions
+in the research record rather than relying on those temporary results.
+
+If incompatible generated files prevent validation from running, the agent
+explains the blocker and requests separate permission to archive or remove
+those files.
 
 Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed

@@ -347,7 +347,11 @@ class RecordSurfaceTests(unittest.TestCase):
 
         self.assertIn("repair, fix, resolve, correct, clean up, or remove", skill)
         self.assertIn("narrowest authorized finding, causal", repair)
-        self.assertIn("no matching published findings ends the repair", repair)
+        self.assertIn(
+            "End repair for no matching findings only when a completed evaluation "
+            "covers the target and remains applicable to its current state.",
+            " ".join(repair.split()),
+        )
 
     def test_integrated_repair_cases_preserve_evidence_and_continue(self) -> None:
         cases = " ".join(CASES.read_text(encoding="utf-8").split())
@@ -381,7 +385,7 @@ class RecordSurfaceTests(unittest.TestCase):
         validate = reference("operation-validate.md")
         records = reference("file-validation-records.md")
         self.assertIn(
-            "Its `report` field is the complete finished Markdown", validate
+            "Its default text is the complete finished Markdown", validate
         )
         self.assertIn("Present it unchanged", validate)
         self.assertIn("every discovered log", validate)

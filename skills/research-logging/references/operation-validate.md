@@ -54,7 +54,7 @@ For repo-wide or multi-log validation, run the bounded all-log operation:
 
 It uses the same canonical discovery contract as
 `<skill>/scripts/log discover --root <project-root>` and returns one bounded
-batch result. Its `report` field is the complete finished Markdown comparison
+batch result. Its default text is the complete finished Markdown comparison
 for every discovered log, including concise explanations for incomplete,
 blocked, or operationally failed rows. Present it unchanged; do not open
 generated reports or interpret the structured collections to reconstruct it.
@@ -94,8 +94,10 @@ process tables, work around the lock, or alter generated state.
 
 ## Report
 
-Present the returned `report` field unchanged for one-log and `--root`
-validation. Do not reconstruct, reformat, supplement, or reconcile it against
+Present the returned text report unchanged for one-log and `--root`
+validation. The tool also returns available cached result IDs and inspection
+commands. JSON consumers must explicitly request `--format json`. Do not
+reconstruct, reformat, supplement, or reconcile the report against
 the structured fields or generated files. The report already contains the
 shared human area wording, publication links or `Not published`, and concise
 explanations for incomplete or blocked results. The batch report likewise
@@ -109,9 +111,15 @@ chain, the same cell retains both quantities as `N chains + U unassigned`, or
 group count below the table. `—` is reserved for an unavailable or otherwise
 incomplete Structure evaluation; zero remains `Clear`.
 
-The other structured fields remain available to callers and establish exit
-behavior, but are not an additional agent reporting task. For
-`unsupported_metadata`, stop after presenting the report and request separate
+Structured fields remain available with `--format json`; they are not an
+additional agent reporting task. Use `results show --path <log> --id <result-id>`
+for saved observations. If producer stdout is lost, list candidates with
+`results list --path <log> --kind full` without rerunning validation. Match the
+result's scope and evaluation time to the invocation before using its ID;
+a failed run can leave an older result. If the match is uncertain, report the
+outcome as unknown.
+
+For `unsupported_metadata`, stop after presenting the report and request separate
 user authorization before archiving or removing the identified generated
 paths. Do not route the blocker to Record. When an invocation returns no
 structured result at all, report the precise operational error from standard
@@ -127,21 +135,24 @@ When the researcher asks to inspect, explain, triage, or determine the cause of
 a named mechanical finding or bounded finding group, keep the work within
 Validate and do not rerun validation unless requested.
 
-For published findings, locate only the relevant bounded group:
+Use the supplied result ID. Only when none is supplied, obtain one with
+`<skill>/scripts/log results show --path <log> --latest --kind full`.
+Pin that ID for subsequent views:
 
 ```text
-<skill>/scripts/log findings list --path <log> \
-  [--entry <entry>]... [--validation-area <area>]... [--code <code>]... \
-  [--family <family>]... [--subject <subject>]... [--command <command>]...
+<skill>/scripts/log results show --path <log> --id <result-id> --view findings \
+  [--entry <entry>] [--code <code>]
+<skill>/scripts/log results finding --path <log> --id <result-id> --finding <check-id>
 ```
 
-Then retrieve each selected complete check needed to explain the shared cause:
+Request only missing command, artifact, collection, or value detail through
+`results` commands. Do not duplicate queryable output in files or parse JSON to
+reconstruct reports. For older publications without a cached result, use
+`log findings list` or `log findings show` with exact selectors; cache absence
+does not authorize another validation. Cached results are historical and can
+be superseded or cleared; record conclusions independently of their IDs.
 
-```text
-<skill>/scripts/log findings show --path <log> --id <check-id>
-```
-
-Use repeatable exact filters and inspect only the affected research files
+Use exact filters and inspect only the affected research files
 and enough surrounding metadata or recorded commands to explain the
 deterministic failed relationship. Do not parse generated validation files,
 inspect script internals, execute research commands, make semantic judgments,

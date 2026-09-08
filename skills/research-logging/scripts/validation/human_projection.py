@@ -210,6 +210,16 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "A command reads material that is not declared as an input.",
         "command",
     ),
+    "data.output.declaration_invalid": FindingPresentation(
+        "Invalid Generated Output Declaration",
+        "A named command output is not a valid generated artifact declaration.",
+        "command",
+    ),
+    "data.output.token_missing": FindingPresentation(
+        "Missing Named Output Token",
+        "A command writes declared generated material without its named token.",
+        "command",
+    ),
     "data.name.duplicate": FindingPresentation(
         "Duplicate Data Name",
         "More than one data declaration uses the same name.",

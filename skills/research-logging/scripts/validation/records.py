@@ -14,6 +14,7 @@ from .operation_state import operation_lock, require_mutation_ready
 PUBLISHABLE_PATHS = frozenset(
     {
         "validation.md",
+        "validation/batches.json",
         "validation/results.json",
     }
 )

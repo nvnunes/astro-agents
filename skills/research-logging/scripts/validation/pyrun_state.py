@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
@@ -214,12 +214,18 @@ def recipe_from_invocation(
             entry_root=entry_root,
             project_root=project_root,
         )
-        prior = outputs.setdefault(key, "file")
-        if prior != "file":
+        kind = (
+            relationship.input_resource.kind
+            if relationship.input_resource is not None
+            else "file"
+        )
+        prior = outputs.setdefault(key, kind)
+        if prior != kind:
             _invalid(invocation.document, {"output": key, "reason": "kind_conflict"})
+    parameters = invocation.recipe_parameters or invocation.parameters
     recipe = ExecutionRecipe(
         script,
-        invocation.recipe_parameters,
+        parameters,
         invocation.environment,
         inputs,
         tuple(sorted(outputs.items())),
@@ -445,6 +451,8 @@ def publish_execution_locked(
     execution: PyrunExecution,
     *,
     project_root: Path | None = None,
+    companion_updates: Mapping[Path, str] | None = None,
+    publish_updates: Callable[[Mapping[Path, str | None]], None] | None = None,
 ) -> PyrunFile:
     """Atomically replace every overlapping owner under the entry lock."""
 
@@ -472,7 +480,12 @@ def publish_execution_locked(
         executions[execution_id(execution.recipe)] = execution
         result = PyrunFile(path, root, executions)
         serialized = _validated_serialization(result, project_root=project_root)
-        _atomic_write(path, serialized)
+        if companion_updates:
+            if publish_updates is None or path in companion_updates:
+                raise ValueError("companion publication requires one valid publisher")
+            publish_updates({path: serialized, **companion_updates})
+        else:
+            _atomic_write(path, serialized)
         return result
     except OSError as error:
         raise PyrunStateError(
@@ -688,7 +701,7 @@ def _decode_execution(
     return PyrunExecution(
         confirmed,
         auto_reproduce,
-        cast(str | None, timestamp),
+        cast(str, timestamp) if timestamp is not None else None,
         PYRUN_RUNNER,
         PYRUN_ENVIRONMENT_PROFILE,
         PYRUN_EXECUTION_CONTRACT,

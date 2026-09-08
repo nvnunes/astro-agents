@@ -56,7 +56,7 @@ or evolution requires it.
 | Evidence records | `research-log-evidence/v3` |
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
-| Input registry | `research-log-data/v3` |
+| Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
 | `pyrun` output support | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -68,7 +68,9 @@ or evolution requires it.
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
-| Finding query results | `research-log-findings-list/1` and `research-log-finding/1` |
+| Batch projection | `research-log-batch-projection/1` |
+| Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
+| Batch validation | `research-log-batch-validation/1` |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
@@ -2519,9 +2521,9 @@ for explicitly authorized Repair.
   exact `<name>` token or one exact `<directory-name>/member` token. A Git
   repository consumer additionally uses the matching `<name:commit>` token.
   Raw paths and URIs are invalid.
-- A generated output enters `data.json` when a later recorded command or an
-  evidence record consumes it. An output consumed by neither surface remains
-  absent.
+- A generated output is declared before its producing command when a later
+  recorded command or evidence record consumes it. An output consumed by
+  neither surface remains absent.
 - Evidence use counts as registry use when evaluating unused declarations.
 - An evidence source resolves to one local regular file. A bare directory token
   is invalid; select one exact member instead.
@@ -2540,7 +2542,7 @@ One entry-root file has exactly:
 
 ```json
 {
-  "schema": "research-log-data/v3",
+  "schema": "research-log-data/v4",
   "inputs": []
 }
 ```
@@ -2550,8 +2552,8 @@ JSON uses the UTF-8, duplicate-key, finite-number, and trailing-content rules
 of `evidence.json`. Array order has no meaning; canonicalization sorts by
 `name`. One file is at most 8 MiB and contains at most 10,000 inputs.
 
-Every item requires `name`, `kind`, `location`, `fingerprint`, and the Boolean
-`origin`:
+Every direct item requires `name`, `kind`, `location`, `fingerprint`, and the
+Boolean `origin`:
 
 ```json
 {
@@ -2565,6 +2567,22 @@ Every item requires `name`, `kind`, `location`, `fingerprint`, and the Boolean
   "origin": true
 }
 ```
+
+Version 4 also accepts an entry-local reference with exactly `from_entry` and
+`name`. It resolves recursively to one direct generated declaration in the
+named stable entry of the same log. It does not copy, shadow, rename, or change
+the source declaration, cannot target an origin or another reference, and may
+not form a cycle:
+
+```json
+{"from_entry": "e001", "name": "simulation-results"}
+```
+
+For a generated file or directory declared before production, `fingerprint`
+contains its applicable algorithm and any selected `files` or `patterns`, but
+may omit `digest`. Origins and legacy version-3 declarations require the
+complete observed digest. Successful `pyrun` production observes and publishes
+the generated declaration's current fingerprint.
 
 A generated file may additionally select the named evidence-scoped
 reproduction comparison:
@@ -2803,10 +2821,12 @@ and
 `pyrun` resolves tokens before execution. Script parameters may retain clean
 internal names through `dest=`; compatibility aliases are not required.
 
-Named tokens establish input direction. Every other input proven by an
-input-bearing option or finite input collection must use its matching token. A
-raw value matching an item is a missing token; a raw proven input without an
-item is undeclared.
+Every declared input or output uses its matching named token. Direction comes
+from an input- or output-bearing option, capture, or explicit runner role; a
+token alone does not assign direction. A raw value matching an input is a
+missing token, a raw proven input without an item is undeclared, and a raw
+output path is `data.output.token_missing` in Structure. Legacy path-authored
+recipes remain decodable for diagnosis but are not admissible for reproduction.
 
 A path-like argument with no role is not silently dropped. A candidate is
 path-like when its complete static value resolves to an existing filesystem
@@ -3062,27 +3082,29 @@ tracing, process polling, open-file polling, post-execution source-tree scan,
 or ordinary static import discovery.
 
 `pyrun` records its current working entry root, resolves the command through
-that entry's `data.json`, and publishes output records only after the process
+that entry's `data.json`, and publishes output records and generated-declaration
+fingerprints only after the process
 succeeds, the script and every direct input still have their pre-execution
 identities, code observation completes, and every output can be observed
 completely. Publication replaces only records for outputs produced by that
-invocation and preserves
-records for other output keys. It is atomic under an entry-specific lock.
+invocation and preserves records and declarations for other output keys. The
+registry and execution-state replacement is one guarded, rollback-capable
+publication under an entry-specific lock.
 Failed execution, capture, observation, or publication confirms no record.
 
 Ordinary output parameters use the existing mechanical input/output role
 rules. Retained process streams use one of these forms:
 
 ```bash
-./pyrun --capture-stdout data/run.log -- \
+./pyrun --capture-stdout "<stdout-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --capture-stderr data/error.log -- \
+./pyrun --capture-stderr "<stderr-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --capture-stdout-stderr data/run.log -- \
+./pyrun --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
@@ -3550,9 +3572,16 @@ The validation and discovery operations are:
   [--recompute-fingerprints] [--dry-run]
 
 <skill>/scripts/log findings list --path LOG
-  [--entry ENTRY] [--subject SUBJECT]
+  [--entry ENTRY]... [--validation-area AREA]... [--code CODE]...
+  [--family FAMILY]... [--subject SUBJECT]... [--command COMMAND]...
 
 <skill>/scripts/log findings show --path LOG --id CHECK_ID
+
+<skill>/scripts/log findings batch --path LOG --projection PROJECTION_ID
+  --entry ENTRY --chain CHAIN_ID
+
+<skill>/scripts/log validate-batch --path LOG --projection PROJECTION_ID
+  --entry ENTRY --chain CHAIN_ID
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
@@ -3628,7 +3657,10 @@ The input-registry operations are:
 <skill>/scripts/log data add-origin --path LOG --entry ENTRY NAME TARGET
   [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
+  [--kind file|directory] [--identity SELECTOR]...
   [--pending-confirmation] [--dry-run]
+<skill>/scripts/log data use --path LOG --entry ENTRY --from-entry ENTRY NAME
+  [--dry-run]
 <skill>/scripts/log data update --path LOG --entry ENTRY NAME
   [--target TARGET] [--origin | --generated]
   [--identity SELECTOR]... [--byte-complete] [--commit COMMIT] [--dry-run]
@@ -3639,27 +3671,28 @@ The input-registry operations are:
 <skill>/scripts/log data list --path LOG --entry ENTRY
 ```
 
-These actions infer kind and canonical location and use the production
-fingerprint and data-file contracts. `add-origin` rejects a confirmed producer
+These actions normalize canonical location and use the production fingerprint
+and data-file contracts. `add-origin` rejects a confirmed producer
 in the same log. Its mutually exclusive `--commit` form requires a full
 lowercase commit hash and makes `TARGET` a Git repository locator.
-`add-generated` requires one current confirmed same-log
-producer whose recorded output and current target bytes agree. Its
-`--pending-confirmation` form is reserved for explicit Repair and migration:
-it requires one structurally valid, unambiguous current same-log producer and
-the current target, but permits absent or explicitly unconfirmed output
-support so reproduction can establish confirmation later. It does not change
-`pyrun-outputs.json`, add persisted pending state, or relax missing and
-ambiguous producer checks. When a support record is already confirmed, the
-producer's own current output and signature checks still apply, while recursive
-lineage may remain pending reproduction. `update` applies
+`add-generated` declares a named file or directory before production. It
+infers kind from an existing target or requires `--kind` when the target is
+absent. Selected identity files or final-component patterns are available only
+for directories; the declaration omits its digest until successful production
+observes it. For an existing retained output, `--pending-confirmation` is an
+explicit Repair and migration form requiring one structurally valid,
+unambiguous current producer; it permits absent or unconfirmed output support
+but does not relax missing or ambiguous producer checks. `data use` creates one same-log reference to a direct generated
+declaration in the named source entry. It rejects missing, origin, chained,
+cyclic, or locally conflicting references and does not copy the target. `update` applies
 only explicit changes and rechecks the resulting boundary; changing a Git
 repository target preserves and verifies its commit unless `--commit` replaces
 it. Git repository inputs cannot become generated or use directory identity
-options. Managed identity is available only for origin directories. `refresh`
+options. Managed identity is available for origin and generated directories. `refresh`
 preserves the target,
 classification, and identity mode. `remove` requires prior removal of command
-and evidence use and removes an empty registry. `rename` requires prior command
+and evidence use and every cross-entry reference, and removes an empty registry.
+References are read-only through update, refresh, and rename. `rename` requires prior command
 token edits, atomically updates same-entry evidence source tokens, and reports
 producer commands whose support must be replaced by successful reruns. Each
 mutation holds the shared log lock and the selected entry lock and leaves
@@ -3764,6 +3797,14 @@ creation instead uses a lock beneath the owning project's
 Recognized Reorganize and entry-keyed authored-registry transaction residue
 require explicit Repair and block applicable later operations.
 
+An acquired operation lock publishes bounded JSON owner metadata beside the
+lock as `<lock>.owner.json`. It identifies the operation, scope, process,
+request and source fingerprints, and start time needed to report one precise
+`operation.lock.conflict`. Metadata publication and removal are atomic with the
+owner lifecycle. A stale or malformed metadata file never owns a lock and is
+replaced by the next successful owner. Callers report the observed owner once;
+they do not poll, retry, or inspect process tables.
+
 Both publishing and dry-run Validate hold `log.lock` exclusively from before
 their first research-owned read through evaluation, cache work, publication,
 and result construction. Lock contention is an operational conflict and no
@@ -3813,6 +3854,7 @@ A completed published evaluation owns exactly these active generated paths:
 
 ```text
 <log>/validation/results.json
+<log>/validation/batches.json
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
 <log>/.cache/research-log-operations/log.lock
@@ -3950,9 +3992,9 @@ validation. A content discrepancy becomes the same Evidence finding and makes
 that artifact's Provenance check dependent on it; an operational inconsistency
 that prevents coherent targeted evaluation aborts publication.
 
-In the human Provenance artifact count, a
+In the per-log human Provenance artifact count, a
 `provenance.output.unconfirmed` check projects as unavailable rather than as a
-failed artifact. Multi-log summaries label that count `N unconfirmed`. A
+failed artifact. A
 downstream artifact whose `not_applicable` check depends transitively on an
 actual failed Provenance prerequisite projects as a failed artifact, while its
 authoritative machine check remains `not_applicable`. A failed Provenance
@@ -3960,30 +4002,61 @@ artifact takes precedence over an unconfirmed status for both an individual
 artifact and the human row's aggregate status. Other `not_applicable` checks
 remain only in machine-readable results and are omitted from human reports;
 they are not abbreviated as N/A.
-The batch CLI composes the multi-log table directly from the same scope
-projection used by each human report. Agents do not parse generated reports or
-recalculate these cells.
+The batch CLI keeps those detailed four-area per-log reports but composes a
+three-column cross-log summary from the batch projection. `Structure` counts
+distinct chains containing failed Conformance, failed Provenance other than
+awaiting confirmation, or Hygiene findings. `Evidence` counts existing
+distinct Evidence finding groups. `Confirmation` counts distinct producing
+commands awaiting confirmation, deduplicated across outputs. Nonzero counts
+are bare integers and zero is `Clear`; an unplaceable structural finding makes
+Structure incomplete and receives a row explanation. Agents do not parse
+generated reports or recalculate these cells.
 
-`log findings list` and `log findings show` are read-only bounded machine
-access to the latest published `validation/results.json`. Both require an
-explicit logical log path, read a regular non-symlink result through a bounded
-UTF-8 decoder, expose its own result date without claiming currentness, and
-never validate, publish, repair, or inspect research-owned files. `list`
-returns at most 50 direct failed or unavailable finding-signature groups. Exact
-`--entry` and `--subject` filters may be combined; there is no fuzzy matching,
-pagination, or adjustable limit. Each returned group includes its code, entry,
-logical subject, represented-check count, and one representative check ID.
-`show` accepts one exact ID and returns that check's code, scope, status,
-resolved entry, logical subject, dependencies, observed state, violated rule,
-and result date without repair advice.
+Every completed publication also writes
+`research-log-batch-projection/1` to `validation/batches.json`. It contains the
+exact result identity, source and rules identities, a content-derived
+`projection_id`, bounded unresolved finding groups, and every same-entry
+command chain. A chain is one connected component of unique producer-to-
+consumer edges; competing writers and cross-entry relationships do not connect
+components. `source_identity` is the SHA-256 identity of the bounded starting
+research-source snapshot accepted for that evaluation. Each chain records its
+commands, material collections, edges, named artifacts, relevant registry
+records, pattern signals, and attached direct findings. Cross-entry registry
+context is marked read-only. The projection is deterministic and atomically
+published with the result and human report.
+
+`log findings list`, `show`, and `batch` are read-only bounded machine access
+to the latest published result and batch projection. They require an explicit
+logical log path, use bounded strict UTF-8 decoders, expose the result date
+without claiming research-source currentness, and never validate, publish,
+repair, or inspect research-owned files. `list` returns all matching nonempty
+chains within the fixed response bound. Repeatable exact `--entry`,
+`--validation-area`,
+`--code`, `--family`, `--subject`, and `--command` selectors intersect across
+families and union within one family; there is no fuzzy matching or pagination.
+`show` accepts one exact finding ID and returns the complete direct check
+without repair advice. `batch` requires the exact current projection, entry,
+and chain IDs and returns that complete chain with all attached findings.
+
+`log validate-batch` is the Repair campaign's lock-free, write-free ephemeral
+check. It accepts one published chain identity, takes bounded selected-entry
+source snapshots before and after evaluation, and retries once when that
+selected source changes. It evaluates only the selected entry, builds a fresh
+in-memory projection, and reconciles command identity by document, fence, and
+ordinal anchors with output overlap as the bounded fallback. Rename,
+replacement, split, and join may therefore change current chain IDs without
+losing the requested scope. The result reports current membership, findings,
+and pending overlaps as `complete_clear`, `complete_findings`, or `incomplete`.
+It acquires no operation lock and writes no result, report, cache, or metadata.
 
 Finding queries distinguish absent published state
 (`findings.result.missing`), unsupported schema
 (`findings.result.schema_unsupported`), malformed or inconsistent state
 (`findings.result.malformed`), duplicate identities (`findings.id.duplicate`),
 unknown identities (`findings.id.unknown`), and identities that are not direct
-findings (`findings.id.not_finding`). Expected query failures exit 2 and emit
-no success object.
+findings (`findings.id.not_finding`). A superseded batch projection fails
+precisely rather than silently retargeting. Expected query failures and
+incomplete batch validation exit 2 and emit no success claim.
 
 Validation acquires the canonical exclusive
 `<log>/.cache/research-log-operations/log.lock` before opening the per-log
@@ -4145,11 +4218,11 @@ executable interface unchanged is not a valid repair.
 - A direct, structured, or summary table uses the applicable closed table
   recipe. Every local source used by the table must independently resolve to
   exactly one producing invocation unless it reaches an explicit origin.
-- A marked output block may select a retained command log. Use
-  `./pyrun --capture-stdout-stderr data/run.log -- ...` so the log has both a
-  graph relationship and confirmed output support; raw redirection or `tee`
-  does not provide that support. The marked fence payload must still match the
-  selected retained text exactly.
+- A marked output block may select a retained command log. Declare the generated
+  log and use `./pyrun --capture-stdout-stderr "<run-log>" -- ...` so it has
+  both a graph relationship and confirmed output support; raw redirection or
+  `tee` does not provide that support. The marked fence payload must still
+  match the selected retained text exactly.
 - A whole-artifact evidence presentation resolves its one source token and
   compares that canonical path with the normalized Markdown target before
   applying ordinary fingerprint and Provenance checks. A generated artifact

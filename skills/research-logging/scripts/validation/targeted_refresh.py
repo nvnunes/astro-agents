@@ -15,6 +15,7 @@ from research_log_data import (
     load_data_file,
     observe_directory_tree,
     observe_file_content,
+    observe_fingerprint,
     resolve_input_token,
 )
 
@@ -33,6 +34,7 @@ from .mechanical_results import (
 )
 from .output_support import (
     confirmed_output_record,
+    declared_output_resource,
     require_current_output_support,
     resolve_code_support,
     resolve_output_support,
@@ -697,7 +699,7 @@ def _support(
         project_root=state.project_root,
         support=support,
     )
-    current_output = _observe(resolved.path)
+    current_output = _observe_output(invocation, resolved.path)
     candidate = resolved.record
     current_code = None
     if candidate is not None:
@@ -719,6 +721,15 @@ def _support(
         "record_file": entry.state.path.resolve().as_posix(),
         "record_file_sha256": entry.record_digest,
     }
+
+
+def _observe_output(invocation: Invocation, path: Path) -> Fingerprint:
+    """Observe a named output with its declaration-shaped identity."""
+
+    resource = declared_output_resource(invocation, path)
+    if resource is not None:
+        return observe_fingerprint(resource).fingerprint
+    return _observe(path)
 
 
 def _owner_invocations(

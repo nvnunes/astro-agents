@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn
 
-from research_log_data import Fingerprint
+from research_log_data import Fingerprint, InputResource
 
 from .commands import Invocation
 from .errors import MechanicalContractError
@@ -39,6 +39,21 @@ class ResolvedCodeSupport:
     key: str
     path: Path
     resolved: Path
+
+
+def declared_output_resource(
+    invocation: Invocation, path: Path
+) -> InputResource | None:
+    """Return the one declaration whose identity shape owns an output path."""
+
+    canonical = path.resolve().as_posix()
+    resources = {
+        relationship.input_resource
+        for relationship in invocation.outputs
+        if relationship.input_resource is not None
+        and relationship.input_resource.canonical_target == canonical
+    }
+    return next(iter(resources)) if len(resources) == 1 else None
 
 
 def resolve_output_support(
@@ -164,9 +179,7 @@ def output_signature_mismatches(
     mismatches: list[str] = []
     if record.fingerprint != current_output:
         mismatches.append("output_fingerprint")
-    mismatches.extend(
-        output_producer_mismatches(invocation, record, material=material)
-    )
+    mismatches.extend(output_producer_mismatches(invocation, record, material=material))
     if current_code is not None and dict(record.code) != current_code:
         mismatches.append("code")
     return mismatches
@@ -186,7 +199,7 @@ def output_support_matches_invocation(
         return False
     return (
         record.script.path == invocation.script_argument
-        and record.parameters == invocation.parameters
+        and _parameters_match(invocation, record.parameters)
         and set(dict(record.inputs)) == set(expected_inputs)
     )
 
@@ -251,11 +264,36 @@ def output_producer_mismatches(
         mismatches.append("script")
     if current_script is None or record.script.fingerprint != current_script:
         mismatches.append("script_fingerprint")
-    if record.parameters != invocation.parameters:
+    if not _parameters_match(invocation, record.parameters):
         mismatches.append("parameters")
     if dict(record.inputs) != expected_inputs:
         mismatches.append("inputs")
     return mismatches
+
+
+def _parameters_match(invocation: Invocation, recorded: tuple[str, ...]) -> bool:
+    """Match path-era support after a path-identical named-output migration."""
+
+    if recorded in {invocation.parameters, invocation.recipe_parameters}:
+        return True
+    aliases = {
+        f"<{relationship.input_resource.name}>": relationship.input_resource.location
+        for relationship in invocation.outputs
+        if relationship.input_resource is not None
+        and not relationship.input_resource.origin
+    }
+    normalized = []
+    for parameter in invocation.parameters:
+        if parameter in aliases:
+            normalized.append(aliases[parameter])
+            continue
+        if parameter.startswith("-") and "=" in parameter:
+            prefix, value = parameter.split("=", 1)
+            if value in aliases:
+                normalized.append(f"{prefix}={aliases[value]}")
+                continue
+        normalized.append(parameter)
+    return tuple(normalized) == recorded
 
 
 def _output_signature_inputs(

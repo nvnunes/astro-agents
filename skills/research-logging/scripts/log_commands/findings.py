@@ -1,12 +1,17 @@
-"""Bounded read-only access to published mechanical findings."""
+"""Lock-free bounded access to published command-chain findings."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Sequence
 
+from validation.batch_projection import PROJECTION_SCHEMA
 from validation.filesystem import BoundedFileReadError, bounded_file_bytes
-from validation.human_projection import FindingGroup, project_findings
+from validation.human_projection import project_findings
 from validation.mechanical_results import (
     GENERATED_RECORD_SCHEMA,
     CheckStatus,
@@ -17,43 +22,100 @@ from validation.mechanical_results import (
 from .context import LogContext
 from .model import ActionError
 
-LIST_SCHEMA = "research-log-findings-list/1"
+LIST_SCHEMA = "research-log-findings-list/2"
+BATCH_SCHEMA = "research-log-findings-batch/1"
 SHOW_SCHEMA = "research-log-finding/1"
 MAX_RESULT_BYTES = 64 * 1024 * 1024
-MAX_RETURNED_GROUPS = 50
+MAX_PROJECTION_BYTES = 64 * 1024 * 1024
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class _DuplicateJsonKey(ValueError):
     """Signal one duplicate key during strict JSON decoding."""
 
 
+@dataclass(frozen=True)
+class FindingFilters:
+    """Repeatable exact selectors for one published finding query."""
+
+    entries: Sequence[str] = ()
+    areas: Sequence[str] = ()
+    codes: Sequence[str] = ()
+    families: Sequence[str] = ()
+    subjects: Sequence[str] = ()
+    commands: Sequence[str] = ()
+
+
 def list_findings(
     log: LogContext,
     *,
-    entry: str | None,
-    subject: str | None,
+    filters: FindingFilters = FindingFilters(),
 ) -> dict[str, object]:
-    """Return a bounded direct-finding inventory from the published record."""
+    """Return one complete summary per selected command chain."""
 
     record = _load_record(log)
-    groups = sorted(project_findings(record), key=_list_sort_key)
-    matches = [
-        group
-        for group in groups
-        if (entry is None or group.entry == entry)
-        and (subject is None or group.subject == subject)
+    projection = load_batch_projection(log, record=record)
+    selected = {
+        "area": sorted(set(filters.areas)),
+        "code": sorted(set(filters.codes)),
+        "command": sorted(set(filters.commands)),
+        "entry": sorted(set(filters.entries)),
+        "family": sorted(set(filters.families)),
+        "subject": sorted(set(filters.subjects)),
+    }
+    chains = [
+        value for value in _all_groups(projection) if _matches(value, selected)
     ]
-    returned = matches[:MAX_RETURNED_GROUPS]
-    return {
-        "filters": {"entry": entry, "subject": subject},
-        "findings": [_list_item(group) for group in returned],
-        "matched_groups": len(matches),
-        "omitted_groups": len(matches) - len(returned),
+    summaries = [_summary(value, selected) for value in chains]
+    result: dict[str, object] = {
+        "chains": summaries,
+        "filters": selected,
+        "matched_chains": len(chains),
+        "matched_entries": len({str(value["entry"]) for value in chains}),
+        "matched_findings": sum(_matching_count(value) for value in summaries),
+        "projection_id": projection["projection_id"],
         "result_date": record.result_date,
-        "returned_groups": len(returned),
         "schema": LIST_SCHEMA,
         "summary": record.summary,
     }
+    _require_response_bound(result, chains)
+    return result
+
+
+def batch_findings(
+    log: LogContext, *, projection_id: str, entry: str, chain_id: str
+) -> dict[str, object]:
+    """Return one complete recorded chain and every attached direct finding."""
+
+    record = _load_record(log)
+    projection = load_batch_projection(log, record=record)
+    current_id = projection["projection_id"]
+    if projection_id != current_id:
+        raise ActionError(
+            "findings.projection_superseded",
+            f"requested projection {projection_id!r}; "
+            f"current projection is {current_id!r}",
+        )
+    matches = [
+        value
+        for value in _all_groups(projection)
+        if value.get("entry") == entry and value.get("chain_id") == chain_id
+    ]
+    if not matches:
+        raise ActionError(
+            "findings.chain.unknown", f"unknown batch {entry}:{chain_id}"
+        )
+    if len(matches) != 1:
+        raise ActionError("findings.projection.malformed", "duplicate batch identity")
+    result = {
+        "batch": dict(matches[0]),
+        "projection_id": current_id,
+        "result_date": record.result_date,
+        "schema": BATCH_SCHEMA,
+        "summary": record.summary,
+    }
+    _require_response_bound(result, matches)
+    return result
 
 
 def show_finding(log: LogContext, *, check_id: str) -> dict[str, object]:
@@ -99,6 +161,67 @@ def show_finding(log: LogContext, *, check_id: str) -> dict[str, object]:
     }
 
 
+def load_batch_projection(
+    log: LogContext, *, record: MechanicalGeneratedRecord | None = None
+) -> dict[str, object]:
+    """Load the one current strict projection without reconstructing it."""
+
+    if record is None:
+        record = _load_record(log)
+    path = log.root / "validation" / "batches.json"
+    if path.is_symlink() or not path.is_file():
+        raise ActionError(
+            "findings.projection_unavailable",
+            "published validation predates batch projection; "
+            "full validation is required",
+        )
+    value = _read_json(path, maximum_bytes=MAX_PROJECTION_BYTES, label="projection")
+    required = {
+        "chains",
+        "projection_id",
+        "record_identity",
+        "result_date",
+        "rules_version",
+        "schema",
+        "source_identity",
+        "summary",
+        "unresolved",
+    }
+    if (
+        set(value) != required
+        or value.get("schema") != PROJECTION_SCHEMA
+        or not isinstance(value.get("chains"), list)
+        or not isinstance(value.get("unresolved"), list)
+        or not isinstance(value.get("source_identity"), str)
+        or value.get("summary") != record.summary
+        or value.get("result_date") != record.result_date
+        or value.get("rules_version") != record.rules_version
+    ):
+        raise ActionError(
+            "findings.projection.malformed", "current batch projection is malformed"
+        )
+    expected_record = hashlib.sha256(
+        record.canonical_json().encode("utf-8")
+    ).hexdigest()
+    projected_id = value.get("projection_id")
+    body = {key: item for key, item in value.items() if key != "projection_id"}
+    expected_id = hashlib.sha256(
+        json.dumps(
+            body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+    if value.get("record_identity") != expected_record or projected_id != expected_id:
+        raise ActionError(
+            "findings.projection.malformed",
+            "current batch projection identity does not match validation",
+        )
+    if not _valid_projection_groups(value):
+        raise ActionError(
+            "findings.projection.malformed", "current batch group is malformed"
+        )
+    return value
+
+
 def _load_record(log: LogContext) -> MechanicalGeneratedRecord:
     path = log.root / "validation" / "results.json"
     if path.is_symlink() or not path.is_file():
@@ -106,24 +229,7 @@ def _load_record(log: LogContext) -> MechanicalGeneratedRecord:
             "findings.result.missing",
             f"no published mechanical result for {log.summary}",
         )
-    try:
-        raw = bounded_file_bytes(path, maximum_bytes=MAX_RESULT_BYTES)
-    except BoundedFileReadError as error:
-        raise ActionError(
-            "findings.result.malformed",
-            "published mechanical result cannot be read within its bound",
-        ) from error
-    try:
-        text = raw.decode("utf-8")
-        value = json.loads(text, object_pairs_hook=_unique_object)
-    except (UnicodeError, json.JSONDecodeError, _DuplicateJsonKey) as error:
-        raise ActionError(
-            "findings.result.malformed", "published mechanical result is malformed"
-        ) from error
-    if not isinstance(value, dict):
-        raise ActionError(
-            "findings.result.malformed", "published mechanical result must be an object"
-        )
+    value = _read_json(path, maximum_bytes=MAX_RESULT_BYTES, label="result")
     schema = value.get("schema")
     if isinstance(schema, str) and schema != GENERATED_RECORD_SCHEMA:
         raise ActionError(
@@ -139,7 +245,27 @@ def _load_record(log: LogContext) -> MechanicalGeneratedRecord:
         ) from error
 
 
-def _reject_duplicate_identities(value: dict[str, Any]) -> None:
+def _read_json(path: Path, *, maximum_bytes: int, label: str) -> dict[str, Any]:
+    try:
+        raw = bounded_file_bytes(path, maximum_bytes=maximum_bytes)
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (
+        BoundedFileReadError,
+        UnicodeError,
+        json.JSONDecodeError,
+        _DuplicateJsonKey,
+    ) as error:
+        raise ActionError(
+            f"findings.{label}.malformed", f"published {label} is malformed"
+        ) from error
+    if not isinstance(value, dict):
+        raise ActionError(
+            f"findings.{label}.malformed", f"published {label} must be an object"
+        )
+    return value
+
+
+def _reject_duplicate_identities(value: Mapping[str, Any]) -> None:
     checks = value.get("checks")
     if not isinstance(checks, list):
         return
@@ -164,28 +290,296 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _list_item(group: FindingGroup) -> dict[str, object]:
-    return {
-        "check_id": group.check_ids[0],
-        "code": group.code,
-        "entry": group.entry,
-        "represented_checks": group.represented_checks,
-        "subject": group.subject,
-    }
-
-
-def _list_sort_key(group: FindingGroup) -> tuple[object, ...]:
-    return (
-        group.entry is None,
-        group.entry or "",
-        group.code,
-        group.subject,
-        group.status.value,
-        json.dumps(
-            dict(group.observed),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
-        group.check_ids[0],
+def _valid_projection_groups(projection: Mapping[str, object]) -> bool:
+    chains = projection.get("chains")
+    unresolved = projection.get("unresolved")
+    assert isinstance(chains, list) and isinstance(unresolved, list)
+    return all(
+        isinstance(value, dict) and _valid_chain(value) for value in chains
+    ) and all(
+        isinstance(value, dict) and _valid_unresolved(value)
+        for value in unresolved
     )
+
+
+def _all_groups(projection: Mapping[str, object]) -> list[dict[str, object]]:
+    return [
+        value
+        for family in ("chains", "unresolved")
+        for value in _sequence_items(projection.get(family))
+        if isinstance(value, dict)
+    ]
+
+
+def _valid_findings(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    required = {
+        "code",
+        "dependencies",
+        "identity",
+        "observed",
+        "rule",
+        "scope",
+        "status",
+        "subject",
+    }
+    return all(
+        isinstance(item, dict)
+        and set(item) == required
+        and all(
+            isinstance(item.get(key), str)
+            for key in ("code", "identity", "rule", "scope", "status", "subject")
+        )
+        and isinstance(item.get("dependencies"), list)
+        and all(isinstance(child, dict) for child in item["dependencies"])
+        and isinstance(item.get("observed"), dict)
+        for item in value
+    )
+
+
+def _valid_chain(value: Mapping[str, object]) -> bool:
+    required = {
+        "artifacts",
+        "chain_id",
+        "commands",
+        "edges",
+        "entry",
+        "findings",
+        "registry",
+        "signals",
+    }
+    if set(value) != required or not _valid_group_base(value):
+        return False
+    artifacts = value.get("artifacts")
+    commands = value.get("commands")
+    edges = value.get("edges")
+    registry = value.get("registry")
+    signals = value.get("signals")
+    return (
+        _string_list(artifacts)
+        and isinstance(commands, list)
+        and all(isinstance(item, dict) and _valid_command(item) for item in commands)
+        and isinstance(edges, list)
+        and all(isinstance(item, dict) and _valid_edge(item) for item in edges)
+        and isinstance(registry, list)
+        and all(isinstance(item, dict) and _valid_registry(item) for item in registry)
+        and _string_list(signals)
+    )
+
+
+def _valid_unresolved(value: Mapping[str, object]) -> bool:
+    return (
+        set(value) == {"chain_id", "entry", "findings", "reason"}
+        and _valid_group_base(value)
+        and isinstance(value.get("reason"), str)
+    )
+
+
+def _valid_group_base(value: Mapping[str, object]) -> bool:
+    findings = value.get("findings")
+    return (
+        isinstance(value.get("chain_id"), str)
+        and isinstance(value.get("entry"), str)
+        and _valid_findings(findings)
+    )
+
+
+def _valid_command(value: Mapping[str, object]) -> bool:
+    required = {
+        "collections",
+        "document",
+        "entry",
+        "fence",
+        "identity",
+        "inputs",
+        "ordinal",
+        "outputs",
+        "tokens",
+    }
+    collections = value.get("collections")
+    return (
+        set(value) == required
+        and all(
+            isinstance(value.get(key), str)
+            for key in ("document", "entry", "identity")
+        )
+        and all(isinstance(value.get(key), int) for key in ("fence", "ordinal"))
+        and _string_list(value.get("tokens"))
+        and _valid_relationships(value.get("inputs"))
+        and _valid_relationships(value.get("outputs"))
+        and isinstance(collections, list)
+        and all(
+            isinstance(item, dict) and _valid_collection(item)
+            for item in collections
+        )
+    )
+
+
+def _valid_relationships(value: object) -> bool:
+    required = {"direction", "path", "proof"}
+    optional = {"artifact", "origin", "target"}
+    return isinstance(value, list) and all(
+        isinstance(item, dict)
+        and required <= set(item) <= required | optional
+        and all(isinstance(item.get(key), str) for key in required)
+        and all(
+            key not in item or isinstance(item.get(key), str)
+            for key in ("artifact", "target")
+        )
+        and ("origin" not in item or item.get("origin") is True)
+        for item in value
+    )
+
+
+def _valid_collection(value: Mapping[str, object]) -> bool:
+    return (
+        set(value) == {"direction", "mechanism", "members", "root", "target"}
+        and all(
+            isinstance(value.get(key), str)
+            for key in ("direction", "mechanism", "target")
+        )
+        and (value.get("root") is None or isinstance(value.get("root"), str))
+        and _string_list(value.get("members"))
+    )
+
+
+def _valid_edge(value: Mapping[str, object]) -> bool:
+    return set(value) == {"artifact", "source", "target"} and all(
+        isinstance(value.get(key), str) for key in value
+    )
+
+
+def _valid_registry(value: Mapping[str, object]) -> bool:
+    required = {"entry", "kind", "location", "name", "origin", "path"}
+    optional = {"fingerprint", "from_entry", "read_only"}
+    if not (required <= set(value) <= required | optional):
+        return False
+    return (
+        all(
+            isinstance(value.get(key), str)
+            for key in ("entry", "kind", "location", "name", "path")
+        )
+        and isinstance(value.get("origin"), bool)
+        and (
+            "fingerprint" not in value or isinstance(value.get("fingerprint"), dict)
+        )
+        and (
+            ("from_entry" not in value and "read_only" not in value)
+            or (
+                isinstance(value.get("from_entry"), str)
+                and value.get("read_only") is True
+            )
+        )
+    )
+
+
+def _string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _matches(value: Mapping[str, object], filters: Mapping[str, list[str]]) -> bool:
+    findings = value.get("findings")
+    assert isinstance(findings, list)
+    if not findings:
+        return False
+    if filters["entry"] and value.get("entry") not in filters["entry"]:
+        return False
+    if filters["command"]:
+        command_ids = {
+            str(item.get("identity"))
+            for item in _mapping_items(value.get("commands"))
+            if isinstance(item, Mapping)
+        }
+        if command_ids.isdisjoint(filters["command"]):
+            return False
+    if not any(filters[name] for name in ("area", "code", "family", "subject")):
+        return True
+    return any(
+        _finding_matches(item, filters)
+        for item in findings
+        if isinstance(item, Mapping)
+    )
+
+
+def _finding_matches(
+    finding: Mapping[str, object], filters: Mapping[str, list[str]]
+) -> bool:
+    code = str(finding.get("code", ""))
+    return (
+        (not filters["area"] or finding.get("scope") in filters["area"])
+        and (not filters["code"] or code in filters["code"])
+        and (
+            not filters["family"]
+            or any(
+                code == family or code.startswith(f"{family}.")
+                for family in filters["family"]
+            )
+        )
+        and (
+            not filters["subject"] or finding.get("subject") in filters["subject"]
+        )
+    )
+
+
+def _summary(
+    value: Mapping[str, object], filters: Mapping[str, list[str]]
+) -> dict[str, object]:
+    findings = value.get("findings")
+    assert isinstance(findings, list)
+    selected = [
+        item
+        for item in findings
+        if isinstance(item, Mapping) and _finding_matches(item, filters)
+    ]
+    if not any(filters[name] for name in ("area", "code", "family", "subject")):
+        selected = [item for item in findings if isinstance(item, Mapping)]
+    result: dict[str, object] = {
+        "chain_id": value["chain_id"],
+        "code_distribution": dict(
+            sorted(Counter(str(item["code"]) for item in findings).items())
+        ),
+        "command_count": len(_sequence_items(value.get("commands"))),
+        "entry": value["entry"],
+        "finding_count": len(findings),
+        "matching_findings": len(selected),
+        "represented_checks": len(findings),
+        "subjects": sorted({str(item["subject"]) for item in findings}),
+    }
+    if value.get("signals"):
+        result["signals"] = value["signals"]
+    if value.get("reason"):
+        result["unresolved"] = value["reason"]
+    return result
+
+
+def _require_response_bound(
+    result: Mapping[str, object], groups: Sequence[Mapping[str, object]]
+) -> None:
+    raw = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    if len(raw) <= MAX_RESPONSE_BYTES:
+        return
+    raise ActionError(
+        "findings.response.too_large",
+        "matching projection exceeds the response bound: "
+        f"entries={len({str(value['entry']) for value in groups})} "
+        f"chains={len(groups)} findings="
+        f"{sum(len(_sequence_items(value.get('findings'))) for value in groups)}",
+    )
+
+
+def _sequence_items(value: object) -> Sequence[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return value
+    return ()
+
+
+def _matching_count(value: Mapping[str, object]) -> int:
+    count = value.get("matching_findings")
+    return count if isinstance(count, int) else 0
+
+
+def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
+    return tuple(item for item in _sequence_items(value) if isinstance(item, Mapping))

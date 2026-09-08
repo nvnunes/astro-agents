@@ -39,10 +39,12 @@ Choose the core operation:
 - Explicit mechanical reproduction of a maintained log or one entry: read
   `references/operation-reproduce.md`. Reproduce is CLI-owned, uses JSON as its
   graph and execution authority, and never becomes Record, Review, or Validate.
-- Explicit correction of a named research-log finding, malformed or legacy
-  state, transaction residue, or other identified log defect: read
-  `references/operation-repair.md`. A failed authoring command or reported
-  finding does not start Repair without a separate correction request.
+- Explicit correction of a research-log finding, causal group, finding class,
+  malformed or legacy state, transaction residue, or other identified log
+  defect: read `references/operation-repair.md`. Correction language such as
+  repair, fix, resolve, correct, clean up, or remove authorizes Repair when the
+  requested target and corrected state are clear. A failed authoring command
+  or reported finding alone does not.
 - Researcher-requested reorganization, or a specific Reorganize recommendation
   that the researcher has approved: read
   `references/operation-reorganize.md`. Review may recommend Reorganize but
@@ -79,6 +81,11 @@ A bounded question that merely overlaps a lens does not start Review.
 A request to inspect, explain, triage, or determine the cause of named
 mechanical-validation findings routes to Validate's read-only diagnosis path,
 not Review or Repair. It does not authorize a validation rerun or correction.
+If the same request also asks to correct the diagnosed condition, route it
+directly to Repair and use the narrowest named finding, causal group, or
+finding class as its scope. A hypothetical question about how one might fix a
+condition remains diagnosis. When several corrected states are plausible, ask
+which state the researcher intends before editing.
 
 Do not infer Replace from a revision, rerun, correction, or reorganization
 request. Use it only when the researcher explicitly intends superseded
@@ -105,8 +112,9 @@ state does not start Repair without an explicit correction request.
   Reproduce-owned. Other operations preserve them and never edit them by hand;
   their exact paths and mutation boundaries are defined in
   `references/file-reproduction-records.md`.
-- If a maintained log command reports `operation.lock.conflict`, stop and
-  retry after the conflicting operation completes; do not bypass its lock.
+- If a maintained log command reports `operation.lock.conflict`, report the
+  supplied owner metadata once and stop. Do not retry, poll, inspect process
+  tables, or bypass the lock during the current operation.
 - If validation reports `research-owned state changed during validation`,
   retry the identical command once; do not infer concurrent activity unless it
   fails again.

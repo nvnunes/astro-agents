@@ -215,6 +215,27 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn(internal, data)
             self.assertNotIn(internal, evidence)
 
+    def test_provenance_catalog_routes_to_eight_focused_common_cases(self) -> None:
+        index = reference("provenance-patterns.md")
+        cards = sorted((REFERENCES / "provenance-patterns").glob("*.md"))
+        self.assertEqual(len(cards), 8)
+        self.assertIn("not an\nexhaustive taxonomy or a whitelist", index)
+        for card in cards:
+            relative = card.relative_to(REFERENCES).as_posix()
+            text = card.read_text(encoding="utf-8")
+            self.assertEqual(index.count(f"references/{relative}"), 1, relative)
+            self.assertIn("Required tooling:", text, relative)
+            self.assertIn("Research command", text, relative)
+
+        record = reference("operation-record.md")
+        data = reference("file-data-index.md")
+        repair = reference("operation-repair.md")
+        self.assertIn("references/provenance-patterns.md", record)
+        self.assertIn("references/provenance-patterns.md", data)
+        self.assertIn("when the correction requires choosing a good", repair)
+        self.assertIn("references/provenance-patterns.md", repair)
+        self.assertIn("Unrelated Repair does not load the\n  catalog", repair)
+
     def test_log_local_code_guidance_stays_in_script_reference(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         record = reference("operation-record.md")
@@ -293,18 +314,54 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn("references/operation-repair.md", text)
             self.assertNotIn("references/operation-reorganize.md", text)
 
-    def test_pending_generated_registration_is_repair_only(self) -> None:
+    def test_generated_registration_separates_preproduction_and_repair(self) -> None:
+        data = reference("file-data-index.md")
         repair = reference("operation-repair.md")
-        ordinary = "\n".join(
-            (
-                (SKILL / "SKILL.md").read_text(encoding="utf-8"),
-                reference("operation-record.md"),
-                reference("operation-record-content.md"),
-                reference("file-data-index.md"),
-            )
-        )
+        cases = CASES.read_text(encoding="utf-8")
+        self.assertIn("Declare the artifact before", data)
+        self.assertIn("ordinary pre-production state", cases)
+        self.assertNotIn("--pending-confirmation", data)
         self.assertIn("--pending-confirmation", repair)
-        self.assertNotIn("--pending-confirmation", ordinary)
+
+    def test_repair_routing_cases_cover_intent_and_operation_boundaries(self) -> None:
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        repair = reference("operation-repair.md")
+        cases = CASES.read_text(encoding="utf-8")
+        normalized = " ".join(cases.split())
+
+        for phrase in (
+            "class-level repair starts one bounded Repair campaign",
+            "exact-finding repair starts directly",
+            "combined search and correction request enters Repair",
+            "combined diagnosis and correction enters Repair",
+            "unambiguous pronoun enters Repair",
+            "diagnosis only stays in Validate's read-only finding path",
+            "hypothetical advice stays read-only",
+            "ambiguous correction request asks which target",
+            "failure alone does not authorize Repair",
+            "requests explicit Replace authority",
+            "routes the structural cleanup to Reorganize",
+            "validator defect is outside repair scope",
+        ):
+            self.assertIn(phrase, normalized)
+
+        self.assertIn("repair, fix, resolve, correct, clean up, or remove", skill)
+        self.assertIn("narrowest authorized finding, causal", repair)
+        self.assertIn("no matching published findings ends the repair", repair)
+
+    def test_integrated_repair_cases_preserve_evidence_and_continue(self) -> None:
+        cases = " ".join(CASES.read_text(encoding="utf-8").split())
+        repair = reference("operation-repair.md")
+        for phrase in (
+            "lists the class once",
+            "does not run full validation during the campaign",
+            "skips the evidence-changing chain for researcher direction",
+            "continues with the independent chain",
+            "without polling or broadening scope",
+        ):
+            self.assertIn(phrase, cases)
+        self.assertIn("one entry or command\n  chain at a time", repair)
+        self.assertIn("Skip any case whose correction would require", repair)
 
     def test_record_sequences_separately_requested_validation(self) -> None:
         content = reference("operation-record-content.md")

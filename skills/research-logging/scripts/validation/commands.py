@@ -13,6 +13,8 @@ from research_log_data import (
     DataFile,
     FingerprintObservation,
     InputResource,
+    identity_file_paths,
+    identity_pattern_paths,
     input_token_candidate,
     input_token_parts,
     require_git_repository_token_pairs,
@@ -320,9 +322,7 @@ def discover_commands(
                 continue
             duplicate_counts[canonical] = duplicate + 1
             invocations.append(invocation)
-    return DiscoveryResult(
-        tuple(invocations), tuple(command_failures)
-    )
+    return DiscoveryResult(tuple(invocations), tuple(command_failures))
 
 
 def order_invocations(
@@ -539,9 +539,7 @@ def _parse_command(
         recipe_parameters,
         environment,
         auto_reproduce,
-    ) = _pyrun_layout(
-        ordinary, executable_index
-    )
+    ) = _pyrun_layout(ordinary, executable_index)
     argument_start = script_index + 1
     options, positionals = split_argument_values(ordinary[argument_start:])
     return _ParsedCommand(
@@ -589,8 +587,6 @@ def _pyrun_layout(
     )
 
 
-
-
 def _build_invocation(
     command: _ParsedCommand,
     context: CommandContext,
@@ -612,6 +608,9 @@ def _build_invocation(
         )
     inputs = tuple(item for item in relationships if item.direction == "input")
     outputs = tuple(item for item in relationships if item.direction == "output")
+    recipe_parameters = _canonical_recipe_output_parameters(
+        command.recipe_parameters, outputs, context
+    )
     input_slots = _relationship_slots(inputs, collections, "input")
     output_slots = _relationship_slots(outputs, collections, "output")
     if input_slots > MAX_RELATIONSHIPS or output_slots > MAX_RELATIONSHIPS:
@@ -648,11 +647,42 @@ def _build_invocation(
         collections,
         candidates,
         _material_owner(context),
-        command.recipe_parameters,
+        recipe_parameters,
         command.environment,
         command.auto_reproduce,
         command.authored_group,
     )
+
+
+def _canonical_recipe_output_parameters(
+    parameters: tuple[str, ...],
+    outputs: tuple[MaterialRelationship, ...],
+    context: CommandContext,
+) -> tuple[str, ...]:
+    """Normalize generated names to their portable recipe output identities."""
+
+    aliases: dict[str, str] = {}
+    for relationship in outputs:
+        resource = relationship.input_resource
+        if resource is None or resource.origin:
+            continue
+        aliases[f"<{resource.name}>"] = portable_output_path(
+            resource.canonical_target,
+            entry_root=context.entry_root,
+            project_root=context.project_root,
+        )
+    normalized: list[str] = []
+    for parameter in parameters:
+        if parameter in aliases:
+            normalized.append(aliases[parameter])
+            continue
+        if parameter.startswith("-") and "=" in parameter:
+            prefix, value = parameter.split("=", 1)
+            if value in aliases:
+                normalized.append(f"{prefix}={aliases[value]}")
+                continue
+        normalized.append(parameter)
+    return tuple(normalized)
 
 
 def _relationship_slots(
@@ -852,10 +882,7 @@ def _relationships(
     collections.extend(_repeated_collections(relationships, context.document))
     try:
         require_git_repository_token_pairs(
-            tuple(
-                [item.value for item in command.options]
-                + list(command.positionals)
-            ),
+            tuple([item.value for item in command.options] + list(command.positionals)),
             context.data_file,
         )
     except DataContractError as error:
@@ -892,10 +919,6 @@ def _collect_argument(
 ) -> None:
     if role is not None:
         _apply_role(value, role, target, state)
-        return
-    named = _named_input(value, state.context)
-    if named is not None:
-        state.relationships.append(named)
         return
     candidate = _candidate(value, state.context)
     if candidate is not None:
@@ -967,6 +990,19 @@ def _apply_role(
         )
     _reject_entry_material_root(value, target, context)
     direction = "input" if role.startswith("input") else "output"
+    if direction == "output":
+        named_output = _named_output(value, context, target=target)
+        if named_output is not None:
+            resource = named_output.input_resource
+            if resource is not None and resource.kind == "directory":
+                collection, relationships = _named_output_directory_collection(
+                    named_output, target, context
+                )
+                state.collections.append(collection)
+                state.relationships.extend(relationships)
+            else:
+                state.relationships.append(named_output)
+            return
     if role.endswith("-directory"):
         if direction == "input":
             collection, relationships = _named_directory_collection(
@@ -1033,6 +1069,122 @@ def _named_input(
     )
 
 
+def _named_output(
+    value: str, context: CommandContext, *, target: str
+) -> MaterialRelationship | None:
+    """Resolve one explicitly output-directed artifact token without observing it."""
+
+    if input_token_parts(value) is None:
+        return None
+    try:
+        resolved = resolve_input_token(value, context.data_file)
+    except DataContractError as error:
+        _fail(error.code, context.document, error.observed)
+    resource = resolved.resource
+    if (
+        resource.origin
+        or resource.reference_entry is not None
+        or resolved.member is not None
+    ):
+        _fail(
+            "data.output.declaration_invalid",
+            context.document,
+            {
+                "artifact": resource.name,
+                "origin": resource.origin,
+                "reference": resource.reference_entry,
+                "value": value,
+            },
+        )
+    return MaterialRelationship(
+        resolved.path,
+        "output",
+        "named-output",
+        target,
+        resource.name,
+        False,
+        resource,
+    )
+
+
+def _named_output_directory_collection(
+    relationship: MaterialRelationship,
+    target: str,
+    context: CommandContext,
+) -> tuple[MaterialCollection, tuple[MaterialRelationship, ...]]:
+    """Expand one declared generated directory through its retained members."""
+
+    root = Path(relationship.path)
+    if not root.exists():
+        return (
+            MaterialCollection(
+                "output", "directory", target, (), root.resolve().as_posix()
+            ),
+            (relationship,),
+        )
+    if not root.is_dir():
+        _fail(
+            "collection.membership.invalid",
+            context.document,
+            {"directory": relationship.path, "reason": "not_directory"},
+        )
+    resource = relationship.input_resource
+    assert resource is not None
+    if resource.fingerprint.algorithm == "identity-files-sha256-v1":
+        members = tuple(
+            path.resolve().as_posix() for path in identity_file_paths(resource).values()
+        )
+    elif resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
+        members = tuple(
+            path.resolve().as_posix()
+            for path in identity_pattern_paths(resource).values()
+        )
+    else:
+        try:
+            descendants = bounded_descendants(
+                root, maximum_entries=MAX_COLLECTION_MEMBERS
+            )
+        except BoundedTraversalError as error:
+            _fail(
+                "collection.membership.invalid",
+                context.document,
+                {
+                    "directory": relationship.path,
+                    "limit": error.limit,
+                    "observed": error.observed,
+                    "reason": error.reason,
+                },
+            )
+        if any(path.is_symlink() for path in descendants):
+            _fail(
+                "collection.membership.invalid",
+                context.document,
+                {"directory": relationship.path, "reason": "nested_symlink"},
+            )
+        members = tuple(
+            path.resolve().as_posix() for path in descendants if path.is_file()
+        )
+    _validate_members(members, context.document)
+    relationships = tuple(
+        MaterialRelationship(
+            member,
+            "output",
+            "directory",
+            target,
+            resource.name if resource is not None else None,
+            False,
+            resource,
+        )
+        for member in members
+    )
+    return (
+        MaterialCollection(
+            "output", "directory", target, members, root.resolve().as_posix()
+        ),
+        relationships,
+    )
+
+
 def _relationship(
     request: _RelationshipRequest,
     context: CommandContext,
@@ -1086,10 +1238,7 @@ def _reject_raw_input(value: str, context: CommandContext) -> NoReturn:
             if resource.canonical_target == canonical:
                 matching.append(resource.name)
                 continue
-            if (
-                resource.kind == "directory"
-                and path is not None
-            ):
+            if resource.kind == "directory" and path is not None:
                 try:
                     path.resolve().relative_to(Path(resource.canonical_target))
                 except ValueError:

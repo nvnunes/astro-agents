@@ -24,6 +24,7 @@ from validation.commands import (
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.output_support import (
     confirmed_output_record,
+    declared_output_resource,
     require_current_output_support,
     resolve_output_support,
 )
@@ -61,9 +62,7 @@ class LogMaterials:
     input_names: Mapping[Path, frozenset[str]]
     failures: Mapping[Path, tuple[CommandDiscoveryFailure, ...]]
     _support: dict[str, PyrunOutputsFile] = field(default_factory=dict)
-    _producer_index: ProducerIndex | None = field(
-        default=None, init=False, repr=False
-    )
+    _producer_index: ProducerIndex | None = field(default=None, init=False, repr=False)
 
     def confirmed(self, invocation: Invocation, material: str) -> bool:
         """Return confirmed support using the validator's exact output identity."""
@@ -101,12 +100,18 @@ class LogMaterials:
                     canonical = resolved.path.resolve().as_posix()
                     current = observations.get(canonical)
                     if current is None:
-                        path = resolved.path
-                        observation = (
-                            cache.observe_directory(path)
-                            if path.is_dir()
-                            else cache.observe_regular_file(path)
+                        declared = declared_output_resource(
+                            invocation, resolved.path
                         )
+                        if declared is not None:
+                            observation = observe_fingerprint(declared)
+                        else:
+                            path = resolved.path
+                            observation = (
+                                cache.observe_directory(path)
+                                if path.is_dir()
+                                else cache.observe_regular_file(path)
+                            )
                         current = observation.fingerprint
                         observations[canonical] = current
                     record = require_current_output_support(
@@ -142,6 +147,7 @@ class LogMaterials:
             resource.canonical_target,
             self.invocations,
             producer_index=self._index(),
+            allow_missing=resource.fingerprint.digest is None,
         )
         root = self._root(producer)
         resolved = resolve_output_support(
@@ -152,8 +158,9 @@ class LogMaterials:
             support=self._output_support(producer.material_owner, root),
         )
         if resolved.record is not None and resolved.record.confirmed:
-            current = resource.fingerprint
-            if resolved.path.resolve().as_posix() != resource.canonical_target:
+            if resolved.path.resolve().as_posix() == resource.canonical_target:
+                current = observe_fingerprint(resource).fingerprint
+            else:
                 try:
                     with FingerprintCache(
                         self.project_root, writable=False, reuse=True

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .batch_projection import build_batch_projection
 from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .human_projection import (
@@ -16,9 +18,18 @@ from .human_projection import (
     load_report_context,
     project_findings,
 )
-from .mechanical import MechanicalEvaluationRequest, evaluate_mechanical
+from .mechanical import (
+    MechanicalEvaluation,
+    MechanicalEvaluationRequest,
+    evaluate_mechanical,
+)
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
-from .operation_state import operation_lock, require_mutation_ready, research_snapshot
+from .operation_state import (
+    LOCK_OWNER_SCHEMA,
+    operation_lock,
+    require_mutation_ready,
+    research_snapshot,
+)
 from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
@@ -94,8 +105,37 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         )
     requested_summary = request.summary.absolute()
     requested_log_root = requested_summary.with_suffix("")
+    starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None = None
+
+    def validation_owner() -> Mapping[str, object]:
+        nonlocal starting_snapshot
+        starting_snapshot = research_snapshot(requested_summary)
+        request_projection = {
+            "publish": request.publish,
+            "recompute": request.recompute,
+            "recompute_fingerprints": request.recompute_fingerprints,
+            "recompute_validation": request.recompute_validation,
+            "result_date": request.result_date,
+            "summary": requested_summary.as_posix(),
+        }
+        return {
+            "log": requested_log_root.resolve().as_posix(),
+            "operation": "validation",
+            "pid": os.getpid(),
+            "publication": request.publish,
+            "request_fingerprint": _value_digest(request_projection),
+            "schema": LOCK_OWNER_SCHEMA,
+            "source_fingerprint": _value_digest(starting_snapshot),
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
     try:
-        with operation_lock(requested_log_root, "log.lock", mode="exclusive"):
+        with operation_lock(
+            requested_log_root,
+            "log.lock",
+            mode="exclusive",
+            owner_factory=validation_owner,
+        ):
             require_mutation_ready(requested_log_root)
             summary = requested_summary.resolve()
             _validate_request(summary)
@@ -118,6 +158,7 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 summary,
                 log_root,
                 result_date,
+                starting_snapshot=starting_snapshot,
             )
     except (
         FingerprintCacheError,
@@ -159,15 +200,51 @@ def evaluate_current_record(
     return MechanicalGeneratedRecord.from_dict(raw)
 
 
+def evaluate_entry_record(
+    summary: Path, *, result_date: str, entry_id: str
+) -> MechanicalEvaluation[MechanicalGeneratedRecord]:
+    """Evaluate one entry without publication, operation locks, or cache writes."""
+
+    summary = summary.resolve()
+    _validate_request(summary)
+    unsupported = _unsupported_metadata_state(summary)
+    if unsupported is not None:
+        raise ValidationControllerError(
+            "generated metadata requires Repair before batch evaluation"
+        )
+    with FingerprintCache(
+        project_root(summary), writable=False, reuse=True
+    ) as fingerprints:
+        with ValidationCache(
+            summary.with_suffix(""), writable=False, reuse=True
+        ) as checks:
+            evaluation = evaluate_mechanical(
+                MechanicalEvaluationRequest(
+                    summary,
+                    _result_date(result_date),
+                    fingerprint_cache=fingerprints,
+                    validation_cache=checks,
+                    entry_ids=frozenset({entry_id}),
+                ),
+                mechanical_policy(),
+            )
+    if not isinstance(evaluation.result, MechanicalGeneratedRecord):
+        raise ValidationControllerError("mechanical batch evaluation did not complete")
+    return evaluation
+
+
 def _run_validation(
     request: ValidationRequest,
     summary: Path,
     log_root: Path,
     result_date: str,
+    *,
+    starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None = None,
 ) -> dict[str, Any]:
     """Evaluate under the caller-owned publication lifecycle."""
 
-    starting_snapshot = research_snapshot(summary) if request.publish else None
+    if starting_snapshot is None:
+        starting_snapshot = research_snapshot(summary)
     report_context = load_report_context(summary)
     recompute_validation = request.recompute or request.recompute_validation
     recompute_fingerprints = request.recompute or request.recompute_fingerprints
@@ -205,17 +282,34 @@ def _run_validation(
                 raise ValidationControllerError(
                     "mechanical engine returned an invalid record"
                 )
+            projection = build_batch_projection(
+                record,
+                invocations=evaluation.scan["invocations"],
+                registries=evaluation.scan["registries"],
+                source_identity=_value_digest(starting_snapshot),
+            )
             if not request.publish or record.completion is CompletionState.INCOMPLETE:
                 return _completed_result(
                     record,
                     evaluation.metrics,
                     published=False,
                     report_context=report_context,
+                    batch_projection=projection,
                 )
             finding_groups = project_findings(record, report_context)
             mechanical = (record.canonical_json() + "\n").encode()
             mechanical_digest = hashlib.sha256(mechanical).hexdigest()
+            projection_bytes = (
+                json.dumps(
+                    projection,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
             outputs = {
+                "validation/batches.json": projection_bytes,
                 "validation.md": compose_validation_report(
                     record, context=report_context, groups=finding_groups
                 ).encode(),
@@ -257,6 +351,7 @@ def _run_validation(
                 metrics,
                 published=True,
                 report_context=report_context,
+                batch_projection=projection,
             )
 
 
@@ -385,10 +480,12 @@ def _completed_result(
     *,
     published: bool,
     report_context: ReportContext,
+    batch_projection: Mapping[str, object],
 ) -> dict[str, Any]:
     log_root = Path(record.summary).with_suffix("")
     return {
         "metrics": dict(metrics),
+        "_batch_projection": dict(batch_projection),
         "published": published,
         "record": record.as_dict(),
         "report": compose_validation_command_report(
@@ -402,3 +499,10 @@ def _completed_result(
         "status": record.completion.value,
         "summary": record.summary,
     }
+
+
+def _value_digest(value: object) -> str:
+    raw = json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()

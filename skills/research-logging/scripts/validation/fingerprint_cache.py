@@ -29,6 +29,7 @@ from research_log_data import (
     identity_pattern_paths,
     observe_directory_tree,
     observe_file_content,
+    observe_fingerprint,
     validate_fingerprint_observation,
     verify_fingerprint,
 )
@@ -155,15 +156,23 @@ class FingerprintCache:
 
     def verify(self, resource: InputResource) -> FingerprintObservation | None:
         """Observe one local resource and compare it with its authored identity."""
+
+        return validate_fingerprint_observation(
+            resource, self.observe_resource(resource)
+        )
+
+    def observe_resource(self, resource: InputResource) -> FingerprintObservation:
+        """Observe one declaration-shaped local resource without comparing it."""
+
         if resource.kind == "git-repository":
-            return self._verify_without_cache(resource)
+            return observe_fingerprint(resource)
         path = Path(resource.canonical_target)
         if (
             path.is_symlink()
             or (resource.kind == "file" and not path.is_file())
             or (resource.kind == "directory" and not path.is_dir())
         ):
-            return self._verify_without_cache(resource)
+            return observe_fingerprint(resource)
         if resource.kind == "file":
             digest, identity, reused = self._observe_file(path)
             observation = FingerprintObservation(
@@ -178,7 +187,7 @@ class FingerprintCache:
                 observation = self._observe_identity_patterns(resource)
             else:
                 observation = self._observe_directory(path)
-        return validate_fingerprint_observation(resource, observation)
+        return observation
 
     def observe_regular_file(self, path: Path) -> FingerprintObservation:
         """Return one current strong identity without an authored expectation.

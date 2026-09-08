@@ -193,7 +193,7 @@ class ValidationCliTests(unittest.TestCase):
                     )
                     self.assertIn(bad_summary.resolve().as_posix(), payload["report"])
                     self.assertIn(
-                        "| — | — | — | — | Not published |", payload["report"]
+                        "| — | — | — | Not published |", payload["report"]
                     )
                     self.assertIn("Validation could not start:", payload["report"])
                     self.assertEqual(

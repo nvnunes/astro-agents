@@ -29,7 +29,8 @@ from validation.filesystem import (
 )
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
-DATA_SCHEMA = "research-log-data/v3"
+DATA_SCHEMA = "research-log-data/v4"
+LEGACY_DATA_SCHEMA = "research-log-data/v3"
 EVIDENCE_COMPARISON_CONTRACT = "research-log-evidence-scoped-comparison/1"
 _MISSING = object()
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
@@ -92,11 +93,9 @@ class Fingerprint:
     def as_dict(self) -> dict[str, object]:
         """Return the canonical fingerprint object."""
 
-        assert self.digest is not None
-        value: dict[str, object] = {
-            "algorithm": self.algorithm,
-            "digest": self.digest,
-        }
+        value: dict[str, object] = {"algorithm": self.algorithm}
+        if self.digest is not None:
+            value["digest"] = self.digest
         if self.files:
             value["files"] = list(self.files)
         if self.patterns:
@@ -148,10 +147,13 @@ class InputResource:
     origin: bool
     canonical_target: str
     comparison: ReproductionComparison | None = None
+    reference_entry: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return authored canonical fields without resolved observations."""
 
+        if self.reference_entry is not None:
+            return {"from_entry": self.reference_entry, "name": self.name}
         value: dict[str, object] = {
             "fingerprint": self.fingerprint.as_dict(),
             "kind": self.kind,
@@ -253,6 +255,14 @@ class DataDeclarationConflict:
 def load_data_file(path: Path, *, entry_root: Path) -> DataFile:
     """Read one strict entry-root ``data.json`` declaration."""
 
+    return _load_data_file(path, entry_root=entry_root, loading=frozenset())
+
+
+def _load_data_file(
+    path: Path, *, entry_root: Path, loading: frozenset[Path]
+) -> DataFile:
+    """Resolve one data file and its bounded cross-entry references."""
+
     entry_root_symlink = entry_root.is_symlink()
     entry_root = entry_root.resolve()
     expected = entry_root / "data.json"
@@ -268,12 +278,25 @@ def load_data_file(path: Path, *, entry_root: Path) -> DataFile:
         _invalid(path, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
     raw_inputs = value.get("inputs")
-    if value.get("schema") != DATA_SCHEMA or not isinstance(raw_inputs, list):
+    schema = value.get("schema")
+    if schema not in {DATA_SCHEMA, LEGACY_DATA_SCHEMA} or not isinstance(
+        raw_inputs, list
+    ):
         _invalid(path, {"schema": value.get("schema")})
     if not raw_inputs or len(raw_inputs) > MAX_INPUTS:
         _invalid(path, {"inputs": len(raw_inputs)})
+    canonical = expected.resolve()
+    if canonical in loading:
+        _invalid(path, {"reason": "reference_cycle"})
+    nested = loading | {canonical}
     inputs = tuple(
-        _decode_input(raw, f"{path}:inputs[{index}]", entry_root)
+        _decode_input(
+            raw,
+            f"{path}:inputs[{index}]",
+            entry_root,
+            allow_unobserved=schema == DATA_SCHEMA,
+            loading=nested,
+        )
         for index, raw in enumerate(raw_inputs)
     )
     _require_unique_inputs(inputs, path)
@@ -339,6 +362,49 @@ def build_local_input(
     )
     observation = observe_fingerprint(provisional)
     return replace(provisional, fingerprint=observation.fingerprint)
+
+
+def build_declared_generated(
+    name: str,
+    kind: str,
+    location: str,
+    *,
+    entry_root: Path,
+    identity: tuple[str, ...] | None = None,
+) -> InputResource:
+    """Build one generated artifact declaration before production."""
+
+    if kind not in {"file", "directory"}:
+        _invalid(name, {"kind": kind})
+    if identity and kind != "directory":
+        _invalid(name, {"identity": list(identity), "kind": kind})
+    if identity:
+        pattern_selected = any(has_magic(selector) for selector in identity)
+        fingerprint = Fingerprint(
+            (
+                "identity-patterns-sha256-v1"
+                if pattern_selected
+                else "identity-files-sha256-v1"
+            ),
+            files=() if pattern_selected else identity,
+            patterns=identity if pattern_selected else (),
+        )
+    else:
+        fingerprint = Fingerprint(
+            "sha256" if kind == "file" else "directory-sha256-v1"
+        )
+    return _decode_input(
+        {
+            "name": name,
+            "kind": kind,
+            "location": location,
+            "origin": False,
+            "fingerprint": fingerprint.as_dict(),
+        },
+        f"input:{name}",
+        entry_root.resolve(),
+        allow_unobserved=True,
+    )
 
 
 def build_git_repository_input(
@@ -968,6 +1034,13 @@ def validate_fingerprint_observation(
 ) -> FingerprintObservation:
     """Require one shared observation to match a specific declaration."""
 
+    if resource.fingerprint.digest is None:
+        _fail(
+            "data.fingerprint.unobserved",
+            resource.name,
+            {"kind": resource.kind, "location": resource.location},
+            "Fingerprints",
+        )
     if observation.fingerprint != resource.fingerprint:
         _fail(
             "data.fingerprint.mismatch",
@@ -1200,10 +1273,19 @@ def _valid_file_cache_identity(value: Mapping[str, object]) -> bool:
     )
 
 
-def _decode_input(value: object, subject: str, entry_root: Path) -> InputResource:
+def _decode_input(
+    value: object,
+    subject: str,
+    entry_root: Path,
+    *,
+    allow_unobserved: bool = True,
+    loading: frozenset[Path] = frozenset(),
+) -> InputResource:
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})
     value = cast(Mapping[str, Any], value)
+    if set(value) == {"from_entry", "name"}:
+        return _decode_reference(value, subject, entry_root, loading)
     required = {"name", "kind", "location", "fingerprint", "origin"}
     if not required <= set(value) <= required | {"comparison"}:
         _invalid(subject, {"fields": sorted(value)})
@@ -1212,12 +1294,17 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
     if kind not in {"file", "directory", "git-repository"}:
         _invalid(subject, {"kind": kind})
     location, target = _location(value.get("location"), subject, entry_root)
-    fingerprint = parse_fingerprint(value.get("fingerprint"), subject, kind=kind)
     origin = value.get("origin")
     if not isinstance(origin, bool):
         _invalid(subject, {"origin": origin})
     if kind == "git-repository" and not origin:
         _invalid(subject, {"kind": kind, "origin": origin})
+    fingerprint = parse_fingerprint(
+        value.get("fingerprint"),
+        subject,
+        kind=kind,
+        allow_unobserved=allow_unobserved and not origin,
+    )
     comparison = _decode_reproduction_comparison(
         value["comparison"] if "comparison" in value else _MISSING,
         subject,
@@ -1240,6 +1327,55 @@ def _decode_input(value: object, subject: str, entry_root: Path) -> InputResourc
         canonical_target=target,
         comparison=comparison,
     )
+
+
+def _decode_reference(
+    value: Mapping[str, Any],
+    subject: str,
+    entry_root: Path,
+    loading: frozenset[Path],
+) -> InputResource:
+    name = _name(value.get("name"), subject)
+    from_entry = value.get("from_entry")
+    if (
+        not isinstance(from_entry, str)
+        or ENTRY_REFERENCE_NAME_RE.fullmatch(from_entry) is None
+    ):
+        _invalid(subject, {"from_entry": from_entry})
+    entries_root = entry_root.resolve().parent
+    candidates = []
+    try:
+        for candidate in entries_root.iterdir():
+            if (
+                candidate.is_dir()
+                and not candidate.is_symlink()
+                and (candidate / f"{from_entry}.md").is_file()
+                and not (candidate / f"{from_entry}.md").is_symlink()
+            ):
+                candidates.append(candidate)
+    except OSError as error:
+        _invalid(subject, {"error": str(error), "from_entry": from_entry})
+    if len(candidates) != 1:
+        _invalid(
+            subject,
+            {"from_entry": from_entry, "matches": len(candidates)},
+        )
+    source_path = candidates[0] / "data.json"
+    if source_path.is_symlink() or not source_path.is_file():
+        _invalid(subject, {"from_entry": from_entry, "reason": "source_missing"})
+    source = _load_data_file(
+        source_path, entry_root=candidates[0], loading=loading
+    ).by_name.get(name)
+    if source is None or source.origin or source.reference_entry is not None:
+        _invalid(
+            subject,
+            {
+                "from_entry": from_entry,
+                "name": name,
+                "reason": "producer_declaration_missing",
+            },
+        )
+    return replace(source, reference_entry=from_entry)
 
 
 def _decode_reproduction_comparison(
@@ -1331,7 +1467,11 @@ def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
 
 
 def parse_fingerprint(
-    value: object, subject: str, *, kind: object | None = None
+    value: object,
+    subject: str,
+    *,
+    kind: object | None = None,
+    allow_unobserved: bool = False,
 ) -> Fingerprint:
     """Parse one closed local fingerprint, inferring resource kind if omitted."""
 
@@ -1346,18 +1486,24 @@ def parse_fingerprint(
             if algorithm == GIT_COMMIT_ALGORITHM
             else "directory"
         )
-    return _fingerprint(value, subject, kind)
+    return _fingerprint(value, subject, kind, allow_unobserved=allow_unobserved)
 
 
-def _fingerprint(value: object, subject: str, kind: object) -> Fingerprint:
+def _fingerprint(
+    value: object, subject: str, kind: object, *, allow_unobserved: bool
+) -> Fingerprint:
     if not isinstance(value, Mapping):
         _invalid(subject, {"fingerprint": value})
     value = cast(Mapping[str, Any], value)
     algorithm = value.get("algorithm")
     if algorithm == "identity-files-sha256-v1":
-        return _identity_files_fingerprint(value, subject, kind)
+        return _identity_files_fingerprint(
+            value, subject, kind, allow_unobserved=allow_unobserved
+        )
     if algorithm == "identity-patterns-sha256-v1":
-        return _identity_pattern_fingerprint(value, subject, kind)
+        return _identity_pattern_fingerprint(
+            value, subject, kind, allow_unobserved=allow_unobserved
+        )
     if algorithm == GIT_COMMIT_ALGORITHM:
         digest = value.get("digest")
         if (
@@ -1371,9 +1517,11 @@ def _fingerprint(value: object, subject: str, kind: object) -> Fingerprint:
     if algorithm in {"sha256", "directory-sha256-v1"}:
         digest = value.get("digest")
         if (
-            set(value) != {"algorithm", "digest"}
-            or not isinstance(digest, str)
-            or DIGEST_RE.fullmatch(digest) is None
+            set(value) not in ({"algorithm"}, {"algorithm", "digest"})
+            or digest is None
+            and not allow_unobserved
+            or digest is not None
+            and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
         ):
             _invalid(subject, {"fingerprint": dict(value)})
         if algorithm == "directory-sha256-v1" and kind != "directory":
@@ -1388,14 +1536,19 @@ def _identity_files_fingerprint(
     value: Mapping[str, Any],
     subject: str,
     kind: object,
+    *,
+    allow_unobserved: bool,
 ) -> Fingerprint:
     digest = value.get("digest")
     files = _identity_files(value.get("files"), subject)
     if (
-        set(value) != {"algorithm", "digest", "files"}
+        set(value)
+        not in ({"algorithm", "files"}, {"algorithm", "digest", "files"})
         or kind != "directory"
-        or not isinstance(digest, str)
-        or DIGEST_RE.fullmatch(digest) is None
+        or digest is None
+        and not allow_unobserved
+        or digest is not None
+        and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
     ):
         _invalid(subject, {"fingerprint": dict(value), "kind": kind})
     return Fingerprint("identity-files-sha256-v1", digest=digest, files=files)
@@ -1405,14 +1558,19 @@ def _identity_pattern_fingerprint(
     value: Mapping[str, Any],
     subject: str,
     kind: object,
+    *,
+    allow_unobserved: bool,
 ) -> Fingerprint:
     digest = value.get("digest")
     patterns = _identity_patterns(value.get("patterns"), subject)
     if (
-        set(value) != {"algorithm", "digest", "patterns"}
+        set(value)
+        not in ({"algorithm", "patterns"}, {"algorithm", "digest", "patterns"})
         or kind != "directory"
-        or not isinstance(digest, str)
-        or DIGEST_RE.fullmatch(digest) is None
+        or digest is None
+        and not allow_unobserved
+        or digest is not None
+        and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
     ):
         _invalid(subject, {"fingerprint": dict(value), "kind": kind})
     return Fingerprint(

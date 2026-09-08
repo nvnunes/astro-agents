@@ -13,11 +13,12 @@ from validation.controller import (
     validate,
 )
 from validation.discovery import MAX_HEADER_CHARACTERS, discover_summaries
-from validation.human_projection import area_results, project_findings
 from validation.mechanical_results import MechanicalGeneratedRecord
 from validation.report import (
-    AREA_NAMES,
+    BATCH_AREA_NAMES,
     ValidationBatchReportRow,
+    batch_area_results,
+    batch_unresolved_explanation,
     compose_validation_batch_report,
     unavailable_explanation,
 )
@@ -37,6 +38,7 @@ MAX_FAILURE_MESSAGE_BYTES = 2_048
 class _ValidationOutcome:
     result: dict[str, object]
     record: MechanicalGeneratedRecord | None
+    projection: Mapping[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -75,12 +77,14 @@ def _evaluate_validation(
         )
     )
     raw_record = result.get("record")
+    raw_projection = result.pop("_batch_projection", None)
     record = (
         MechanicalGeneratedRecord.from_dict(raw_record)
         if isinstance(raw_record, dict)
         else None
     )
-    return _ValidationOutcome(_public_result(result), record)
+    projection = raw_projection if isinstance(raw_projection, Mapping) else None
+    return _ValidationOutcome(_public_result(result), record, projection)
 
 
 def _public_result(result: dict[str, object]) -> dict[str, object]:
@@ -228,8 +232,21 @@ def _batch_row(
             summary,
             "Validation could not start because generated metadata requires Repair",
         )
-    groups = project_findings(outcome.record)
+    if outcome.projection is None:
+        return _blocked_batch_row(
+            title,
+            summary,
+            "Validation did not produce a batch projection",
+        )
     log_root = summary.with_suffix("")
+    explanations = tuple(
+        value
+        for value in (
+            unavailable_explanation(outcome.record),
+            batch_unresolved_explanation(outcome.projection),
+        )
+        if value is not None
+    )
     return ValidationBatchReportRow(
         title=title,
         summary=summary.resolve().as_posix(),
@@ -238,8 +255,8 @@ def _batch_row(
         .resolve()
         .as_posix(),
         published=bool(outcome.result.get("published")),
-        areas=area_results(outcome.record, groups),
-        explanation=unavailable_explanation(outcome.record),
+        areas=batch_area_results(outcome.record, outcome.projection),
+        explanation="; ".join(explanations) or None,
     )
 
 
@@ -259,6 +276,6 @@ def _blocked_batch_row(
         .resolve()
         .as_posix(),
         published=False,
-        areas={name: "—" for name in AREA_NAMES},
+        areas={name: "—" for name in BATCH_AREA_NAMES},
         explanation=explanation,
     )

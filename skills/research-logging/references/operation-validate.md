@@ -88,9 +88,9 @@ requested evaluation or preflight completed; `incomplete` exits nonzero. A
 `--root` batch exits nonzero when `failures` is non-empty or any result is
 `incomplete`, even though standard error can be empty. A top-level tool failure
 that prevents a structured result also exits nonzero and prints a precise error
-to standard error. If a conflicting research operation owns the log lock, stop
-and retry after it completes; do not work around the lock or alter generated
-state.
+to standard error. If a conflicting research operation owns the log lock,
+report the supplied owner metadata once and stop. Do not retry, poll, inspect
+process tables, work around the lock, or alter generated state.
 
 ## Report
 
@@ -123,7 +123,9 @@ Validate and do not rerun validation unless requested.
 For published findings, locate only the relevant bounded group:
 
 ```text
-<skill>/scripts/log findings list --path <log> [--entry <entry>] [--subject <subject>]
+<skill>/scripts/log findings list --path <log> \
+  [--entry <entry>]... [--validation-area <area>]... [--code <code>]... \
+  [--family <family>]... [--subject <subject>]... [--command <command>]...
 ```
 
 Then retrieve each selected complete check needed to explain the shared cause:
@@ -132,7 +134,7 @@ Then retrieve each selected complete check needed to explain the shared cause:
 <skill>/scripts/log findings show --path <log> --id <check-id>
 ```
 
-Use exact entry or subject filters and inspect only the affected research files
+Use repeatable exact filters and inspect only the affected research files
 and enough surrounding metadata or recorded commands to explain the
 deterministic failed relationship. Do not parse generated validation files,
 inspect script internals, execute research commands, make semantic judgments,
@@ -142,6 +144,10 @@ plain language without Review finding classes or independence statements.
 Diagnosis is read-only. Do not apply a correction or choose among plausible
 repairs. Begin Repair only after the researcher explicitly asks to correct the
 finding.
+
+`log findings batch` and `log validate-batch` belong to an authorized Repair
+campaign. Do not use them to turn diagnosis into correction or to substitute a
+partial check for a researcher-requested full validation.
 
 Mechanical validation does not continue into semantic review or reproduction.
 Those are separate workflows with separate ownership.

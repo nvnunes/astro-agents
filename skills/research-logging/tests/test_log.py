@@ -364,8 +364,7 @@ class LogValidationRouteTests(unittest.TestCase):
             )
             self.assertEqual(batch_payload["failures"], [])
             self.assertIn(
-                "| Research log | Structure | Evidence | Provenance | Hygiene | "
-                "Report |",
+                "| Research log | Structure | Evidence | Confirmation | Report |",
                 batch_payload["report"],
             )
             self.assertIn(

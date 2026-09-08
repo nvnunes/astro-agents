@@ -202,23 +202,100 @@ class MechanicalControllerTests(unittest.TestCase):
         record = RESULTS.MechanicalGeneratedRecord.build(
             "docs/study.md", "test-rules", "2026-08-30", checks
         )
+        projection = {
+            "chains": [
+                {
+                    "chain_id": "structure",
+                    "findings": [
+                        {
+                            "code": "association.declaration_missing",
+                            "scope": "conformance",
+                            "status": "fail",
+                        }
+                    ],
+                },
+                {
+                    "chain_id": "provenance-and-hygiene",
+                    "findings": [
+                        {
+                            "code": "producer.missing",
+                            "scope": "provenance",
+                            "status": "fail",
+                        },
+                        {
+                            "code": "orphan.material.unused",
+                            "scope": "orphan",
+                            "status": "fail",
+                        },
+                    ],
+                },
+                {
+                    "chain_id": "second-hygiene",
+                    "findings": [
+                        {
+                            "code": "orphan.material.unused",
+                            "scope": "orphan",
+                            "status": "fail",
+                        }
+                    ],
+                },
+                {
+                    "chain_id": "confirmation",
+                    "findings": [
+                        {
+                            "code": "provenance.output.unconfirmed",
+                            "observed": {"producer": "execution-1"},
+                            "scope": "provenance",
+                            "status": "fail",
+                        }
+                    ],
+                },
+            ],
+            "unresolved": [],
+        }
         row = REPORT.ValidationBatchReportRow(
             "Study | One",
             "/project/docs/study.md",
             "/project/docs/study/validation.md",
             "/project/docs/study/validation/results.json",
             True,
-            HUMAN.area_results(record, HUMAN.project_findings(record)),
+            REPORT.batch_area_results(record, projection),
         )
 
         report = REPORT.compose_validation_batch_report((row,))
 
         self.assertIn(
-            "| [Study \\| One](</project/docs/study.md>) | 1 issue | 1 issue | "
-            "1 artifact issue · 1 await confirmation | 2 issues | "
+            "| [Study \\| One](</project/docs/study.md>) | 3 | 1 | 1 | "
             "[Human](</project/docs/study/validation.md>) · "
             "[JSON](</project/docs/study/validation/results.json>) |",
             report,
+        )
+
+    def test_batch_report_marks_unplaceable_structure_incomplete(self) -> None:
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md", "test-rules", "2026-08-30", ()
+        )
+        projection = {
+            "chains": [],
+            "unresolved": [
+                {
+                    "findings": [
+                        {
+                            "code": "command.syntax.invalid",
+                            "scope": "conformance",
+                            "status": "fail",
+                        }
+                    ]
+                }
+            ],
+        }
+        self.assertEqual(
+            REPORT.batch_area_results(record, projection),
+            {"Structure": "—", "Evidence": "Clear", "Confirmation": "Clear"},
+        )
+        self.assertEqual(
+            REPORT.batch_unresolved_explanation(projection),
+            "Structure finding scope could not be assigned to a command chain",
         )
 
     def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:
@@ -463,7 +540,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     for path in (log_root / "validation").rglob("*")
                     if path.is_file()
                 ),
-                ["results.json"],
+                ["batches.json", "results.json"],
             )
             cache_names = {path.name for path in (log_root / ".cache").iterdir()}
             self.assertIn(VALIDATION_CACHE.CACHE_FILENAME, cache_names)
@@ -692,6 +769,12 @@ class MechanicalControllerTests(unittest.TestCase):
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             evidence["records"][0]["sources"][0]["source"] = "<renamed-results>"
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "<results>", "<renamed-results>"
+                ),
+            )
 
             second = CONTROLLER.validate(request)
 
@@ -1166,6 +1249,48 @@ class MechanicalControllerTests(unittest.TestCase):
                         {"validation/results.json": b"new record\n"},
                     )
             self.assertFalse((log_root / "validation/results.json").exists())
+
+    def test_lock_owner_metadata_is_visible_bounded_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_root = Path(directory) / "log"
+            log_root.mkdir()
+            owner = {
+                "log": log_root.as_posix(),
+                "operation": "validation",
+                "pid": 123,
+                "publication": True,
+                "request_fingerprint": "a" * 64,
+                "schema": OPERATION_STATE.LOCK_OWNER_SCHEMA,
+                "source_fingerprint": "b" * 64,
+                "started_at": "2026-09-08T00:00:00Z",
+            }
+            directory_path = OPERATION_STATE.operation_directory(log_root)
+            metadata = directory_path / "log.lock.owner.json"
+            with OPERATION_STATE.operation_lock(
+                log_root,
+                "log.lock",
+                mode="exclusive",
+                owner_factory=lambda: owner,
+            ):
+                self.assertEqual(json.loads(metadata.read_text()), owner)
+                with self.assertRaises(OPERATION_STATE.OperationLockError) as raised:
+                    with OPERATION_STATE.operation_lock(
+                        log_root, "log.lock", mode="exclusive"
+                    ):
+                        pass
+                self.assertEqual(raised.exception.owner, owner)
+            self.assertFalse(metadata.exists())
+
+            metadata.write_text(json.dumps(owner), encoding="utf-8")
+            replacement = {**owner, "pid": 456}
+            with OPERATION_STATE.operation_lock(
+                log_root,
+                "log.lock",
+                mode="exclusive",
+                owner_factory=lambda: replacement,
+            ):
+                self.assertEqual(json.loads(metadata.read_text()), replacement)
+            self.assertFalse(metadata.exists())
 
     def test_controller_holds_log_lock_through_evaluation_and_promotion(
         self,

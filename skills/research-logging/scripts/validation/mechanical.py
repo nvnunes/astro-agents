@@ -28,6 +28,7 @@ class MechanicalEvaluationRequest:
     fingerprint_cache: FingerprintCache | None = None
     validation_cache: ValidationCache | None = None
     check_comparison: Mapping[str, CheckComparisonEntry] | None = None
+    entry_ids: frozenset[str] | None = None
 
 
 MechanicalScanRunner = Callable[

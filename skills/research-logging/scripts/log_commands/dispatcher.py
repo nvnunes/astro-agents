@@ -34,6 +34,7 @@ FAMILIES = (
     "reorganize",
     "retention",
     "validate",
+    "validate-batch",
 )
 AUTHORING_FAMILIES = frozenset(
     {"add", "data", "evidence", "init", "pyrun", "reorganize", "retention"}
@@ -69,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "findings": _dispatch_findings,
             "reproduce": _dispatch_reproduce,
             "validate": _dispatch_validate,
+            "validate-batch": _dispatch_validate_batch,
         }
         if family in read_only_dispatch:
             return read_only_dispatch[family](arguments)
@@ -303,6 +305,13 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log data")
     actions = parser.add_subparsers(dest="action", required=True)
     _add_data_input_parsers(actions)
+    use = actions.add_parser(
+        "use", help="Reference one generated artifact declared by another entry"
+    )
+    _entry_arguments(use)
+    _mutation_argument(use)
+    use.add_argument("--from-entry", required=True)
+    use.add_argument("name")
     _add_data_update_parser(actions)
     rename = actions.add_parser(
         "rename", help="Rename an input after recorded-command token edits"
@@ -327,13 +336,21 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     from . import data
 
     entry = resolve_entry(resolve_log(args.path), args.entry)
-    if args.action in {"add-origin", "add-generated"}:
-        return data.add(
+    if args.action == "use":
+        result = data.use(
+            entry,
+            source=resolve_entry(entry.log, args.from_entry),
+            name=args.name,
+            dry_run=args.dry_run,
+        )
+    elif args.action in {"add-origin", "add-generated"}:
+        result = data.add(
             entry,
             generated=args.action == "add-generated",
             arguments=DataAddArguments(
                 name=args.name,
                 target=args.target,
+                kind=getattr(args, "kind", None),
                 identity=(
                     tuple(args.identity)
                     if getattr(args, "identity", None) is not None
@@ -344,11 +361,11 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                 dry_run=args.dry_run,
             ),
         )
-    if args.action == "update":
+    elif args.action == "update":
         classification_value = (
             "origin" if args.origin else "generated" if args.generated else None
         )
-        return data.update(
+        result = data.update(
             entry,
             DataUpdateArguments(
                 name=args.name,
@@ -361,13 +378,17 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                 dry_run=args.dry_run,
             ),
         )
-    if args.action == "rename":
-        return data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
-    if args.action == "refresh":
-        return data.refresh(entry, args.name, dry_run=args.dry_run)
-    if args.action == "remove":
-        return data.remove(entry, args.name, dry_run=args.dry_run)
-    return data.list_inputs(entry)
+    elif args.action == "rename":
+        result = data.rename(
+            entry, args.old_name, args.new_name, dry_run=args.dry_run
+        )
+    elif args.action == "refresh":
+        result = data.refresh(entry, args.name, dry_run=args.dry_run)
+    elif args.action == "remove":
+        result = data.remove(entry, args.name, dry_run=args.dry_run)
+    else:
+        result = data.list_inputs(entry)
+    return result
 
 
 def _add_data_input_parsers(
@@ -377,7 +398,7 @@ def _add_data_input_parsers(
         description = (
             "Register one producerless material input and stop Provenance"
             if name == "add-origin"
-            else "Register one current confirmed same-log generated input"
+            else "Declare one named same-log generated artifact"
         )
         action = actions.add_parser(name, help=description, description=description)
         _entry_arguments(action)
@@ -385,7 +406,7 @@ def _add_data_input_parsers(
         action.add_argument("name", help="stable entry-scoped input name")
         action.add_argument(
             "target",
-            help="existing absolute or entry-root-relative file or directory",
+            help="absolute or entry-root-relative file or directory",
         )
         if name == "add-origin":
             representation = action.add_mutually_exclusive_group()
@@ -400,11 +421,21 @@ def _add_data_input_parsers(
             )
         else:
             action.add_argument(
+                "--kind",
+                choices=("file", "directory"),
+                help="declared kind, required before the output exists",
+            )
+            action.add_argument(
+                "--identity",
+                action="append",
+                help="authoritative generated-directory file or pattern",
+            )
+            action.add_argument(
                 "--pending-confirmation",
                 action="store_true",
                 help=(
-                    "register one uniquely declared output before reproduction "
-                    "confirms it"
+                    "register one uniquely declared existing output before "
+                    "reproduction confirms it"
                 ),
             )
 
@@ -715,6 +746,25 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     return 0
 
 
+def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log validate-batch")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--projection", required=True)
+    parser.add_argument("--entry", required=True)
+    parser.add_argument("--chain", required=True)
+    args = parser.parse_args(arguments)
+    from .batch_validation import validate_batch
+
+    value, complete = validate_batch(
+        resolve_log(args.path),
+        projection_id=args.projection,
+        entry=args.entry,
+        chain_id=args.chain,
+    )
+    print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    return 0 if complete else 2
+
+
 def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog=f"log reproduce {action}")
     parser.add_argument("--path", required=True, type=Path)
@@ -781,19 +831,45 @@ def _dispatch_reproduction_artifacts(arguments: Sequence[str]) -> int:
 def _dispatch_findings(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log findings")
     actions = parser.add_subparsers(dest="action", required=True)
-    listing = actions.add_parser("list", help="List bounded published findings")
+    listing = actions.add_parser("list", help="List complete published finding batches")
     listing.add_argument("--path", required=True, type=Path)
-    listing.add_argument("--entry")
-    listing.add_argument("--subject")
+    listing.add_argument("--entry", action="append", default=[])
+    listing.add_argument("--validation-area", action="append", default=[])
+    listing.add_argument("--code", action="append", default=[])
+    listing.add_argument("--family", action="append", default=[])
+    listing.add_argument("--subject", action="append", default=[])
+    listing.add_argument("--command", action="append", default=[])
+    batch = actions.add_parser("batch", help="Show one complete finding batch")
+    batch.add_argument("--path", required=True, type=Path)
+    batch.add_argument("--projection", required=True)
+    batch.add_argument("--entry", required=True)
+    batch.add_argument("--chain", required=True)
     showing = actions.add_parser("show", help="Show one published finding")
     showing.add_argument("--path", required=True, type=Path)
     showing.add_argument("--id", required=True)
     args = parser.parse_args(arguments)
-    from .findings import list_findings, show_finding
+    from .findings import FindingFilters, batch_findings, list_findings, show_finding
 
     log = resolve_log(args.path)
     if args.action == "list":
-        result = list_findings(log, entry=args.entry, subject=args.subject)
+        result = list_findings(
+            log,
+            filters=FindingFilters(
+                entries=args.entry,
+                areas=args.validation_area,
+                codes=args.code,
+                families=args.family,
+                subjects=args.subject,
+                commands=args.command,
+            ),
+        )
+    elif args.action == "batch":
+        result = batch_findings(
+            log,
+            projection_id=args.projection,
+            entry=args.entry,
+            chain_id=args.chain,
+        )
     else:
         result = show_finding(log, check_id=args.id)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

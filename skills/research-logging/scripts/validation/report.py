@@ -16,6 +16,7 @@ from .human_projection import (
 from .mechanical_results import CheckScope, CheckStatus, MechanicalGeneratedRecord
 
 AREA_NAMES = ("Structure", "Evidence", "Provenance", "Hygiene")
+BATCH_AREA_NAMES = ("Structure", "Evidence", "Confirmation")
 MAX_TARGETS_PER_GROUP = 10
 
 
@@ -113,8 +114,8 @@ def compose_validation_batch_report(
     """Render one complete ready-to-present report for discovered logs."""
 
     lines = [
-        "| Research log | Structure | Evidence | Provenance | Hygiene | Report |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Research log | Structure | Evidence | Confirmation | Report |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         report = (
@@ -129,7 +130,7 @@ def compose_validation_batch_report(
             + " | ".join(
                 (
                     _markdown_link(row.title, row.summary),
-                    *(row.areas[name] for name in AREA_NAMES),
+                    *(row.areas[name] for name in BATCH_AREA_NAMES),
                     report,
                 )
             )
@@ -143,6 +144,119 @@ def compose_validation_batch_report(
     if explanations:
         lines.extend(("", *explanations))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def batch_area_results(
+    record: MechanicalGeneratedRecord,
+    projection: Mapping[str, object],
+) -> Mapping[str, str]:
+    """Return the chain-aware three-column cross-log summary."""
+
+    chains = _batch_groups(projection, "chains")
+    unresolved = _batch_groups(projection, "unresolved")
+    structure_chains = {
+        str(chain["chain_id"])
+        for chain in chains
+        if _group_has_structure(chain, status=CheckStatus.FAIL.value)
+    }
+    structure_incomplete = any(
+        _group_has_structure(chain, status=CheckStatus.UNAVAILABLE.value)
+        for chain in chains
+    ) or any(_group_has_structure(group) for group in unresolved)
+    confirmation_commands = {
+        producer
+        for group in (*chains, *unresolved)
+        for finding in _batch_findings(group)
+        if (producer := _confirmation_producer(finding)) is not None
+    }
+
+    evidence_groups = [
+        group
+        for group in project_findings(record)
+        if group.scope is CheckScope.EVIDENCE
+    ]
+    evidence_incomplete = any(
+        group.status is CheckStatus.UNAVAILABLE for group in evidence_groups
+    )
+    evidence_count = sum(
+        group.status is CheckStatus.FAIL for group in evidence_groups
+    )
+    return {
+        "Structure": (
+            "—" if structure_incomplete else _batch_count(len(structure_chains))
+        ),
+        "Evidence": "—" if evidence_incomplete else _batch_count(evidence_count),
+        "Confirmation": _batch_count(len(confirmation_commands)),
+    }
+
+
+def batch_unresolved_explanation(projection: Mapping[str, object]) -> str | None:
+    """Explain an unresolved structural batch without exposing machine detail."""
+
+    if any(
+        _group_has_structure(group)
+        for group in _batch_groups(projection, "unresolved")
+    ):
+        return "Structure finding scope could not be assigned to a command chain"
+    return None
+
+
+def _structure_finding(finding: Mapping[str, object]) -> bool:
+    if finding.get("status") not in {
+        CheckStatus.FAIL.value,
+        CheckStatus.UNAVAILABLE.value,
+    }:
+        return False
+    scope = finding.get("scope")
+    if scope in {CheckScope.CONFORMANCE.value, CheckScope.ORPHAN.value}:
+        return True
+    return (
+        scope == CheckScope.PROVENANCE.value
+        and finding.get("code") != "provenance.output.unconfirmed"
+    )
+
+
+def _confirmation_producer(finding: Mapping[str, object]) -> str | None:
+    if finding.get("code") != "provenance.output.unconfirmed":
+        return None
+    observed = finding.get("observed")
+    if isinstance(observed, Mapping):
+        producer = observed.get("producer")
+        if isinstance(producer, str):
+            return producer
+    return None
+
+
+def _group_has_structure(
+    group: Mapping[str, object], *, status: str | None = None
+) -> bool:
+    return any(
+        _structure_finding(finding)
+        and (status is None or finding.get("status") == status)
+        for finding in _batch_findings(group)
+    )
+
+
+def _batch_groups(
+    projection: Mapping[str, object], family: str
+) -> tuple[Mapping[str, object], ...]:
+    value = projection.get(family)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _batch_findings(
+    group: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    value = group.get("findings")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _batch_count(count: int) -> str:
+    return "Clear" if count == 0 else str(count)
 
 
 def unavailable_explanation(record: MechanicalGeneratedRecord) -> str | None:

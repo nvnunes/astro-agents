@@ -296,13 +296,14 @@ authorized Repair operation.
 
 ### Repair
 
-Use Repair only when you explicitly ask to correct a named research-owned
-finding, malformed or legacy state, or recognized interrupted-transaction
-residue. Repair examines only enough of the affected log contract to establish
-the intended correction. It does not choose new scientific meaning, fix nearby
-findings, reorganize material, or remove superseded experiments without the
-corresponding authorization. After the correction, it runs mechanical
-validation again to determine whether the named condition cleared.
+Use Repair only when you explicitly ask to correct a research-owned finding,
+causal group, finding class, malformed or legacy state, or recognized
+interrupted-transaction residue. Direct correction language such as “fix” or
+“resolve” is enough when the target and corrected state are clear; diagnosis
+alone remains read-only. A campaign changes one command chain at a time,
+preserves presented evidence and tolerances, skips cases that would require new
+scientific choices, and checks each corrected chain without publishing a new
+full-log validation. Full validation remains a separately requested operation.
 
 ## Entries and section types
 
@@ -600,22 +601,27 @@ snapshot. Every consuming `pyrun` command uses both `<name>` and
 generated model, cache, build product, or submodule checkout separately when
 the command also consumes it.
 
-Raw command-input and evidence-source paths and URIs are invalid. Evidence
-sources use one complete `<name>` or `<directory-name>/member` token and must
-resolve to one local regular file. A generated output enters `data.json` when a
-later recorded command or evidence record consumes it. After its producer
-succeeds, register it with
+Raw command-input, command-output, and evidence-source paths and URIs are
+invalid. Evidence sources use one complete `<name>` or
+`<directory-name>/member` token and must resolve to one local regular file.
+Declare a generated artifact before its producer runs with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
-<target>` so it traces to that current confirmed producer. `log data` is the
-sole ordinary author of `data.json`; do not edit the registry directly. Omit
-the file when the entry has no command or evidence inputs.
+<target> --kind file|directory`; successful production records its fingerprint
+and execution support. A later entry reuses a same-log declaration with
+`<skill>/scripts/log data use --path <log> --entry <consumer-entry>
+--from-entry <producer-entry> <name>`. The reference does not copy the target
+or turn it into an origin. `log data` is the sole ordinary author of
+`data.json`; do not edit the registry directly. Omit the file when the entry
+has no command or evidence inputs.
 
 One `pyrun` output-directory declaration represents one atomic generated
 artifact when that invocation owns the complete directory. Register the
 directory once. A whole-directory consumer uses `<name>`; an exact member
 consumer or evidence source uses `<name>/member`. The member association stays
-exact while identity, output support, and Provenance use the complete recursive
-directory fingerprint.
+exact while identity, output support, and Provenance use the declared directory
+fingerprint. Large origin or generated directories may select bounded identity
+files or final-component patterns when the selected files explicitly define
+their relevant identity; excluded descendants are not covered.
 
 Input targets passed to `log data` are absolute or relative to the selected
 entry root, regardless of the caller's working directory. Prefer short
@@ -1060,7 +1066,8 @@ human-readable issue type. Each group shows at most ten targets and states when
 more were omitted. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
 
-The adjacent `<log>/validation/` directory contains machine-readable results.
+The adjacent `<log>/validation/` directory contains machine-readable results
+and their deterministic command-chain batch projection.
 Disposable validator caches live beneath `<log>/.cache/` and the research
 project's `.cache/` directory. Entry-root `pyrun.json` is separate current
 execution state maintained by `pyrun`. Researchers and research
@@ -1070,21 +1077,32 @@ Validation reads the research record but changes only its own generated output.
 ### Resolving findings
 
 Validation identifies problems; it does not repair the research record. A
-separately authorized Repair operation reviews the named finding, corrects the
-relevant evidence, command, source, or retained-material relationship, and then
-runs validation again. Repair obtains bounded finding details through:
+separately authorized Repair operation reviews the named finding, causal group,
+or class and corrects the relevant command, source, or retained-material
+relationship without changing presented evidence. Repair obtains bounded
+finding details through:
 
 ```bash
-<skill>/scripts/log findings list --path <log> [--entry <entry-id>] [--subject <subject>]
+<skill>/scripts/log findings list --path <log> \
+  [--entry <entry-id>]... [--validation-area <area>]... [--code <code>]... \
+  [--family <family>]... [--subject <subject>]... [--command <command>]...
 <skill>/scripts/log findings show --path <log> --id <finding-id>
+<skill>/scripts/log findings batch --path <log> --projection <projection-id> \
+  --entry <entry-id> --chain <chain-id>
+<skill>/scripts/log validate-batch --path <log> --projection <projection-id> \
+  --entry <entry-id> --chain <chain-id>
 ```
 
-The list command supplies stable finding IDs for the show command. These
-commands inspect the latest completed result without validating or changing the
-log. When incompatible generated metadata stops evaluation before a report is
-published, use the paths identified by the validation command for a separately
-authorized archival or removal action; a research operation must not modify
-them.
+The list command accepts repeatable exact selectors and returns every match;
+`show` retrieves one exact finding. `batch` returns one connected command-chain
+group from the current published projection. `validate-batch` reconciles that
+group against current command identity and performs an entry-scoped,
+lock-free, write-free check after correction. It may report findings or an
+incomplete scope; it does not replace full validation. A list with no matches
+ends the repair without validation. When incompatible generated metadata stops
+evaluation before a report is published, use the paths identified by the
+validation command for a separately authorized archival or removal action; a
+research operation must not modify them.
 
 Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed

@@ -20,6 +20,7 @@ from validation.operation_state import (
     OperationLockError,
     operation_directory,
     operation_lock,
+    operation_lock_owner,
     require_mutation_ready,
 )
 
@@ -97,6 +98,11 @@ def launch_reproduction(
         include_all=include_all,
         selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
     )
+    if not plan.executions and plan.failures:
+        raise ActionError(
+            "reproduction.no_runnable_work",
+            "validation or dependency blockers excluded all selected work",
+        )
     project = resolve_project_root(log.root)
     run_id = _new_run_id()
     accepted_at = _utc_now()
@@ -535,9 +541,8 @@ def _acquire_scope_locks(log: LogContext, entry: str | None) -> tuple[int, ...]:
                 fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 os.close(descriptor)
-                raise OperationLockError(
-                    f"research-log operation is active: {directory / name}"
-                ) from error
+                path = directory / name
+                raise OperationLockError(path, operation_lock_owner(path)) from error
             os.set_inheritable(descriptor, True)
             opened.append(descriptor)
     except BaseException:

@@ -11,6 +11,7 @@ from research_log_data import (
     DataFile,
     InputResource,
     ReproductionComparison,
+    build_declared_generated,
     build_git_repository_input,
     build_identity_directory,
     build_identity_pattern_directory,
@@ -42,7 +43,13 @@ from .model import (
     DataAddArguments,
     DataUpdateArguments,
 )
-from .storage import PublicationError, atomic_write_texts, entry_lock, remove_or_write
+from .storage import (
+    PublicationError,
+    atomic_write_texts,
+    entry_lock,
+    entry_locks,
+    remove_or_write,
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +59,7 @@ class _InputDefinition:
     name: str
     target: str
     origin: bool
+    kind: str | None
     identity: tuple[str, ...] | None
     commit: str | None
 
@@ -77,6 +85,11 @@ def list_inputs(entry: EntryContext) -> ActionResult:
                 "kind": item.kind,
                 "name": item.name,
                 **(
+                    {"from_entry": item.reference_entry}
+                    if item.reference_entry is not None
+                    else {}
+                ),
+                **(
                     {"reproduction_comparison": item.comparison.profile}
                     if item.comparison is not None
                     else {}
@@ -86,6 +99,41 @@ def list_inputs(entry: EntryContext) -> ActionResult:
             for item in sorted(inputs, key=lambda value: value.name)
         ),
     )
+
+
+def use(
+    entry: EntryContext,
+    *,
+    source: EntryContext,
+    name: str,
+    dry_run: bool,
+) -> ActionResult:
+    """Reference one generated declaration owned by another log entry."""
+
+    if source.id == entry.id:
+        raise ActionError("data.reference.invalid", "source and destination match")
+    with entry_locks(entry.log, (entry, source)):
+        current = _load(entry)
+        if current is not None and name in current.by_name:
+            raise ActionError("data.name.conflict", name)
+        source_data = _required(source)
+        source_item = _named(source_data, name)
+        if source_item.origin or source_item.reference_entry is not None:
+            raise ActionError(
+                "data.reference.source_invalid",
+                "source must directly declare a generated artifact",
+            )
+        reference = replace(source_item, reference_entry=source.id)
+        built = _build(entry, (*_items(current), reference))
+        if not dry_run:
+            remove_or_write(built.path, built.canonical_json())
+        return ActionResult(
+            "data.use",
+            "dry-run" if dry_run else "changed",
+            "data.dry-run" if dry_run else "data.changed",
+            True,
+            records=({"from_entry": source.id, "name": name},),
+        )
 
 
 def add(
@@ -106,6 +154,7 @@ def add(
                 arguments.name,
                 arguments.target,
                 not generated,
+                arguments.kind,
                 arguments.identity,
                 arguments.commit,
             ),
@@ -159,6 +208,10 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
     with entry_lock(entry):
         current = _required(entry)
         existing = _named(current, arguments.name)
+        if existing.reference_entry is not None:
+            raise ActionError(
+                "data.reference.read_only", "change the producer declaration"
+            )
         origin = (
             existing.origin
             if arguments.classification is None
@@ -172,6 +225,7 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
                 existing.name,
                 arguments.target or existing.location,
                 origin,
+                existing.kind if existing.kind != "git-repository" else None,
                 identity,
                 commit,
             ),
@@ -199,6 +253,10 @@ def refresh(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
     with entry_lock(entry):
         current = _required(entry)
         existing = _named(current, name)
+        if existing.reference_entry is not None:
+            raise ActionError(
+                "data.reference.read_only", "refresh the producer declaration"
+            )
         observed = observe_fingerprint(existing)
         candidate = replace(existing, fingerprint=observed.fingerprint)
         built = _build(entry, _replace(current, name, candidate))
@@ -217,6 +275,11 @@ def remove(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
         current = _load(entry)
         if current is None or name not in current.by_name:
             return _result("remove", "absent", False)
+        existing = current.by_name[name]
+        if existing.reference_entry is None and _references_to(entry, name):
+            raise ActionError(
+                "data.remove.in_use", "remove cross-entry references first"
+            )
         materials = inspect_log_materials(entry.log)
         if name in materials.input_names.get(entry.root, frozenset()):
             raise ActionError(
@@ -244,6 +307,14 @@ def rename(
     with entry_lock(entry):
         current = _required(entry)
         old = _named(current, old_name)
+        if old.reference_entry is not None:
+            raise ActionError(
+                "data.reference.read_only", "rename the producer declaration"
+            )
+        if _references_to(entry, old_name):
+            raise ActionError(
+                "data.rename.in_use", "rename cross-entry references first"
+            )
         if new_name in current.by_name:
             raise ActionError("data.name.conflict", new_name)
         candidate_item = replace(old, name=new_name)
@@ -308,45 +379,89 @@ def _build_item(
 ) -> InputResource:
     location = normalize_input_location(definition.target, entry_root=entry.root)
     path = Path(location) if Path(location).is_absolute() else entry.root / location
-    kind = "file" if path.is_file() else "directory" if path.is_dir() else None
+    observed_kind = (
+        "file" if path.is_file() else "directory" if path.is_dir() else None
+    )
+    kind = definition.kind or observed_kind
+    if definition.kind is not None and observed_kind not in {None, definition.kind}:
+        raise ActionError("data.kind.invalid", definition.target)
     if kind is None:
-        raise ActionError("data.target.missing", definition.target)
-    if definition.commit is not None:
-        if not definition.origin or kind != "directory" or definition.identity:
-            raise ActionError(
-                "data.git.invalid",
-                "--commit requires an origin Git repository without --identity",
-            )
-        return build_git_repository_input(
-            definition.name,
-            location,
-            definition.commit,
-            entry_root=entry.root,
+        if definition.origin:
+            raise ActionError("data.target.missing", definition.target)
+        raise ActionError(
+            "data.kind.required",
+            "--kind is required before a generated target exists",
         )
+    if definition.commit is not None:
+        return _build_commit_item(entry, definition, location, kind)
     if definition.identity:
-        if not definition.origin or kind != "directory":
-            raise ActionError(
-                "data.identity.invalid", "--identity requires an origin directory"
-            )
-        if any(has_magic(selector) for selector in definition.identity):
-            return build_identity_pattern_directory(
-                definition.name,
-                location,
-                definition.identity,
-                entry_root=entry.root,
-                origin=True,
-            )
-        return build_identity_directory(
+        return _build_identity_item(
+            entry, definition, location, kind, observed_kind=observed_kind
+        )
+    if observed_kind is None:
+        return build_declared_generated(
             definition.name,
+            kind,
             location,
-            definition.identity,
             entry_root=entry.root,
-            origin=True,
         )
     return build_local_input(
         definition.name,
         kind,
         location,
+        entry_root=entry.root,
+        origin=definition.origin,
+    )
+
+
+def _build_commit_item(
+    entry: EntryContext,
+    definition: _InputDefinition,
+    location: str,
+    kind: str,
+) -> InputResource:
+    if not definition.origin or kind != "directory" or definition.identity:
+        raise ActionError(
+            "data.git.invalid",
+            "--commit requires an origin Git repository without --identity",
+        )
+    assert definition.commit is not None
+    return build_git_repository_input(
+        definition.name,
+        location,
+        definition.commit,
+        entry_root=entry.root,
+    )
+
+
+def _build_identity_item(
+    entry: EntryContext,
+    definition: _InputDefinition,
+    location: str,
+    kind: str,
+    *,
+    observed_kind: str | None,
+) -> InputResource:
+    if kind != "directory":
+        raise ActionError("data.identity.invalid", "--identity requires a directory")
+    assert definition.identity is not None
+    if observed_kind is None:
+        return build_declared_generated(
+            definition.name,
+            kind,
+            location,
+            entry_root=entry.root,
+            identity=definition.identity,
+        )
+    builder = (
+        build_identity_pattern_directory
+        if any(has_magic(selector) for selector in definition.identity)
+        else build_identity_directory
+    )
+    return builder(
+        definition.name,
+        location,
+        definition.identity,
         entry_root=entry.root,
         origin=definition.origin,
     )
@@ -407,6 +522,14 @@ def _require_boundary(
             confirmed_record=materials.confirmed,
         )
         return None
+    if candidate.fingerprint.digest is None:
+        producer = materials.require_pending_generated(candidate)
+        return {
+            "confirmation": "not_yet_produced",
+            "document": producer.document,
+            "fence": producer.fence,
+            "ordinal": producer.ordinal,
+        }
     if pending_confirmation:
         producer = materials.require_pending_generated(candidate)
         return {
@@ -500,6 +623,24 @@ def _load_evidence(entry: EntryContext) -> EvidenceFile | None:
         if path.exists() or path.is_symlink()
         else None
     )
+
+
+def _references_to(entry: EntryContext, name: str) -> tuple[str, ...]:
+    """Return entries explicitly referencing one direct declaration."""
+
+    references: list[str] = []
+    entries_root = entry.root.parent
+    for candidate in sorted(entries_root.iterdir(), key=lambda path: path.name):
+        if candidate == entry.root or candidate.is_symlink() or not candidate.is_dir():
+            continue
+        path = candidate / "data.json"
+        if path.is_symlink() or not path.is_file():
+            continue
+        data = load_data_file(path, entry_root=candidate)
+        item = data.by_name.get(name)
+        if item is not None and item.reference_entry == entry.id:
+            references.append(candidate.name)
+    return tuple(references)
 
 
 def _required(entry: EntryContext) -> DataFile:

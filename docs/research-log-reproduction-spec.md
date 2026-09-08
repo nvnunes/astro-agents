@@ -215,7 +215,7 @@ The operational authority is:
 | `evidence.json` | Reproduction roots and exact retained evidence-source identity |
 | `data.json` | Named material location, fingerprint, and origin/generated classification |
 | `pyrun.json` | Current executable recipes and observed execution state |
-| `validation/results.json` | Reproduction admission gate |
+| `validation/results.json` and `validation/batches.json` | Reproduction admission result and per-chain projection |
 | `validation.md` | Disposable human validation projection only |
 | `reproduction/results.json` | Cumulative authoritative reproduction results and published run index |
 | Durable run directory | Active, stopped, failed, and staged run-specific operational state |
@@ -665,22 +665,24 @@ current coverage or execution planning.
 
 ### Admission Gate
 
-Before accepting or previewing work, reproduction requires a current completed
-`validation/results.json` for the exact source snapshot. It rejects:
-
-- any Structure failure;
-- any Evidence failure;
-- any failed Provenance artifact;
-- incomplete, malformed, unsupported, or stale validation state; and
-- any active operation or source condition that prevents a stable plan.
+Before accepting or previewing work, reproduction requires current completed
+`validation/results.json` and `validation/batches.json` for the exact source
+snapshot. Incomplete, malformed, unsupported, stale, or mutually inconsistent
+validation state blocks the plan. Current findings are admitted per connected
+same-entry command chain: Structure, Evidence, and failed Provenance findings
+exclude only their affected batches. Independent batches remain eligible, and
+ordinary dependency propagation prevents admitted downstream work from running
+when it depends on an excluded upstream batch.
 
 Unconfirmed Provenance and Hygiene findings do not block reproduction.
 Unconfirmed runnable recipes are deliberately eligible so reproduction can
 establish confirmation.
 
-The validation subsystem's artifact-level Provenance projection determines
-whether a failed Provenance artifact exists. Reproduction must not classify
-raw check failures independently. In particular, a
+The validation subsystem's persisted batch projection determines finding
+membership and admission. Reproduction must not reconstruct groups or classify
+raw check failures independently. A selected execution output must map to
+exactly one projected chain; a blocking unresolved group or ambiguous mapping
+excludes the affected work. In particular, a
 `summary.reference.target_invalid` check whose exact target is
 `provenance.output.unconfirmed` belongs to the same admissible unconfirmed
 state and does not create an additional admission blocker. A summary-target
@@ -807,12 +809,14 @@ exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 null rather than omitted. Failures are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
-The validation snapshot has exactly `result_path`, `result_date`,
-`rules_version`, `result_digest`, and `source_projection_digest`. The last two
-are SHA-256 digests of the exact completed result and validation-owned complete
-research-source projection admitted for reproduction. The mechanical validator
-owns that projection's construction; reproduction treats it as an opaque
-currentness token.
+The validation snapshot records `result_path`, `result_date`, `rules_version`,
+`result_digest`, `source_projection_digest`, `projection_path`,
+`projection_digest`, `projection_id`, and `batch_admission`. The admission
+projection uses `research-log-reproduction-batch-admission/1` and lists every
+admitted chain plus every excluded chain with its blocking finding IDs. The two
+file digests cover the exact completed result and batch projection;
+`source_projection_digest` covers the validation-owned complete research-source
+projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
 `research-log-reproduction-source-snapshot/3` and has exactly `schema`,
@@ -825,14 +829,13 @@ file, direct input, retained boundary, and comparison baseline by canonical
 identity, role, kind, and closed fingerprint. All arrays are unique and
 canonically sorted.
 
-At acceptance, the CLI verifies both the validation snapshot and the complete
-source snapshot. At execution, resume, and final reproduction-publication
-boundaries it rechecks the source snapshot only; comparison and confirmation
-remain inside the same accepted scope lock. This permits the run's own
-confirmation writes while still rejecting any change to a recipe, observation,
-policy, input, script, code path, data declaration, evidence root, or comparison
-baseline. The validation snapshot remains the immutable record of the admission
-decision; it is not a runtime publication dependency.
+At acceptance, the CLI verifies the validation result, batch projection, and
+complete source snapshot. At execution, resume, and final reproduction-
+publication boundaries it rechecks the accepted validation files and source
+snapshot; comparison and confirmation remain inside the same accepted scope
+lock. This permits the run's own confirmation writes while still rejecting any
+change to a recipe, observation, policy, input, script, code path, data
+declaration, evidence root, comparison baseline, or admitted batch decision.
 
 Dry run is completely write-free. It creates no run ID, lock, output workspace,
 staging directory, checkpoint, result, report, cache, or other state. Because
@@ -1567,7 +1570,8 @@ outcome rolls it back.
 After reproduction-result publication succeeds and the run becomes complete,
 the supervisor releases its reproduction scope lock and invokes ordinary
 mechanical validation for that log as a separate operation. Validation owns
-and publishes `validation/results.json` and `validation.md`; reproduction never
+and publishes `validation/results.json`, `validation/batches.json`, and
+`validation.md`; reproduction never
 performs a targeted confirmation refresh. Validation findings or an
 operational validation failure do not change the complete reproduction status,
 confirmations, or reproduction results.
@@ -1599,7 +1603,8 @@ Reproduction owns:
 <log>/reproduction.md
 ```
 
-Validation continues to own `validation/results.json` and `validation.md`.
+Validation continues to own `validation/results.json`,
+`validation/batches.json`, and `validation.md`.
 Cutover removes the legacy Reproduction result section from `validation.md`.
 Validation may link to `reproduction.md` but must not duplicate reproduction
 state.

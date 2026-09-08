@@ -56,6 +56,7 @@ class DataAddArguments:
 
     name: str
     target: str
+    kind: str | None
     identity: tuple[str, ...] | None
     commit: str | None
     pending_confirmation: bool

@@ -48,16 +48,17 @@ import sys
 import tempfile
 import threading
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, Mapping
 
 from log_commands.context import (
     EntryContext,
     LogContext,
     parse_entry_directory_name,
 )
-from log_commands.storage import entry_lock
+from log_commands.storage import PublicationError, atomic_write_texts, entry_lock
 from pyrun_code_observer import (
     MAX_CODE_PATHS,
     CodeObservationError,
@@ -69,14 +70,21 @@ from research_log_data import (
     DataContractError,
     DataFile,
     Fingerprint,
+    data_file_from_inputs,
     input_token_candidate,
+    input_token_parts,
     load_data_file,
+    observe_fingerprint,
     require_git_repository_token_pairs,
     resolve_input_token,
 )
 from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
-from validation.operation_state import OperationLockError
+from validation.operation_state import (
+    OperationLockError,
+    begin_registry_transaction,
+    finish_guarded_publication,
+)
 from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_contract import (
     PyrunContractError,
@@ -244,6 +252,25 @@ def resolve_arg(
     return resolved.value
 
 
+def resolve_output_arg(arg: str, root: Path, log: Path, data: DataFile | None) -> str:
+    """Resolve one explicitly output-directed artifact token without reading it."""
+
+    expanded = _reserved_tokens(arg, root, log)
+    if input_token_parts(expanded) is None:
+        return expanded
+    try:
+        resolved = resolve_input_token(expanded, data)
+    except DataContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
+    if (
+        resolved.resource.origin
+        or resolved.resource.reference_entry is not None
+        or resolved.member is not None
+    ):
+        raise SystemExit("pyrun: outputs require a whole generated artifact token")
+    return resolved.value
+
+
 def _execution_layout(
     argv: list[str],
 ) -> tuple[
@@ -298,6 +325,27 @@ def _selected_values(
     return tuple(result)
 
 
+def _material_value_roles(
+    arguments: tuple[str, ...], roles: dict[str, str]
+) -> dict[str, str]:
+    """Return each material value's explicit or conventional direction."""
+
+    selected: dict[str, set[str]] = {}
+    options, positionals = split_argument_values(arguments)
+    for option in options:
+        role = roles.get(option.name, automatic_option_role(option.name))
+        if role is not None:
+            selected.setdefault(option.value, set()).add(role)
+    for index, value in enumerate(positionals, 1):
+        role = roles.get(f"@{index}")
+        if role is not None:
+            selected.setdefault(value, set()).add(role)
+    conflicts = sorted(value for value, found in selected.items() if len(found) != 1)
+    if conflicts:
+        raise SystemExit("pyrun: material values have conflicting roles")
+    return {value: next(iter(found)) for value, found in selected.items()}
+
+
 def _require_declared_input_tokens(
     arguments: tuple[str, ...], roles: dict[str, str], data: DataFile | None
 ) -> None:
@@ -322,6 +370,7 @@ def _declared_outputs(
     entry: Path,
     root: Path,
     log: Path,
+    data: DataFile | None,
 ) -> dict[str, tuple[Path, str | None]]:
     """Resolve outputs and any runner-enforced kind at the process boundary."""
 
@@ -338,11 +387,23 @@ def _declared_outputs(
             outputs.append((value, None))
     result: dict[str, tuple[Path, str | None]] = {}
     for raw, kind in outputs:
+        named = input_token_parts(raw) is not None
+        if named:
+            try:
+                resolved = resolve_input_token(raw, data)
+            except DataContractError as error:
+                raise SystemExit(f"pyrun: {error}") from error
+            if resolved.resource.origin or resolved.member is not None:
+                raise SystemExit(
+                    "pyrun: outputs require a whole generated artifact token"
+                )
+            raw = resolved.value
+            kind = resolved.resource.kind
         key = portable_output_path(
             raw,
             entry_root=entry,
             project_root=root,
-            authored=True,
+            authored=not named,
         )
         path = output_target_path(
             key, entry_root=entry, project_root=root, authored=True
@@ -354,18 +415,67 @@ def _declared_outputs(
 
 
 def _capture_paths(
-    captures: dict[str, str], entry: Path, root: Path, log: Path
+    captures: dict[str, str],
+    entry: Path,
+    root: Path,
+    log: Path,
+    data: DataFile | None,
 ) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for option, raw in captures.items():
-        path = output_target_path(
+        named = input_token_parts(raw) is not None
+        raw = resolve_output_arg(raw, root, log, data)
+        key = portable_output_path(
             raw,
+            entry_root=entry,
+            project_root=root,
+            authored=not named,
+        )
+        path = output_target_path(
+            key,
             entry_root=entry,
             project_root=root,
             authored=True,
         )
         result[option] = path
     return result
+
+
+def _canonical_output_parameters(
+    parameters: tuple[str, ...],
+    data: DataFile | None,
+    *,
+    entry: Path,
+    root: Path,
+    outputs: Mapping[str, tuple[Path, str | None]],
+) -> tuple[str, ...]:
+    """Normalize named outputs to their path-based recipe identity."""
+
+    if data is None:
+        return parameters
+    output_targets = {path.resolve().as_posix() for path, _kind in outputs.values()}
+    aliases = {
+        f"<{resource.name}>": portable_output_path(
+            resource.canonical_target,
+            entry_root=entry,
+            project_root=root,
+            authored=False,
+        )
+        for resource in data.inputs
+        if not resource.origin and resource.canonical_target in output_targets
+    }
+    result = []
+    for parameter in parameters:
+        if parameter in aliases:
+            result.append(aliases[parameter])
+            continue
+        if parameter.startswith("-") and "=" in parameter:
+            prefix, value = parameter.split("=", 1)
+            if value in aliases:
+                result.append(f"{prefix}={aliases[value]}")
+                continue
+        result.append(parameter)
+    return tuple(result)
 
 
 def _run_with_captures(
@@ -656,6 +766,13 @@ def main(argv: list[str]) -> int:
                 auto_reproduce,
             ) = _execution_layout(argv)
             _require_declared_input_tokens(script_args, roles, data)
+            material_roles = _material_value_roles(script_args, roles)
+            for value in script_args:
+                if input_token_parts(value) is not None and value not in material_roles:
+                    raise SystemExit(
+                        "pyrun: registered artifact tokens require an explicit "
+                        "input or output role"
+                    )
             verified: set[str] = set()
             observed_inputs: dict[str, Fingerprint] = {}
             script_identity = portable_script_path(
@@ -671,24 +788,35 @@ def main(argv: list[str]) -> int:
                 script_observation = fingerprint_cache.observe_regular_file(script_path)
             except FingerprintCacheError as error:
                 raise SystemExit(f"pyrun: could not observe script: {error}") from error
-            resolved_arguments = [
-                resolve_arg(
-                    arg,
-                    root,
-                    log,
-                    data,
-                    verified,
-                    observed_inputs,
-                    fingerprint_cache,
-                )
-                for arg in script_args
-            ]
+            resolved_arguments = []
+            for arg in script_args:
+                if material_roles.get(arg) == "output":
+                    resolved_arguments.append(resolve_output_arg(arg, root, log, data))
+                else:
+                    resolved_arguments.append(
+                        resolve_arg(
+                            arg,
+                            root,
+                            log,
+                            data,
+                            verified,
+                            observed_inputs,
+                            fingerprint_cache,
+                        )
+                    )
             try:
                 require_git_repository_token_pairs(script_args, data)
             except DataContractError as error:
                 raise SystemExit(f"pyrun: {error}") from error
             output_paths = _declared_outputs(
-                script_args, captures, roles, entry, root, log
+                script_args, captures, roles, entry, root, log, data
+            )
+            parameters = _canonical_output_parameters(
+                parameters,
+                data,
+                entry=entry,
+                root=root,
+                outputs=output_paths,
             )
             if output_paths:
                 validate_output_paths(
@@ -697,17 +825,14 @@ def main(argv: list[str]) -> int:
                 try:
                     project_output_bindings(
                         parameters,
-                        {
-                            key: kind
-                            for key, (_path, kind) in output_paths.items()
-                        },
+                        {key: kind for key, (_path, kind) in output_paths.items()},
                         entry_root=entry,
                         project_root=root,
                         subject=str(entry / "pyrun.json"),
                     )
                 except OutputBindingError as error:
                     raise SystemExit(f"pyrun: {error}") from error
-            capture_paths = _capture_paths(captures, entry, root, log)
+            capture_paths = _capture_paths(captures, entry, root, log, data)
             with tempfile.TemporaryDirectory(prefix="pyrun-") as temporary:
                 environment, trace_directory = prepare_environment(
                     _execution_environment(explicit_env, Path(temporary)),
@@ -756,12 +881,36 @@ def main(argv: list[str]) -> int:
             )
             observed_outputs: dict[str, Fingerprint] = {}
             output_kinds: dict[str, str] = {}
+            produced_resources: dict[str, Fingerprint] = {}
             for key, (path, kind) in output_paths.items():
                 if not path.exists():
                     raise SystemExit(f"pyrun: declared output is missing: {key}")
-                output_kind, fingerprint = _observe_output(
-                    path, kind, fingerprint_cache
+                resource = (
+                    next(
+                        (
+                            item
+                            for item in data.inputs
+                            if not item.origin
+                            and item.canonical_target == path.resolve().as_posix()
+                        ),
+                        None,
+                    )
+                    if data is not None
+                    else None
                 )
+                if resource is not None:
+                    try:
+                        fingerprint = observe_fingerprint(resource).fingerprint
+                    except DataContractError as error:
+                        raise SystemExit(
+                            f"pyrun: could not observe output {path}: {error}"
+                        ) from error
+                    output_kind = resource.kind
+                    produced_resources[resource.name] = fingerprint
+                else:
+                    output_kind, fingerprint = _observe_output(
+                        path, kind, fingerprint_cache
+                    )
                 output_kinds[key] = output_kind
                 observed_outputs[key] = fingerprint
             if observed_outputs:
@@ -784,16 +933,50 @@ def main(argv: list[str]) -> int:
                     .isoformat()
                     .replace("+00:00", "Z")
                 )
-                publish_execution_locked(
-                    entry,
-                    ordinary_execution(
-                        recipe,
-                        observed,
-                        auto_reproduce=auto_reproduce,
-                        last_run_at=completed_at,
-                    ),
-                    project_root=root,
+                companion_updates = (
+                    {
+                        data.path: data_file_from_inputs(
+                            data.path,
+                            entry_root=data.entry_root,
+                            inputs=tuple(
+                                replace(
+                                    item,
+                                    fingerprint=produced_resources[item.name],
+                                )
+                                if item.name in produced_resources
+                                else item
+                                for item in data.inputs
+                            ),
+                        ).canonical_json()
+                    }
+                    if data is not None and produced_resources
+                    else {}
                 )
+                residue = (
+                    begin_registry_transaction(log, entry_identity.id)
+                    if companion_updates
+                    else None
+                )
+                try:
+                    publish_execution_locked(
+                        entry,
+                        ordinary_execution(
+                            recipe,
+                            observed,
+                            auto_reproduce=auto_reproduce,
+                            last_run_at=completed_at,
+                        ),
+                        project_root=root,
+                        companion_updates=companion_updates,
+                        publish_updates=atomic_write_texts,
+                    )
+                except PublicationError as error:
+                    if residue is not None and error.rollback_complete:
+                        finish_guarded_publication(residue)
+                    raise
+                else:
+                    if residue is not None:
+                        finish_guarded_publication(residue)
             return returncode
     except PyrunOutputsError as error:
         raise SystemExit(f"pyrun: {error}") from error

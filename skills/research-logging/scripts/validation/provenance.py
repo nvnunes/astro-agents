@@ -399,13 +399,16 @@ def require_declared_producer(
     invocations: Sequence[Invocation],
     *,
     producer_index: ProducerIndex | None = None,
+    allow_missing: bool = False,
 ) -> Invocation:
     """Require one structurally valid producer without asserting execution."""
 
     canonical = Path(material).resolve().as_posix()
     index = producer_index or build_producer_index(invocations)
     producer = _starting_producer(canonical, index)
-    _require_declared_producer_ready(canonical, producer, index)
+    _require_declared_producer_ready(
+        canonical, producer, index, allow_missing=allow_missing
+    )
     return producer
 
 
@@ -420,7 +423,15 @@ def build_producer_index(
     directory_by_ancestor: dict[str, list[_IndexedOutput]] = {}
     directory_by_root: dict[str, list[_IndexedOutput]] = {}
     for invocation in ordered:
+        directory_roots = {
+            _collection_root(invocation, collection).as_posix()
+            for collection in invocation.collections
+            if collection.direction == "output"
+            and collection.mechanism == "directory"
+        }
         for output in invocation.outputs:
+            if output.path in directory_roots:
+                continue
             outputs.setdefault(output.path, []).append(invocation)
             indexed = _IndexedOutput(invocation, output.path)
             for parent in PurePosixPath(output.path).parents:
@@ -609,7 +620,22 @@ def _starting_producer(
         return _starting_directory_producer(material, producer_index)
     candidates = producer_index.outputs.get(material, ())
     if not candidates:
-        _fail("producer.missing", material, {"consumer": None})
+        matches = producer_index.lookup(material)
+        directory_owners = {
+            match.producer.identity: match.producer
+            for match in matches
+            if match.overlapping_directory
+        }
+        if len(directory_owners) == 1:
+            return next(iter(directory_owners.values()))
+        _fail(
+            "producer.missing" if not directory_owners else "producer.ambiguous",
+            material,
+            {
+                "consumer": None,
+                "producers": sorted(directory_owners),
+            },
+        )
     _fail_shared_output_directory(material, candidates)
     if len(candidates) != 1:
         _fail(
@@ -729,9 +755,11 @@ def _require_declared_producer_ready(
     material: str,
     producer: Invocation,
     producer_index: ProducerIndex,
+    *,
+    allow_missing: bool = False,
 ) -> None:
     path = Path(material)
-    if not path.is_file() and not path.is_dir():
+    if not allow_missing and not path.is_file() and not path.is_dir():
         _fail(
             "provenance.output.missing",
             material,

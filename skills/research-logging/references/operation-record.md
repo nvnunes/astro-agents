@@ -58,8 +58,10 @@ material as a new routing event and load only its matching reference.
 - Presented results, evidence records, summary references, or artifact links:
   read `references/file-presented-evidence.md`. It routes an unsupported common
   case to exactly one focused advanced-definition reference.
-- A material command or evidence input, a `<name>` token, or an explicit origin
-  boundary: read `references/file-data-index.md` when introduced.
+- Artifact, command, or provenance work: read the small
+  `references/provenance-patterns.md` index, then only the matching common-case
+  cards. A material command or evidence input, a `<name>` token, or an explicit
+  origin boundary also reads `references/file-data-index.md` when introduced.
 - Intentional retention outside the evidence-rooted graph: read
   `references/file-retention.md` when introduced.
 - Citations or `refs.bib`: read `references/file-references.md`; also read

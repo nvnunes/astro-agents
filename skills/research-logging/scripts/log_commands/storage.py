@@ -45,6 +45,23 @@ def entry_lock(entry: EntryContext) -> Iterator[None]:
 
 
 @contextmanager
+def entry_locks(log: LogContext, entries: Iterable[EntryContext]) -> Iterator[None]:
+    """Hold the shared log lock and several entry locks in stable order."""
+
+    selected = sorted(entries, key=lambda item: item.id)
+    if len({entry.id for entry in selected}) != len(selected) or any(
+        entry.log.root != log.root for entry in selected
+    ):
+        raise ValueError("operation locks require unique entries from one log")
+    with ExitStack() as stack:
+        stack.enter_context(operation_lock(log.root, "log.lock", mode="shared"))
+        for entry in selected:
+            require_mutation_ready(log.root, entry_id=entry.id)
+            stack.enter_context(entry_lock_under_log(entry))
+        yield
+
+
+@contextmanager
 def entry_lock_under_log(entry: EntryContext) -> Iterator[None]:
     """Hold one entry lock while the caller already owns the log lock."""
 

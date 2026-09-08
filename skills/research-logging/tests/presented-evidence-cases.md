@@ -248,19 +248,86 @@ mechanical contract, preserves the original state or backup, and edits only the
 affected non-validation Markdown or JSON. It leaves unrelated records
 unchanged and does not open registry schemas that are not involved.
 
-Given an explicitly identified retained generated target that must enter the
-input registry before reproduction, Repair uses `log data add-generated
+Given a generated target required by a recorded workflow, Record declares its
+name, kind, and path before production. Repair does not need a privileged
+registration mode: a missing digest represents ordinary pre-production state,
+and successful `pyrun` production supplies the observation.
+
+Given an existing retained generated target that must enter the registry
+before reproduction can confirm it, Repair may use `log data add-generated
 --pending-confirmation` only when one current same-log `pyrun` producer is
-unambiguous. The action records the current target as generated without editing
-execution support. Missing or ambiguous producers still fail, and validation
-continues to report unconfirmed Provenance until reproduction succeeds.
+structurally valid and unambiguous. It does not use this migration form for
+ordinary pre-production declaration or to bypass a missing producer.
 
 Given recognized residue from an interrupted research-owned transaction,
 Repair follows its exact diagnostic and owning implementation contract. It
 does not treat unknown files as residue or edit generated validation state.
 Reconstructed execution-support records remain `confirmed: false`; only
-successful owning execution may confirm them. The final Validate invocation
-alone may replace generated reports.
+successful owning execution may confirm them. A bounded owning postcondition
+checks unprojected residue without claiming full validation.
+
+## Repair Routing Cases
+
+Given “fix every `data.output.token_missing` finding in this log,” the explicit
+class-level repair starts one bounded Repair campaign. Multiple matching chains
+are campaign membership, not ambiguity; unrelated codes remain outside scope.
+
+Given “repair finding chk-123,” the exact-finding repair starts directly and
+uses `findings show` for that one published identity without a preliminary
+validation run.
+
+Given “find and fix the raw output paths in e004,” the combined search and
+correction request enters Repair. It queries the relevant class and entry,
+forms the matching chain batches, and does not detour through diagnosis-only
+Validate.
+
+Given “diagnose and correct the missing named inputs in this log,” combined
+diagnosis and correction enters Repair. Repair owns the bounded inspection
+needed to establish the correction within that class.
+
+Given the agent has just reported one clearly bounded selected set and the
+researcher says “fix those,” the unambiguous pronoun enters Repair for exactly
+that set; older findings and nearby cleanup do not join it.
+
+Given “explain why these output findings occurred,” diagnosis only stays in
+Validate's read-only finding path and does not edit or rerun validation.
+
+Given “how would you fix this finding?”, hypothetical advice stays read-only.
+It may explain the mechanical choices but does not start Repair.
+
+Given several findings or several plausible corrected states and only “fix
+it,” the ambiguous correction request asks which target or state the researcher
+intends before editing.
+
+Given a failed Record authoring command with no correction request, the failure
+alone does not authorize Repair, validation, direct registry edits, or a retry.
+
+Given “remove this finding” would require deleting superseded experimental
+work, Repair stops and requests explicit Replace authority before removal.
+
+Given “clean up these entry boundaries” would require renaming, splitting,
+merging, or moving log structure, Repair routes the structural cleanup to
+Reorganize and does not perform it under correction language alone.
+
+Given a reported condition is caused by a validator implementation defect
+rather than research-owned state, Repair reports that the validator defect is
+outside repair scope. It does not mutate the log to satisfy faulty validation.
+
+## Integrated Repair Scenarios
+
+Given a published raw-output-path class with two independent command chains,
+Repair lists the class once, retrieves the first chain once, states and applies
+its named-output correction, runs `validate-batch`, records the scoped outcome,
+and continues to the second chain. It does not run full validation during the
+campaign. After a separately requested full-validation refresh, reproduction
+admission consumes the new projection and admits only clean current batches.
+
+Given a class campaign contains one chain whose correction would change a
+presented value and one independent mechanically correctable chain, Repair
+skips the evidence-changing chain for researcher direction, records that
+decision, and continues with the independent chain. If another chain has an
+unresolved projection or a lock owner conflict, it reports the precise blocker
+once and stops only that affected case without polling or broadening scope.
 
 ## Replace Boundary
 

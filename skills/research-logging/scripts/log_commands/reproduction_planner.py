@@ -21,11 +21,11 @@ from research_log_data import (
     parse_fingerprint,
     resolve_input_token,
 )
+from validation.batch_projection import PROJECTION_SCHEMA
 from validation.controller import evaluate_current_record
 from validation.engine import RULES_VERSION
 from validation.evidence import EvidenceFile, load_evidence_file
 from validation.evidence_comparison import evidence_comparison_identity
-from validation.human_projection import provenance_artifact_counts
 from validation.mechanical_results import (
     CheckScope,
     CheckStatus,
@@ -134,6 +134,10 @@ class _PlanningState:
     blocked: set[ExecutionKey] = field(default_factory=set)
     materials: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
     authority_paths: set[Path] = field(default_factory=set)
+    admitted_batches: set[tuple[str, str]] = field(default_factory=set)
+    excluded_batches: dict[tuple[str, str], tuple[str, ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -202,9 +206,9 @@ class _ReachabilityProjector:
         if len(candidates) == 1:
             evidence_key = (evidence_entry.context.id, evidence_artifact)
             self.output_executions[evidence_key] = candidates[0].execution_id
-            self.last_runs[
-                (evidence_entry.context.id, candidates[0].execution_id)
-            ] = candidates[0].execution.last_run_at
+            self.last_runs[(evidence_entry.context.id, candidates[0].execution_id)] = (
+                candidates[0].execution.last_run_at
+            )
             self.execution(candidates[0])
 
     def result(self) -> ReproductionStateProjection:
@@ -235,7 +239,9 @@ def plan_reproduction(
 
     _require_selection_policy(selection_policy)
     _require_existing_locks_available(log, entry)
-    validation_snapshot, validation_state = _admit_validation(log)
+    admitted = _admit_validation(log)
+    validation_snapshot, validation_state = admitted[:2]
+    batch_projection = admitted[2] if len(admitted) == 3 else None
     before_digest, before_projection = research_source_projection(log.summary)
     if before_digest != validation_snapshot["source_projection_digest"]:
         raise ActionError(
@@ -256,6 +262,37 @@ def plan_reproduction(
         entries,
         _owner_index(entries, project_root),
     )
+    _trace_selected_evidence(selected_ids, entries, state)
+    if batch_projection is not None:
+        _apply_validation_admission(state, batch_projection)
+    _apply_cycle_and_dependency_failures(state)
+    prior = _load_prior_results(log)
+    ordered = _select_and_order(state, prior)
+    plan = _project_plan(
+        state,
+        ordered,
+        validation_snapshot,
+        entry=entry,
+    )
+    _recheck_plan_sources(plan, state)
+    after_digest, after_projection = research_source_projection(log.summary)
+    if before_projection != after_projection or before_digest != after_digest:
+        raise ActionError(
+            "reproduction.source.changed",
+            "research source changed while the dry-run plan was being built",
+        )
+    plan.serialized()
+    del validation_state
+    return plan
+
+
+def _trace_selected_evidence(
+    selected_ids: Sequence[str],
+    entries: Mapping[str, _EntryState],
+    state: _PlanningState,
+) -> None:
+    """Load the selected evidence roots into one planning state."""
+
     for entry_id in selected_ids:
         current = entries[entry_id]
         if current.data is not None:
@@ -276,25 +313,6 @@ def plan_reproduction(
                 _trace_resource(
                     resolved.resource, current, state, consumer=None, depth=0
                 )
-    _apply_cycle_and_dependency_failures(state)
-    prior = _load_prior_results(log)
-    ordered = _select_and_order(state, prior)
-    plan = _project_plan(
-        state,
-        ordered,
-        validation_snapshot,
-        entry=entry,
-    )
-    _recheck_plan_sources(plan, state)
-    after_digest, after_projection = research_source_projection(log.summary)
-    if before_projection != after_projection or before_digest != after_digest:
-        raise ActionError(
-            "reproduction.source.changed",
-            "research source changed while the dry-run plan was being built",
-        )
-    plan.serialized()
-    del validation_state
-    return plan
 
 
 def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
@@ -598,19 +616,21 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         )
 
 
-def _comparison_identity(
-    owner: _Owner, output: str, project_root: Path
-) -> str | None:
+def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str | None:
     """Return one output's evidence-comparison definition identity, if any."""
 
     data = owner.entry.data
     if data is None:
         return None
-    target = output_target_path(
-        output,
-        entry_root=owner.entry.context.root,
-        project_root=project_root,
-    ).resolve().as_posix()
+    target = (
+        output_target_path(
+            output,
+            entry_root=owner.entry.context.root,
+            project_root=project_root,
+        )
+        .resolve()
+        .as_posix()
+    )
     resource = next(
         (item for item in data.inputs if item.canonical_target == target), None
     )
@@ -737,6 +757,174 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
                         "dependency_failed",
                     )
                 changed = True
+
+
+def _apply_validation_admission(
+    state: _PlanningState, projection: Mapping[str, object]
+) -> None:
+    """Exclude only executions owned by validation-blocked command batches."""
+
+    blocked = _blocked_validation_batches(projection)
+    entry_blockers = _entry_validation_blockers(projection)
+    _require_resolved_validation_blockers(projection)
+    chains = _mapping_items(projection.get("chains"))
+    for key, owner in sorted(state.selected.items()):
+        entry_groups = entry_blockers.get(owner.entry.context.id)
+        if entry_groups:
+            _exclude_entry_execution(state, key, owner, entry_groups)
+            continue
+        _apply_execution_admission(state, key, owner, chains, blocked)
+
+
+def _blocked_validation_batches(
+    projection: Mapping[str, object],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    blocked: dict[tuple[str, str], tuple[str, ...]] = {}
+    for group in _mapping_items(projection.get("chains")):
+        finding_ids = tuple(
+            sorted(
+                str(finding["identity"])
+                for finding in _mapping_items(group.get("findings"))
+                if _blocks_reproduction(finding)
+            )
+        )
+        if finding_ids:
+            blocked[(str(group["entry"]), str(group["chain_id"]))] = finding_ids
+    return blocked
+
+
+def _require_resolved_validation_blockers(
+    projection: Mapping[str, object],
+) -> None:
+    for group in _mapping_items(projection.get("unresolved")):
+        if group.get("entry") == "log" and any(
+            _blocks_reproduction(finding)
+            for finding in _mapping_items(group.get("findings"))
+        ):
+            raise ActionError(
+                "reproduction.validation.scope_unresolved",
+                "a blocking validation finding has no safe batch scope",
+            )
+
+
+def _entry_validation_blockers(
+    projection: Mapping[str, object],
+) -> dict[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+    result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    for group in _mapping_items(projection.get("unresolved")):
+        entry = group.get("entry")
+        if not isinstance(entry, str) or entry == "log":
+            continue
+        finding_ids = tuple(
+            sorted(
+                str(finding["identity"])
+                for finding in _mapping_items(group.get("findings"))
+                if _blocks_reproduction(finding)
+            )
+        )
+        if finding_ids:
+            result.setdefault(entry, []).append(
+                (str(group["chain_id"]), finding_ids)
+            )
+    return {entry: tuple(groups) for entry, groups in sorted(result.items())}
+
+
+def _exclude_entry_execution(
+    state: _PlanningState,
+    key: ExecutionKey,
+    owner: _Owner,
+    blockers: Sequence[tuple[str, tuple[str, ...]]],
+) -> None:
+    finding_ids = tuple(
+        sorted({finding for _chain, findings in blockers for finding in findings})
+    )
+    state.blocked.add(key)
+    for chain_id, findings in blockers:
+        state.excluded_batches[(owner.entry.context.id, chain_id)] = findings
+    for output, _kind in owner.execution.recipe.outputs:
+        _record_failure(
+            state,
+            _Failure(
+                owner.entry.context.id,
+                output,
+                owner.execution_id,
+                "validation_blocked",
+                finding_ids,
+            ),
+        )
+
+
+def _apply_execution_admission(
+    state: _PlanningState,
+    key: ExecutionKey,
+    owner: _Owner,
+    chains: Sequence[Mapping[str, object]],
+    blocked: Mapping[tuple[str, str], tuple[str, ...]],
+) -> None:
+    targets = {
+        output_target_path(
+            output,
+            entry_root=owner.entry.context.root,
+            project_root=state.project_root,
+        )
+        .resolve()
+        .as_posix()
+        for output, _kind in owner.execution.recipe.outputs
+    }
+    matches = [
+        group
+        for group in chains
+        if group.get("entry") == owner.entry.context.id
+        and targets & {str(value) for value in _sequence_items(group.get("artifacts"))}
+    ]
+    if len(matches) != 1:
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            f"execution has {len(matches)} projected batch matches: {key[1]}",
+        )
+    group = matches[0]
+    batch_key = (owner.entry.context.id, str(group["chain_id"]))
+    blockers = blocked.get(batch_key)
+    if blockers is None:
+        state.admitted_batches.add(batch_key)
+        return
+    state.blocked.add(key)
+    state.excluded_batches[batch_key] = blockers
+    for output, _kind in owner.execution.recipe.outputs:
+        _record_failure(
+            state,
+            _Failure(
+                owner.entry.context.id,
+                output,
+                owner.execution_id,
+                "validation_blocked",
+                blockers,
+            ),
+        )
+
+
+def _sequence_items(value: object) -> Sequence[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return value
+    return ()
+
+
+def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
+    return tuple(item for item in _sequence_items(value) if isinstance(item, Mapping))
+
+
+def _blocks_reproduction(finding: Mapping[str, object]) -> bool:
+    if finding.get("status") != CheckStatus.FAIL.value:
+        return False
+    if finding.get("scope") in {
+        CheckScope.CONFORMANCE.value,
+        CheckScope.EVIDENCE.value,
+    }:
+        return True
+    return (
+        finding.get("scope") == CheckScope.PROVENANCE.value
+        and finding.get("code") != "provenance.output.unconfirmed"
+    )
 
 
 def _select_and_order(
@@ -914,6 +1102,22 @@ def _project_plan(
     )
     boundaries = tuple(state.boundaries[key] for key in sorted(state.boundaries))
     failures = tuple(state.failures[key] for key in sorted(state.failures))
+    accepted_validation = dict(validation_snapshot)
+    accepted_validation["batch_admission"] = {
+        "admitted": [
+            {"chain_id": chain, "entry": entry}
+            for entry, chain in sorted(state.admitted_batches)
+        ],
+        "excluded": [
+            {
+                "blocking_findings": list(state.excluded_batches[(entry, chain)]),
+                "chain_id": chain,
+                "entry": entry,
+            }
+            for entry, chain in sorted(state.excluded_batches)
+        ],
+        "schema": "research-log-reproduction-batch-admission/1",
+    }
     return ReproductionPlan(
         _canonical_path(state.log.summary, state.project_root),
         {
@@ -921,7 +1125,7 @@ def _project_plan(
             "kind": "entry" if entry is not None else "log",
         },
         state.include_all,
-        validation_snapshot,
+        accepted_validation,
         snapshot,
         cases,
         tuple(executions),
@@ -932,7 +1136,7 @@ def _project_plan(
 
 def _admit_validation(
     log: LogContext,
-) -> tuple[dict[str, object], MechanicalGeneratedRecord]:
+) -> tuple[dict[str, object], MechanicalGeneratedRecord, Mapping[str, object]]:
     path = log.root / "validation" / "results.json"
     if path.is_symlink() or not path.is_file():
         raise ActionError(
@@ -957,18 +1161,6 @@ def _admit_validation(
             "reproduction.validation.stale",
             "validation identity or rules version is stale",
         )
-    if any(
-        check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}
-        for check in record.checks
-        if check.scope in {CheckScope.CONFORMANCE, CheckScope.EVIDENCE}
-    ):
-        raise ActionError(
-            "reproduction.validation.blocked", "Structure or Evidence validation failed"
-        )
-    if provenance_artifact_counts(record)[CheckStatus.FAIL.value]:
-        raise ActionError(
-            "reproduction.validation.blocked", "Provenance validation failed"
-        )
     try:
         current = evaluate_current_record(log.summary, result_date=record.result_date)
     except (OSError, UnicodeError, ValueError) as error:
@@ -978,9 +1170,21 @@ def _admit_validation(
             "reproduction.validation.stale",
             "published validation result does not describe current research source",
         )
+    from .findings import load_batch_projection
+
+    projection = load_batch_projection(log, record=record)
+    if projection.get("schema") != PROJECTION_SCHEMA:
+        raise ActionError(
+            "reproduction.validation.projection_invalid",
+            "validation batch projection is unsupported",
+        )
+    projection_path = log.root / "validation" / "batches.json"
     source_digest, _ = research_source_projection(log.summary)
     return (
         {
+            "projection_digest": _digest(projection_path),
+            "projection_id": projection["projection_id"],
+            "projection_path": projection_path.relative_to(log.root).as_posix(),
             "result_date": record.result_date,
             "result_digest": hashlib.sha256(raw).hexdigest(),
             "result_path": path.relative_to(log.root).as_posix(),
@@ -988,6 +1192,7 @@ def _admit_validation(
             "source_projection_digest": source_digest,
         },
         record,
+        projection,
     )
 
 
@@ -1109,15 +1314,23 @@ def _recheck_validation_result(plan: ReproductionPlan, log: LogContext) -> None:
         raise ActionError("reproduction.source.invalid", "invalid validation snapshot")
     if _digest(log.root / result_path) != result_digest:
         raise ActionError("reproduction.source.changed", "validation result changed")
+    projection_path = plan.validation_snapshot.get("projection_path")
+    projection_digest = plan.validation_snapshot.get("projection_digest")
+    if projection_path is None and projection_digest is None:
+        return
+    if not isinstance(projection_path, str) or not isinstance(projection_digest, str):
+        raise ActionError("reproduction.source.invalid", "invalid batch projection")
+    if _digest(log.root / projection_path) != projection_digest:
+        raise ActionError(
+            "reproduction.source.changed", "validation batch projection changed"
+        )
 
 
 def _recheck_executions(
     plan: ReproductionPlan, log: LogContext, project_root: Path
 ) -> None:
     loaded: dict[str, PyrunFile] = {}
-    values = cast(
-        Sequence[Mapping[str, object]], plan.source_snapshot["executions"]
-    )
+    values = cast(Sequence[Mapping[str, object]], plan.source_snapshot["executions"])
     for value in values:
         entry_id = value.get("entry")
         identity = value.get("execution_id")
@@ -1145,10 +1358,7 @@ def _recheck_executions(
             if execution is not None
             else None
         )
-        if (
-            execution is None
-            or digest != expected
-        ):
+        if execution is None or digest != expected:
             raise ActionError(
                 "reproduction.source.changed",
                 f"execution recipe changed: {entry_id}:{identity}",

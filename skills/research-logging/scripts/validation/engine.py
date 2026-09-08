@@ -19,6 +19,7 @@ from research_log_data import (
     find_log_consistency_conflicts,
     input_token_parts,
     load_data_file,
+    observe_fingerprint,
     resolve_input_token,
     validate_fingerprint_observation,
     verify_fingerprint,
@@ -100,6 +101,7 @@ from .output_bindings import OutputBindingError, project_output_bindings
 from .output_support import (
     ResolvedCodeSupport,
     confirmed_output_record,
+    declared_output_resource,
     output_producer_mismatches,
     output_support_matches_invocation,
     require_current_output_support,
@@ -257,9 +259,9 @@ class _ScanState:
         default_factory=dict
     )
     provenance_results: dict[str, ProvenanceResult] = field(default_factory=dict)
-    output_support_conclusions: dict[
-        tuple[str, str], _OutputSupportConclusion
-    ] = field(default_factory=dict)
+    output_support_conclusions: dict[tuple[str, str], _OutputSupportConclusion] = field(
+        default_factory=dict
+    )
     output_file_observations: dict[str, str] = field(default_factory=dict)
     selection_cache: dict[tuple[str, str], SelectionResult] = field(
         default_factory=dict
@@ -279,9 +281,9 @@ class _ScanState:
     )
     graph_failure_owners: dict[str, set[str]] = field(default_factory=dict)
     logical_material_roots: tuple[tuple[Path, str, str], ...] | None = None
-    owner_surface_prerequisite_checks: dict[
-        str, tuple[MechanicalCheck, ...]
-    ] = field(default_factory=dict)
+    owner_surface_prerequisite_checks: dict[str, tuple[MechanicalCheck, ...]] = field(
+        default_factory=dict
+    )
     markdown_reads: int = 0
     presentation_count: int = 0
     source_evaluations: int = 0
@@ -343,7 +345,7 @@ def _scan(
     try:
         summary_text = _read_text(summary, state)
         phase = time.perf_counter()
-        state.entries = _entries(summary_text, state)
+        state.entries = _entries(summary_text, state, entry_ids=request.entry_ids)
         record_count = sum(
             len(evidence_file.records)
             for evidence_file in _unique_evidence_files(state.entries)
@@ -360,11 +362,11 @@ def _scan(
         state.producer_index = build_producer_index(state.invocations)
         state.complete_provenance_context = CompleteProvenanceContext(
             state.producer_index,
-            producer_validator=lambda invocation, output: (
-                _validate_output_support(invocation, output, state)
+            producer_validator=lambda invocation, output: _validate_output_support(
+                invocation, output, state
             ),
-            confirmed_record=lambda invocation, output: (
-                _has_confirmed_output_record(invocation, output, state)
+            confirmed_record=lambda invocation, output: _has_confirmed_output_record(
+                invocation, output, state
             ),
         )
         _load_output_support(state)
@@ -375,16 +377,17 @@ def _scan(
         )
     else:
         _evaluate_entries(state)
-        try:
-            _evaluate_summary(summary_text, state)
-        except MechanicalContractError as error:
-            state.checks.append(
-                _error_check(
-                    "evidence:summary",
-                    _error_scope(error, CheckScope.EVIDENCE),
-                    error,
+        if request.entry_ids is None:
+            try:
+                _evaluate_summary(summary_text, state)
+            except MechanicalContractError as error:
+                state.checks.append(
+                    _error_check(
+                        "evidence:summary",
+                        _error_scope(error, CheckScope.EVIDENCE),
+                        error,
+                    )
                 )
-            )
         _compose_graph(state)
         _verify_source_stability(state)
         _verify_provenance_stability(state)
@@ -438,6 +441,13 @@ def _scan(
     }
     return {
         "checks": checks,
+        "graph": state.graph,
+        "invocations": state.invocations,
+        "registries": tuple(
+            (entry.id, entry.data_file)
+            for entry in state.entries
+            if entry.data_file is not None
+        ),
         "summary": summary.as_posix(),
     }, metrics
 
@@ -453,11 +463,18 @@ def _evaluate(scan: Mapping[str, Any], date: str) -> MechanicalGeneratedRecord:
 # Entry surfaces and command discovery.
 
 
-def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
+def _entries(
+    summary_text: str,
+    state: _ScanState,
+    *,
+    entry_ids: frozenset[str] | None = None,
+) -> list[_Entry]:
     listed = _listed_entry_documents(summary_text, state)
+    if entry_ids is not None:
+        listed = tuple(document for document in listed if document.stem in entry_ids)
     if not listed:
         _fail("association.declaration_missing", str(state.summary), {"entries": 0})
-    _validate_surface_placement(listed, state)
+    _validate_surface_placement(listed, state, scoped=entry_ids is not None)
     entries: list[_Entry] = []
     surfaces: dict[Path, _EntrySurface] = {}
     surface_errors: dict[Path, MechanicalContractError] = {}
@@ -505,7 +522,9 @@ def _entries(summary_text: str, state: _ScanState) -> list[_Entry]:
     return entries
 
 
-def _validate_surface_placement(documents: Sequence[Path], state: _ScanState) -> None:
+def _validate_surface_placement(
+    documents: Sequence[Path], state: _ScanState, *, scoped: bool = False
+) -> None:
     allowed_roots = {document.parent.resolve() for document in documents}
     entries_root = (state.log_root / "entries").resolve()
     surface_names = ("data.csv", "data.json", "retention.json")
@@ -519,7 +538,7 @@ def _validate_surface_placement(documents: Sequence[Path], state: _ScanState) ->
                     str(invalid),
                     {"reason": "parent_or_log_level_surface"},
                 )
-    if not entries_root.is_dir():
+    if scoped or not entries_root.is_dir():
         return
     try:
         descendants = bounded_descendants(
@@ -805,6 +824,7 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
             discovery = discover_commands(text, context)
             valid_invocations: list[Invocation] = []
             for invocation in discovery.invocations:
+                _record_raw_output_findings(invocation, state)
                 prerequisites = _invocation_input_prerequisites(invocation, state)
                 if not prerequisites:
                     valid_invocations.append(invocation)
@@ -813,9 +833,7 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                     entry.id, invocation.fence, invocation.ordinal
                 )
                 state.checks.append(
-                    _checks_depending_on(
-                        identity, CheckScope.PROVENANCE, prerequisites
-                    )
+                    _checks_depending_on(identity, CheckScope.PROVENANCE, prerequisites)
                 )
                 _register_invocation_blockers(invocation, identity, state)
             documents.append(tuple(valid_invocations))
@@ -850,8 +868,9 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                     )
                     for candidate in candidates:
                         if isinstance(candidate, str) and candidate:
+                            dependency = _command_candidate_dependency(candidate, entry)
                             state.command_candidate_dependencies.setdefault(
-                                candidate, set()
+                                dependency, set()
                             ).add(identity)
                     state.command_failure_owners.setdefault(
                         relative.rsplit("/", 1)[0], set()
@@ -872,6 +891,45 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                 )
             )
     return order_invocations(documents)
+
+
+def _command_candidate_dependency(candidate: str, entry: _Entry) -> str:
+    """Resolve a named failed-command candidate to its material identity."""
+
+    if input_token_parts(candidate) is None or entry.data_file is None:
+        return candidate
+    try:
+        return resolve_input_token(candidate, entry.data_file).path
+    except DataContractError:
+        return candidate
+
+
+def _record_raw_output_findings(invocation: Invocation, state: _ScanState) -> None:
+    """Classify each path-authored output as a Structure finding."""
+
+    for number, relationship in enumerate(invocation.outputs, 1):
+        if relationship.named_input is not None:
+            continue
+        error = EngineV2Error(
+            "data.output.token_missing",
+            invocation.document,
+            {
+                "command": invocation.identity,
+                "output": relationship.path,
+                "target": relationship.target,
+            },
+            "Command Tokens And Roles",
+        )
+        state.checks.append(
+            _error_check(
+                _command_check_identity(
+                    invocation.entry, invocation.fence, invocation.ordinal
+                )
+                + f":output:{number}",
+                CheckScope.CONFORMANCE,
+                error,
+            )
+        )
 
 
 def _command_check_identity(entry: str, fence: int, ordinal: int) -> str:
@@ -996,9 +1054,7 @@ def _load_output_support(state: _ScanState) -> None:
                     entry_root=root,
                     project_root=state.project_root,
                 )
-                _validate_execution_bindings(
-                    owner, execution_state, state
-                )
+                _validate_execution_bindings(owner, execution_state, state)
                 state.output_files[owner] = legacy_output_projection(
                     execution_state,
                     tuple(
@@ -1031,11 +1087,7 @@ def _validate_execution_bindings(
     """Report each invalid persisted binding without rejecting sibling state."""
 
     entry_id = next(
-        (
-            entry.id
-            for entry in state.entries
-            if _material_owner(entry, state) == owner
-        ),
+        (entry.id for entry in state.entries if _material_owner(entry, state) == owner),
         owner,
     )
     record_path = execution_state.path.resolve().as_posix()
@@ -1061,10 +1113,7 @@ def _validate_execution_bindings(
     for identity, execution in sorted(execution_state.executions.items()):
         subject = f"{execution_state.path}:executions[{identity!r}]"
         expected_policy = authored_policy.get(identity)
-        if (
-            expected_policy is not None
-            and expected_policy != execution.auto_reproduce
-        ):
+        if expected_policy is not None and expected_policy != execution.auto_reproduce:
             state.checks.append(
                 _error_check(
                     f"conformance:{entry_id}:pyrun-policy:{identity}",
@@ -1228,7 +1277,7 @@ def _evaluate_output_support(
         project_root=state.project_root,
         support=support,
     )
-    current_output = _observe_provenance_path(resolved.path, state)
+    current_output = _observe_output_path(invocation, resolved.path, state)
     candidate = resolved.record
     resolved_code = (
         resolve_code_support(
@@ -1241,9 +1290,7 @@ def _evaluate_output_support(
     )
     current_code = (
         _observe_output_code(resolved_code, state)
-        if candidate is not None
-        and candidate.confirmed
-        and candidate.code is not None
+        if candidate is not None and candidate.confirmed and candidate.code is not None
         else None
     )
     record = require_current_output_support(
@@ -1263,16 +1310,31 @@ def _evaluate_output_support(
     }
 
 
+def _observe_output_path(
+    invocation: Invocation, path: Path, state: _ScanState
+) -> Fingerprint:
+    """Reuse the declaration-shaped observation for one named output."""
+
+    resource = declared_output_resource(invocation, path)
+    if resource is not None:
+        observation = state.input_observations.get(resource.observation_identity)
+        if observation is None:
+            observation = (
+                state.fingerprint_cache.observe_resource(resource)
+                if state.fingerprint_cache is not None
+                else observe_fingerprint(resource)
+            )
+        return observation.fingerprint
+    return _observe_provenance_path(path, state)
+
+
 def _observe_output_code(
     code: Sequence[ResolvedCodeSupport],
     state: _ScanState,
 ) -> Mapping[str, Fingerprint]:
     """Observe each unique resolved code file once for output currentness."""
 
-    return {
-        item.key: _observe_provenance_path(item.resolved, state)
-        for item in code
-    }
+    return {item.key: _observe_provenance_path(item.resolved, state) for item in code}
 
 
 def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
@@ -1307,9 +1369,7 @@ def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
             observation = state.fingerprint_cache.observe_regular_file(path)
             kind = "file"
     except FingerprintCacheError as error:
-        _fail(
-            "provenance.observation.unavailable", canonical, {"error": str(error)}
-        )
+        _fail("provenance.observation.unavailable", canonical, {"error": str(error)})
     state.provenance_observations[canonical] = (kind, observation.fingerprint)
     return observation.fingerprint
 
@@ -2096,9 +2156,7 @@ def _record_missing_outputs(state: _ScanState) -> None:
                     canonical,
                     {
                         "output": key,
-                        "producers": [
-                            item.identity for item, _ in declarations
-                        ],
+                        "producers": [item.identity for item, _ in declarations],
                     },
                     "Output Reconciliation",
                 ),
@@ -2149,11 +2207,8 @@ def _graph_code_inputs(state: _ScanState) -> Mapping[str, tuple[str, ...]]:
                 project_root=state.project_root,
             )
             record = support.outputs.get(key)
-            if (
-                record is None
-                or not output_support_matches_invocation(
-                    invocation, record, material=material
-                )
+            if record is None or not output_support_matches_invocation(
+                invocation, record, material=material
             ):
                 continue
             try:
@@ -2207,12 +2262,16 @@ def _record_unmatched_outputs(state: _ScanState) -> _UnmatchedOutputs:
             if key.startswith(PROJECT_OUTPUT_PREFIX):
                 continue
             record = output_file.outputs[key]
-            canonical = output_target_path(
-                key,
-                entry_root=root,
-                project_root=state.project_root,
-                authored=True,
-            ).resolve().as_posix()
+            canonical = (
+                output_target_path(
+                    key,
+                    entry_root=root,
+                    project_root=state.project_root,
+                    authored=True,
+                )
+                .resolve()
+                .as_posix()
+            )
             if canonical in graph_outputs:
                 continue
             unmatched.add(canonical)
@@ -2237,9 +2296,7 @@ def _record_unmatched_outputs(state: _ScanState) -> _UnmatchedOutputs:
     return _UnmatchedOutputs(frozenset(unmatched), frozenset(directory_roots))
 
 
-def _covered_by_unmatched_output(
-    material: str, unmatched: _UnmatchedOutputs
-) -> bool:
+def _covered_by_unmatched_output(material: str, unmatched: _UnmatchedOutputs) -> bool:
     if material in unmatched.paths:
         return True
     path = Path(material)
@@ -2449,9 +2506,7 @@ def _material_graph_blockers(material: str, state: _ScanState) -> tuple[str, ...
     return tuple(sorted(blockers))
 
 
-def _input_graph_blockers(
-    name: str, owner: str, state: _ScanState
-) -> tuple[str, ...]:
+def _input_graph_blockers(name: str, owner: str, state: _ScanState) -> tuple[str, ...]:
     blockers = set(state.command_failure_owners.get(owner, ()))
     blockers.update(state.graph_failure_owners.get(owner, ()))
     blockers.update(
@@ -2812,11 +2867,7 @@ def _checks_depending_on(
     unique = {check.identity: check for check in dependencies}
     subject = identity if subject is None else subject
     unavailable = next(
-        (
-            check
-            for check in unique.values()
-            if check.status is CheckStatus.UNAVAILABLE
-        ),
+        (check for check in unique.values() if check.status is CheckStatus.UNAVAILABLE),
         None,
     )
     if unavailable is None:

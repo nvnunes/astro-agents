@@ -4,7 +4,9 @@ Use this file when a recorded command consumes a file, directory, or pinned Git
 repository; an evidence presentation consumes a file or directory; or the
 researcher must choose where its Provenance chain stops. The public `log data`
 actions own input-registry validation and storage.
-Never create, inspect, or edit the registry during ordinary Record.
+Never create, inspect, or edit the registry during ordinary Record. For common
+complete examples, read `references/provenance-patterns.md` only when the
+workflow matches one of its cases.
 
 Every material input has one stable entry-scoped name. Recorded commands and
 evidence use `<name>` instead of a raw path. Use
@@ -18,9 +20,10 @@ shorthand as an evidence source.
   the researcher intends Provenance to stop at its current bytes. Ask whether
   an accessible external input should be copied into the entry or referenced
   at its current local location.
-- Choose generated only after a `pyrun` command in the same maintained log has
-  successfully produced and confirmed the current target. Production in
-  another maintained log crosses an origin boundary.
+- Choose generated when a current or planned `pyrun` command in the same
+  maintained log uniquely owns the target. Declare the artifact before the
+  command runs; successful production records its fingerprint and execution
+  support. Production in another maintained log crosses an origin boundary.
 
 Storage location does not determine this choice. Do not infer an origin merely
 because no producer was found, and do not hide a known same-log producer behind
@@ -34,19 +37,24 @@ selected action's help. `<log>` is the logical base whose summary is
 
 ```text
 <skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  <name> <target> [--commit <full-commit-hash>]
+  <name> <target> [--commit <full-commit-hash>] [--identity <selector>]...
 <skill>/scripts/log data add-generated --path <log> --entry <entry-id> \
-  <name> <target>
+  <name> <target> [--kind file|directory] [--identity <selector>]...
+<skill>/scripts/log data use --path <log> --entry <entry-id> \
+  --from-entry <producer-entry-id> <name>
 ```
 
 Write `<target>` as an absolute path or a path relative to the selected entry
 root, regardless of the shell's current directory. For entry-owned material,
 prefer the short entry-relative form such as `data/metrics.json`.
 
-The action infers file versus directory unless `--commit` selects a Git
-repository, normalizes the target, records its current identity, verifies the
-asserted boundary, and publishes canonical state. After success, use the token
-without opening the registry.
+`add-origin` observes the existing target. `add-generated` accepts a missing
+target when `--kind` establishes whether it will be a file or directory, and
+records its fingerprint after successful production. A generated directory
+may use selected identity files or final-component patterns. `data use`
+creates a read-only reference to an existing declaration in another entry of
+the same log; it neither copies the data nor relabels it as an origin. After
+success, use the token without opening the registry.
 
 For source code identified by a repository commit, use `add-origin --commit`
 with the repository root as `<target>` and an exact lowercase 40-character
@@ -70,10 +78,12 @@ Use the corresponding action for later intent:
 - `log data remove` runs only after command and evidence use is removed; and
 - `log data list` returns a bounded semantic inventory when needed.
 
-Use action-specific `--dry-run` when a mutation needs preflight. Advanced
-origin-directory identity options belong to the selected action's help and
-explicit researcher intent; do not load or reproduce their registry
-representation during ordinary Record.
+Use action-specific `--dry-run` when a mutation needs preflight. Selected
+directory identity options belong to the selected action's help and explicit
+researcher intent; do not load or reproduce their registry representation
+during ordinary Record. A referenced declaration is maintained by its source
+entry: update, refresh, rename, and remove the source only after removing or
+updating every dependent reference.
 
 Whole-artifact exact comparison is always the default. Do not add an evidence
 comparison while recording ordinary work or merely because a reproduction

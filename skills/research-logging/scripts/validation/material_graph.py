@@ -270,6 +270,18 @@ def _trace_material(
         for invocation in state.outputs.get(material, ())
         if consumer is None or invocation.sequence < consumer.sequence
     )
+    if not candidates:
+        matches = state.producer_index.lookup(
+            material,
+            before_sequence=consumer.sequence if consumer is not None else None,
+        )
+        directory_owners = {
+            match.producer.identity: match.producer
+            for match in matches
+            if match.overlapping_directory
+        }
+        if len(directory_owners) == 1:
+            candidates = (next(iter(directory_owners.values())),)
     if len(candidates) != 1:
         return
     producer = candidates[0]

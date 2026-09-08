@@ -180,7 +180,7 @@ so it receives an output support record. Use `--capture-stdout <path>` and
 keep that option and `--` on the `./pyrun` line:
 
 ```bash
-./pyrun --capture-stdout-stderr data/run.log -- \
+./pyrun --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
@@ -193,19 +193,21 @@ Never create the retained log later from output held only in agent context. Do
 not create a CSV merely to transfer formatted text into an entry; retain
 structured data when it supports analysis, reuse, or provenance.
 
-Every material command input must already have one matching named declaration
-in the owning entry. When adding a producerless input, ask whether it should be
-copied into the entry or referenced at its current local location, then use
+Every material command input and output must have one matching named
+declaration. When adding a producerless input, ask whether it should be copied
+into the entry or referenced at its current local location, then use
 `<skill>/scripts/log data add-origin --path <log> --entry <entry-id> <name>
-<target>`. Record the command with `<name>` instead of the raw path. When a
-confirmed output becomes an input to a later recorded command, use
+<target>`. Before a producer runs, declare each generated output with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
-<target>` after its producer succeeds.
+<target> --kind file|directory`. Use `<name>` instead of the raw path in both
+directions; `pyrun` records the generated fingerprint after successful
+production. A later entry reuses the source declaration through `log data use`
+rather than copying it.
 
-Never register output-only results, scripts, command logs, or images as inputs.
-Keep script and output paths directly in commands or Markdown. An image that is
-actually consumed by a later command is an input and follows the same
-registration rule.
+Do not register scripts as artifacts merely because they are executed. Register
+output-only results, command logs, and images as generated artifacts when a
+recorded command produces them. Presentation and later consumption do not
+change that producer-owned declaration.
 
 `pyrun` resolves names only from the current owning entry. It does not inherit
 inputs from a parent entry or the log root.

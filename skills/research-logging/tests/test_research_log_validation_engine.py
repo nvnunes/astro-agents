@@ -124,7 +124,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
                         },
                         "code": {},
                         "parameters": [
-                            "--catalog",
+                            "--input-catalog",
                             "<catalog>",
                             f"--{output_option}",
                             "data/results.csv",
@@ -152,8 +152,8 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         "`Background:`\n\nWhat is the success rate?\n\n"
         "`Steps:`\n\n"
         "```bash\n"
-        "./pyrun scripts/model.py --catalog '<catalog>' "
-        f"--{output_option} data/results.csv\n"
+        "./pyrun scripts/model.py --input-catalog '<catalog>' "
+        f"--{output_option} '<results>'\n"
         "```\n\n"
         "`Results:`\n\n"
         "The success rate was `67.6%`<!-- eid:success-rate -->.\n",
@@ -319,8 +319,8 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
     write(
         entry,
         entry.read_text().replace(
-            "--output-data data/results.csv",
-            "--output-dir data/bundle",
+            "--output-data '<results>'",
+            "--output-dir '<results>'",
         ),
     )
     support_path = entry_root / "pyrun-outputs.json"
@@ -328,7 +328,7 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
     record = support["outputs"].pop("data/results.csv")
     record["fingerprint"] = resource.fingerprint.as_dict()
     record["parameters"] = [
-        "--catalog",
+        "--input-catalog",
         "<catalog>",
         "--output-dir",
         "data/bundle",
@@ -345,7 +345,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry_document = _log(root)
             identity = _replace_with_pyrun_state(
                 entry_document,
-                ("--catalog", "<catalog>", "--output-data", "data/results.csv"),
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
             )
             entry = entry_document.parent
             path = entry / PYRUN_STATE.PYRUN_FILENAME
@@ -444,10 +444,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
     def test_pyrun_binding_failure_is_execution_scoped_structure(self) -> None:
         cases = (
-            (("--catalog", "<catalog>", "--mode", "exact"), "missing"),
+            (("--input-catalog", "<catalog>", "--mode", "exact"), "missing"),
             (
                 (
-                    "--catalog",
+                    "--input-catalog",
                     "<catalog>",
                     "--output-data",
                     "data/results.csv",
@@ -458,7 +458,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ),
             (
                 (
-                    "--catalog",
+                    "--input-catalog",
                     "<catalog>",
                     "--output-data",
                     "./data/results.csv",
@@ -506,7 +506,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             _replace_with_pyrun_state(
                 entry,
                 (
-                    "--catalog",
+                    "--input-catalog",
                     "<catalog>",
                     "--output-data",
                     "data/results.csv",
@@ -1195,7 +1195,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text().replace(
-                    "--catalog '<catalog>' ", "--catalog '<catalog>' --mode revised "
+                    "--input-catalog '<catalog>' ",
+                    "--input-catalog '<catalog>' --mode revised ",
                 ),
             )
 
@@ -1216,7 +1217,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             output_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(output_path.read_text())
             support["outputs"]["data/results.csv"]["parameters"] = [
-                "--catalog",
+                "--input-catalog",
                 "<catalog>",
                 "--mode",
                 "revised",
@@ -1255,9 +1256,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text().replace(
-                    "./pyrun scripts/model.py --catalog '<catalog>' ",
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' ",
                     "./pyrun scripts/preprocess.py --input-data '<catalog>' "
-                    "--output-data data/intermediate.csv\n"
+                    "--output-data '<intermediate>'\n"
                     "./pyrun scripts/model.py --input-data '<intermediate>' ",
                 ),
             )
@@ -1319,7 +1320,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry,
                 complete_document.replace(
                     "./pyrun scripts/preprocess.py --input-data '<catalog>' "
-                    "--output-data data/intermediate.csv\n",
+                    "--output-data '<intermediate>'\n",
                     "",
                 ),
             )
@@ -1443,7 +1444,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry,
                 text.replace(
                     "```\n\n`Results:`",
-                    "./pyrun scripts/model.py --catalog '<catalog>' "
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
                     "--output-data data/missing.csv\n"
                     "```\n\n`Results:`",
                 ),
@@ -2226,7 +2227,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 second,
                 "## Trial\n\n`Steps:`\n\n"
-                "```bash\n./pyrun scripts/run.py --catalog '<catalog>'\n```\n\n"
+                "```bash\n./pyrun scripts/run.py --input-catalog '<catalog>'\n```\n\n"
                 "`Results:`\n\nDone.\n",
             )
 
@@ -2362,7 +2363,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluation.metrics["provenance_traversals"], 1)
             self.assertEqual(evaluation.metrics["provenance_traversals_reused"], 1)
 
-    def test_generated_evidence_input_rejects_an_origin_boundary(self) -> None:
+    def test_named_output_rejects_an_origin_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             data_path = entry.parent / "data.json"
@@ -2374,12 +2375,15 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             checks = {check.identity: check for check in evaluation.result.checks}
+            command = checks["entry:e001:command:1:1"]
             evidence = checks["evidence:e001:success-rate"]
             provenance = checks["provenance:e001:success-rate"]
+            self.assertEqual(command.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(
+                command.failure.code, "data.output.declaration_invalid"
+            )
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
-            assert provenance.failure is not None
-            self.assertEqual(provenance.failure.code, "data.origin.invalid")
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
 
     def test_origin_evidence_is_valid_but_unrelated_output_is_hygiene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2403,7 +2407,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    " --catalog '<catalog>'", ""
+                    " --input-catalog '<catalog>'", ""
                 ),
             )
 
@@ -2808,8 +2812,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry,
                 entry.read_text(encoding="utf-8")
                 .replace(
-                    "--output-data data/results.csv",
-                    "--output-data data/results.csv --output-report data/report.txt",
+                    "--output-data '<results>'",
+                    "--output-data '<results>' --output-report '<report>'",
                 )
                 .replace(
                     "The success rate was",
@@ -2849,7 +2853,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             parameters = [
-                "--catalog",
+                "--input-catalog",
                 "<catalog>",
                 "--output-data",
                 "data/results.csv",
@@ -3147,8 +3151,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text().replace(
-                    "./pyrun scripts/model.py --catalog '<catalog>' "
-                    "--output-data data/results.csv",
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
+                    "--output-data '<results>'",
                     "true",
                 ),
             )
@@ -3177,8 +3181,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text().replace(
-                    "--results data/results.csv",
-                    "--results data/results.csv --scratch data/scratch.csv",
+                    "--results '<results>'",
+                    "--results '<results>' --scratch data/scratch.csv",
                 ),
             )
 
@@ -3264,11 +3268,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "./pyrun scripts/model.py --catalog '<catalog>' "
-                    "--results data/results.csv",
-                    "./pyrun --other-inputs catalog --other-outputs results -- "
-                    "scripts/model.py --catalog '<catalog>' "
-                    "--results data/results.csv",
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
+                    "--results '<results>'",
+                    "./pyrun --other-inputs input-catalog --other-outputs results -- "
+                    "scripts/model.py --input-catalog '<catalog>' "
+                    "--results '<results>'",
                 ),
             )
 
@@ -3385,7 +3389,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8")
-                .replace(" --catalog '<catalog>'", "")
+                .replace(" --input-catalog '<catalog>'", "")
                 .replace("\n<!-- command type = model -->", ""),
             )
 
@@ -3406,8 +3410,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "--catalog '<catalog>' ",
-                    "--catalog '<catalog>' --input-data data/unrooted.csv ",
+                    "--input-catalog '<catalog>' ",
+                    "--input-catalog '<catalog>' --input-data data/unrooted.csv ",
                 ),
             )
             evaluation = _evaluate(summary)

@@ -785,6 +785,233 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
             self.assertEqual(result(confirmed)["status"], "unchanged")
 
+    def test_use_references_one_direct_generated_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, producer = scaffold(Path(directory))
+            consumer = add_entry(logical, date="2026-09-05", slug="consumer")
+            (producer / "scripts" / "build.py").write_text(
+                "from pathlib import Path\n"
+                "Path('data/result.csv').write_text('value\\n')\n",
+                encoding="utf-8",
+            )
+            (producer / "e001.md").write_text(
+                "# Trial\n\n## Build\n\n`Steps:`\n\n"
+                "```bash\n"
+                "./pyrun scripts/build.py --output \"<result>\"\n"
+                "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            declared = run(
+                producer,
+                "data",
+                "add-generated",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--kind",
+                "file",
+                "result",
+                "data/result.csv",
+            )
+            self.assertEqual(declared.returncode, 0, declared.stderr)
+
+            used = run(
+                consumer,
+                "data",
+                "use",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "--from-entry",
+                "e001",
+                "result",
+            )
+            self.assertEqual(used.returncode, 0, used.stderr)
+            self.assertEqual(
+                data_inputs(consumer),
+                [{"from_entry": "e001", "name": "result"}],
+            )
+            listed = run(
+                consumer,
+                "data",
+                "list",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(result(listed)["records"][0]["from_entry"], "e001")
+
+            (consumer / "scripts" / "build.py").write_text(
+                "import argparse\n"
+                "p=argparse.ArgumentParser(); p.add_argument('--output')\n"
+                "p.parse_args()\n",
+                encoding="utf-8",
+            )
+            rejected_output = run_pyrun(
+                consumer, "scripts/build.py", "--output", "<result>"
+            )
+            self.assertNotEqual(rejected_output.returncode, 0)
+            self.assertIn(
+                "outputs require a whole generated artifact token",
+                rejected_output.stderr,
+            )
+
+            protected = run(
+                producer,
+                "data",
+                "remove",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "result",
+            )
+            self.assertEqual(protected.returncode, 2)
+            self.assertEqual(result(protected)["code"], "data.remove.in_use")
+
+    def test_use_rejects_missing_source_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _producer = scaffold(Path(directory))
+            consumer = add_entry(logical, date="2026-09-05", slug="consumer")
+            missing = run(
+                consumer,
+                "data",
+                "use",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "--from-entry",
+                "e001",
+                "result",
+            )
+            self.assertEqual(missing.returncode, 2)
+            self.assertEqual(result(missing)["code"], "data.input.missing")
+
+    def test_use_rejects_local_name_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, producer = scaffold(Path(directory))
+            consumer = add_entry(logical, date="2026-09-05", slug="consumer")
+            (producer / "scripts" / "build.py").write_text(
+                "from pathlib import Path\n"
+                "Path('data/result.csv').write_text('value\\n')\n",
+                encoding="utf-8",
+            )
+            (producer / "e001.md").write_text(
+                "# Trial\n\n## Build\n\n`Steps:`\n\n"
+                "```bash\n./pyrun scripts/build.py --output \"<result>\"\n```\n"
+                "\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            declared = run(
+                    producer,
+                    "data",
+                    "add-generated",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--kind",
+                    "file",
+                    "result",
+                    "data/result.csv",
+            )
+            self.assertEqual(declared.returncode, 0, declared.stderr)
+            local = consumer / "data" / "result.csv"
+            local.write_text("value\n", encoding="utf-8")
+            added = run(
+                consumer,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "result",
+                "data/result.csv",
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            conflict = run(
+                consumer,
+                "data",
+                "use",
+                "--path",
+                str(logical),
+                "--entry",
+                "e002",
+                "--from-entry",
+                "e001",
+                "result",
+            )
+            self.assertEqual(conflict.returncode, 2)
+            self.assertEqual(result(conflict)["code"], "data.name.conflict")
+
+    def test_selected_generated_directory_observes_only_declared_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = scaffold(Path(directory))
+            (entry / "scripts" / "build.py").write_text(
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "p=argparse.ArgumentParser(); p.add_argument('--output')\n"
+                "a=p.parse_args(); root=Path(a.output); root.mkdir()\n"
+                "(root/'manifest.json').write_text('{}\\n')\n"
+                "(root/'scratch.txt').write_text('first\\n')\n",
+                encoding="utf-8",
+            )
+            (entry / "e001.md").write_text(
+                "# Trial\n\n## Build\n\n`Steps:`\n\n"
+                "```bash\n./pyrun scripts/build.py --output \"<bundle>\"\n```\n"
+                "\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            common = ("--path", str(logical), "--entry", "e001")
+            declared = run(
+                entry,
+                "data",
+                "add-generated",
+                *common,
+                "--kind",
+                "directory",
+                "--identity",
+                "manifest.json",
+                "bundle",
+                "data/bundle",
+            )
+            self.assertEqual(declared.returncode, 0, declared.stderr)
+            item = data_inputs(entry)[0]
+            self.assertEqual(
+                item["fingerprint"],
+                {
+                    "algorithm": "identity-files-sha256-v1",
+                    "files": ["manifest.json"],
+                },
+            )
+            executed = run_pyrun(
+                entry, "scripts/build.py", "--output", "<bundle>"
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            observed = data_inputs(entry)[0]["fingerprint"]
+            self.assertIn("digest", observed)
+
+            (entry / "data" / "bundle" / "scratch.txt").write_text(
+                "excluded change\n", encoding="utf-8"
+            )
+            excluded = run(entry, "data", "refresh", *common, "bundle")
+            self.assertEqual(excluded.returncode, 0, excluded.stderr)
+            self.assertEqual(result(excluded)["status"], "unchanged")
+            (entry / "data" / "bundle" / "manifest.json").write_text(
+                '{"changed":true}\n', encoding="utf-8"
+            )
+            selected = run(entry, "data", "refresh", *common, "bundle")
+            self.assertEqual(selected.returncode, 2)
+            self.assertEqual(
+                result(selected)["code"], "provenance.output.signature_mismatch"
+            )
+
     def test_pending_generated_defers_unconfirmed_recursive_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))

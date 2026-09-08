@@ -382,6 +382,9 @@ class PyrunResolutionTests(unittest.TestCase):
                 [
                     sys.executable,
                     str(PYRUN),
+                    "--other-inputs",
+                    "@3,@4,@5",
+                    "--",
                     "scripts/print_args.py",
                     "<project>",
                     "<log>",
@@ -510,7 +513,15 @@ class PyrunResolutionTests(unittest.TestCase):
             (entry / "data" / "input.csv").write_text("value\n2\n", encoding="utf-8")
 
             result = run(
-                [sys.executable, str(PYRUN), "scripts/print_args.py", "<input_csv>"],
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--other-inputs",
+                    "@1",
+                    "--",
+                    "scripts/print_args.py",
+                    "<input_csv>",
+                ],
                 cwd=entry,
             )
 

@@ -128,7 +128,7 @@ def mechanical_log(
                         },
                         "code": {},
                         "parameters": [
-                            "--catalog",
+                            "--input-catalog",
                             "<catalog>",
                             f"--{output_option}",
                             "data/results.csv",
@@ -156,8 +156,8 @@ def mechanical_log(
         "`Background:`\n\nWhat is the success rate?\n\n"
         "`Steps:`\n\n"
         "```bash\n"
-        "./pyrun scripts/model.py --catalog '<catalog>' "
-        f"--{output_option} data/results.csv\n"
+        "./pyrun scripts/model.py --input-catalog '<catalog>' "
+        f"--{output_option} '<results>'\n"
         "```\n\n"
         "`Results:`\n\n"
         "The success rate was `67.6%`<!-- eid:success-rate -->.\n",

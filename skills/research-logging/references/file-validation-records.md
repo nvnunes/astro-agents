@@ -9,6 +9,7 @@ execution state; validation reads it but never writes or repairs it.
 Mechanical Validate may create or update only these generated paths:
 
 - `<log>/validation/results.json`;
+- `<log>/validation/batches.json`;
 - `<log>/validation.md`;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
   shared-memory companions;
@@ -17,8 +18,9 @@ Mechanical Validate may create or update only these generated paths:
   and shared-memory companions.
 
 `validation/results.json` is the authoritative complete machine-readable
-result. Repair accesses a selected finding through `log findings list` and
-`log findings show`; it does not load this file directly in ordinary work.
+result. `validation/batches.json` is its deterministic command-chain and
+finding projection. Repair accesses them through `log findings list`, `show`,
+and `batch`; it does not load either file directly in ordinary work.
 `validation.md` is a concise validation-only human projection. Validate and
 Repair do not parse it. Reproduction is a separate operation with
 `reproduction/results.json` and `reproduction.md`; mechanical validation
@@ -62,7 +64,7 @@ holding the canonical log lock exclusively. Dry-run validation holds that same
 lock for its complete read-only lifecycle. An incomplete evaluation or
 publication failure does not replace the prior completed bundle. A dry run
 publishes nothing. If another maintained operation owns a conflicting lock,
-stop and retry after that operation completes.
+report its supplied owner metadata once and stop; do not retry or poll.
 
 Do not edit generated records by hand. Report unsupported generated metadata
 and request separate authorization before archiving it outside the active log

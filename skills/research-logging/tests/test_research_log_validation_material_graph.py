@@ -328,7 +328,7 @@ class MaterialGraphTests(unittest.TestCase):
             invocations = COMMAND.discover_commands(
                 """```bash
 ./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
-./pyrun scripts/use.py --results-root '<bundle>' --output-data data/final.csv
+./pyrun scripts/use.py --input-results-root '<bundle>' --output-data data/final.csv
 ```
 """,
                 context,
@@ -350,7 +350,10 @@ class MaterialGraphTests(unittest.TestCase):
             producer, consumer = invocations
             self.assertEqual(
                 tuple(item.path for item in consumer.inputs),
-                ((output_data / "bundle").resolve().as_posix(),),
+                (
+                    (output_data / "bundle/metrics.csv").resolve().as_posix(),
+                    (output_data / "bundle/model.pt").resolve().as_posix(),
+                ),
             )
             self.assertIn(producer.script, result.orphan.connected)
             self.assertIn(

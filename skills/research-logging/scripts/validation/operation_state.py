@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal, Mapping
 
 MAX_SNAPSHOT_FILES = 1_000_000
 RUNTIME_CACHE_DIRECTORIES = frozenset(
@@ -16,6 +18,8 @@ RUNTIME_CACHE_DIRECTORIES = frozenset(
 REORGANIZE_RESIDUE = "reorganize-residue"
 REGISTRY_RESIDUE = "registry-residue"
 REGISTRY_RESIDUE_PREFIX = "registry-residue-"
+LOCK_OWNER_SCHEMA = "research-log-operation-owner/1"
+MAX_LOCK_OWNER_BYTES = 64 * 1024
 LockMode = Literal["shared", "exclusive"]
 
 
@@ -23,6 +27,16 @@ class OperationLockError(OSError):
     """One maintained operation could not acquire its canonical lock."""
 
     code = "operation.lock.conflict"
+
+    def __init__(self, path: Path, owner: Mapping[str, object] | None = None):
+        self.path = path
+        self.owner = dict(owner) if owner is not None else None
+        detail = (
+            f": {json.dumps(self.owner, ensure_ascii=False, sort_keys=True)}"
+            if self.owner is not None
+            else ""
+        )
+        super().__init__(f"research-log operation is active: {path}{detail}")
 
 
 def operation_directory(log_root: Path) -> Path:
@@ -54,28 +68,98 @@ def _open_lock(path: Path, *, create: bool) -> int:
 
 @contextmanager
 def operation_lock(
-    log_root: Path, name: str, *, mode: LockMode = "exclusive"
+    log_root: Path,
+    name: str,
+    *,
+    mode: LockMode = "exclusive",
+    owner_factory: Callable[[], Mapping[str, object]] | None = None,
 ) -> Iterator[None]:
-    """Hold one stable generated operation lock without waiting."""
+    """Hold one stable generated operation lock without waiting.
+
+    An exclusive owner may publish bounded diagnostic metadata after acquiring
+    the OS lock and before control reaches the protected operation. Contenders
+    read that metadata directly; stale metadata never establishes contention.
+    """
 
     if Path(name).name != name or not name.endswith(".lock"):
         raise ValueError(f"invalid operation lock name: {name}")
     if mode not in {"shared", "exclusive"}:
         raise ValueError(f"invalid operation lock mode: {mode}")
+    if owner_factory is not None and mode != "exclusive":
+        raise ValueError("operation owner metadata requires an exclusive lock")
     directory = _prepare_operation_directory(log_root)
     path = directory / name
+    owner_path = directory / f"{name}.owner.json"
     with os.fdopen(_open_lock(path, create=True), "r+b") as handle:
         operation = fcntl.LOCK_SH if mode == "shared" else fcntl.LOCK_EX
         try:
             fcntl.flock(handle.fileno(), operation | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise OperationLockError(
-                f"research-log operation is active: {path}"
-            ) from error
+            raise OperationLockError(path, _read_lock_owner(owner_path)) from error
+        published_owner = False
         try:
+            if owner_factory is not None:
+                _publish_lock_owner(owner_path, owner_factory())
+                published_owner = True
             yield
         finally:
+            if published_owner:
+                try:
+                    owner_path.unlink(missing_ok=True)
+                    _sync_directory(directory)
+                except OSError:
+                    pass
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _publish_lock_owner(path: Path, owner: Mapping[str, object]) -> None:
+    """Atomically publish one bounded exact owner record."""
+
+    value = dict(owner)
+    if value.get("schema") != LOCK_OWNER_SCHEMA:
+        raise ValueError("operation owner has an unsupported schema")
+    raw = (
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        + "\n"
+    ).encode("utf-8")
+    if len(raw) > MAX_LOCK_OWNER_BYTES:
+        raise ValueError("operation owner crossed its byte bound")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _read_lock_owner(path: Path) -> dict[str, object] | None:
+    """Read current diagnostic metadata without treating it as a lock."""
+
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_LOCK_OWNER_BYTES + 1)
+        if len(raw) > MAX_LOCK_OWNER_BYTES:
+            return None
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != LOCK_OWNER_SCHEMA
+        or not all(isinstance(key, str) for key in value)
+    ):
+        return None
+    return value
 
 
 def require_mutation_ready(log_root: Path, *, entry_id: str | None = None) -> None:
@@ -136,6 +220,12 @@ def finish_guarded_publication(path: Path) -> None:
 
     path.unlink()
     _sync_directory(path.parent)
+
+
+def operation_lock_owner(path: Path) -> Mapping[str, object] | None:
+    """Read bounded owner metadata beside one canonical lock path."""
+
+    return _read_lock_owner(path.with_name(f"{path.name}.owner.json"))
 
 
 def _sync_directory(path: Path) -> None:

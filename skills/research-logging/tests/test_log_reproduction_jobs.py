@@ -273,6 +273,24 @@ class ReproductionJobTests(unittest.TestCase):
                     )
                     record["timestamps"] = expected["timestamps"]
                     record["workers"] = expected["surviving_workers"]
+                    record["checkpoints"] = [
+                        {
+                            "completed_at": (
+                                item["finished_at"]
+                                if item["state"] == "complete"
+                                else None
+                            ),
+                            "elapsed_seconds": item["elapsed_seconds"],
+                            "entry": item["entry"],
+                            "execution_id": item["execution_id"],
+                            "finished_at": item["finished_at"],
+                            "outputs": [],
+                            "path": "executions/example/checkpoint.json",
+                            "started_at": item["started_at"],
+                            "state": item["state"],
+                        }
+                        for item in expected["execution_timings"]
+                    ]
                     path = run_root / "run.json"
                     path.write_text(
                         json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -379,6 +397,49 @@ class ReproductionJobTests(unittest.TestCase):
 
         self.assertIn("failed", text)
         self.assertIn("Operational failure:", text)
+
+    def test_status_exposes_active_execution_timing_without_queued_work(self) -> None:
+        record = {
+            "checkpoints": [
+                {
+                    "completed_at": None,
+                    "elapsed_seconds": 12.5,
+                    "entry": "e003",
+                    "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                    "finished_at": None,
+                    "outputs": [],
+                    "path": "executions/example/checkpoint.json",
+                    "started_at": "2030-01-01T00:00:01Z",
+                    "state": "active",
+                }
+            ],
+            "include_all": False,
+            "progress": {
+                "artifact_outcomes": {},
+                "completed_executions": 0,
+                "total_executions": 2,
+            },
+            "run_id": "reproduce-20300101t000000z-fixture",
+            "state": {
+                "current_execution": "pyrun-exec/v1:" + "1" * 64,
+                "latest_execution_diagnostic": None,
+                "operational_failure": None,
+                "phase": "executing",
+                "status": None,
+            },
+            "summary": "docs/research.md",
+            "target": {"entry": "e003", "kind": "entry"},
+            "timestamps": {},
+            "workers": [],
+        }
+
+        status = _status_projection(record)
+
+        self.assertEqual(len(cast(list[object], status["execution_timings"])), 1)
+        self.assertIn(
+            "Active execution time: 12.5 seconds",
+            format_reproduction_status(status),
+        )
 
     def test_supervisor_publishes_artifact_failures_as_complete_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -764,6 +825,7 @@ def _status_fixture(name: str) -> dict[str, object]:
         },
         "completed_executions": 0,
         "current_execution": None,
+        "execution_timings": [],
         "include_all": False,
         "latest_execution_diagnostic": None,
         "operational_failure": None,
@@ -794,6 +856,18 @@ def _status_fixture(name: str) -> dict[str, object]:
         timestamps["updated_at"] = f"2030-01-01T00:00:{updated}Z"
     if name in {"executing", "comparing"}:
         value["current_execution"] = execution
+        value["execution_timings"] = [
+            {
+                "elapsed_seconds": 12.5,
+                "entry": "e003",
+                "execution_id": execution,
+                "finished_at": (
+                    "2030-01-01T00:00:02Z" if name == "comparing" else None
+                ),
+                "started_at": "2030-01-01T00:00:01Z",
+                "state": "complete" if name == "comparing" else "active",
+            }
+        ]
     if name in {"publishing", "complete"}:
         value["completed_executions"] = 1
         cast(dict[str, int], value["artifact_outcomes"])["matched"] = 1

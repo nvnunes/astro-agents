@@ -284,6 +284,10 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             self.assertEqual(attempt.checkpoint.state, "complete")
             self.assertIsNone(attempt.failure_code)
+            self.assertIsNotNone(attempt.checkpoint.started_at)
+            self.assertIsNotNone(attempt.checkpoint.finished_at)
+            self.assertIsNotNone(attempt.checkpoint.elapsed_seconds)
+            self.assertGreaterEqual(attempt.checkpoint.elapsed_seconds or -1, 0)
             self.assertEqual(fixture.output.read_bytes(), retained_before)
             copied = workspace.map_source(fixture.output)
             self.assertEqual(copied.read_text(), "SOURCE\n")
@@ -392,6 +396,26 @@ class ReproductionExecutionTests(unittest.TestCase):
                 )
 
             self.assertFalse(workspace.map_source(fixture.output).exists())
+            self.assertEqual(
+                list((workspace.run_root / "checkpoints").glob("*.json")), []
+            )
+
+    def test_failed_execution_records_terminal_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "raise SystemExit(7)\n")
+            attempt = execute_planned_recipe(
+                fixture.log,
+                fixture.plan,
+                fixture.planned,
+                fixture.workspace(),
+                ExecutionControl(confinement=_FixtureConfinement()),
+            )
+
+            self.assertEqual(attempt.failure_code, "execution_failed")
+            self.assertEqual(attempt.checkpoint.state, "partial")
+            self.assertIsNotNone(attempt.checkpoint.started_at)
+            self.assertIsNotNone(attempt.checkpoint.finished_at)
+            self.assertGreaterEqual(attempt.checkpoint.elapsed_seconds or -1, 0)
 
     def test_downstream_input_uses_regenerated_upstream_path(self) -> None:
         producer = (
@@ -584,6 +608,11 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             self.assertEqual(first.checkpoint.state, "complete")
             self.assertEqual(second.checkpoint.state, "complete")
+            self.assertEqual(second.checkpoint.started_at, first.checkpoint.started_at)
+            self.assertGreaterEqual(
+                second.checkpoint.elapsed_seconds or -1,
+                first.checkpoint.elapsed_seconds or 0,
+            )
             self.assertEqual(copied.read_text(), "continued\ncontinued\n")
 
     def test_stop_terminates_detached_descendant_and_keeps_partial_state(self) -> None:
@@ -616,6 +645,9 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertTrue(attempt.stopped)
             self.assertEqual(attempt.failure_code, "stop_requested")
             self.assertEqual(attempt.checkpoint.state, "partial")
+            self.assertIsNotNone(attempt.checkpoint.started_at)
+            self.assertIsNone(attempt.checkpoint.finished_at)
+            self.assertGreater(attempt.checkpoint.elapsed_seconds or 0, 0)
             self.assertGreaterEqual(len(attempt.workers), 2)
             self.assertTrue(all(worker.state == "exited" for worker in attempt.workers))
 

@@ -46,6 +46,9 @@ from .reproduction_contract import ReproductionPlan
 from .reproduction_paths import canonical_run_root
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
+TIMESTAMP_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z"
+)
 RUNNER_MARKER = "RESEARCH_LOG_REPRODUCTION_RUN_ID"
 MAX_WORKERS_PER_EXECUTION = 1_024
 MAX_WORKERS_PER_RUN = 4_096
@@ -115,14 +118,21 @@ class ExecutionCheckpoint:
     path: str
     completed_at: str | None
     outputs: tuple[Mapping[str, object], ...]
+    started_at: str | None = None
+    finished_at: str | None = None
+    elapsed_seconds: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
             "completed_at": self.completed_at,
+            "elapsed_seconds": self.elapsed_seconds,
+            "entry": self.entry,
             "execution_id": self.execution_id,
+            "finished_at": self.finished_at,
             "outputs": [dict(value) for value in self.outputs],
             "path": self.path,
             "state": self.state,
+            "started_at": self.started_at,
         }
 
 
@@ -404,22 +414,44 @@ def execute_planned_recipe(
     _preflight_output_paths(prepared.output_paths.values(), workspace.work_project)
     if not control.resume:
         _clear_outputs(prepared.output_paths.values())
-    active = _active_checkpoint(prepared, workspace)
-    _write_checkpoint(prepared.checkpoint, active)
+    prior = (
+        _load_checkpoint(workspace, prepared.entry, prepared.execution_id)
+        if control.resume
+        else None
+    )
+    prior_started_at = prior.started_at if prior is not None else None
+    prior_elapsed = prior.elapsed_seconds or 0.0 if prior is not None else 0.0
     backend = control.confinement or DarwinSeatbelt()
     confined = _confined_command(backend, prepared.command, plan, workspace)
-    outcome = _run_prepared(prepared, confined, workspace, control.stop_requested)
+    def launched(started_at: str) -> None:
+        _write_checkpoint(
+            prepared.checkpoint,
+            _active_checkpoint(
+                prepared,
+                workspace,
+                started_at=prior_started_at or started_at,
+                elapsed_seconds=prior_elapsed,
+            ),
+        )
+
+    outcome, launched_at, active_elapsed = _run_prepared(
+        prepared, confined, workspace, control.stop_requested, launched
+    )
     outputs = _observe_available_outputs(prepared.output_paths, prepared.execution)
     state, failure_code, failure_message = _attempt_state(
         outcome, len(outputs), len(prepared.output_paths)
     )
+    finished_at = None if outcome.stopped else _utc_now()
     checkpoint = ExecutionCheckpoint(
         prepared.entry,
         prepared.execution_id,
         state,
-        active.path,
-        _utc_now() if state == "complete" else None,
+        prepared.checkpoint.relative_to(workspace.run_root).as_posix(),
+        finished_at if state == "complete" else None,
         outputs,
+        prior_started_at or launched_at,
+        finished_at,
+        prior_elapsed + active_elapsed,
     )
     _write_checkpoint(prepared.checkpoint, checkpoint)
     return ExecutionAttempt(
@@ -486,7 +518,11 @@ def _prepare_execution(
 
 
 def _active_checkpoint(
-    prepared: _PreparedExecution, workspace: ReproductionWorkspace
+    prepared: _PreparedExecution,
+    workspace: ReproductionWorkspace,
+    *,
+    started_at: str,
+    elapsed_seconds: float,
 ) -> ExecutionCheckpoint:
     return ExecutionCheckpoint(
         prepared.entry,
@@ -495,6 +531,9 @@ def _active_checkpoint(
         prepared.checkpoint.relative_to(workspace.run_root).as_posix(),
         None,
         (),
+        started_at,
+        None,
+        elapsed_seconds,
     )
 
 
@@ -518,11 +557,15 @@ def _run_prepared(
     command: Sequence[str],
     workspace: ReproductionWorkspace,
     stop_requested: Callable[[], bool],
-) -> _ProcessOutcome:
+    on_launch: Callable[[str], None],
+) -> tuple[_ProcessOutcome, str, float]:
     registry = _WorkerRegistry(prepared.execution_id, workspace.run_id)
     try:
         with ExitStack() as stack:
             launched = _launch_process(prepared, command, stack)
+            started_at = _utc_now()
+            started_monotonic = time.monotonic()
+            on_launch(started_at)
             registry.register_root(launched.process.pid)
             outcome = _monitor_process(launched.process, registry, stop_requested)
             failure_code, failure_message = _finish_streams(
@@ -531,12 +574,16 @@ def _run_prepared(
     except BaseException:
         registry.stop_all()
         raise
-    return _ProcessOutcome(
-        outcome.returncode,
-        outcome.stopped,
-        failure_code,
-        failure_message,
-        registry.records(),
+    return (
+        _ProcessOutcome(
+            outcome.returncode,
+            outcome.stopped,
+            failure_code,
+            failure_message,
+            registry.records(),
+        ),
+        started_at,
+        max(0.0, time.monotonic() - started_monotonic),
     )
 
 
@@ -903,7 +950,17 @@ def _load_checkpoint(
         value = json.loads(raw)
     except (OSError, UnicodeError, ValueError) as error:
         raise ActionError("reproduction.checkpoint.invalid", str(error)) from error
-    fields = {"completed_at", "execution_id", "outputs", "path", "state"}
+    fields = {
+        "completed_at",
+        "elapsed_seconds",
+        "entry",
+        "execution_id",
+        "finished_at",
+        "outputs",
+        "path",
+        "started_at",
+        "state",
+    }
     if not isinstance(value, Mapping) or set(value) != fields:
         raise ActionError(
             "reproduction.checkpoint.invalid", "checkpoint fields are invalid"
@@ -913,7 +970,8 @@ def _load_checkpoint(
     outputs = value.get("outputs")
     expected_path = path.relative_to(workspace.run_root).as_posix()
     if (
-        value.get("execution_id") != execution_id
+        value.get("entry") != entry
+        or value.get("execution_id") != execution_id
         or value.get("path") != expected_path
         or state not in {"active", "complete", "partial"}
         or completed_at is not None
@@ -940,6 +998,7 @@ def _load_checkpoint(
         raise ActionError(
             "reproduction.checkpoint.invalid", "complete checkpoint has no timestamp"
         )
+    started_at, finished_at, elapsed_seconds = _checkpoint_timing(value, state)
     return ExecutionCheckpoint(
         entry,
         execution_id,
@@ -947,7 +1006,70 @@ def _load_checkpoint(
         expected_path,
         completed_at,
         tuple(decoded),
+        started_at,
+        finished_at,
+        float(elapsed_seconds) if elapsed_seconds is not None else None,
     )
+
+
+def _checkpoint_timing(
+    value: Mapping[str, object], state: object
+) -> tuple[str | None, str | None, float | int | None]:
+    """Decode one explicit attempt-timing projection."""
+
+    started_at = value.get("started_at")
+    finished_at = value.get("finished_at")
+    elapsed_seconds = value.get("elapsed_seconds")
+    if any(
+        item is not None
+        and (not isinstance(item, str) or TIMESTAMP_RE.fullmatch(item) is None)
+        for item in (value.get("completed_at"), started_at, finished_at)
+    ):
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "checkpoint timestamp is invalid"
+        )
+    if elapsed_seconds is not None and (
+        not isinstance(elapsed_seconds, (int, float))
+        or isinstance(elapsed_seconds, bool)
+        or elapsed_seconds < 0
+    ):
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "checkpoint elapsed time is invalid"
+        )
+    if started_at is None and (finished_at is not None or elapsed_seconds is not None):
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "unlaunched checkpoint has timing"
+        )
+    if started_at is not None and elapsed_seconds is None:
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "launched checkpoint has no elapsed time"
+        )
+    if state == "active" and finished_at is not None:
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "active checkpoint is finished"
+        )
+    if (
+        isinstance(started_at, str)
+        and isinstance(finished_at, str)
+        and finished_at < started_at
+    ):
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "checkpoint finishes before it starts"
+        )
+    completed_at = value.get("completed_at")
+    if state == "complete" and (finished_at is None or completed_at != finished_at):
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "complete checkpoint timing is invalid"
+        )
+    if state != "complete" and completed_at is not None:
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "incomplete checkpoint is completed"
+        )
+    if state == "partial" and finished_at is None and started_at is None:
+        raise ActionError(
+            "reproduction.checkpoint.invalid", "partial checkpoint was never launched"
+        )
+    return cast(str | None, started_at), cast(str | None, finished_at), elapsed_seconds
 
 
 def _checkpoint_outputs_current(

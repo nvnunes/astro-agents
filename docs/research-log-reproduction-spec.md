@@ -946,10 +946,15 @@ identities.
 Each worker item has exactly `worker_id`, `parent_worker_id`, `pid`,
 `execution_id`, `state`, `registered_at`, and `last_observed_at`.
 `parent_worker_id` and `execution_id` may be null where their relationship is
-not applicable. Each checkpoint item has exactly `execution_id`, `state`,
-`path`, `completed_at`, and `outputs`; `state` is `active`, `complete`, or
-`partial`, and fields unavailable in that state are null. Output entries use
-canonical output identities and observed fingerprints.
+not applicable. Each checkpoint item has exactly `entry`, `execution_id`,
+`state`, `path`, `completed_at`, `started_at`, `finished_at`,
+`elapsed_seconds`, and `outputs`; `state` is `active`, `complete`, or `partial`,
+and fields unavailable in that state are null. Output entries use canonical
+output identities and observed fingerprints. Timing begins at the first
+supervised child launch. Elapsed time uses a monotonic clock and accumulates
+only active supervised runtime. A stopped resumable attempt preserves its
+first `started_at`, has no `finished_at`, and adds its resumed active interval
+to `elapsed_seconds`.
 
 The run record therefore durably retains:
 
@@ -979,10 +984,14 @@ contract.
 Default status is concise human text. `--json` emits one deterministic
 `research-log-reproduction-status/2` object containing exactly `schema`,
 `run_id`, `summary`, `target`, `include_all`, `status`, `phase`,
-`current_execution`, `completed_executions`, `total_executions`,
+`current_execution`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
 `operational_failure`, and `surviving_workers`. The values are the
 corresponding strict projection of `run.json`.
+`execution_timings` contains only launched executions, in checkpoint order,
+with exactly `entry`, `execution_id`, `state`, `started_at`, `finished_at`, and
+`elapsed_seconds`. Planned-but-queued executions are absent, so status does not
+misrepresent queue time as execution time.
 `surviving_workers` is normally empty and, while stopping cleanup remains
 incomplete, contains the exact sorted worker records still observed alive.
 
@@ -1331,6 +1340,15 @@ The complete v1 reason vocabulary is `baseline_unavailable`,
         "comparison_failed": 0,
         "skipped": 0
       },
+      "executions": [
+        {
+          "entry": "e003",
+          "execution_id": "pyrun-exec/v1:...",
+          "started_at": "2030-01-01T00:00:01Z",
+          "finished_at": "2030-01-01T00:04:59Z",
+          "elapsed_seconds": 298.4
+        }
+      ],
       "folder": {
         "path": "tmp/reproduction/2030-01-01/reproduce-research-e003-reproduce-...",
         "availability": "available"
@@ -1368,7 +1386,11 @@ resource outside the project retains its canonical absolute POSIX identity so
 the result identifies the same resource as `data.json`; noncanonical absolute
 forms remain invalid.
 
-Every run item has exactly the fields shown. Its target follows the run-state
+Every run item has exactly the fields shown. Its `executions` array records one
+explicit timing projection for each launched attempt in accepted execution
+order. Planned work that never launched has no timing item. Timing is
+diagnostic only: it does not affect identity, currentness, selection,
+comparison, or confirmation. Its target follows the run-state
 target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is
 read through status and is added to the published index only when a lifecycle
 event safely publishes it. `finished_at` is null for a resumable stopped run.

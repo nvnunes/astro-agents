@@ -209,6 +209,7 @@ class RunResult:
     finished_at: str | None
     artifact_outcomes: Mapping[str, int]
     folder: RunFolder
+    executions: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         _run_id(self.run_id)
@@ -229,6 +230,7 @@ class RunResult:
         if finished is not None and finished < accepted:
             raise ReproductionResultError("run finished_at precedes accepted_at")
         _counts(self.artifact_outcomes)
+        _execution_timings(self.executions)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -237,6 +239,7 @@ class RunResult:
             "finished_at": self.finished_at,
             "folder": self.folder.as_dict(),
             "include_all": self.include_all,
+            "executions": [dict(value) for value in self.executions],
             "run_id": self.run_id,
             "status": self.status,
             "target": dict(self.target),
@@ -724,6 +727,7 @@ def _decode_run(value: object, index: int) -> RunResult:
         "finished_at",
         "folder",
         "include_all",
+        "executions",
         "run_id",
         "status",
         "target",
@@ -733,6 +737,7 @@ def _decode_run(value: object, index: int) -> RunResult:
     target = _target(item["target"])
     counts = _counts(item["artifact_outcomes"])
     folder = _folder(item["folder"])
+    executions = _execution_timings(item["executions"])
     include_all = item["include_all"]
     if not isinstance(include_all, bool):
         raise ReproductionResultError("run include_all must be boolean")
@@ -753,7 +758,61 @@ def _decode_run(value: object, index: int) -> RunResult:
         cast(str | None, finished),
         counts,
         folder,
+        executions,
     )
+
+
+def _execution_timings(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > 2_048:
+        raise ReproductionResultError("run executions are invalid")
+    decoded: list[Mapping[str, object]] = []
+    identities: set[tuple[str, str]] = set()
+    for index, raw in enumerate(value):
+        item = _mapping(raw, f"run.executions[{index}]")
+        if set(item) != {
+            "elapsed_seconds",
+            "entry",
+            "execution_id",
+            "finished_at",
+            "started_at",
+        }:
+            raise ReproductionResultError("run execution timing fields are invalid")
+        entry = _entry(item["entry"], f"run.executions[{index}].entry")
+        identity = item["execution_id"]
+        if (
+            not isinstance(identity, str)
+            or PYRUN_EXECUTION_RE.fullmatch(identity) is None
+        ):
+            raise ReproductionResultError("run execution ID is invalid")
+        started = _timestamp(item["started_at"], f"run.executions[{index}].started_at")
+        finished = item["finished_at"]
+        if finished is not None:
+            finished = _timestamp(finished, f"run.executions[{index}].finished_at")
+            if finished < started:
+                raise ReproductionResultError(
+                    "run execution finished before it started"
+                )
+        elapsed = item["elapsed_seconds"]
+        if (
+            not isinstance(elapsed, (int, float))
+            or isinstance(elapsed, bool)
+            or elapsed < 0
+        ):
+            raise ReproductionResultError("run execution elapsed time is invalid")
+        key = (entry, identity)
+        if key in identities:
+            raise ReproductionResultError("run execution timing is duplicated")
+        identities.add(key)
+        decoded.append(
+            {
+                "elapsed_seconds": float(elapsed),
+                "entry": entry,
+                "execution_id": identity,
+                "finished_at": finished,
+                "started_at": started,
+            }
+        )
+    return tuple(decoded)
 
 
 def _validate_results(results: ReproductionResults) -> None:
@@ -972,6 +1031,7 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
         run.finished_at,
         run.artifact_outcomes,
         RunFolder(run.folder.path, availability),
+        run.executions,
     )
 
 

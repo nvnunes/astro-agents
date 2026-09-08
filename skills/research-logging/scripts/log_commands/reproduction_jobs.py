@@ -161,6 +161,22 @@ def format_reproduction_status(status: Mapping[str, object]) -> str:
     current = status.get("current_execution")
     if current is not None:
         lines.append(f"Current execution: {current}")
+        timings = status.get("execution_timings")
+        if isinstance(timings, Sequence):
+            active = next(
+                (
+                    item
+                    for item in timings
+                    if isinstance(item, Mapping)
+                    and item.get("execution_id") == current
+                    and item.get("state") == "active"
+                ),
+                None,
+            )
+            if active is not None:
+                lines.append(
+                    f"Active execution time: {active['elapsed_seconds']} seconds"
+                )
     operational = status.get("operational_failure")
     if isinstance(operational, Mapping):
         lines.append(
@@ -904,10 +920,23 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
     state = cast(Mapping[str, object], record["state"])
     progress = cast(Mapping[str, object], record["progress"])
     workers = cast(Sequence[Mapping[str, object]], record["workers"])
+    checkpoints = cast(Sequence[Mapping[str, object]], record["checkpoints"])
     return {
         "artifact_outcomes": progress["artifact_outcomes"],
         "completed_executions": progress["completed_executions"],
         "current_execution": state["current_execution"],
+        "execution_timings": [
+            {
+                "elapsed_seconds": item["elapsed_seconds"],
+                "entry": item["entry"],
+                "execution_id": item["execution_id"],
+                "finished_at": item["finished_at"],
+                "started_at": item["started_at"],
+                "state": item["state"],
+            }
+            for item in checkpoints
+            if item["started_at"] is not None
+        ],
         "include_all": record["include_all"],
         "latest_execution_diagnostic": state["latest_execution_diagnostic"],
         "operational_failure": state["operational_failure"],
@@ -1157,9 +1186,68 @@ def _validate_workers(value: object) -> None:
 def _validate_checkpoints(value: object) -> None:
     if not isinstance(value, list) or len(value) > 100_000:
         raise ActionError("reproduction.run.invalid", "checkpoint list is invalid")
-    fields = {"completed_at", "execution_id", "outputs", "path", "state"}
+    fields = {
+        "completed_at",
+        "elapsed_seconds",
+        "entry",
+        "execution_id",
+        "finished_at",
+        "outputs",
+        "path",
+        "started_at",
+        "state",
+    }
     if any(not isinstance(item, Mapping) or set(item) != fields for item in value):
         raise ActionError("reproduction.run.invalid", "checkpoint record is invalid")
+    timestamp_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    for item in cast(Sequence[Mapping[str, object]], value):
+        state = item["state"]
+        started_at = item["started_at"]
+        finished_at = item["finished_at"]
+        completed_at = item["completed_at"]
+        elapsed_seconds = item["elapsed_seconds"]
+        if (
+            not isinstance(item["entry"], str)
+            or not isinstance(item["execution_id"], str)
+            or not isinstance(item["path"], str)
+            or state not in {"active", "complete", "partial"}
+            or not isinstance(item["outputs"], list)
+            or any(
+                timestamp is not None
+                and (
+                    not isinstance(timestamp, str)
+                    or timestamp_re.fullmatch(timestamp) is None
+                )
+                for timestamp in (started_at, finished_at, completed_at)
+            )
+            or elapsed_seconds is not None
+            and (
+                not isinstance(elapsed_seconds, (int, float))
+                or isinstance(elapsed_seconds, bool)
+                or elapsed_seconds < 0
+            )
+        ):
+            raise ActionError(
+                "reproduction.run.invalid", "checkpoint record is invalid"
+            )
+        if (
+            started_at is None
+            and (finished_at is not None or elapsed_seconds is not None)
+            or started_at is not None
+            and elapsed_seconds is None
+            or state == "active"
+            and finished_at is not None
+            or isinstance(started_at, str)
+            and isinstance(finished_at, str)
+            and finished_at < started_at
+            or state == "complete"
+            and (finished_at is None or completed_at != finished_at)
+            or state != "complete"
+            and completed_at is not None
+        ):
+            raise ActionError(
+                "reproduction.run.invalid", "checkpoint timing is invalid"
+            )
 
 
 def _nonnegative_int(value: object) -> bool:

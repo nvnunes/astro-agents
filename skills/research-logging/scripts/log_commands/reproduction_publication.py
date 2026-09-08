@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -276,6 +277,44 @@ def _run_result(
         request.finished_at,
         {outcome: counts[outcome] for outcome in OUTCOMES},
         RunFolder(folder, "available"),
+        _execution_timings(plan, request.run_folder),
+    )
+
+
+def _execution_timings(
+    plan: ReproductionPlan, run_root: Path
+) -> tuple[Mapping[str, object], ...]:
+    """Project explicit launched-attempt timing in accepted execution order."""
+
+    observed: dict[tuple[str, str], Mapping[str, object]] = {}
+    for path in sorted((run_root / "checkpoints").glob("*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ActionError("reproduction.publication.invalid", str(error)) from error
+        if not isinstance(value, Mapping) or value.get("started_at") is None:
+            continue
+        entry = value.get("entry")
+        identity = value.get("execution_id")
+        if not isinstance(entry, str) or not isinstance(identity, str):
+            raise ActionError(
+                "reproduction.publication.invalid",
+                "checkpoint timing identity is invalid",
+            )
+        observed[(entry, identity)] = {
+            "elapsed_seconds": value.get("elapsed_seconds"),
+            "entry": entry,
+            "execution_id": identity,
+            "finished_at": value.get("finished_at"),
+            "started_at": value.get("started_at"),
+        }
+    return tuple(
+        observed[key]
+        for planned in sorted(
+            plan.executions, key=lambda item: cast(int, item["order"])
+        )
+        for key in ((str(planned["entry"]), str(planned["execution_id"])),)
+        if key in observed
     )
 
 

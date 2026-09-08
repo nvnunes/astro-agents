@@ -20,9 +20,11 @@ from `skills/technical-writing/references/base.md`.
 - Use bullets for discrete requirements, outputs, and checks, numbered lists for ordered actions, and paragraphs for explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
 - State each requirement once. Place evidence collection, validation, and documentation at the steps that produce or need them.
-- Link consequential decisions to known downstream phase/Part/task consumers.
-  Maintain those links as the plan develops or moves, so later reconciliation
-  stays bounded. Do not build a separate dependency registry.
+- Link consequential decisions to downstream consumers only when execution needs
+  information beyond the standard project guidance or state available at that time.
+  Sequence and implementation history alone do not justify links or handoff
+  artifacts. Maintain necessary links as the plan changes; do not build a
+  separate dependency registry.
 - Mark unresolved choices beside the work they affect; link to planning notes for the discussion. Distinguish choices that block progress from details that can be resolved during implementation.
 
 ## Execution Detail

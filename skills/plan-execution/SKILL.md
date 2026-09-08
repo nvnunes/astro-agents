@@ -17,7 +17,8 @@ redesign to `$plan-writing`.
 
 Load only applicable references:
 
-- `references/continuation.md`: resume, notes/history, and downstream decisions.
+- `references/continuation.md`: starting a Part or checkpoint, resuming work,
+  notes/history, and downstream decisions.
 - `references/verification.md`: checks and human review/commit checkpoints.
 - `references/operations.md`: expensive processing, running operations, or
   repeated inspection.

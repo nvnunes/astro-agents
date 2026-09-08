@@ -51,19 +51,24 @@ definition mode, not Repair.
 
 ## Apply The Correction
 
-- For each authorized chain: retrieve it once with `findings batch`; inspect
-  only its needed current records; when the correction requires choosing a good
-  provenance shape, load `references/provenance-patterns.md` and then only the
-  matching card; state the proposed correction; apply it through the owning
-  command or permitted edit; run `validate-batch`; report the outcome; then
-  continue to another independent authorized chain. Pause only when requested
-  or when a research-owned decision remains. Unrelated Repair does not load the
-  catalog.
-- Treat a shared cause inferred from several findings as a tentative campaign
-  hypothesis, not as authority to edit every match. Change one entry or command
-  chain at a time, confirm the local postcondition, and revise the hypothesis
-  when a case does not fit. Continue independent cases after a skipped or
-  blocked case.
+For each authorized chain:
+
+1. Retrieve it once with `findings batch` and inspect only needed current records.
+2. If choosing a provenance shape, read `references/provenance-patterns.md`
+   and only the matching card. Otherwise, skip the catalog.
+3. Apply the correction through the owning command or permitted edit.
+4. Run `validate-batch` and record the outcome.
+5. Continue to another independent authorized chain. Pause only when requested
+   or when a research-owned decision remains.
+
+- Group batches by likely shared cause. Explain a representative correction
+  and its safety conditions; reuse that understanding for subsequent cases.
+  Check each case against those conditions; investigate and explain material
+  differences instead of repeating the full diagnosis. Keep mutations and
+  postcondition checks bounded to one entry or chain at a time.
+  Continue independent cases after a skipped or blocked case.
+- Record repeated cases as target, outcome, and exception. Group user-facing
+  updates at campaign milestones; preserve required approval stops.
 - Preserve presented evidence, evidence tolerances, and scientific meaning.
   Skip any case whose correction would require changing presented evidence or
   choosing new scientific content, and report it for researcher direction.
@@ -97,8 +102,18 @@ definition mode, not Repair.
   identified as belonging to the interrupted research-owned transaction.
 - Stop the affected case on a failed correction command. Retry only after a
   revised, evidence-backed hypothesis; do not repeat the same mutation, edit
-  around a precondition, or widen the repair. Keep a compact current note for a
-  multi-case campaign so completed, skipped, and remaining chains stay clear.
+  around a precondition, or widen the repair.
+
+## Campaign Records
+
+For planned campaigns, use `$plan-execution` for continuation. For standalone
+campaigns, keep `repair-<campaign>-current.md` and `repair-<campaign>-history.md`
+in the project's temporary-work location. Create the note at campaign start
+and append-only history with the first outcome. At completion, save remaining
+outcomes to history and delete the current note.
+
+Keep the active batch, next action, and blockers in the current note. Record
+completed/skipped batches once in history with outcomes and evidence links.
 
 ## Boundaries
 
@@ -106,8 +121,7 @@ definition mode, not Repair.
   or researcher decisions unless the explicit repair request supplies the
   intended replacement.
 - Do not fix unrelated validation or review findings.
-- Do not edit generated validation files. Repair may read them before the
-  correction; only Validate may replace them afterward.
+- Never edit generated validation files; only Validate may replace them.
 - Do not infer Replace authorization. If the correction would remove
   superseded experimental work, stop and request explicit Replace authority.
 - Do not reorganize document or entry boundaries unless the researcher also
@@ -128,6 +142,14 @@ chain membership. If the result is `incomplete`, report the precise reason and
 do not claim the batch cleared. For malformed state, transaction residue, or
 another defect that has no projection, use the owning bounded decoder or
 command postcondition instead and do not claim `complete_clear`.
+
+Save batch query and validation responses before summarizing. Inspect saved
+responses for more detail; never rerun commands just to display different fields.
+
+Repeat validation only after repairs, relevant state changes, or fixing an
+incomplete check's cause. Otherwise reuse applicable evidence. For joined or
+overlapping chains, check returned membership and coverage before reusing
+results; assess uncovered work separately.
 
 Run full `log validate --path <log>` only when the researcher separately asks
 for validation. Report unrelated remaining findings without correcting them.

@@ -2,40 +2,48 @@
 
 ## Current Note And History
 
-When useful state must survive sessions or compaction, keep one current note
-for the active Part, falling back to the phase or whole plan when needed.
-Keep one append-only history per phase, or per plan if it has no phases.
-Small tasks need no extra files. Use the project's temporary-work
-location, resolve symlinks, and follow existing naming conventions. Defaults
-beside sharded phases: `phase-NN-part-ID-current.md` and `phase-NN-history.md`.
-Link the current note from the owning plan section or phase document.
+Create a current note when starting a Part or execution checkpoint; for smaller
+work, create it before pausing unfinished work. Start history with the first
+outcome worth retaining under the criteria below.
 
-Keep only actionable state in the note:
+- **Current note:** one per active Part, or per grouped checkpoint spanning
+  Parts. Use the phase or whole plan only when it has no Parts or checkpoints.
+- **History:** one append-only file per phase, or per plan without phases.
 
-- owned changes, next action, and unresolved findings;
-- essential tools, exact paths, working directory/environment, non-obvious
-  procedures, and working commands;
-- verification evidence and the state it covers;
-- active operation handles and direct history references.
+Place both files beside the plan, or its phase document for sharded plans.
+Default names:
+`phase-NN-part-ID-current.md` and `phase-NN-history.md`.
 
-Update at meaningful checkpoints. Append short action/outcome records and
-artifact links to history under stable unique headings, such as
-`Part 2.B — Entry 004`. Append corrections; do not rewrite referenced entries.
-Leave unsupported past state unknown rather than deriving it from current state.
+## Maintain The Files
 
-On resume, read the current note first and retrieve only needed history
-entries. Check current state where it could have changed. Avoid full-history
-summaries and transcript duplication.
+Start the current note with the next action and blockers. Keep only what
+continuation needs: owned work, essential tools, paths, environment and
+procedures, applicable check results, and active operation handles. Update
+materially changed information; remove details no longer needed.
 
-## Finish A Part
+History, not the plan, records execution outcomes: decision rationale,
+completed work, checks, and evidence needed to recover from failed approaches.
+Link details; omit command narration. Group routine outcomes under stable,
+descriptive headings such as `Part 2.B — Entry 004 — Interface approved`.
+Append corrections; never rewrite entries. Link an outcome from the current
+note only when upcoming work needs it; state why instead of repeating details.
 
-After the applicable completion checkpoint:
+## Read Continuation State
 
-1. Carry still-needed state into the next Part note, if needed.
-2. Append remaining useful content from the old note to phase history.
-3. Verify the writes, repair links, and delete the old note.
+Continue from the current note and active plan section. Do not read history
+by default. Open it only to resolve a specific missing fact blocking the next
+action. Follow an entry link or search for that fact; read only the matching entry.
+Never load the whole history or arbitrary tails for orientation. Verify state
+that may have changed; leave missing past evidence unknown.
 
-The final Part needs no successor note.
+## Finish A Part Or Grouped Checkpoint
+
+1. Mark completion in the existing progress record. In sharded plans, update
+   Part status in the phase document and changed phase status in the main
+   plan's top table.
+2. Save still-needed state in the next current note, if work remains.
+3. Append remaining outcomes meeting the history criteria above, without duplication.
+4. After saving that content, delete the completed note; do not archive it.
 
 ## Changed Decisions
 

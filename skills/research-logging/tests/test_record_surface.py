@@ -232,9 +232,9 @@ class RecordSurfaceTests(unittest.TestCase):
         repair = reference("operation-repair.md")
         self.assertIn("references/provenance-patterns.md", record)
         self.assertIn("references/provenance-patterns.md", data)
-        self.assertIn("when the correction requires choosing a good", repair)
+        self.assertIn("If choosing a provenance shape", repair)
         self.assertIn("references/provenance-patterns.md", repair)
-        self.assertIn("Unrelated Repair does not load the\n  catalog", repair)
+        self.assertIn("Otherwise, skip the catalog", repair)
 
     def test_log_local_code_guidance_stays_in_script_reference(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -360,7 +360,7 @@ class RecordSurfaceTests(unittest.TestCase):
             "without polling or broadening scope",
         ):
             self.assertIn(phrase, cases)
-        self.assertIn("one entry or command\n  chain at a time", repair)
+        self.assertIn("one entry or chain at a time", " ".join(repair.split()))
         self.assertIn("Skip any case whose correction would require", repair)
 
     def test_record_sequences_separately_requested_validation(self) -> None:

@@ -124,6 +124,25 @@ class _RunStateContext:
     run_id: str
 
 
+@dataclass(frozen=True)
+class ReproductionLaunch:
+    """One accepted run ID or one terminal no-work reconciliation."""
+
+    run_id: str | None = None
+    summary: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.run_id is None) == (self.summary is None):
+            raise ValueError("reproduction launch needs exactly one result")
+
+    def render(self) -> str:
+        """Return the complete CLI-owned launch output."""
+
+        if self.run_id is not None:
+            return f"{self.run_id}\n"
+        return cast(str, self.summary)
+
+
 _RUN_STATE_THREAD_LOCK = threading.Lock()
 
 
@@ -134,8 +153,8 @@ def launch_reproduction(
     include_all: bool,
     jobs: int = 1,
     recheck: bool = False,
-) -> str:
-    """Accept one immutable plan and hand its scope lock to a supervisor."""
+) -> ReproductionLaunch:
+    """Return a no-work summary or hand an accepted plan to a supervisor."""
 
     selected = resolve_entry(log, entry) if entry is not None else None
     plan = plan_reproduction(
@@ -145,10 +164,15 @@ def launch_reproduction(
         jobs=jobs,
         selection_policy=RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION,
     )
-    if not plan.executions and plan.failures:
-        raise ActionError(
-            "reproduction.no_runnable_work",
-            "validation or dependency blockers excluded all selected work",
+    if not plan.executions:
+        from .reproduction_queries import reproduction_reconciliation_text
+
+        return ReproductionLaunch(
+            summary=reproduction_reconciliation_text(
+                log,
+                plan,
+                generated_at=_utc_now(),
+            )
         )
     project = resolve_project_root(log.root)
     _require_no_active_legacy_run(project)
@@ -174,7 +198,7 @@ def launch_reproduction(
         _close_fds(lock_fds)
         raise
     _close_fds(lock_fds)
-    return run_id
+    return ReproductionLaunch(run_id=run_id)
 
 
 def dry_run_reproduction(

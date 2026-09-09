@@ -7,7 +7,6 @@ import hashlib
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
@@ -53,6 +52,7 @@ from .context import (
 from .model import ActionError
 from .reproduction_contract import (
     LEGACY_SOURCE_SNAPSHOT_SCHEMA,
+    PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
     PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
     SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
@@ -160,6 +160,8 @@ class _PlanningState:
     excluded_batches: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=dict
     )
+    command_digests: dict[ExecutionKey, str] = field(default_factory=dict)
+    command_selections: dict[ExecutionKey, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -172,6 +174,7 @@ class ReproductionStateProjection:
     comparison_definitions: Mapping[tuple[str, str], str | None] = field(
         default_factory=dict
     )
+    reachable_commands: frozenset[ExecutionKey] = frozenset()
 
 
 @dataclass
@@ -247,6 +250,7 @@ class _ReachabilityProjector:
             self.output_executions,
             self.last_runs,
             self.comparison_definitions,
+            frozenset(self.visited),
         )
 
 
@@ -292,8 +296,8 @@ def plan_reproduction(
     if batch_projection is not None:
         _apply_validation_admission(state, batch_projection)
     _apply_cycle_and_dependency_failures(state)
-    prior = _load_prior_results(log)
-    ordered = _select_and_order(state, prior)
+    prior_commands = _load_prior_results(log)
+    ordered = _select_and_order(state, prior_commands)
     plan = _project_plan(
         state,
         ordered,
@@ -682,9 +686,7 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
     )
     failures: list[tuple[str, str]] = []
     script_identity = script.resolve().as_posix()
-    failure = _material_failure(
-        script, "file", execution.observed.script, "script"
-    )
+    failure = _material_failure(script, "file", execution.observed.script, "script")
     if failure is None:
         _retain_material(
             state,
@@ -801,7 +803,11 @@ def _verified_boundary(
                 if request.consumer is not None
                 else "boundary_changed"
             ),
-            (request.resource.canonical_target,),
+            (
+                request.resource.canonical_target,
+                f"expected={request.resource.fingerprint.content_identity}",
+                f"observed={observed.content_identity}",
+            ),
         )
         return
     _boundary(state, request)
@@ -968,9 +974,12 @@ def _validate_projected_admission(projection: Mapping[str, object]) -> None:
             effect = _finding_effect(finding)
             entries = _string_items(finding.get("affected_entries"))
             chains = _string_items(finding.get("affected_chains"))
-            if effect == "chain" or chains or (
-                effect == "entry" and len(entries) != 1
-            ) or (effect in {"none", "log"} and entries):
+            if (
+                effect == "chain"
+                or chains
+                or (effect == "entry" and len(entries) != 1)
+                or (effect in {"none", "log"} and entries)
+            ):
                 raise ActionError(
                     "reproduction.validation.scope_unresolved",
                     "validation finding has inconsistent admission ownership",
@@ -1180,18 +1189,35 @@ def _string_items(value: object) -> tuple[str, ...]:
 
 def _select_and_order(
     state: _PlanningState,
-    prior: Mapping[tuple[str, str], Mapping[str, object]],
+    prior: Mapping[ExecutionKey, Mapping[str, object]],
 ) -> tuple[ExecutionKey, ...]:
+    state.command_digests = {
+        key: _command_source_digest(state, key) for key in sorted(state.selected)
+    }
     runnable = set(state.selected) - state.blocked
     needs_run = _initial_work(state, prior, runnable)
     _propagate_required_work(state, runnable, needs_run)
-    _project_current_cases(state, runnable - needs_run)
+    reused = (
+        {
+            key
+            for key in state.selected
+            if key not in needs_run
+            and _command_result_current(prior.get(key), state.command_digests[key])
+        }
+        if state.selection_policy == INCREMENTAL_SELECTION
+        else set()
+    )
+    state.command_selections = {
+        key: ("run" if key in needs_run else "reuse" if key in reused else "blocked")
+        for key in state.selected
+    }
+    _project_current_cases(state, reused)
     return _topological_order(state, needs_run)
 
 
 def _initial_work(
     state: _PlanningState,
-    prior: Mapping[tuple[str, str], Mapping[str, object]],
+    prior: Mapping[ExecutionKey, Mapping[str, object]],
     runnable: set[ExecutionKey],
 ) -> set[ExecutionKey]:
     """Select runnable executions under the active work-selection policy."""
@@ -1199,18 +1225,11 @@ def _initial_work(
     if state.selection_policy == RECHECK_SELECTION:
         return set(runnable)
 
-    needs_run: set[ExecutionKey] = set()
-    for key in runnable:
-        owner = state.selected[key]
-        if not owner.execution.confirmed:
-            needs_run.add(key)
-            continue
-        for output, _ in owner.execution.recipe.outputs:
-            result = prior.get((owner.entry.context.id, output))
-            if not _result_current(result, owner, output, state.project_root):
-                needs_run.add(key)
-                break
-    return needs_run
+    return {
+        key
+        for key in runnable
+        if not _command_result_current(prior.get(key), state.command_digests[key])
+    }
 
 
 def _propagate_required_work(
@@ -1272,28 +1291,68 @@ def _topological_order(
     return tuple(order)
 
 
-def _result_current(
-    result: Mapping[str, object] | None,
-    owner: _Owner,
-    output: str,
-    project_root: Path,
+def _command_result_current(
+    result: Mapping[str, object] | None, source_digest: str
 ) -> bool:
-    if result is None or result.get("outcome") not in {"matched", "changed"}:
-        return False
-    recorded = result.get("recorded_at")
-    if not isinstance(recorded, str):
-        return False
-    if owner.execution.last_run_at is not None and _timestamp(recorded) < _timestamp(
-        owner.execution.last_run_at
-    ):
-        return False
-    comparison = result.get("comparison")
-    recorded_definition = (
-        comparison.get("evidence_definition")
-        if isinstance(comparison, Mapping)
-        else None
+    """Return whether one prior terminal command result has the same closure."""
+
+    return (
+        result is not None
+        and result.get("disposition") in {"succeeded", "failed", "blocked"}
+        and result.get("source_digest") == source_digest
     )
-    return recorded_definition == _comparison_identity(owner, output, project_root)
+
+
+def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
+    """Hash every current source component owned by one command."""
+
+    owner = state.selected[key]
+    outputs = []
+    for output, _kind in owner.execution.recipe.outputs:
+        case = state.cases[(owner.entry.context.id, output)]
+        reason = case.get("reason")
+        failure = (
+            state.failures.get((owner.entry.context.id, output, str(reason)))
+            if isinstance(reason, str)
+            else None
+        )
+        outputs.append(
+            {
+                "artifact": output,
+                "comparison_definition": _comparison_identity(
+                    owner, output, state.project_root
+                ),
+                "planning_disposition": case["disposition"],
+                "planning_failure_dependencies": (
+                    list(_string_items(failure.get("dependencies")))
+                    if failure is not None
+                    else []
+                ),
+                "planning_reason": reason,
+            }
+        )
+    materials = sorted(
+        (
+            dict(value)
+            for material_key, value in state.materials.items()
+            if key in state.material_owners[material_key]
+        ),
+        key=lambda value: (str(value["role"]), str(value["identity"])),
+    )
+    return canonical_record_digest(
+        {
+            "contract": "research-log-reproduction-command-source/1",
+            "dependencies": [
+                _reference(value)
+                for value in sorted(state.dependencies.get(key, set()))
+            ],
+            "entry": owner.entry.context.id,
+            "execution": canonical_execution_source_digest(owner.execution.as_dict()),
+            "execution_id": owner.execution_id,
+            "materials": materials,
+            "outputs": outputs,
+        }
+    )
 
 
 def _project_plan(
@@ -1333,9 +1392,7 @@ def _project_plan(
     runnable = set(state.selected) - state.blocked
     execution_snapshot = [
         {
-            "digest": canonical_execution_source_digest(
-                owner.execution.as_dict()
-            ),
+            "digest": canonical_execution_source_digest(owner.execution.as_dict()),
             "entry": owner.entry.context.id,
             "execution_id": identity,
         }
@@ -1353,6 +1410,16 @@ def _project_plan(
     )
     snapshot = source_snapshot(
         authority_files=authority_files,
+        commands=[
+            {
+                "auto_reproduce": state.selected[key].execution.auto_reproduce,
+                "entry": key[0],
+                "execution_id": key[1],
+                "selection": state.command_selections[key],
+                "source_digest": state.command_digests[key],
+            }
+            for key in sorted(state.selected)
+        ],
         executions=execution_snapshot,
         materials=materials,
     )
@@ -1524,7 +1591,7 @@ def _admit_validation(
 
 def _load_prior_results(
     log: LogContext,
-) -> dict[tuple[str, str], Mapping[str, object]]:
+) -> dict[ExecutionKey, Mapping[str, object]]:
     from .reproduction_results import (
         ReproductionResultError,
         load_reproduction_results,
@@ -1537,10 +1604,7 @@ def _load_prior_results(
         value = load_reproduction_results(path)
     except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
-    result: dict[tuple[str, str], Mapping[str, object]] = {}
-    for item in value.artifacts:
-        result[(item.entry, item.artifact)] = item.as_dict()
-    return result
+    return {(item.entry, item.execution_id): item.as_dict() for item in value.commands}
 
 
 def _require_existing_locks_available(
@@ -1605,7 +1669,10 @@ def verify_reproduction_runtime_snapshot(
     }:
         verify_reproduction_snapshot(log, plan)
         return
-    if plan.source_snapshot.get("schema") != SOURCE_SNAPSHOT_SCHEMA:
+    if plan.source_snapshot.get("schema") not in {
+        PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
+        SOURCE_SNAPSHOT_SCHEMA,
+    }:
         raise ActionError("reproduction.source.invalid", "unknown source snapshot")
     project_root = resolve_project_root(log.root)
     _recheck_authority_files(plan, project_root)
@@ -1677,16 +1744,16 @@ def _recheck_executions(
                 project_root=project_root,
             )
         execution = loaded[entry_id].executions.get(identity)
-        encoded = (
-            execution.as_dict()
-            if execution is not None
-            else None
-        )
+        encoded = execution.as_dict() if execution is not None else None
         digest = (
             canonical_execution_source_digest(encoded)
             if encoded is not None
             and plan.source_snapshot.get("schema")
-            in {PRELOCAL_SOURCE_SNAPSHOT_SCHEMA, SOURCE_SNAPSHOT_SCHEMA}
+            in {
+                PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
+                PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
+                SOURCE_SNAPSHOT_SCHEMA,
+            }
             else canonical_record_digest(encoded)
             if encoded is not None
             else None
@@ -1860,10 +1927,6 @@ def _canonical_path(path: Path, project_root: Path) -> str:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _timestamp(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
 
 
 def _entry_order(value: str) -> int:

@@ -10,7 +10,8 @@ LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
 PLAN_SCHEMA = "research-log-reproduction-plan/3"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
+PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/5"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
 
@@ -64,9 +65,7 @@ class ReproductionPlan:
         return text
 
 
-def format_reproduction_plan_summary(
-    plan: ReproductionPlan, *, recheck: bool
-) -> str:
+def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -> str:
     """Return the bounded human projection of one valid dry-run plan."""
 
     entry_counts: dict[str, tuple[int, int]] = {}
@@ -136,6 +135,7 @@ def format_reproduction_plan_summary(
 def source_snapshot(
     *,
     authority_files: Sequence[Mapping[str, object]],
+    commands: Sequence[Mapping[str, object]] = (),
     executions: Sequence[Mapping[str, object]],
     materials: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
@@ -143,6 +143,7 @@ def source_snapshot(
 
     return {
         "authority_files": authority_files,
+        "commands": commands,
         "executions": executions,
         "materials": materials,
         "schema": SOURCE_SNAPSHOT_SCHEMA,

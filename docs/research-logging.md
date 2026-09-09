@@ -961,10 +961,13 @@ Preview one exact scope without writing anything:
 
 Launch it by omitting `--dry-run`. The command prints a durable run ID and
 returns immediately while the CLI-owned background job continues. By default,
-selection is incremental: already-current results satisfy their artifact
-cases. Add `--recheck` when you deliberately want every eligible execution in
-the selected evidence-relevant scope to run again, including executions whose
-results are current.
+selection is incremental: a command whose complete source closure and saved
+terminal disposition are unchanged is reused without execution. This applies
+to prior successes, failures, and blocks, so two unchanged incremental runs in
+a row select zero commands on the second run. A changed command selects only
+its affected downstream closure. Add `--recheck` when you deliberately want
+every currently runnable eligible execution in the selected evidence-relevant
+scope to run again. Recheck does not bypass a planning blocker.
 
 `--jobs` defaults to `1`. A larger accepted value bounds concurrent executions
 within the run; graph dependencies, overlapping read/write/run/runtime claims,
@@ -1019,13 +1022,20 @@ Confirmations remain valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.
 
-On completion, retrieve the compact centralized projection with
-`log reproduce report --path <log> --summary`. It keeps commands from the
-latest completed run separate from current artifact state and explains why
-their totals need not match. Its two trees show command selection and execution
-as one hierarchy, then artifact comparison and non-comparison reasons as a
-second hierarchy. Use `log reproduce report --root <project> --summary` for a
-compact two-table comparison across every discovered log.
+On completion, immediately retrieve and present the compact centralized
+projection with `log reproduce report --path <log> --summary`. It keeps commands
+from the latest completed run separate from current artifact state and explains
+why their totals need not match. Its two trees show command selection and
+execution as one hierarchy, then artifact comparison and non-comparison reasons
+as a second hierarchy. An unchanged incremental invocation instead returns the
+same summary shape directly, with its current reused count and zero selected
+commands; present it immediately because no new run exists. Use
+`log reproduce report --root <project> --summary` for a compact two-table
+comparison across every discovered log.
+
+Within the artifact tree, not-compared artifacts distinguish command failure,
+command blocking, comparison failure, and command skipping. Comparison failure
+is shown first and command skipping last.
 
 The generated `<log>/reproduction.md` and the complete
 `log reproduce report --path <log> [--entry <entry-id>]` projection list every

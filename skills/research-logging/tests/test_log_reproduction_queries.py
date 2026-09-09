@@ -11,10 +11,15 @@ from log_commands.context import LogContext
 from log_commands.dispatcher import main
 from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
-from log_commands.reproduction_planner import ReproductionStateProjection
+from log_commands.reproduction_jobs import ReproductionLaunch
+from log_commands.reproduction_planner import (
+    ReproductionCommandInventory,
+    ReproductionStateProjection,
+)
 from log_commands.reproduction_queries import (
     compose_root_reproduction_summary,
     list_reproduction_artifacts,
+    reproduction_reconciliation_text,
     reproduction_report,
     reproduction_summary,
     root_reproduction_summary,
@@ -31,6 +36,76 @@ from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
+    def test_no_work_reconciliation_counts_current_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            summary = root / "docs" / "research.md"
+            log_root = summary.with_suffix("")
+            reproduction = log_root / ".cache" / "reproduction"
+            reproduction.mkdir(parents=True)
+            summary.write_text("# Research\n", encoding="utf-8")
+            results = _results()
+            (reproduction / "results.json").write_text(
+                results.serialized(), encoding="utf-8"
+            )
+            commands = tuple(
+                {
+                    "auto_reproduce": True,
+                    "entry": "e003",
+                    "execution_id": "pyrun-exec/v1:" + str(number) * 64,
+                    "selection": "reuse",
+                    "source_digest": str(number) * 64,
+                }
+                for number in (1,)
+            )
+            plan = ReproductionPlan(
+                "docs/research.md",
+                {"entry": None, "kind": "log"},
+                False,
+                {},
+                source_snapshot(
+                    authority_files=(),
+                    commands=commands,
+                    executions=(),
+                    materials=(),
+                ),
+                (),
+                (),
+                (),
+                (),
+            )
+            artifact = results.artifacts[0]
+            state = ReproductionStateProjection(
+                frozenset({(artifact.entry, artifact.artifact)}),
+                {(artifact.entry, artifact.artifact): artifact.execution_id},
+                {(artifact.entry, artifact.execution_id): artifact.recorded_at},
+            )
+            with (
+                mock.patch(
+                    "log_commands.reproduction_queries.project_reproduction_state",
+                    return_value=state,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_queries."
+                    "project_reproduction_command_inventory",
+                    return_value=ReproductionCommandInventory(3, 1),
+                ),
+            ):
+                text = reproduction_reconciliation_text(
+                    LogContext(summary.resolve(), log_root.resolve()),
+                    plan,
+                    generated_at="2030-01-02T00:00:00Z",
+                )
+
+        self.assertIn(
+            "3 total\n"
+            "├─ 1 skipped by policy (not automatic)\n"
+            "├─ 2 reused from saved state\n"
+            "└─ 0 selected for execution",
+            text,
+        )
+
     def test_report_does_not_read_the_former_result_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -181,10 +256,10 @@ class ReproductionQueryTests(unittest.TestCase):
                     "matched": 0,
                     "not_matched": 1,
                     "not_compared": {
+                        "command_blocked": 0,
                         "command_failed": 0,
-                        "command_skipped_or_blocked": 0,
+                        "command_skipped": 0,
                         "comparison_failed": 0,
-                        "stale": 0,
                         "total": 0,
                     },
                     "total": 1,
@@ -197,10 +272,10 @@ class ReproductionQueryTests(unittest.TestCase):
                 "matched": 2,
                 "not_matched": 1,
                 "not_compared": {
+                    "command_blocked": 1,
                     "command_failed": 2,
-                    "command_skipped_or_blocked": 1,
+                    "command_skipped": 0,
                     "comparison_failed": 0,
-                    "stale": 0,
                     "total": 3,
                 },
                 "total": 6,
@@ -218,7 +293,7 @@ class ReproductionQueryTests(unittest.TestCase):
             },
             "generated_at": "2030-01-01T00:00:00Z",
             "run_id": "reproduce-20300101t000000z-fixture",
-            "schema": "research-log-reproduction-summary/1",
+            "schema": "research-log-reproduction-summary/2",
             "status": "complete",
             "summary": "docs/one.md",
         }
@@ -278,7 +353,7 @@ class ReproductionQueryTests(unittest.TestCase):
             mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
             mock.patch(
                 "log_commands.reproduction_queries.reproduction_summary",
-                return_value={"schema": "research-log-reproduction-summary/1"},
+                return_value={"schema": "research-log-reproduction-summary/2"},
             ),
             redirect_stdout(output),
         ):
@@ -297,7 +372,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(
             output.getvalue(),
-            '{"schema": "research-log-reproduction-summary/1"}\n',
+            '{"schema": "research-log-reproduction-summary/2"}\n',
         )
 
         output = StringIO()
@@ -350,7 +425,7 @@ class ReproductionQueryTests(unittest.TestCase):
             mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
             mock.patch(
                 "log_commands.reproduction_jobs.launch_reproduction",
-                return_value="reproduce-fixture",
+                return_value=ReproductionLaunch(run_id="reproduce-fixture"),
             ) as launch,
             redirect_stdout(output),
         ):
@@ -361,6 +436,22 @@ class ReproductionQueryTests(unittest.TestCase):
         launch.assert_called_once_with(
             log, entry=None, include_all=False, jobs=1, recheck=True
         )
+
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
+                "log_commands.reproduction_jobs.launch_reproduction",
+                return_value=ReproductionLaunch(
+                    summary="# Reproduction Summary\n\n3 total\n"
+                ),
+            ),
+            redirect_stdout(output),
+        ):
+            status = main(["reproduce", "--path", "/project/log"])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue(), "# Reproduction Summary\n\n3 total\n")
 
         rejected = (
             ["status", "--path", "/project/log", "--run-id", "run"],

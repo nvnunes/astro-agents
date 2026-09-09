@@ -75,9 +75,12 @@ negative-science-vs-research-log,science-writing,research-logging,false,negative
 negative-technical-vs-readme,technical-writing,readme-writing,false,negative,Rewrite this README.md introduction for new users
 explicit-plan-execution,plan-execution,plan-execution,true,explicit,Use $plan-execution to implement Phase 2 of this approved plan
 implicit-plan-execution,plan-execution,plan-execution,true,implicit,Implement Part 2.A of the existing implementation plan
-implicit-plan-resume,plan-execution,plan-execution,true,implicit,Resume the active Part of this plan from its continuation note
+implicit-plan-resume,plan-execution,plan-execution,true,implicit,Resume the active delegated Part from the plan repository state and latest relevant handoff
 implicit-plan-status,plan-execution,plan-execution,true,implicit,Mark this Part complete in the plan using its recorded passing checks
 implicit-plan-shard,plan-writing,plan-writing,true,implicit,Split the fully developed phases of this long plan into independently usable documents
+implicit-plan-delegation-design,plan-writing,plan-writing,true,implicit,Revise this plan to assign its large Phase 2 shard to a fresh sub-agent
+implicit-plan-delegated-execution,plan-execution,plan-execution,true,implicit,Execute this approved plan using only the sub-agent shard assignments it explicitly names
+implicit-plan-sharded-single-agent,plan-execution,plan-execution,true,implicit,Execute this sharded plan which contains no sub-agent opt-in
 implicit-plan-redesign,plan-writing,plan-writing,true,implicit,Redesign the remaining phases around the newly agreed storage contract
 negative-plan-writing-vs-execution,plan-writing,plan-execution,false,negative,Implement the next Part of this approved plan
 negative-plan-writing-vs-status,plan-writing,plan-execution,false,negative,Update only the plan status row using the recorded successful outcome

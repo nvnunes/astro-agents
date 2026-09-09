@@ -69,14 +69,14 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/3` |
-| Per-log summary | `research-log-reproduction-summary/1` |
-| Cross-log summary | `research-log-reproduction-root-summary/1` |
+| Reproduction result | `research-log-reproduction-result/4` |
+| Per-log summary | `research-log-reproduction-summary/2` |
+| Cross-log summary | `research-log-reproduction-root-summary/2` |
 | Durable run state | `research-log-reproduction-run/3` |
 | Run status projection | `research-log-reproduction-status/3` |
 | Dry-run plan | `research-log-reproduction-plan/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/4` |
+| Source snapshot | `research-log-reproduction-source-snapshot/5` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -179,6 +179,7 @@ also consume the ordinary file, path, and directory limits.
 | --- | ---: |
 | `.cache/reproduction/results.json` encoded bytes | 64 MiB |
 | Current artifact records | 10,000 |
+| Current command records | 10,000 |
 | Retained or availability-unknown run records | 10,000 |
 
 History pruning follows the filesystem-availability rules below. Reaching a
@@ -812,13 +813,26 @@ acceptance. The CLI must not prompt to widen it.
 
 ### Selection Policy
 
-Incremental selection is the default. It selects only new, unconfirmed,
-failed, stale, and dependency-affected eligible executions. A current result
-otherwise satisfies its artifact case without new execution work.
+Incremental selection is the default. Every evidence-relevant command has a
+source-closure digest. An unchanged prior terminal command result satisfies the
+command without new execution work whether its disposition was `succeeded`,
+`failed`, or `blocked`. A command is selected when it has no saved command
+result, its source closure changed, or selected upstream work can change an
+input it consumes. Selection propagates through only that command's reachable
+downstream closure; unrelated commands remain reusable.
 
-`--recheck` selects every eligible execution in the current evidence-relevant
+The source closure covers the canonical execution record after omitting only
+`confirmed`, including the recipe and environment; current script,
+participating-code, direct-input, dependency-output, retained-boundary, and
+comparison-baseline fingerprints; dependency identities; per-output comparison
+definition identities; and localized planning disposition, reason, and failure
+dependencies. It therefore represents the complete current reason that the
+saved terminal disposition remains applicable.
+
+`--recheck` selects every runnable execution in the current evidence-relevant
 closure under the chosen entry-or-log target and automatic-reproduction policy, including
-executions whose artifact results are already current. It preserves execution
+executions whose command results are already reusable. Commands that remain
+locally blocked are projected as blocked rather than executed. Recheck preserves execution
 grouping, dependency order, target boundaries, retained boundaries, and
 artifact-level result identity. It does not bypass validation admission,
 repair a graph failure, or make an otherwise ineligible case runnable.
@@ -828,11 +842,11 @@ alone stops at verified retained non-automatic boundaries. `--recheck
 --include-all` also selects non-automatic executions. Neither flag implies the
 other.
 
-Recheck is a launch-time planning input. The emitted plan records the exact
-selected cases and executions and is the durable authority for execution and
-resume. Plan, run, status, and cumulative-result JSON therefore gain no
-selection-policy field, schema version, or migration. Commands that consume an
-accepted run or only query published state do not accept `--recheck`.
+Recheck is a launch-time planning input. The emitted plan records each
+command's exact source digest and `run`, `reuse`, or `blocked` selection and is
+the durable authority for execution and resume. It requires no persistent
+selection-policy field. Commands that consume an accepted run or only query
+published state do not accept `--recheck`.
 
 ### Failures And Parallel Ordering
 
@@ -877,10 +891,11 @@ An input beneath a declared directory output depends on that directory's
 producer just as an exact file output does. If that producer fails, the
 consumer is skipped with `dependency_failed`; the missing regenerated member
 must not abort independent work in the run.
-Its default incremental policy selects all and only new, unconfirmed, failed,
-stale, and dependency-affected current cases required by the target. It must
-not infer a reduced plan from prior matches when a current dependency
-invalidates them.
+Its default incremental policy selects only commands without a matching saved
+source closure and the reachable downstream commands that those selections may
+affect. It must not infer command reuse from prior artifact matches, and it must
+not reuse downstream command state when selected upstream work can invalidate
+it.
 
 Graph node, edge, depth, execution, and projection limits are fixed and
 code-owned in [Fixed Resource Bounds](#fixed-resource-bounds). Exceeding a
@@ -950,10 +965,12 @@ file digests cover the exact completed result and batch projection;
 projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/4` and has exactly `schema`,
-`authority_files`, `executions`, and `materials`. `authority_files` records the
+`research-log-reproduction-source-snapshot/5` and has exactly `schema`,
+`authority_files`, `commands`, `executions`, and `materials`. `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
-for the plan. `executions` records each runnable execution ID and the SHA-256
+for the plan. `commands` records every evidence-relevant command's entry,
+execution ID, automatic policy, `run`, `reuse`, or `blocked` selection, and
+source-closure digest. `executions` records each runnable execution ID and the SHA-256
 digest of its canonical execution record after omitting only the mutable
 `confirmed` field. `materials` records every current script, participating code
 file, direct input, retained boundary, and comparison baseline required by
@@ -979,10 +996,21 @@ operational failure, not a stale preview.
 
 ### Launch And Identity
 
-Every non-dry launch creates one durable background job, persists its accepted
-scope and source snapshot, starts its supervisor, emits its run ID, and returns
-immediately. The job is independent of the invoking terminal and agent turn.
-There is no foreground mode.
+A non-dry launch with one or more selected executions creates one durable
+background job, persists its accepted scope and source snapshot, starts its
+supervisor, emits its run ID, and returns immediately. The job is independent
+of the invoking terminal and agent turn. There is no foreground mode.
+
+A non-dry launch with no selected executions is a successful no-op
+reconciliation. It creates no run ID, lock, run folder, worker, result write,
+or report write. Standard output is the standard per-log summary using the
+current plan's command partition: policy exclusions, reusable saved
+dispositions, and any blocked commands. Succeeded and failed
+are zero because no command ran. Current artifact state remains a separate
+tree. The latest completed run may be identified as historical context, but
+its command counts must not replace the current reconciliation. This terminal
+summary is returned immediately even when localized artifact planning failures
+are present.
 
 A run ID is an opaque, lowercase, filesystem-safe unique token produced by the
 CLI. It is immutable and names the durable state, output workspace, diagnostics,
@@ -1520,11 +1548,11 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/3`. It has exactly this shape:
+`research-log-reproduction-result/4`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/3",
+  "schema": "research-log-reproduction-result/4",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1542,6 +1570,16 @@ strict canonical UTF-8 JSON using
         "expected": {"algorithm": "sha256", "digest": "..."},
         "regenerated": {"algorithm": "sha256", "digest": "..."}
       }
+    }
+  ],
+  "commands": [
+    {
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:...",
+      "disposition": "succeeded",
+      "source_digest": "...",
+      "recorded_at": "2030-01-01T00:05:00Z",
+      "run_id": "reproduce-..."
     }
   ],
   "runs": [
@@ -1586,10 +1624,17 @@ strict canonical UTF-8 JSON using
 ```
 
 `summary` is the maintained summary path. `updated_at` is the latest successful
-artifact-result or run-index publication time. `artifacts` is sorted by
+result publication time. `artifacts` is sorted by
 canonical log entry order, then artifact path. The pair `(entry, artifact)` is
 unique. `runs` is sorted by descending accepted time, then run ID, and has one
 record per retained or availability-unknown run.
+
+`commands` is sorted by canonical log entry order, then execution ID. The pair
+`(entry, execution_id)` is unique. Each record stores the most recently
+published terminal `succeeded`, `failed`, or `blocked` disposition, the exact
+source-closure digest to which it applies, publication time, and publishing run
+ID. A changed artifact still belongs to a `succeeded` command because command
+completion and artifact matching are separate facts.
 
 Every artifact record has exactly `entry`, `artifact`, `execution_id`,
 `outcome`, `reason`, `recorded_at`, `run_id`, and `comparison`. `reason` is null
@@ -1624,13 +1669,15 @@ mutually exclusive categories:
 - `succeeded` is an attempted command that reached its complete mechanical
   endpoint, regardless of whether its artifacts matched;
 - `failed` is an attempted command that did not reach that endpoint; and
-- `blocked` is a selected command that was not attempted because another
-  selected command failed.
+- `blocked` is a command selected for the current reconciliation but not
+  attempted because of a localized planning blocker or another selected
+  command's failure.
 
 `total` is exactly the sum of those five values. Each target command is
 counted once even when it produces several artifacts. New publications always
-record the complete mapping. A row decoded from the read-only v2 result format
-uses null; rerunning reproduction publishes current command accounting in v3.
+record the complete mapping. A row decoded from the read-only v3 result format
+may already contain command accounting but has no reusable command records. The
+next successful reproduction seeds those records and publishes v4.
 
 The `executions` array records one explicit timing projection for each launched
 attempt in accepted execution order. Planned work that never launched has no
@@ -1648,8 +1695,8 @@ than persisting an `absent` value. Current artifact records retain their run ID
 after that historical run item is removed; run-directory retention is not a
 precondition for retaining the authoritative artifact outcome.
 
-Unknown fields, duplicate artifact pairs, duplicate run IDs, invalid ordering,
-or inconsistent counts fail decoding. The cardinality and byte limits in
+Unknown fields, duplicate artifact or command pairs, duplicate run IDs, invalid
+ordering, or inconsistent counts fail decoding. The cardinality and byte limits in
 [Fixed Resource Bounds](#fixed-resource-bounds) do not change this field
 grammar.
 
@@ -1663,7 +1710,9 @@ matching.
 Entry-level publication replaces only selected current cases and actually
 regenerated supporting outputs for that entry. It preserves unrelated entry
 and log cases and never claims log-level completion. Log-level publication
-reconciles the complete selected log closure.
+reconciles the complete selected log closure. The same publication replaces
+newly terminal command records, preserves reused command records, and prunes
+records no longer reachable from current execution state.
 
 A stopped run or an operational failure before final reproduction publication
 leaves the current artifact map unchanged. Confirmations already written for
@@ -1675,11 +1724,16 @@ outcomes.
 
 ### Currentness
 
-Every artifact result records `recorded_at`, the commit time of that result to
+Every artifact and command result records `recorded_at`, the commit time of that result to
 `.cache/reproduction/results.json`, regardless of outcome. A result is implicitly
 stale when the producing execution has a non-null `last_run_at` later than
 `recorded_at`. Recipe, script, code, input, validation, and dependency changes
 may also make a case ineligible or require new work under the graph contract.
+
+Incremental command currentness is exact digest equality between the saved
+command record and the newly planned source closure. Artifact result
+currentness remains a reporting concern; it is not used to infer reusable
+command state.
 
 Currentness is derived when planning, querying, or rendering. Ordinary
 `pyrun` never reads reproduction results. Neither file is rewritten merely to
@@ -2000,6 +2054,11 @@ output unchanged by default and does not parse generated files or reconstruct
 a summary. It requests the complete per-log report only when the researcher
 asks for artifact or run detail.
 
+After a launched run completes, the reproduction agent retrieves and presents
+the compact summary immediately. A successful no-op launch already returns its
+current compact reconciliation, which the agent presents immediately without
+substituting the historical `report --summary` projection.
+
 The compact per-log projection has two visibly separate trees. The command tree
 starts with every command in the target, separates commands skipped by policy,
 commands reused from saved state, and commands selected for execution, then
@@ -2007,9 +2066,20 @@ nests `Succeeded`, `Failed`, and `Blocked` below the selected count. The artifac
 tree starts with every current reachable artifact, separates `Matched`, `Not
 matched`, and `Not compared`, then nests the reasons for non-comparison. A current
 `matched` result contributes to `Matched`, a current `changed` result contributes
-to `Not matched`, and failed, comparison-failed, skipped, or stale results
+to `Not matched`, and failed, comparison-failed, or skipped results
 contribute to `Not compared`. These three artifact categories are mutually
 exclusive and sum exactly to artifact `Total`.
+
+Non-comparison reasons are listed as `comparison failed`, `command failed`,
+`command blocked`, and `command skipped`. Zero-count reasons are omitted, and
+`command skipped` is always the last visible reason.
+An artifact skipped because a dependency failed is blocked; policy- or
+scope-skipped artifacts remain skipped.
+
+Compact summary counts describe recorded reproduction outcomes. They do not
+reclassify an earlier outcome when later project activity makes its detailed
+currentness diagnostic stale. Incremental planning owns the decision to rerun
+affected commands and successful publication replaces their artifact results.
 
 The projection explicitly states that command and artifact totals are different
 units and need not match because one command may produce several artifacts.
@@ -2104,11 +2174,12 @@ defined above. No accepted run is upgraded in place, and no consumer may decode
 a v2 object with v3 defaults. The maintained-corpus execution-state cutover is
 complete.
 
-The result reader accepts canonical `research-log-reproduction-result/2` only
-as a read-only migration input. It does not invent command counts for those run
-rows. The next successful reproduction publication writes the complete result
-as `research-log-reproduction-result/3`; all newly published run rows contain
-command accounting.
+The result reader accepts canonical `research-log-reproduction-result/3` only
+as a read-only migration input. It does not infer command records from artifact
+outcomes or run counts. The next successful reproduction reruns the applicable
+commands, seeds their exact source closures and terminal dispositions, and
+publishes `research-log-reproduction-result/4`. Earlier result schemas are
+unsupported.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded

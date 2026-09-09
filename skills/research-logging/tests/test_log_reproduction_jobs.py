@@ -26,6 +26,7 @@ from log_commands.reproduction_jobs import (
     LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
     PUBLICATION_RETRY,
     RUN_SCHEMA,
+    ReproductionLaunch,
     _accepted_record,
     _acquire_scope_locks,
     _checkpoint_dicts,
@@ -1031,9 +1032,11 @@ class ReproductionJobTests(unittest.TestCase):
                 ),
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
-                run_id = launch_reproduction(
+                launch = launch_reproduction(
                     log, entry="e003", include_all=False, recheck=True
                 )
+
+            run_id = cast(str, launch.run_id)
 
             run_root = (
                 project
@@ -1058,6 +1061,49 @@ class ReproductionJobTests(unittest.TestCase):
                 selection_policy="recheck",
             )
             spawn.assert_called_once()
+
+    def test_launch_returns_current_summary_without_creating_an_empty_run(
+        self,
+    ) -> None:
+        plan = replace(
+            _plan(),
+            executions=(),
+            failures=({"artifact": "data/blocked.txt"},),
+        )
+        with (
+            mock.patch(
+                "log_commands.reproduction_jobs.plan_reproduction",
+                return_value=plan,
+            ),
+            mock.patch(
+                "log_commands.reproduction_queries.reproduction_reconciliation_text",
+                return_value="# Reproduction Summary\n",
+            ) as summarize,
+            mock.patch("log_commands.reproduction_jobs._new_run_id") as new_run_id,
+            mock.patch(
+                "log_commands.reproduction_jobs._acquire_scope_locks"
+            ) as acquire,
+            mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+        ):
+            launch = launch_reproduction(
+                mock.sentinel.log,
+                entry=None,
+                include_all=False,
+            )
+
+        self.assertEqual(
+            launch,
+            ReproductionLaunch(summary="# Reproduction Summary\n"),
+        )
+        self.assertEqual(launch.render(), "# Reproduction Summary\n")
+        summarize.assert_called_once_with(
+            mock.sentinel.log,
+            plan,
+            generated_at=mock.ANY,
+        )
+        new_run_id.assert_not_called()
+        acquire.assert_not_called()
+        spawn.assert_not_called()
 
     def test_human_status_exposes_failure(self) -> None:
         fixture = _status_fixture("failed")

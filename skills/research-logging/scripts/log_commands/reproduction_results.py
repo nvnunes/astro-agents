@@ -24,11 +24,12 @@ from .reproduction_paths import (
 )
 from .reproduction_planner import ReproductionStateProjection
 
-LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/2"
-RESULT_SCHEMA = "research-log-reproduction-result/3"
+LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/3"
+RESULT_SCHEMA = "research-log-reproduction-result/4"
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
+MAX_COMMAND_RESULTS = 10_000
 MAX_RUN_RESULTS = 10_000
 MAX_QUERY_RESULTS = 50
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -42,11 +43,12 @@ COMMAND_OUTCOMES = (
     "blocked",
     "total",
 )
+COMMAND_DISPOSITIONS = ("succeeded", "failed", "blocked")
 ARTIFACT_NOT_COMPARED_REASONS = (
-    "command_failed",
-    "command_skipped_or_blocked",
     "comparison_failed",
-    "stale",
+    "command_failed",
+    "command_blocked",
+    "command_skipped",
 )
 RUN_STATUSES = ("complete", "failed", "stopped")
 PROFILES = (
@@ -132,9 +134,8 @@ class ComparisonRecord:
                 raise ReproductionResultError(
                     "evidence comparison needs its definition identity"
                 )
-        elif (
-            re.fullmatch(r"[0-9a-f]{64}", self.evidence_definition) is None
-            or any(not _valid_evidence_comparison(item) for item in self.evidence)
+        elif re.fullmatch(r"[0-9a-f]{64}", self.evidence_definition) is None or any(
+            not _valid_evidence_comparison(item) for item in self.evidence
         ):
             raise ReproductionResultError("evidence comparison details are invalid")
 
@@ -204,6 +205,36 @@ class ArtifactResult:
             "reason": self.reason,
             "recorded_at": self.recorded_at,
             "run_id": self.run_id,
+        }
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """One reusable terminal result for an entry-qualified command."""
+
+    entry: str
+    execution_id: str
+    disposition: str
+    source_digest: str
+    recorded_at: str
+    run_id: str
+
+    def __post_init__(self) -> None:
+        _entry(self.entry, "command.entry")
+        _execution(self.execution_id)
+        _choice(self.disposition, COMMAND_DISPOSITIONS, "command.disposition")
+        _sha256_digest(self.source_digest, "command.source_digest")
+        _timestamp(self.recorded_at, "command.recorded_at")
+        _run_id(self.run_id)
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "disposition": self.disposition,
+            "entry": self.entry,
+            "execution_id": self.execution_id,
+            "recorded_at": self.recorded_at,
+            "run_id": self.run_id,
+            "source_digest": self.source_digest,
         }
 
 
@@ -283,12 +314,13 @@ class RunResult:
 
 @dataclass(frozen=True)
 class ReproductionResults:
-    """The complete current artifact map and retained run history."""
+    """The current artifact and command maps plus retained run history."""
 
     summary: str
     updated_at: str
     artifacts: tuple[ArtifactResult, ...]
     runs: tuple[RunResult, ...]
+    commands: tuple[CommandResult, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_results(self)
@@ -296,6 +328,7 @@ class ReproductionResults:
     def as_dict(self) -> dict[str, object]:
         return {
             "artifacts": [item.as_dict() for item in self.artifacts],
+            "commands": [item.as_dict() for item in self.commands],
             "runs": [item.as_dict() for item in self.runs],
             "schema": RESULT_SCHEMA,
             "summary": self.summary,
@@ -322,24 +355,36 @@ class ReproductionResults:
                 f"invalid reproduction result: {error}"
             ) from error
         item = _mapping(value, "result")
-        if set(item) != {"artifacts", "runs", "schema", "summary", "updated_at"}:
-            raise ReproductionResultError("result has incorrect fields")
-        schema = item["schema"]
+        schema = item.get("schema")
         if schema not in {LEGACY_RESULT_SCHEMA, RESULT_SCHEMA}:
             raise ReproductionResultError("result schema is unsupported")
+        fields = {"artifacts", "runs", "schema", "summary", "updated_at"}
+        if schema == RESULT_SCHEMA:
+            fields.add("commands")
+        if set(item) != fields:
+            raise ReproductionResultError("result has incorrect fields")
         artifacts = tuple(
             _decode_artifact(value, index)
             for index, value in enumerate(_sequence(item["artifacts"], "artifacts"))
         )
         runs = tuple(
-            _decode_run(value, index, legacy=schema == LEGACY_RESULT_SCHEMA)
+            _decode_run(value, index)
             for index, value in enumerate(_sequence(item["runs"], "runs"))
+        )
+        commands = (
+            ()
+            if schema == LEGACY_RESULT_SCHEMA
+            else tuple(
+                _decode_command(value, index)
+                for index, value in enumerate(_sequence(item["commands"], "commands"))
+            )
         )
         result = cls(
             _string(item["summary"], "summary"),
             _timestamp(item["updated_at"], "updated_at"),
             artifacts,
             runs,
+            commands,
         )
         expected = (
             _legacy_serialized(result)
@@ -357,6 +402,13 @@ class ArtifactCurrentness:
 
     current: bool
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _SummaryPresentation:
+    heading: str
+    run_context: tuple[str, ...]
+    artifacts_available: bool
 
 
 @dataclass(frozen=True)
@@ -399,10 +451,10 @@ def merge_reproduction_results(
     artifacts: Sequence[ArtifactResult],
     run: RunResult,
     *,
-    updated_at: str,
-    reachable: set[tuple[str, str]] | None = None,
+    commands: Sequence[CommandResult] = (),
+    state: ReproductionStateProjection | None = None,
 ) -> ReproductionResults:
-    """Replace only published cases and append one unique run record."""
+    """Replace published artifact and command cases and append one run."""
 
     if any(item.run_id == run.run_id for item in current.runs):
         raise ReproductionResultError(f"duplicate run ID: {run.run_id}")
@@ -415,13 +467,29 @@ def merge_reproduction_results(
         if (item.entry, item.artifact) not in replacements
     }
     merged.update(replacements)
-    if reachable is not None:
-        merged = {key: value for key, value in merged.items() if key in reachable}
+    if state is not None:
+        merged = {key: value for key, value in merged.items() if key in state.reachable}
+    command_replacements = {(item.entry, item.execution_id): item for item in commands}
+    if len(command_replacements) != len(commands):
+        raise ReproductionResultError("published command results are duplicated")
+    merged_commands = {
+        (item.entry, item.execution_id): item
+        for item in current.commands
+        if (item.entry, item.execution_id) not in command_replacements
+    }
+    merged_commands.update(command_replacements)
+    if state is not None:
+        merged_commands = {
+            key: value
+            for key, value in merged_commands.items()
+            if key in state.reachable_commands
+        }
     return ReproductionResults(
         current.summary,
-        _timestamp(updated_at, "updated_at"),
+        _timestamp(run.finished_at, "run.finished_at"),
         tuple(sorted(merged.values(), key=_artifact_key)),
         tuple(sorted((*current.runs, run), key=_run_key)),
+        tuple(sorted(merged_commands.values(), key=_command_key)),
     )
 
 
@@ -443,6 +511,7 @@ def reconcile_run_folders(
             results.updated_at,
             results.artifacts,
             tuple(_run_with_folder(run, "unknown") for run in results.runs),
+            results.commands,
         )
     storage_root = temporary_root / REPRODUCTION_ROOT_NAME
     try:
@@ -456,6 +525,7 @@ def reconcile_run_folders(
             results.updated_at,
             results.artifacts,
             tuple(_run_with_folder(run, "unknown") for run in results.runs),
+            results.commands,
         )
     retained: list[RunResult] = []
     for run in results.runs:
@@ -479,6 +549,7 @@ def reconcile_run_folders(
         results.updated_at,
         results.artifacts,
         tuple(retained),
+        results.commands,
     )
 
 
@@ -508,9 +579,7 @@ def project_current_results(
             currentness[key] = ArtifactCurrentness(False, "execution_unavailable")
             continue
         recorded_definition = (
-            item.comparison.evidence_definition
-            if item.comparison is not None
-            else None
+            item.comparison.evidence_definition if item.comparison is not None else None
         )
         if recorded_definition != state.comparison_definitions.get(key):
             currentness[key] = ArtifactCurrentness(False, "comparison_changed")
@@ -521,7 +590,7 @@ def project_current_results(
         else:
             currentness[key] = ArtifactCurrentness(True)
     projected = ReproductionResults(
-        results.summary, results.updated_at, artifacts, results.runs
+        results.summary, results.updated_at, artifacts, results.runs, results.commands
     )
     return projected, currentness
 
@@ -543,9 +612,13 @@ def compose_reproduction_report(
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
         results.updated_at,
-        latest,
-        artifact_summary_counts(artifacts, currentness=currentness),
-        heading="# Reproduction",
+        artifact_summary_counts(artifacts),
+        latest.command_outcomes if latest is not None else None,
+        _SummaryPresentation(
+            "# Reproduction",
+            _latest_run_context(latest),
+            latest is not None,
+        ),
     )
     stable_context_entries = {
         value for value in context.entries if re.fullmatch(r"e[0-9]+", value)
@@ -589,46 +662,72 @@ def compose_reproduction_report(
 
 def compose_reproduction_summary(
     results: ReproductionResults,
-    *,
-    currentness: Mapping[tuple[str, str], ArtifactCurrentness] | None = None,
 ) -> str:
-    """Render the concise balanced summary for one current log."""
+    """Render the concise balanced summary of recorded reproduction outcomes."""
 
-    currentness = currentness or {}
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
         results.updated_at,
-        latest,
-        artifact_summary_counts(results.artifacts, currentness=currentness),
-        heading="# Reproduction Summary",
+        artifact_summary_counts(results.artifacts),
+        latest.command_outcomes if latest is not None else None,
+        _SummaryPresentation(
+            "# Reproduction Summary",
+            _latest_run_context(latest),
+            latest is not None,
+        ),
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def compose_reproduction_reconciliation_summary(
+    results: ReproductionResults,
+    command_outcomes: Mapping[str, int],
+    *,
+    generated_at: str,
+) -> str:
+    """Render a terminal no-work reconciliation without inventing a run."""
+
+    latest = next((run for run in results.runs if run.status == "complete"), None)
+    lines = _summary_lines(
+        generated_at,
+        artifact_summary_counts(results.artifacts),
+        command_outcomes,
+        _SummaryPresentation(
+            "# Reproduction Summary",
+            (
+                "Current reconciliation: no commands executed; no run was created.",
+                "Latest completed run remains: "
+                + (f"`{latest.run_id}`" if latest is not None else "none"),
+            ),
+            latest is not None,
+        ),
     )
     return "\n".join(lines).rstrip() + "\n"
 
 
 def artifact_summary_counts(
     artifacts: Sequence[ArtifactResult],
-    *,
-    currentness: Mapping[tuple[str, str], ArtifactCurrentness] | None = None,
 ) -> Mapping[str, object]:
-    """Project mutually exclusive current artifact outcomes for human reporting."""
+    """Project mutually exclusive recorded artifact outcomes for reporting."""
 
-    currentness = currentness or {}
     matched = 0
     not_matched = 0
     total = 0
     not_compared = {name: 0 for name in ARTIFACT_NOT_COMPARED_REASONS}
     for item in artifacts:
-        state = currentness.get((item.entry, item.artifact), ArtifactCurrentness(True))
-        if not state.current:
-            not_compared["stale"] += 1
-        elif item.outcome == "matched":
+        if item.outcome == "matched":
             matched += 1
         elif item.outcome == "changed":
             not_matched += 1
         elif item.outcome == "failed":
             not_compared["command_failed"] += 1
         elif item.outcome == "skipped":
-            not_compared["command_skipped_or_blocked"] += 1
+            reason = (
+                "command_blocked"
+                if item.reason == "dependency_failed"
+                else "command_skipped"
+            )
+            not_compared[reason] += 1
         else:
             not_compared["comparison_failed"] += 1
         total += 1
@@ -661,18 +760,16 @@ def command_summary_counts(commands: Mapping[str, int]) -> Mapping[str, object]:
 
 def _summary_lines(
     updated_at: str,
-    latest: RunResult | None,
     artifacts: Mapping[str, object],
-    *,
-    heading: str,
+    command_outcomes: Mapping[str, int] | None,
+    presentation: _SummaryPresentation,
 ) -> list[str]:
     lines = [
-        heading,
+        presentation.heading,
         "",
         f"Generated: `{updated_at}`",
         "",
-        "Latest completed run: "
-        + (f"`{latest.run_id}`" if latest is not None else "none"),
+        *presentation.run_context,
         "",
         "A command can produce more than one artifact, so the totals are not "
         "expected to match.",
@@ -681,13 +778,13 @@ def _summary_lines(
         "## Commands",
         "",
     ]
-    if latest is None or latest.command_outcomes is None:
+    if command_outcomes is None:
         lines.append(
             "Command accounting is unavailable for this older result. Run "
             "reproduction again to publish it."
         )
     else:
-        commands = command_summary_counts(latest.command_outcomes)
+        commands = command_summary_counts(command_outcomes)
         selected = cast(Mapping[str, int], commands["selected"])
         lines.extend(
             (
@@ -698,7 +795,7 @@ def _summary_lines(
                 f"└─ {selected['total']} selected for execution",
                 f"   ├─ {selected['succeeded']} succeeded",
                 f"   ├─ {selected['failed']} failed",
-                f"   └─ {selected['blocked']} blocked by another command failure",
+                f"   └─ {selected['blocked']} blocked",
                 "```",
             )
         )
@@ -710,23 +807,23 @@ def _summary_lines(
             "",
         )
     )
-    if latest is None:
+    if not presentation.artifacts_available:
         lines.append("Artifact accounting is unavailable until reproduction completes.")
     else:
         reasons = [
             (
-                not_compared["command_failed"],
-                "because their command failed",
-            ),
-            (
-                not_compared["command_skipped_or_blocked"],
-                "because their command was skipped or blocked",
-            ),
-            (
                 not_compared["comparison_failed"],
-                "because comparison failed",
+                "comparison failed",
             ),
-            (not_compared["stale"], "because their prior result is stale"),
+            (
+                not_compared["command_failed"],
+                "command failed",
+            ),
+            (
+                not_compared["command_blocked"],
+                "command blocked",
+            ),
+            (not_compared["command_skipped"], "command skipped"),
         ]
         visible = [(count, label) for count, label in reasons if count]
         tree = [
@@ -742,6 +839,13 @@ def _summary_lines(
         tree.append("```")
         lines.extend(tree)
     return lines
+
+
+def _latest_run_context(latest: RunResult | None) -> tuple[str, ...]:
+    return (
+        "Latest completed run: "
+        + (f"`{latest.run_id}`" if latest is not None else "none"),
+    )
 
 
 def query_artifacts(
@@ -829,14 +933,38 @@ def _decode_artifact(value: object, index: int) -> ArtifactResult:
     )
 
 
+def _decode_command(value: object, index: int) -> CommandResult:
+    item = _mapping(value, f"commands[{index}]")
+    if set(item) != {
+        "disposition",
+        "entry",
+        "execution_id",
+        "recorded_at",
+        "run_id",
+        "source_digest",
+    }:
+        raise ReproductionResultError(f"commands[{index}] has incorrect fields")
+    return CommandResult(
+        _entry(item["entry"], f"commands[{index}].entry"),
+        _execution(item["execution_id"]),
+        _choice(
+            item["disposition"],
+            COMMAND_DISPOSITIONS,
+            f"commands[{index}].disposition",
+        ),
+        _sha256_digest(item["source_digest"], f"commands[{index}].source_digest"),
+        _timestamp(item["recorded_at"], f"commands[{index}].recorded_at"),
+        _run_id(item["run_id"]),
+    )
+
+
 def _decode_comparison(value: object, subject: str) -> ComparisonRecord:
     item = _mapping(value, subject)
     required = {"contract", "expected", "profile", "regenerated"}
     evidence_fields = {"evidence", "evidence_contract", "evidence_definition"}
-    if (
-        not required <= set(item) <= required | evidence_fields
-        or set(item) & evidence_fields not in (set(), evidence_fields)
-    ):
+    if not required <= set(item) <= required | evidence_fields or set(
+        item
+    ) & evidence_fields not in (set(), evidence_fields):
         raise ReproductionResultError(f"{subject} has incorrect fields")
     if item["contract"] != COMPARISON_CONTRACT:
         raise ReproductionResultError(f"{subject} contract is unsupported")
@@ -878,9 +1006,7 @@ def _valid_evidence_comparison(value: Mapping[str, object]) -> bool:
         or not isinstance(value.get("definition"), str)
         or re.fullmatch(r"[0-9a-f]{64}", cast(str, value["definition"])) is None
         or not isinstance(value.get("id"), str)
-        or re.fullmatch(
-            r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", cast(str, value["id"])
-        )
+        or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", cast(str, value["id"]))
         is None
         or not isinstance(value.get("matched"), bool)
         or not isinstance(expected, list)
@@ -903,7 +1029,7 @@ def _valid_evidence_comparison(value: Mapping[str, object]) -> bool:
     return True
 
 
-def _decode_run(value: object, index: int, *, legacy: bool = False) -> RunResult:
+def _decode_run(value: object, index: int) -> RunResult:
     item = _mapping(value, f"runs[{index}]")
     fields = {
         "accepted_at",
@@ -916,8 +1042,7 @@ def _decode_run(value: object, index: int, *, legacy: bool = False) -> RunResult
         "status",
         "target",
     }
-    if not legacy:
-        fields.add("command_outcomes")
+    fields.add("command_outcomes")
     if set(item) != fields:
         raise ReproductionResultError(f"runs[{index}] has incorrect fields")
     target = _target(item["target"])
@@ -947,7 +1072,7 @@ def _decode_run(value: object, index: int, *, legacy: bool = False) -> RunResult
         executions,
         (
             None
-            if legacy or item["command_outcomes"] is None
+            if item["command_outcomes"] is None
             else _command_counts(item["command_outcomes"])
         ),
     )
@@ -1011,6 +1136,8 @@ def _validate_results(results: ReproductionResults) -> None:
     _timestamp(results.updated_at, "updated_at")
     if len(results.artifacts) > MAX_ARTIFACT_RESULTS:
         raise ReproductionResultError("too many artifact results")
+    if len(results.commands) > MAX_COMMAND_RESULTS:
+        raise ReproductionResultError("too many command results")
     if len(results.runs) > MAX_RUN_RESULTS:
         raise ReproductionResultError("too many run results")
     keys = [(item.entry, item.artifact) for item in results.artifacts]
@@ -1018,6 +1145,13 @@ def _validate_results(results: ReproductionResults) -> None:
         raise ReproductionResultError("artifact results are not canonically ordered")
     if len(keys) != len(set(keys)):
         raise ReproductionResultError("artifact result identities are duplicated")
+    command_keys = [(item.entry, item.execution_id) for item in results.commands]
+    if command_keys != sorted(
+        command_keys, key=lambda key: (_entry_key(key[0]), key[1])
+    ):
+        raise ReproductionResultError("command results are not canonically ordered")
+    if len(command_keys) != len(set(command_keys)):
+        raise ReproductionResultError("command result identities are duplicated")
     run_ids = [item.run_id for item in results.runs]
     if len(run_ids) != len(set(run_ids)):
         raise ReproductionResultError("run IDs are duplicated")
@@ -1180,6 +1314,13 @@ def _string(value: object, subject: str) -> str:
     return value
 
 
+def _sha256_digest(value: object, subject: str) -> str:
+    text = _string(value, subject)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise ReproductionResultError(f"{subject} is invalid")
+    return text
+
+
 def _unique_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -1191,6 +1332,10 @@ def _unique_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
 
 def _artifact_key(value: ArtifactResult) -> tuple[tuple[int, str], str]:
     return _entry_key(value.entry), value.artifact
+
+
+def _command_key(value: CommandResult) -> tuple[tuple[int, str], str]:
+    return _entry_key(value.entry), value.execution_id
 
 
 def _entry_key(value: str) -> tuple[int, str]:
@@ -1243,13 +1388,11 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
 
 
 def _legacy_serialized(results: ReproductionResults) -> str:
-    """Serialize the exact read-only v2 shape for canonicality checking."""
+    """Serialize the exact read-only v3 shape for canonicality checking."""
 
     value = results.as_dict()
     value["schema"] = LEGACY_RESULT_SCHEMA
-    runs = cast(list[dict[str, object]], value["runs"])
-    for run in runs:
-        run.pop("command_outcomes")
+    value.pop("commands")
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

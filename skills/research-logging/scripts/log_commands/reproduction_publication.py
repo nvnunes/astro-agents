@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence, cast
 
@@ -26,6 +26,11 @@ from validation.operation_state import OperationLockError, operation_lock
 
 from .context import LogContext, resolve_project_root
 from .model import ActionError
+from .reproduction_accounting import (
+    CommandAccountingError,
+    command_snapshot_index,
+    project_command_selection,
+)
 from .reproduction_comparison import (
     ArtifactComparison,
     ExecutionComparison,
@@ -41,6 +46,7 @@ from .reproduction_planner import (
 from .reproduction_results import (
     OUTCOMES,
     ArtifactResult,
+    CommandResult,
     ComparisonRecord,
     ReproductionResultError,
     ReproductionResults,
@@ -85,6 +91,7 @@ def publish_completed_reproduction(
     project_root = resolve_project_root(log.root)
     try:
         artifacts = _artifact_results(request)
+        commands = _command_results(request)
     except ReproductionResultError as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
     try:
@@ -104,22 +111,25 @@ def publish_completed_reproduction(
             )
             current = reconcile_run_folders(current, project_root=project_root)
             state_projection = project_reproduction_state(log)
-            reachable = set(state_projection.reachable)
             if request.plan.target.get("kind") == "log":
-                reachable = {
-                    (_required(case, "entry"), _required(case, "artifact"))
-                    for case in request.plan.cases
-                }
+                state_projection = replace(
+                    state_projection,
+                    reachable=frozenset(
+                        (
+                            _required(case, "entry"),
+                            _required(case, "artifact"),
+                        )
+                        for case in request.plan.cases
+                    ),
+                )
             merged = merge_reproduction_results(
                 current,
                 artifacts,
                 run,
-                updated_at=request.finished_at,
-                reachable=reachable,
+                commands=commands,
+                state=state_projection,
             )
-            projected, currentness = project_current_results(
-                merged, state_projection
-            )
+            projected, currentness = project_current_results(merged, state_projection)
             context = load_report_context(log.summary)
             report = compose_reproduction_report(
                 projected,
@@ -190,6 +200,47 @@ def _dependency_skip_index(
     }
 
 
+def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]:
+    """Project new terminal command results without replacing reused results."""
+
+    try:
+        snapshots = command_snapshot_index(request.plan)
+    except CommandAccountingError as error:
+        raise ActionError("reproduction.publication.invalid", str(error)) from error
+    compared = {(item.entry, item.execution_id): item for item in request.comparisons}
+    if len(compared) != len(request.comparisons):
+        raise ActionError(
+            "reproduction.publication.invalid", "execution comparison is duplicated"
+        )
+    skipped = _dependency_skip_index(request.dependency_skips)
+    results: list[CommandResult] = []
+    for key, snapshot in sorted(snapshots.items()):
+        selection = snapshot["selection"]
+        if selection == "reuse":
+            continue
+        if selection == "blocked" or key in skipped:
+            disposition = "blocked"
+        else:
+            comparison = compared.get(key)
+            if comparison is None:
+                raise ActionError(
+                    "reproduction.publication.incomplete",
+                    f"command has no terminal result: {key[0]}:{key[1]}",
+                )
+            disposition = "succeeded" if comparison.complete else "failed"
+        results.append(
+            CommandResult(
+                key[0],
+                key[1],
+                disposition,
+                cast(str, snapshot["source_digest"]),
+                request.finished_at,
+                request.run_id,
+            )
+        )
+    return tuple(results)
+
+
 def _artifact_result_for_case(
     case: Mapping[str, object],
     compared: Mapping[tuple[str, str, str], ArtifactComparison],
@@ -208,14 +259,10 @@ def _artifact_result_for_case(
         )
     case_reason = case.get("reason")
     if case_reason is not None and not isinstance(case_reason, str):
-        raise ActionError(
-            "reproduction.publication.invalid", "invalid artifact reason"
-        )
+        raise ActionError("reproduction.publication.invalid", "invalid artifact reason")
     comparison_key = (entry, cast(str, execution), artifact)
     comparison = compared.get(comparison_key)
-    outcome, reason, details = _case_outcome(
-        case, execution, comparison, skipped
-    )
+    outcome, reason, details = _case_outcome(case, execution, comparison, skipped)
     return (
         ArtifactResult(
             entry,
@@ -305,16 +352,10 @@ def _command_outcomes(
 ) -> Mapping[str, int]:
     """Return one exhaustive command reconciliation for a completed run."""
 
-    planned: dict[tuple[str, str], bool] = {}
-    for item in plan.executions:
-        key = (_required(item, "entry"), _required(item, "execution_id"))
-        automatic = item.get("auto_reproduce")
-        if key in planned or not isinstance(automatic, bool):
-            raise ActionError(
-                "reproduction.publication.invalid",
-                "planned command accounting is invalid",
-            )
-        planned[key] = automatic
+    try:
+        selection = project_command_selection(plan, inventory)
+    except CommandAccountingError as error:
+        raise ActionError("reproduction.publication.invalid", str(error)) from error
     compared: dict[tuple[str, str], ExecutionComparison] = {}
     for comparison in request.comparisons:
         key = (comparison.entry, comparison.execution_id)
@@ -327,31 +368,23 @@ def _command_outcomes(
     dependency_skips = _dependency_skip_index(request.dependency_skips)
     if (
         set(compared) & dependency_skips
-        or set(compared) | dependency_skips != set(planned)
+        or set(compared) | dependency_skips != selection.run_keys
     ):
         raise ActionError(
             "reproduction.publication.invalid",
             "terminal command outcomes do not match the accepted plan",
         )
 
-    selected_not_automatic = sum(not automatic for automatic in planned.values())
-    not_automatic = inventory.not_automatic - selected_not_automatic
-    reused = inventory.total - not_automatic - len(planned)
-    if not_automatic < 0 or reused < 0:
-        raise ActionError(
-            "reproduction.publication.invalid",
-            "command inventory does not reconcile with the accepted plan",
-        )
     succeeded = sum(comparison.complete for comparison in compared.values())
     failed = len(compared) - succeeded
-    blocked = len(dependency_skips)
+    blocked = len(dependency_skips) + selection.blocked
     return {
-        "not_automatic": not_automatic,
-        "reused": reused,
+        "not_automatic": selection.not_automatic,
+        "reused": selection.reused,
         "succeeded": succeeded,
         "failed": failed,
         "blocked": blocked,
-        "total": inventory.total,
+        "total": selection.total,
     }
 
 

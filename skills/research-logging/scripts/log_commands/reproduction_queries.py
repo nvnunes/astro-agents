@@ -12,24 +12,32 @@ from validation.human_projection import load_report_context
 
 from .context import LogContext, resolve_log, resolve_project_root
 from .model import ActionError
-from .reproduction_planner import project_reproduction_state
+from .reproduction_accounting import CommandAccountingError, project_command_selection
+from .reproduction_contract import ReproductionPlan
+from .reproduction_planner import (
+    ReproductionCommandInventory,
+    project_reproduction_command_inventory,
+    project_reproduction_state,
+)
 from .reproduction_results import (
     ArtifactCurrentness,
     ReproductionResultError,
     ReproductionResults,
     artifact_summary_counts,
     command_summary_counts,
+    compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
     compose_reproduction_summary,
     load_reproduction_results,
+    load_results_or_empty,
     project_current_results,
     query_artifacts,
 )
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
-SUMMARY_SCHEMA = "research-log-reproduction-summary/1"
-ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/1"
+SUMMARY_SCHEMA = "research-log-reproduction-summary/2"
+ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/2"
 
 
 def reproduction_report(log: LogContext, *, entry: str | None) -> str:
@@ -48,11 +56,11 @@ def reproduction_report(log: LogContext, *, entry: str | None) -> str:
 def reproduction_summary(log: LogContext) -> dict[str, object]:
     """Return the canonical compact summary for one maintained log."""
 
-    results, currentness = _current(log)
+    results, _currentness = _current(log)
     latest = next((run for run in results.runs if run.status == "complete"), None)
     return {
         "artifacts": (
-            dict(artifact_summary_counts(results.artifacts, currentness=currentness))
+            dict(artifact_summary_counts(results.artifacts))
             if latest is not None
             else None
         ),
@@ -72,8 +80,69 @@ def reproduction_summary(log: LogContext) -> dict[str, object]:
 def reproduction_summary_text(log: LogContext) -> str:
     """Return the canonical compact human summary for one maintained log."""
 
-    results, currentness = _current(log)
-    return compose_reproduction_summary(results, currentness=currentness)
+    results, _currentness = _current(log)
+    return compose_reproduction_summary(results)
+
+
+def reproduction_reconciliation_text(
+    log: LogContext,
+    plan: ReproductionPlan,
+    *,
+    generated_at: str,
+) -> str:
+    """Return the current terminal summary for a plan with no runnable work."""
+
+    if plan.executions:
+        raise ActionError(
+            "reproduction.reconciliation.invalid",
+            "a no-work reconciliation cannot contain runnable executions",
+        )
+    project = resolve_project_root(log.root)
+    try:
+        summary = log.summary.resolve().relative_to(project).as_posix()
+    except ValueError as error:
+        raise ActionError("reproduction.results.invalid", str(error)) from error
+    results = load_results_or_empty(
+        log.root / REPRODUCTION_RESULTS,
+        summary=summary,
+        updated_at=generated_at,
+    )
+    state = project_reproduction_state(log)
+    projected, _currentness = project_current_results(results, state)
+    outcomes = _no_work_command_outcomes(
+        plan,
+        project_reproduction_command_inventory(log, plan.target),
+    )
+    return compose_reproduction_reconciliation_summary(
+        projected,
+        outcomes,
+        generated_at=generated_at,
+    )
+
+
+def _no_work_command_outcomes(
+    plan: ReproductionPlan,
+    inventory: ReproductionCommandInventory,
+) -> Mapping[str, int]:
+    """Reconcile current plan selections when no command will be launched."""
+
+    try:
+        selection = project_command_selection(plan, inventory)
+    except CommandAccountingError as error:
+        raise ActionError("reproduction.reconciliation.invalid", str(error)) from error
+    if selection.run_keys:
+        raise ActionError(
+            "reproduction.reconciliation.invalid",
+            "command selection does not match the no-work plan",
+        )
+    return {
+        "blocked": selection.blocked,
+        "failed": 0,
+        "not_automatic": selection.not_automatic,
+        "reused": selection.reused,
+        "succeeded": 0,
+        "total": selection.total,
+    }
 
 
 def root_reproduction_summary(root: Path) -> dict[str, object]:

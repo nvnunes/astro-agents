@@ -840,15 +840,14 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         else:
             print(plan.serialized())
     else:
-        print(
-            launch_reproduction(
-                log,
-                entry=args.entry,
-                include_all=args.include_all,
-                jobs=args.jobs,
-                recheck=args.recheck,
-            )
+        launch = launch_reproduction(
+            log,
+            entry=args.entry,
+            include_all=args.include_all,
+            jobs=args.jobs,
+            recheck=args.recheck,
         )
+        print(launch.render(), end="")
     return 0
 
 

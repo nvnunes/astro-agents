@@ -13,6 +13,7 @@ from unittest import mock
 
 from log_commands.context import EntryContext, LogContext
 from log_commands.model import ActionError
+from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import (
     RECHECK_SELECTION,
     SelectionPolicy,
@@ -22,6 +23,7 @@ from log_commands.reproduction_planner import (
     project_reproduction_state,
     verify_reproduction_runtime_snapshot,
 )
+from log_commands.reproduction_results import CommandResult, ReproductionResults
 from research_log_data import (
     Fingerprint,
     InputResource,
@@ -215,6 +217,38 @@ def _admission(fixture: _Fixture) -> dict[str, object]:
     }
 
 
+def _seed_command_results(
+    fixture: _Fixture,
+    plan: ReproductionPlan,
+    *,
+    disposition: str = "succeeded",
+) -> None:
+    snapshots = plan.source_snapshot["commands"]
+    commands = tuple(
+        CommandResult(
+            cast(str, value["entry"]),
+            cast(str, value["execution_id"]),
+            disposition,
+            cast(str, value["source_digest"]),
+            "2026-09-06T00:01:00Z",
+            "reproduce-20260906t000000z-seed",
+        )
+        for value in cast(list[dict[str, object]], snapshots)
+    )
+    path = fixture.log_root / ".cache" / "reproduction" / "results.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ReproductionResults(
+            "docs/study.md",
+            "2026-09-06T00:01:00Z",
+            (),
+            (),
+            commands,
+        ).serialized(),
+        encoding="utf-8",
+    )
+
+
 class ReproductionCommandInventoryTests(unittest.TestCase):
     def test_inventory_counts_all_target_commands_and_policy_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -278,7 +312,7 @@ def _write_projection(
 
 
 class ReproductionPlanningTests(unittest.TestCase):
-    def test_fresh_incremental_run_retries_a_prior_failed_automatic_case(
+    def test_incremental_run_selects_a_command_without_saved_command_state(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -307,12 +341,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             with mock.patch(
                 "log_commands.reproduction_planner._load_prior_results",
-                return_value={
-                    (entry.id, "data/final.txt"): {
-                        "outcome": "failed",
-                        "recorded_at": "2030-01-01T00:00:00Z",
-                    }
-                },
+                return_value={},
             ):
                 plan = _plan(fixture, entry)
 
@@ -1299,7 +1328,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 projection.reachable,
             )
 
-    def test_current_matched_result_is_not_selected_again(self) -> None:
+    def test_v3_artifact_state_is_seeded_then_reused_per_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -1324,61 +1353,113 @@ class ReproductionPlanningTests(unittest.TestCase):
                 last_run_at="2026-09-06T00:00:00Z",
             )
             fixture.write_pyrun(entry, [execution])
-            _write_json(
-                fixture.log_root / ".cache" / "reproduction" / "results.json",
-                {
-                    "artifacts": [
-                        {
-                            "artifact": "data/final.txt",
-                            "comparison": {
-                                "contract": "research-log-reproduction-comparison/1",
-                                "expected": _fingerprint(final).as_dict(),
-                                "profile": "text",
-                                "regenerated": _fingerprint(final).as_dict(),
-                            },
-                            "entry": entry.id,
-                            "execution_id": execution[0],
-                            "outcome": "matched",
-                            "reason": None,
-                            "recorded_at": "2026-09-06T00:01:00Z",
-                            "run_id": "reproduce-20260906t000000z-current",
-                        }
-                    ],
-                    "runs": [
-                        {
-                            "accepted_at": "2026-09-06T00:00:00Z",
-                            "artifact_outcomes": {
-                                "changed": 0,
-                                "comparison_failed": 0,
-                                "failed": 0,
-                                "matched": 1,
-                                "skipped": 0,
-                            },
-                            "finished_at": "2026-09-06T00:01:00Z",
-                            "folder": {
-                                "availability": "unknown",
-                                "path": (
-                                    "tmp/reproduction/2030-01-01/"
-                                    "reproduce-study-current"
-                                ),
-                            },
-                            "executions": [],
-                            "include_all": False,
-                            "run_id": "reproduce-20260906t000000z-current",
-                            "status": "complete",
-                            "target": {"entry": entry.id, "kind": "entry"},
-                        }
-                    ],
-                    "schema": "research-log-reproduction-result/2",
-                    "summary": "docs/study.md",
-                    "updated_at": "2026-09-06T00:01:00Z",
-                },
+            result_path = fixture.log_root / ".cache" / "reproduction" / "results.json"
+            stored = {
+                "artifacts": [
+                    {
+                        "artifact": "data/final.txt",
+                        "comparison": {
+                            "contract": "research-log-reproduction-comparison/1",
+                            "expected": _fingerprint(final).as_dict(),
+                            "profile": "text",
+                            "regenerated": _fingerprint(final).as_dict(),
+                        },
+                        "entry": entry.id,
+                        "execution_id": execution[0],
+                        "outcome": "matched",
+                        "reason": None,
+                        "recorded_at": "2026-09-06T00:01:00Z",
+                        "run_id": "reproduce-20260906t000000z-current",
+                    }
+                ],
+                "runs": [
+                    {
+                        "accepted_at": "2026-09-06T00:00:00Z",
+                        "artifact_outcomes": {
+                            "changed": 0,
+                            "comparison_failed": 0,
+                            "failed": 0,
+                            "matched": 1,
+                            "skipped": 0,
+                        },
+                        "finished_at": "2026-09-06T00:01:00Z",
+                        "folder": {
+                            "availability": "unknown",
+                            "path": (
+                                "tmp/reproduction/2030-01-01/reproduce-study-current"
+                            ),
+                        },
+                        "executions": [],
+                        "include_all": False,
+                        "command_outcomes": {
+                            "blocked": 0,
+                            "failed": 0,
+                            "not_automatic": 0,
+                            "reused": 0,
+                            "succeeded": 1,
+                            "total": 1,
+                        },
+                        "run_id": "reproduce-20260906t000000z-current",
+                        "status": "complete",
+                        "target": {"entry": entry.id, "kind": "entry"},
+                    }
+                ],
+                "schema": "research-log-reproduction-result/3",
+                "summary": "docs/study.md",
+                "updated_at": "2026-09-06T00:01:00Z",
+            }
+            _write_json(result_path, stored)
+
+            first = _plan(fixture, entry)
+
+            self.assertEqual(
+                [value["execution_id"] for value in first.executions],
+                [execution[0]],
             )
+            snapshot = first.source_snapshot["commands"][0]
+            stored["schema"] = "research-log-reproduction-result/4"
+            commands = [
+                {
+                    "disposition": "succeeded",
+                    "entry": entry.id,
+                    "execution_id": execution[0],
+                    "recorded_at": "2026-09-06T00:01:00Z",
+                    "run_id": "reproduce-20260906t000000z-current",
+                    "source_digest": snapshot["source_digest"],
+                }
+            ]
+            stored["commands"] = commands
+            for artifact_outcome, artifact_reason, disposition in (
+                ("matched", None, "succeeded"),
+                ("changed", "content_changed", "succeeded"),
+                ("failed", "execution_failed", "failed"),
+                ("skipped", "dependency_failed", "blocked"),
+            ):
+                with self.subTest(
+                    artifact_outcome=artifact_outcome, disposition=disposition
+                ):
+                    stored["artifacts"][0]["outcome"] = artifact_outcome
+                    stored["artifacts"][0]["reason"] = artifact_reason
+                    if artifact_outcome in {"failed", "skipped"}:
+                        stored["artifacts"][0]["comparison"] = None
+                    else:
+                        stored["artifacts"][0]["comparison"] = {
+                            "contract": "research-log-reproduction-comparison/1",
+                            "expected": _fingerprint(final).as_dict(),
+                            "profile": "text",
+                            "regenerated": _fingerprint(final).as_dict(),
+                        }
+                    commands[0]["disposition"] = disposition
+                    _write_json(result_path, stored)
 
-            plan = _plan(fixture, entry)
+                    second = _plan(fixture, entry)
 
-            self.assertEqual(plan.executions, ())
-            self.assertEqual(plan.cases[0]["disposition"], "current")
+                    self.assertEqual(second.executions, ())
+                    self.assertEqual(second.cases[0]["disposition"], "current")
+                    self.assertEqual(
+                        second.source_snapshot["commands"][0]["selection"],
+                        "reuse",
+                    )
 
             recheck = _plan(fixture, entry, recheck=True)
             self.assertEqual(
@@ -1411,6 +1492,312 @@ class ReproductionPlanningTests(unittest.TestCase):
                 projection.output_executions[(entry.id, "data/final.txt")],
                 execution[0],
             )
+            self.assertEqual(
+                projection.reachable_commands,
+                frozenset({(entry.id, execution[0])}),
+            )
+
+    def test_incremental_command_closure_invalidates_only_affected_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw_first = entry.root / "data" / "raw-first.txt"
+            raw_second = entry.root / "data" / "raw-second.txt"
+            first_output = entry.root / "data" / "first.txt"
+            second_output = entry.root / "data" / "second.txt"
+            participating_code = entry.root / "scripts" / "shared.py"
+            for path, value in (
+                (raw_first, "raw first"),
+                (raw_second, "raw second"),
+                (first_output, "first"),
+                (second_output, "second"),
+                (participating_code, "# shared"),
+            ):
+                path.write_text(value, encoding="utf-8")
+
+            def write_data() -> None:
+                fixture.write_data(
+                    entry,
+                    [
+                        fixture.item(entry, "raw_first", raw_first, origin=True),
+                        fixture.item(entry, "raw_second", raw_second, origin=True),
+                        fixture.item(entry, "first", first_output, origin=False),
+                        fixture.item(entry, "second", second_output, origin=False),
+                    ],
+                )
+
+            write_data()
+            fixture.evidence(entry, "first", "second")
+            first = fixture.execution(
+                entry,
+                "first",
+                {"raw_first": raw_first},
+                {"first": first_output},
+            )
+            first = (
+                first[0],
+                replace(
+                    first[1],
+                    observed=replace(
+                        first[1].observed,
+                        code=(("scripts/shared.py", _fingerprint(participating_code)),),
+                    ),
+                ),
+            )
+            second = fixture.execution(
+                entry,
+                "second",
+                {"raw_second": raw_second},
+                {"second": second_output},
+            )
+            fixture.write_pyrun(entry, [first, second])
+            _seed_command_results(fixture, _plan(fixture, entry))
+
+            unchanged = _plan(fixture, entry)
+            self.assertEqual(unchanged.executions, ())
+
+            first_script = entry.root / first[1].recipe.script
+            first_script.write_text("# first changed\n", encoding="utf-8")
+            first = (
+                first[0],
+                replace(
+                    first[1],
+                    observed=replace(
+                        first[1].observed, script=_fingerprint(first_script)
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [first, second])
+            script_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [value["execution_id"] for value in script_changed.executions],
+                [first[0]],
+            )
+            _seed_command_results(fixture, script_changed)
+
+            participating_code.write_text("# shared changed", encoding="utf-8")
+            first = (
+                first[0],
+                replace(
+                    first[1],
+                    observed=replace(
+                        first[1].observed,
+                        code=(("scripts/shared.py", _fingerprint(participating_code)),),
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [first, second])
+            code_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [value["execution_id"] for value in code_changed.executions],
+                [first[0]],
+            )
+            _seed_command_results(fixture, code_changed)
+
+            raw_first.write_text("raw first changed", encoding="utf-8")
+            write_data()
+            first = (
+                first[0],
+                replace(
+                    first[1],
+                    observed=replace(
+                        first[1].observed,
+                        inputs=(("raw_first", _fingerprint(raw_first)),),
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [first, second])
+            input_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [value["execution_id"] for value in input_changed.executions],
+                [first[0]],
+            )
+            _seed_command_results(fixture, input_changed)
+
+            first_output.write_text("first changed", encoding="utf-8")
+            write_data()
+            first = (
+                first[0],
+                replace(
+                    first[1],
+                    observed=replace(
+                        first[1].observed,
+                        outputs=(("data/first.txt", _fingerprint(first_output)),),
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [first, second])
+            expected_artifact_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [
+                    value["execution_id"]
+                    for value in expected_artifact_changed.executions
+                ],
+                [first[0]],
+            )
+            _seed_command_results(fixture, expected_artifact_changed)
+
+            changed_recipe = replace(
+                first[1].recipe, environment=(("REPRODUCTION_MODE", "changed"),)
+            )
+            first = (
+                execution_id(changed_recipe),
+                replace(first[1], recipe=changed_recipe),
+            )
+            fixture.write_pyrun(entry, [first, second])
+            environment_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [value["execution_id"] for value in environment_changed.executions],
+                [first[0]],
+            )
+
+            def comparison_identity(
+                _owner: object, output: str, _project_root: Path
+            ) -> str | None:
+                return "a" * 64 if output == "data/first.txt" else None
+
+            with mock.patch(
+                "log_commands.reproduction_planner._comparison_identity",
+                side_effect=comparison_identity,
+            ):
+                comparison_a = _plan(fixture, entry)
+                _seed_command_results(fixture, comparison_a)
+
+            def changed_comparison_identity(
+                _owner: object, output: str, _project_root: Path
+            ) -> str | None:
+                return "b" * 64 if output == "data/first.txt" else None
+
+            with mock.patch(
+                "log_commands.reproduction_planner._comparison_identity",
+                side_effect=changed_comparison_identity,
+            ):
+                comparison_changed = _plan(fixture, entry)
+            self.assertEqual(
+                [value["execution_id"] for value in comparison_changed.executions],
+                [first[0]],
+            )
+
+    def test_changed_dependency_output_invalidates_only_affected_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            paths = {
+                name: entry.root / "data" / f"{name}.txt"
+                for name in ("raw", "middle", "final", "other_raw", "other")
+            }
+            for name, path in paths.items():
+                path.write_text(name, encoding="utf-8")
+
+            def write_data() -> None:
+                fixture.write_data(
+                    entry,
+                    [
+                        fixture.item(entry, "raw", paths["raw"], origin=True),
+                        fixture.item(entry, "middle", paths["middle"], origin=False),
+                        fixture.item(entry, "final", paths["final"], origin=False),
+                        fixture.item(
+                            entry, "other_raw", paths["other_raw"], origin=True
+                        ),
+                        fixture.item(entry, "other", paths["other"], origin=False),
+                    ],
+                )
+
+            write_data()
+            fixture.evidence(entry, "final", "other")
+            upstream = fixture.execution(
+                entry,
+                "upstream",
+                {"raw": paths["raw"]},
+                {"middle": paths["middle"]},
+            )
+            downstream = fixture.execution(
+                entry,
+                "downstream",
+                {"middle": paths["middle"]},
+                {"final": paths["final"]},
+            )
+            independent = fixture.execution(
+                entry,
+                "independent",
+                {"other_raw": paths["other_raw"]},
+                {"other": paths["other"]},
+            )
+            fixture.write_pyrun(entry, [upstream, downstream, independent])
+            _seed_command_results(fixture, _plan(fixture, entry))
+
+            paths["middle"].write_text("middle changed", encoding="utf-8")
+            write_data()
+            upstream = (
+                upstream[0],
+                replace(
+                    upstream[1],
+                    observed=replace(
+                        upstream[1].observed,
+                        outputs=(("data/middle.txt", _fingerprint(paths["middle"])),),
+                    ),
+                ),
+            )
+            downstream = (
+                downstream[0],
+                replace(
+                    downstream[1],
+                    observed=replace(
+                        downstream[1].observed,
+                        inputs=(("middle", _fingerprint(paths["middle"])),),
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [upstream, downstream, independent])
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(
+                {value["execution_id"] for value in plan.executions},
+                {upstream[0], downstream[0]},
+            )
+            selections = {
+                value["execution_id"]: value["selection"]
+                for value in plan.source_snapshot["commands"]
+            }
+            self.assertEqual(selections[independent[0]], "reuse")
+
+    def test_recheck_reprojects_an_unchanged_planning_block(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw", encoding="utf-8")
+            output.write_text("output", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"output": output}
+            )
+            fixture.write_pyrun(entry, [execution])
+            (entry.root / execution[1].recipe.script).write_text(
+                "# changed\n", encoding="utf-8"
+            )
+            blocked = _plan(fixture, entry)
+            _seed_command_results(fixture, blocked, disposition="blocked")
+
+            incremental = _plan(fixture, entry)
+            recheck = _plan(fixture, entry, recheck=True)
+
+            self.assertEqual(
+                incremental.source_snapshot["commands"][0]["selection"], "reuse"
+            )
+            self.assertEqual(
+                recheck.source_snapshot["commands"][0]["selection"], "blocked"
+            )
+            self.assertEqual(recheck.executions, ())
 
     def test_changed_source_during_dry_run_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

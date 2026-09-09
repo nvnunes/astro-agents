@@ -71,11 +71,16 @@ a parallel launch, use the dry-run summary to verify the cap, runnable and
 exclusive counts, and complete path claims. Entry-local execution state must
 use `research-log-pyrun/v3`; earlier schemas are unsupported.
 
-The default selection is incremental: current results satisfy their artifact
-cases, while new, unconfirmed, failed, stale, and dependency-affected eligible
-executions are selected. When the researcher explicitly asks to recheck, check
-again, or rerun already-current reproduction results, add `--recheck`. State
-whether the preview or launch uses incremental or recheck selection.
+The default selection is incremental. An unchanged saved per-command source
+closure reuses its terminal disposition—success, failure, or block—without
+running the command again. A new or changed command is selected together with
+only the downstream commands its work may affect. Artifact matches are not
+used to infer command reuse. A canonical v3 result contains no reusable command
+closures, so the first later reproduction seeds them; an unchanged second run
+then selects zero executions. When the researcher explicitly asks to recheck,
+check again, or rerun reusable commands, add `--recheck`. Recheck selects every
+currently runnable eligible command but does not bypass a planning blocker.
+State whether the preview or launch uses incremental or recheck selection.
 
 Treat a valid partial plan as useful work. A pre-existing changed or missing
 script, participating code file, direct input, retained boundary, or comparison
@@ -88,9 +93,13 @@ reinterpret any of these findings during reproduction.
 The default run excludes executions with `auto_reproduce: false`.
 `--include-all` includes them and requires separate explicit researcher
 authorization. A request to recheck does not authorize non-automatic
-execution. A real launch prints a run ID after
-durable acceptance and returns immediately. The background job is CLI-owned
-and does not depend on the launching agent or terminal remaining active.
+execution. When commands are selected for execution, a real launch prints a
+run ID after durable acceptance and returns immediately. The background job is
+CLI-owned and does not depend on the launching agent or terminal remaining
+active. When a launch selects no executions, it instead prints the standard
+current reconciliation immediately. Present that output unchanged: it is the
+completed result of the invocation, not a planning failure, and it must not be
+replaced with the latest completed run's historical command counts.
 
 ## Observe Or Control A Run
 
@@ -126,7 +135,8 @@ must never stop, resume, promote, or otherwise control the run.
 
 ## Report The Result
 
-After completion, retrieve the centralized human projection:
+After a launched run reaches completion, immediately retrieve the centralized
+human projection:
 
 ```bash
 <skill>/scripts/log reproduce report --path <log> --summary
@@ -134,11 +144,17 @@ After completion, retrieve the centralized human projection:
 
 Present the returned compact report unchanged. Its command tree relates total
 commands to policy-skipped, saved-state, and selected commands, then relates
-selected commands to succeeded, failed, and dependency-blocked outcomes. Its
-artifact tree relates current reachable artifacts to matched, not-matched, and
-not-compared outcomes, including the reasons artifacts were not compared. The
-totals are different units because one command may produce several artifacts.
-Do not combine them or reconstruct either tree yourself.
+selected commands to succeeded, failed, and blocked outcomes.
+Its artifact tree relates current reachable artifacts to matched, not-matched, and
+not-compared outcomes, including separate failed, blocked, comparison-failed,
+and skipped reasons. Comparison-failed appears first and skipped appears last.
+The totals are different units because one command may produce several
+artifacts. Do not combine them or reconstruct either tree yourself.
+
+Do not wait for the researcher to ask for this summary. If the launch itself
+returned a no-execution reconciliation, present that CLI-owned summary
+immediately instead; there is no run to observe and no follow-up report command
+to substitute for it.
 
 For a cross-log overview, use the CLI-owned aggregation:
 

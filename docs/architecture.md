@@ -35,11 +35,14 @@ Current user-facing skills include the `technical-writing` base skill, narrower 
 
 Shared runtime behavior should be represented as a skill or kept inside the owning skill package. Avoid hidden cross-skill shared references for normal skill operation.
 
-`plan-writing` owns plan design through optional sharding. `plan-execution`
-owns authorized implementation, continuation, routine progress, and completion.
-Their discovery descriptions and entrypoints define the handoff; substantive
-scope or contract redesign returns to plan-writing. Detailed procedures belong
-in those skill packages, not in the project brief or usage examples.
+`plan-writing` owns plan design, optional document sharding, and explicit
+sub-agent assignments. Delegation requires a complete child shard and an
+explicit plan opt-in; sharding alone does not authorize it. `plan-execution`
+uses one agent by default and owns authorized implementation, plan-authorized
+delegation, routine progress, handoffs, recovery, and completion. Substantive
+scope, contract, or delegation redesign returns to plan-writing. Detailed
+procedures belong in those skill packages, not in the project brief or usage
+examples.
 
 ## Docs As Source Of Truth
 

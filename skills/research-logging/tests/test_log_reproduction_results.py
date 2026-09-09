@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -10,11 +11,13 @@ from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_results import (
     ArtifactCurrentness,
     ArtifactResult,
+    CommandResult,
     ComparisonRecord,
     ReproductionResultError,
     ReproductionResults,
     RunFolder,
     RunResult,
+    compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
     compose_reproduction_summary,
     merge_reproduction_results,
@@ -31,18 +34,48 @@ from validation.human_projection import (
 
 
 class ReproductionResultContractTests(unittest.TestCase):
-    def test_v2_result_is_readable_and_upgrades_without_inventing_counts(self) -> None:
+    def test_v3_result_is_readable_and_upgrades_without_inventing_commands(
+        self,
+    ) -> None:
         value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/2"
-        for run in value["runs"]:
-            del run["command_outcomes"]
+        value["schema"] = "research-log-reproduction-result/3"
+        del value["commands"]
 
         decoded = ReproductionResults.from_json(_canonical(value))
 
-        self.assertIsNone(decoded.runs[0].command_outcomes)
+        self.assertEqual(decoded.commands, ())
         self.assertIn(
-            '"schema": "research-log-reproduction-result/3"', decoded.serialized()
+            '"schema": "research-log-reproduction-result/4"', decoded.serialized()
         )
+
+    def test_v2_result_is_not_retained_as_a_compatibility_format(self) -> None:
+        value = _complete_results().as_dict()
+        value["schema"] = "research-log-reproduction-result/2"
+        del value["commands"]
+
+        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
+            ReproductionResults.from_json(_canonical(value))
+
+    def test_command_result_round_trips_and_merges_by_execution_identity(self) -> None:
+        current = _complete_results()
+        command = CommandResult(
+            "e003",
+            "pyrun-exec/v1:" + "1" * 64,
+            "failed",
+            "a" * 64,
+            "2030-01-02T00:05:00Z",
+            "reproduce-20300102t000000z-fixture",
+        )
+        merged = merge_reproduction_results(
+            current,
+            (),
+            _run("reproduce-20300102t000000z-fixture", "2030-01-02T00:00:00Z"),
+            commands=(command,),
+        )
+
+        decoded = ReproductionResults.from_json(merged.serialized())
+
+        self.assertEqual(decoded.commands, (command,))
 
     def test_evidence_comparison_details_round_trip_durably(self) -> None:
         comparison = ComparisonRecord(
@@ -112,9 +145,7 @@ class ReproductionResultContractTests(unittest.TestCase):
         )
         run = _run("reproduce-20300102t000000z-fixture", "2030-01-02T00:00:00Z")
 
-        merged = merge_reproduction_results(
-            current, (changed,), run, updated_at="2030-01-02T00:05:00Z"
-        )
+        merged = merge_reproduction_results(current, (changed,), run)
 
         self.assertEqual(len(merged.artifacts), len(current.artifacts))
         self.assertEqual(merged.runs[0].run_id, run.run_id)
@@ -278,18 +309,69 @@ class ReproductionResultContractTests(unittest.TestCase):
 
 
 class ReproductionReportTests(unittest.TestCase):
+    def test_no_work_summary_uses_current_command_reconciliation(self) -> None:
+        summary = compose_reproduction_reconciliation_summary(
+            _complete_results(),
+            {
+                "blocked": 0,
+                "failed": 0,
+                "not_automatic": 61,
+                "reused": 189,
+                "succeeded": 0,
+                "total": 250,
+            },
+            generated_at="2030-01-02T00:00:00Z",
+        )
+
+        self.assertIn(
+            "Current reconciliation: no commands executed; no run was created.",
+            summary,
+        )
+        self.assertIn("Latest completed run remains:", summary)
+        self.assertIn(
+            "250 total\n"
+            "├─ 61 skipped by policy (not automatic)\n"
+            "├─ 189 reused from saved state\n"
+            "└─ 0 selected for execution\n"
+            "   ├─ 0 succeeded\n"
+            "   ├─ 0 failed\n"
+            "   └─ 0 blocked",
+            summary,
+        )
+        self.assertIn("5 total\n├─ 1 matched\n├─ 1 not matched", summary)
+
+    def test_unchanged_incremental_run_reports_all_commands_reused(self) -> None:
+        result = _complete_results()
+        run = replace(
+            result.runs[0],
+            command_outcomes={
+                "blocked": 0,
+                "failed": 0,
+                "not_automatic": 2,
+                "reused": 10,
+                "succeeded": 0,
+                "total": 12,
+            },
+        )
+
+        summary = compose_reproduction_summary(replace(result, runs=(run,)))
+
+        self.assertIn(
+            "12 total\n"
+            "├─ 2 skipped by policy (not automatic)\n"
+            "├─ 10 reused from saved state\n"
+            "└─ 0 selected for execution\n"
+            "   ├─ 0 succeeded\n"
+            "   ├─ 0 failed\n"
+            "   └─ 0 blocked",
+            summary,
+        )
+
     def test_compact_summary_reconciles_commands_separately_from_artifacts(
         self,
     ) -> None:
         result = _complete_results()
-        summary = compose_reproduction_summary(
-            result,
-            currentness={
-                ("e003", "data/matched.csv"): ArtifactCurrentness(
-                    False, "execution_reran"
-                )
-            },
-        )
+        summary = compose_reproduction_summary(result)
 
         self.assertIn(
             "12 total\n"
@@ -298,19 +380,48 @@ class ReproductionReportTests(unittest.TestCase):
             "└─ 7 selected for execution\n"
             "   ├─ 4 succeeded\n"
             "   ├─ 1 failed\n"
-            "   └─ 2 blocked by another command failure",
+            "   └─ 2 blocked",
             summary,
         )
         self.assertIn(
-            "5 total\n"
-            "├─ 0 matched\n"
-            "├─ 1 not matched\n"
-            "└─ 4 not compared",
+            "5 total\n├─ 1 matched\n├─ 1 not matched\n└─ 3 not compared",
             summary,
         )
-        self.assertIn("1 because comparison failed", summary)
-        self.assertIn("1 because their prior result is stale", summary)
+        self.assertIn("1 comparison failed", summary)
+        self.assertIn("1 command failed", summary)
+        self.assertIn("1 command blocked", summary)
         self.assertIn("totals are not expected to match", summary)
+
+    def test_artifact_summary_lists_skipped_after_every_other_reason(self) -> None:
+        result = _complete_results()
+        skipped = ArtifactResult(
+            "e003",
+            "data/manual.txt",
+            "pyrun-exec/v1:" + "6" * 64,
+            "skipped",
+            "non_automatic",
+            "2030-01-01T00:05:00Z",
+            "reproduce-20300101t000000z-fixture",
+            None,
+        )
+
+        summary = compose_reproduction_summary(
+            replace(
+                result,
+                artifacts=tuple(
+                    sorted((*result.artifacts, skipped), key=lambda item: item.artifact)
+                ),
+            )
+        )
+
+        reasons = (
+            "comparison failed",
+            "command failed",
+            "command blocked",
+            "command skipped",
+        )
+        positions = tuple(summary.index(reason) for reason in reasons)
+        self.assertEqual(positions, tuple(sorted(positions)))
 
     def test_split_documents_project_as_one_stable_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

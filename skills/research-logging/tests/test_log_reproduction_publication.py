@@ -17,6 +17,7 @@ from log_commands.reproduction_publication import (
     CompletedPublication,
     _artifact_results,
     _command_outcomes,
+    _command_results,
     publish_completed_reproduction,
 )
 from log_commands.reproduction_results import ReproductionResults
@@ -72,7 +73,24 @@ class ReproductionPublicationTests(unittest.TestCase):
             {"entry": None, "kind": "log"},
             False,
             {},
-            {},
+            {
+                "commands": [
+                    {
+                        "auto_reproduce": True,
+                        "entry": "e001",
+                        "execution_id": identities[name],
+                        "selection": selection,
+                        "source_digest": digit * 64,
+                    }
+                    for name, selection, digit in (
+                        ("reused", "reuse", "2"),
+                        ("success", "run", "3"),
+                        ("failure", "run", "4"),
+                        ("dependency", "run", "5"),
+                        ("blocked", "blocked", "6"),
+                    )
+                ]
+            },
             cases,
             planned,
             (),
@@ -130,13 +148,25 @@ class ReproductionPublicationTests(unittest.TestCase):
         self.assertEqual(
             _command_outcomes(plan, request, ReproductionCommandInventory(8, 2)),
             {
-                "blocked": 1,
+                "blocked": 2,
                 "failed": 1,
                 "not_automatic": 2,
-                "reused": 3,
+                "reused": 2,
                 "succeeded": 1,
                 "total": 8,
             },
+        )
+        self.assertEqual(
+            [
+                (item.execution_id, item.disposition)
+                for item in _command_results(request)
+            ],
+            [
+                (identities["success"], "succeeded"),
+                (identities["failure"], "failed"),
+                (identities["dependency"], "blocked"),
+                (identities["blocked"], "blocked"),
+            ],
         )
 
     def test_publication_accepts_run_beneath_intentional_tmp_symlink(self) -> None:

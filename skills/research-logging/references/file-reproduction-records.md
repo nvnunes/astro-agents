@@ -22,7 +22,8 @@ Reproduce may create or update only these generated paths:
   existing-operation-lock mutex that serializes coordinator updates.
 
 `.cache/reproduction/results.json` is the current local machine authority for
-artifact outcomes, per-run command accounting, and run history.
+artifact outcomes, reusable per-command dispositions and source closures,
+per-run command accounting, and run history.
 `reproduction.md` is its source-controlled human-only projection. Agents do not
 parse either file during ordinary work; use
 `log reproduce report --path <log> --summary` for the compact per-log view,
@@ -34,13 +35,32 @@ discards local result history and saved-state reuse, so the next reproduction
 is a cold run. The committed Markdown report remains a human snapshot and is
 never used to reconstruct machine state.
 
-The current result schema is `research-log-reproduction-result/3`. Every newly
+Any launch with no selected executions creates no run ID, run folder, result
+write, or report write. It emits an ephemeral current
+reconciliation using the plan's policy, reuse, and blocked selections together
+with current artifact state. A prior completed run may be named only as
+historical context; its command counts do not replace the current invocation's
+counts.
+
+The current result schema is `research-log-reproduction-result/4`. Every newly
 published run counts every command in its log or entry target exactly once as
 not automatic, reused from saved state, succeeded, failed, or blocked by a
-selected command failure. Those command counts are separate from
-artifact counts because one command may produce several artifacts. The reader
-accepts canonical v2 results only so the next successful publication can write
-v3; it does not reconstruct historical command counts.
+planning condition or selected command failure. Those command counts are separate from
+artifact counts because one command may produce several artifacts.
+
+Each evidence-relevant command also has one current record keyed by entry and
+execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
+disposition and the exact digest of its recipe, environment, scripts, code,
+inputs, dependency outputs, baselines, comparison definitions, and planning
+state. Incremental reproduction reuses any unchanged terminal disposition and
+selects only changed commands plus their affected downstream closure. It never
+infers reusable command state from artifact outcomes. `--recheck` remains the
+explicit override for runnable commands.
+
+The reader accepts canonical v3 results only as a one-time migration input.
+Because v3 has no command source closures, the next successful reproduction
+runs the applicable commands and publishes v4; no older result schema is
+supported.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;

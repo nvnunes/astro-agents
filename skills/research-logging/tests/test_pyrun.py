@@ -12,6 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from research_log_cli_test_support import (
+    PROCESS_TIMEOUT_SECONDS,
+    run_pyrun_process,
+)
+
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
 sys.path.insert(0, str(PYRUN.parent))
 DATA = importlib.import_module("research_log_data")
@@ -40,6 +45,7 @@ def run(
         capture_output=True,
         env=environment,
         check=False,
+        timeout=PROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -1924,16 +1930,15 @@ class PyrunRuntimeTests(unittest.TestCase):
             broken_python.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
             broken_python.chmod(0o755)
             inherited_path = os.environ.get("PATH", "")
-            command = [
-                "./pyrun",
+            arguments = (
                 "scripts/record_executable.py",
                 "--output-data",
                 "data/runner.txt",
-            ]
+            )
 
-            unactivated = run(
-                command,
-                cwd=entry,
+            unactivated = run_pyrun_process(
+                entry,
+                *arguments,
                 environment_updates={
                     "PATH": os.pathsep.join((str(broken_bin), inherited_path))
                 },
@@ -1947,9 +1952,9 @@ class PyrunRuntimeTests(unittest.TestCase):
             before = execution_records(entry)
             (execution_id,) = before
 
-            activated = run(
-                command,
-                cwd=entry,
+            activated = run_pyrun_process(
+                entry,
+                *arguments,
                 environment_updates={
                     "CONDA_PREFIX": str(root / ".conda"),
                     "PATH": os.pathsep.join((str(conda_python.parent), inherited_path)),
@@ -1987,9 +1992,9 @@ class PyrunRuntimeTests(unittest.TestCase):
             broken_python.write_text("#!/bin/sh\nexit 91\n", encoding="utf-8")
             broken_python.chmod(0o755)
 
-            result = run(
-                ["./pyrun", "scripts/print_executable.py"],
-                cwd=entry,
+            result = run_pyrun_process(
+                entry,
+                "scripts/print_executable.py",
                 environment_updates={
                     "PATH": os.pathsep.join(
                         (str(broken_bin), os.environ.get("PATH", ""))
@@ -2010,9 +2015,9 @@ class PyrunRuntimeTests(unittest.TestCase):
             caller_python = caller_bin / "python3"
             caller_python.symlink_to(Path(sys.executable))
 
-            result = run(
-                ["./pyrun", "scripts/print_executable.py"],
-                cwd=entry,
+            result = run_pyrun_process(
+                entry,
+                "scripts/print_executable.py",
                 environment_updates={
                     "PATH": os.pathsep.join(
                         (str(caller_bin), os.environ.get("PATH", ""))
@@ -2034,7 +2039,7 @@ class PyrunRuntimeTests(unittest.TestCase):
             conda_python.parent.mkdir(parents=True)
             conda_python.write_text("not executable\n", encoding="utf-8")
 
-            result = run(["./pyrun", "scripts/print_executable.py"], cwd=entry)
+            result = run_pyrun_process(entry, "scripts/print_executable.py")
 
             self.assertEqual(result.returncode, 2)
             self.assertEqual(
@@ -2051,9 +2056,9 @@ class PyrunRuntimeTests(unittest.TestCase):
             empty_bin = root / "empty-bin"
             empty_bin.mkdir()
 
-            result = run(
-                ["./pyrun", "scripts/print_executable.py"],
-                cwd=entry,
+            result = run_pyrun_process(
+                entry,
+                "scripts/print_executable.py",
                 environment_updates={"PATH": str(empty_bin)},
             )
 
@@ -2067,7 +2072,7 @@ class PyrunRuntimeTests(unittest.TestCase):
             runner = root / "pyrun"
             runner.symlink_to(PYRUN)
 
-            result = run(["./pyrun"], cwd=root)
+            result = run_pyrun_process(root)
 
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stderr, "pyrun: could not resolve project root\n")

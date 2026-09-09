@@ -1,4 +1,4 @@
-"""Fast in-process and explicit process-boundary helpers for ``scripts/log``."""
+"""Fast in-process and explicit process-boundary research-log test helpers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 LOG = SCRIPTS / "log"
+PROCESS_TIMEOUT_SECONDS = 30
 sys.path.insert(0, str(SCRIPTS))
 
 from log_commands.dispatcher import main  # noqa: E402
@@ -53,4 +54,27 @@ def run_log_process(
         capture_output=True,
         env=environment,
         check=False,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def run_pyrun_process(
+    cwd: Path,
+    *arguments: str,
+    environment_updates: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run an entry launcher without direct temporary-shebang dispatch."""
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONHOME", None)
+    if environment_updates is not None:
+        environment.update(environment_updates)
+    return subprocess.run(
+        ["/bin/sh", str(cwd / "pyrun"), *arguments],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+        timeout=PROCESS_TIMEOUT_SECONDS,
     )

@@ -55,6 +55,19 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_research_log_validation_material_graph.py
 ```
 
+## Subprocess Fixture Launches
+
+Tests that execute a temporary `pyrun` must use `run_pyrun_process` from
+`research_log_cli_test_support`. The helper invokes the launcher through
+`/bin/sh` and sets a bounded timeout. Do not pass a temporary shebang script
+directly to `subprocess.run` or `subprocess.Popen` from sandboxed tests: on
+managed macOS hosts, interpreter dispatch can wait before the script body
+starts. Any new subprocess-backed test helper must also set a timeout.
+
+Executable-bit and shebang-dispatch coverage for `./pyrun` belongs in a
+separately identified, unsandboxed platform smoke test. The complete tool suite
+tests the launcher's bootstrap behavior through explicit shell dispatch.
+
 ## Complete Tool Gate
 
 For any research-logging tool change, run the complete tool gate rather than

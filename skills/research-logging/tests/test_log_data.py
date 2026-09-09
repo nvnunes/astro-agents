@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from research_log_cli_test_support import run_log
+from research_log_cli_test_support import run_log, run_pyrun_process
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 
@@ -19,16 +19,7 @@ def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def run_pyrun(entry: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment.pop("PYTHONHOME", None)
-    return subprocess.run(
-        [str(entry / "pyrun"), *arguments],
-        cwd=entry,
-        text=True,
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
+    return run_pyrun_process(entry, *arguments)
 
 
 def result(value: subprocess.CompletedProcess[str]) -> dict[str, object]:

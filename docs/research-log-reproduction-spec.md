@@ -1234,7 +1234,11 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 `resume` is available for `stopped` runs and for a `failed` run whose sole
 operational failure is `reproduction.publication.failed`. It reacquires the
 original scope lock and reuses the same run-local output workspace and run
-paths and immutable `jobs` cap. A stopped run skips `succeeded` and `failed`
+paths and immutable `jobs` cap. One exact pre-fix v3 failure recorded as
+`reproduction.job.failed` with message `unsupported artifact reason:
+'validation_blocked'` is recognized as the corresponding publication failure
+only when its durable run state, workers, and checkpoints are terminal. A
+stopped run skips `succeeded` and `failed`
 execution checkpoints and reinvokes only `stopped` executions in their original run paths,
 preserving script-native checkpoint and resume behavior. It restores the stable
 ready queue from the accepted plan and durable checkpoints, but does not reuse
@@ -1514,7 +1518,8 @@ The complete v1 reason vocabulary is `baseline_unavailable`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
 `multiple_producers`, `output_missing`,
 `outside_entry`, `resource_limit`, `safety_failure`, `non_automatic`, `stop_requested`,
-`unsupported_format`, `worker_cleanup_incomplete`, and `worker_survived`.
+`unsupported_format`, `validation_blocked`, `worker_cleanup_incomplete`, and
+`worker_survived`.
 
 ### Authoritative Result
 

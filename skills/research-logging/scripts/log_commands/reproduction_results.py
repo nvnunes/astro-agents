@@ -67,6 +67,7 @@ REASONS = {
     "non_automatic",
     "stop_requested",
     "unsupported_format",
+    "validation_blocked",
     "worker_cleanup_incomplete",
     "worker_survived",
 }

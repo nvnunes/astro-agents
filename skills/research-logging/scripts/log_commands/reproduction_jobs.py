@@ -92,6 +92,9 @@ STATUS_POLL_SECONDS = 0.1
 FRESH_RUN = "fresh"
 STOPPED_RESUME = "stopped"
 PUBLICATION_RETRY = "publication"
+LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE = (
+    "unsupported artifact reason: 'validation_blocked'"
+)
 
 
 @dataclass(frozen=True)
@@ -285,12 +288,7 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
     record = _load_run(root / "run.json")
     _verify_checkpoint_inventory(root, record)
     state = cast(Mapping[str, object], record["state"])
-    operational = state.get("operational_failure")
-    publication_retry = (
-        state["status"] == "failed"
-        and isinstance(operational, Mapping)
-        and operational.get("code") == "reproduction.publication.failed"
-    )
+    publication_retry = _is_publication_retry(record)
     if state["status"] != "stopped" and not publication_retry:
         raise ActionError(
             "reproduction.resume.invalid_state",
@@ -330,6 +328,51 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
         raise
     _close_fds(lock_fds)
     return run_id
+
+
+def _is_publication_retry(record: Mapping[str, object]) -> bool:
+    """Recognize canonical and one exact legacy terminal publication failure."""
+
+    state = cast(Mapping[str, object], record["state"])
+    timestamps = cast(Mapping[str, object], record["timestamps"])
+    current_schema = record.get("schema") == RUN_SCHEMA
+    inactive = (
+        state.get("active_executions") == []
+        if current_schema
+        else state.get("current_execution") is None
+    )
+    terminal_checkpoints = (
+        {"succeeded", "failed"} if current_schema else {"complete", "partial"}
+    )
+    terminal = (
+        state.get("status") == "failed"
+        and state.get("phase") is None
+        and isinstance(timestamps.get("finished_at"), str)
+        and inactive
+        and all(
+            item.get("state") == "exited"
+            for item in cast(Sequence[Mapping[str, object]], record["workers"])
+        )
+        and all(
+            item.get("state") in terminal_checkpoints
+            for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
+        )
+    )
+    if not terminal:
+        return False
+    operational = state.get("operational_failure")
+    if not isinstance(operational, Mapping):
+        return False
+    if operational.get("code") == "reproduction.publication.failed":
+        return True
+    return (
+        record.get("schema") == RUN_SCHEMA
+        and operational.get("code") == "reproduction.job.failed"
+        and operational.get("message")
+        == LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE
+        and operational.get("entry") is None
+        and operational.get("execution_id") is None
+    )
 
 
 def supervise_reproduction(

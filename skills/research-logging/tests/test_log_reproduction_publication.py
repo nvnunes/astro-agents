@@ -10,6 +10,7 @@ from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_publication import (
     CompletedPublication,
+    _artifact_results,
     publish_completed_reproduction,
 )
 from log_commands.reproduction_results import ReproductionResults
@@ -283,6 +284,49 @@ class ReproductionPublicationTests(unittest.TestCase):
                 validation_path.read_text(encoding="utf-8"), validation_text
             )
             self.assertFalse((log_root / "validation.md").exists())
+
+    def test_validation_blocked_case_is_a_planned_failure(self) -> None:
+        run_id = "reproduce-20300101t000000z-validation-blocked"
+        execution_id = "pyrun-exec/v1:" + "1" * 64
+        plan = ReproductionPlan(
+            "docs/study.md",
+            {"entry": None, "kind": "log"},
+            False,
+            {},
+            {},
+            (
+                {
+                    "artifact": "data/result.csv",
+                    "disposition": "failed",
+                    "entry": "e001",
+                    "execution_id": execution_id,
+                    "reason": "validation_blocked",
+                },
+            ),
+            (),
+            (),
+            (),
+        )
+
+        artifacts = _artifact_results(
+            CompletedPublication(
+                plan,
+                (),
+                run_id,
+                "2030-01-01T00:00:00Z",
+                "2030-01-01T00:01:00Z",
+                Path("/tmp/reproduction-run"),
+            )
+        )
+
+        self.assertEqual(
+            (
+                artifacts[0].execution_id,
+                artifacts[0].outcome,
+                artifacts[0].reason,
+            ),
+            (execution_id, "failed", "validation_blocked"),
+        )
 
 
 if __name__ == "__main__":

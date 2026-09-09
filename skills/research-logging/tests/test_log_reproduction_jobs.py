@@ -20,6 +20,8 @@ from log_commands.reproduction_execution import (
 )
 from log_commands.reproduction_jobs import (
     LEGACY_RUN_SCHEMA,
+    LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
+    PUBLICATION_RETRY,
     RUN_SCHEMA,
     _accepted_record,
     _acquire_scope_locks,
@@ -31,6 +33,7 @@ from log_commands.reproduction_jobs import (
     _failed_checkpoint_references,
     _find_run,
     _finish_failed,
+    _is_publication_retry,
     _load_run,
     _marker_identity,
     _reconcile_lost_supervisor,
@@ -51,6 +54,44 @@ from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_exact_legacy_publication_failure_is_retry_only(self) -> None:
+        record = {
+            "schema": RUN_SCHEMA,
+            "state": {
+                "active_executions": [],
+                "operational_failure": {
+                    "code": "reproduction.job.failed",
+                    "entry": None,
+                    "execution_id": None,
+                    "message": LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
+                },
+                "phase": None,
+                "status": "failed",
+            },
+            "timestamps": {"finished_at": "2030-01-01T00:00:05Z"},
+            "workers": [{"state": "exited"}],
+            "checkpoints": [{"state": "succeeded"}, {"state": "failed"}],
+        }
+
+        self.assertTrue(_is_publication_retry(record))
+        self.assertEqual(
+            _resumable_execution_references(record, mode=PUBLICATION_RETRY),
+            frozenset(),
+        )
+
+        unrelated = cast(dict[str, object], record["state"])[
+            "operational_failure"
+        ]
+        assert isinstance(unrelated, dict)
+        unrelated["message"] = "unrelated job failure"
+        self.assertFalse(_is_publication_retry(record))
+
+        unrelated["message"] = LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE
+        cast(dict[str, object], record["state"])["active_executions"] = [
+            {"entry": "e001", "execution_id": "pyrun-exec/v1:" + "1" * 64}
+        ]
+        self.assertFalse(_is_publication_retry(record))
+
     def test_resume_sets_use_every_schema_specific_terminal_checkpoint(self) -> None:
         identity_a = "pyrun-exec/v1:" + "1" * 64
         identity_b = "pyrun-exec/v1:" + "2" * 64

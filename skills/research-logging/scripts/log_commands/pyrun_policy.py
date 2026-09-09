@@ -20,6 +20,7 @@ from validation.pyrun_state import (
     load_pyrun_state,
     recipe_from_invocation,
     update_auto_reproduce_locked,
+    update_exclusive_locked,
 )
 
 from .context import EntryContext, resolve_project_root
@@ -32,6 +33,36 @@ def update_auto_reproduce(
     entry: EntryContext, *, execution_id_value: str, auto_reproduce: bool
 ) -> ActionResult:
     """Apply one Markdown-first automatic-reproduction policy under lock."""
+
+    return _update_policy(
+        entry,
+        execution_id_value=execution_id_value,
+        field="auto_reproduce",
+        requested=auto_reproduce,
+    )
+
+
+def update_exclusive(
+    entry: EntryContext, *, execution_id_value: str, exclusive: bool
+) -> ActionResult:
+    """Apply one Markdown-first managed-reproduction exclusivity policy."""
+
+    return _update_policy(
+        entry,
+        execution_id_value=execution_id_value,
+        field="exclusive",
+        requested=exclusive,
+    )
+
+
+def _update_policy(
+    entry: EntryContext,
+    *,
+    execution_id_value: str,
+    field: str,
+    requested: bool,
+) -> ActionResult:
+    """Apply one exact execution policy while preserving every other field."""
 
     project_root = resolve_project_root(entry.root)
     with entry_lock(entry):
@@ -75,11 +106,10 @@ def update_auto_reproduce(
         selected = _authored_invocation_group(invocation, recipes)
         selected_ids: list[str] = []
         for current, recipe in selected:
-            if current.auto_reproduce != auto_reproduce:
+            if getattr(current, field) != requested:
                 raise ActionError(
                     "pyrun.update.markdown_disagreement",
-                    "edit only the Markdown --auto-reproduce=false token "
-                    "before updating state",
+                    f"edit only the Markdown {field} policy before updating state",
                 )
             identity = execution_id(recipe)
             recorded = state.executions.get(identity)
@@ -91,28 +121,31 @@ def update_auto_reproduce(
             if identity not in selected_ids:
                 selected_ids.append(identity)
         changed = any(
-            state.executions[key].auto_reproduce != auto_reproduce
-            for key in selected_ids
+            getattr(state.executions[key], field) != requested for key in selected_ids
         )
         if changed:
             try:
-                update_auto_reproduce_locked(
-                    entry.root,
-                    tuple(selected_ids),
-                    auto_reproduce=auto_reproduce,
-                    project_root=project_root,
-                )
+                if field == "auto_reproduce":
+                    update_auto_reproduce_locked(
+                        entry.root,
+                        tuple(selected_ids),
+                        auto_reproduce=requested,
+                        project_root=project_root,
+                    )
+                else:
+                    update_exclusive_locked(
+                        entry.root,
+                        tuple(selected_ids),
+                        exclusive=requested,
+                        project_root=project_root,
+                    )
             except PyrunStateError as error:
                 raise ActionError("pyrun.update.failed", str(error)) from error
     relative = (entry.root / PYRUN_FILENAME).relative_to(project_root).as_posix()
     return ActionResult(
         "pyrun.update",
         "updated" if changed else "unchanged",
-        (
-            "pyrun.auto_reproduce.updated"
-            if changed
-            else "pyrun.auto_reproduce.unchanged"
-        ),
+        (f"pyrun.{field}.updated" if changed else f"pyrun.{field}.unchanged"),
         changed,
         (relative,),
     )

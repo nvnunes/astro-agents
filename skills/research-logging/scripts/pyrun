@@ -99,9 +99,12 @@ from validation.pyrun_outputs import (
     portable_output_path,
 )
 from validation.pyrun_state import (
+    LEGACY_PYRUN_SCHEMA,
+    PYRUN_FILENAME,
     ExecutionRecipe,
     ObservedExecution,
     PyrunStateError,
+    load_pyrun_state,
     ordinary_execution,
     portable_script_path,
     publish_execution_locked,
@@ -118,7 +121,7 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 def usage() -> int:
     print(
         "usage: pyrun <script> [args...]\n"
-        "       pyrun [--auto-reproduce=false] [--env NAME=value] "
+        "       pyrun [--auto-reproduce=false] [--exclusive] [--env NAME=value] "
         "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
@@ -281,6 +284,7 @@ def _execution_layout(
     dict[str, str],
     dict[str, str],
     bool,
+    bool,
 ]:
     """Return the shared runner layout used to execute and publish support."""
 
@@ -296,6 +300,7 @@ def _execution_layout(
         dict(layout.roles),
         dict(layout.environment),
         layout.auto_reproduce,
+        layout.exclusive,
     )
 
 
@@ -764,7 +769,18 @@ def main(argv: list[str]) -> int:
                 roles,
                 explicit_env,
                 auto_reproduce,
+                exclusive,
             ) = _execution_layout(argv)
+            state_path = entry / PYRUN_FILENAME
+            if exclusive and (state_path.exists() or state_path.is_symlink()):
+                current_state = load_pyrun_state(
+                    state_path, entry_root=entry, project_root=root
+                )
+                if current_state.schema == LEGACY_PYRUN_SCHEMA:
+                    raise SystemExit(
+                        "pyrun: --exclusive requires log pyrun "
+                        "migrate-exclusivity first"
+                    )
             _require_declared_input_tokens(script_args, roles, data)
             material_roles = _material_value_roles(script_args, roles)
             for value in script_args:
@@ -964,6 +980,7 @@ def main(argv: list[str]) -> int:
                             recipe,
                             observed,
                             auto_reproduce=auto_reproduce,
+                            exclusive=exclusive,
                             last_run_at=completed_at,
                         ),
                         project_root=root,

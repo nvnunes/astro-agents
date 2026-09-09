@@ -31,6 +31,7 @@ from .reproduction_contract import (
     canonical_execution_source_digest,
     canonical_record_digest,
     source_snapshot,
+    successful_checkpoint_state,
 )
 from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _finish_complete, _load_run, _plan_from_record
@@ -290,7 +291,7 @@ def _verify_candidate_files(
     _require_digest(checkpoint, candidate.get("checkpoint_sha256"))
     value = _load_json_file(checkpoint)
     if (
-        value.get("state") != "complete"
+        not successful_checkpoint_state(value.get("state"))
         or value.get("execution_id") != candidate.get("execution_id")
         or value.get("completed_at") != candidate.get("checkpoint_completed_at")
         or not isinstance(value.get("outputs"), list)
@@ -392,7 +393,7 @@ def _apply_confirmations(
                 executions[identity] = replace(execution, confirmed=True)
                 changed = True
         if changed:
-            candidate_state = PyrunFile(path, entry.root, executions)
+            candidate_state = PyrunFile(path, entry.root, executions, state.schema)
             atomic_write_text(
                 path,
                 validated_pyrun_serialization(candidate_state, project_root=project),
@@ -456,7 +457,9 @@ def _runtime_plan(
             raise ActionError("reproduction.recovery.source_changed", identity)
         executions.append(
             {
-                "digest": canonical_execution_source_digest(execution.as_dict()),
+                "digest": canonical_execution_source_digest(
+                    execution.as_dict(schema=loaded[entry_id].schema)
+                ),
                 "entry": entry_id,
                 "execution_id": identity,
             }

@@ -14,6 +14,7 @@ This file is the root working brief for the `astro-agents` project itself.
 - Use `docs/runtime-model.md` for runtime terminology, control-flow concepts, and terminology-reframing guidance in this project.
 - Use `docs/testing.md` for validation requirements and canonical review checks in this project.
 - Use `docs/research-log-mechanical-validator-spec.md` for the normative implementation contract for the code-only research-log mechanical validator, its inputs, generated state, cache, diagnostics, and tests.
+- Use `docs/research-log-reproduction-spec.md` for the normative execution-state, scheduling, migration, and mechanical-reproduction contract.
 - Use any other named local source-of-truth docs directly.
 
 ## Validation

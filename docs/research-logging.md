@@ -571,6 +571,14 @@ remains log-local. Changing a recorded helper makes the dependent execution
 support stale; a later successful run refreshes the observed dependency set.
 Use `./pyrun --auto-reproduce=false -- ...` for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
+Use `./pyrun --exclusive -- ...` when managed reproduction must run the command
+alone across all active reproduction runs in the project. Exclusivity is a
+scheduling policy, not part of the recipe identity, and it does not change
+ordinary direct execution or reserve unrelated host processes. For a later
+policy-only change, edit Markdown first and run `log pyrun update` with exactly
+one of `--auto-reproduce true|false` or `--exclusive true|false`. Convert strict
+legacy records with `log pyrun migrate-exclusivity --path <log> --dry-run`
+before running the mutating form; neither form executes research commands.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
@@ -946,7 +954,7 @@ Preview one exact scope without writing anything:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry-id>] \
-  [--recheck] --dry-run
+  [--recheck] [--jobs <positive-integer>] --dry-run
 ```
 
 Launch it by omitting `--dry-run`. The command prints a durable run ID and
@@ -955,6 +963,17 @@ selection is incremental: already-current results satisfy their artifact
 cases. Add `--recheck` when you deliberately want every eligible execution in
 the selected evidence-relevant scope to run again, including executions whose
 results are current.
+
+`--jobs` defaults to `1`. A larger accepted value bounds concurrent executions
+within the run; graph dependencies, overlapping read/write/run/runtime claims,
+and project-wide exclusive commands can reduce actual concurrency. The dry run
+shows the immutable cap, each execution's exclusive flag, and its normalized
+path claims without creating state. Status, stop, and resume use the accepted
+cap and do not accept an override.
+
+Legacy v2 execution records remain available only with `--jobs 1`, conservatively
+scheduled as exclusive; migrate them with `log pyrun migrate-exclusivity` before
+requesting a larger jobs value.
 
 Executions recorded with `auto_reproduce: false` are excluded by default.
 Include them only when you explicitly intend the additional simulation or

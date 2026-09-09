@@ -4,8 +4,8 @@
 
 Status: active implementation specification. The serial reproduction workflow
 and its maintained-log cutovers are complete. The Phase 19 version 3 parallel
-scheduling contract is frozen; implementation and exclusivity metadata
-migration remain pending until their plan gates pass.
+scheduling implementation is complete; maintained-corpus exclusivity metadata
+migration and integrated verification remain pending until their plan gates pass.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -620,7 +620,8 @@ have exactly `entry`, `execution_id`, `script`, `markdown_path`, `line`,
 `invocation_kind`, `expansion_index`, `prior_schema`, `prior_exclusive`,
 `target_exclusive`, and `action`. `invocation_kind` is `direct` or
 `loop_expansion`; `expansion_index` is null for direct commands and otherwise
-the zero-based stable expansion index. `prior_exclusive` is null for v2 and a
+the zero-based stable expansion index. `line` is the one-based opening line of
+the containing shell command fence. `prior_exclusive` is null for v2 and a
 Boolean for v3; `action` is `convert` or `unchanged`. Arrays use canonical log,
 entry, Markdown-location, expansion, and execution-ID order. A ready or complete
 result requires `unaccounted: 0` and no diagnostics. Text is a complete human
@@ -1206,6 +1207,11 @@ Terminal run statuses are:
 `stopping` is an active phase, not a terminal status. Artifact changes or
 failures do not make a successfully published run operationally failed. A
 complete run may contain any artifact outcome.
+When run-level failure cleanup is still active, `phase: "stopping"` together
+with a non-null `operational_failure` is the durable failed-terminal intent.
+Recovery preserves that intent, finishes worker and permit cleanup, and then
+publishes `status: "failed"`; it must not reinterpret the transition as a user
+stop.
 
 ### Stop
 
@@ -1258,8 +1264,10 @@ must never restart research execution automatically. Every formerly active run
 is reconciled, surviving registered workers receive the same bounded cleanup,
 and its project-scheduler waiters and permits are reconciled under the scheduler
 mutex. The run becomes reason-coded `stopped` only after no worker or permit
-remains. The scope lock is not released earlier. Execution continues only after
-explicit `resume` passes ordinary guards.
+remains, except that a `stopping` run with non-null `operational_failure`
+preserves that durable intent and becomes `failed` after cleanup. The scope lock
+is not released earlier. Execution continues only after explicit `resume`
+passes ordinary guards.
 
 ### Exit Status
 

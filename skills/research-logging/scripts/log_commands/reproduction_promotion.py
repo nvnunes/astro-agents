@@ -414,10 +414,11 @@ def _metadata_candidates(
                 (name, fingerprints[name]) for name, _kind in execution.recipe.outputs
             ),
         ),
+        execution.exclusive,
     )
     executions = dict(state.executions)
     executions[execution_id] = candidate_execution
-    candidate_state = PyrunFile(state.path, state.entry_root, executions)
+    candidate_state = PyrunFile(state.path, state.entry_root, executions, state.schema)
     updates = {
         state.path: validated_pyrun_serialization(candidate_state, project_root=project)
     }

@@ -133,7 +133,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), '{"schema":"fixture"}\n')
         dry_run.assert_called_once_with(
-            log, entry="e003", include_all=False, recheck=True
+            log, entry="e003", include_all=False, jobs=1, recheck=True
         )
 
         output = StringIO()
@@ -152,7 +152,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), "reproduce-fixture\n")
         launch.assert_called_once_with(
-            log, entry=None, include_all=False, recheck=True
+            log, entry=None, include_all=False, jobs=1, recheck=True
         )
 
         rejected = (

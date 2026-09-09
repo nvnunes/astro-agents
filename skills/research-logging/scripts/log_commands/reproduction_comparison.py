@@ -32,7 +32,6 @@ from validation.evidence_comparison import (
 )
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
-    PyrunExecution,
     PyrunFile,
     load_pyrun_state,
     validated_pyrun_serialization,
@@ -40,7 +39,7 @@ from validation.pyrun_state import (
 
 from .context import LogContext, resolve_entry
 from .model import ActionError
-from .reproduction_contract import ReproductionPlan
+from .reproduction_contract import ReproductionPlan, successful_checkpoint_state
 from .reproduction_execution import ExecutionAttempt, ReproductionWorkspace
 from .storage import atomic_write_text
 
@@ -132,15 +131,11 @@ class ArtifactComparison:
                 "expected": dict(self.expected) if self.expected is not None else None,
                 "profile": self.profile,
                 "regenerated": (
-                    dict(self.regenerated)
-                    if self.regenerated is not None
-                    else None
+                    dict(self.regenerated) if self.regenerated is not None else None
                 ),
             }
             if self.evidence_definition is not None:
-                comparison["evidence_contract"] = (
-                    EVIDENCE_COMPARISON_RESULT_CONTRACT
-                )
+                comparison["evidence_contract"] = EVIDENCE_COMPARISON_RESULT_CONTRACT
                 comparison["evidence_definition"] = self.evidence_definition
                 comparison["evidence"] = [dict(item) for item in self.evidence]
         return {
@@ -278,7 +273,7 @@ def compare_execution_outputs(
                 definition=definition,
             )
         )
-    complete = attempt.checkpoint.state == "complete"
+    complete = successful_checkpoint_state(attempt.checkpoint.state)
     staged = _record_execution(
         _StagingRequest(
             plan,
@@ -306,7 +301,7 @@ def _compare_execution_output(
     attempt: ExecutionAttempt,
     definition: EvidenceComparisonDefinition | None,
 ) -> ArtifactComparison:
-    if attempt.checkpoint.state != "complete":
+    if not successful_checkpoint_state(attempt.checkpoint.state):
         return ArtifactComparison(
             artifact,
             "failed",
@@ -420,17 +415,8 @@ def confirm_matching_execution_locked(
     if current.confirmed:
         return False
     executions = dict(state.executions)
-    executions[result.execution_id] = PyrunExecution(
-        True,
-        current.auto_reproduce,
-        current.last_run_at,
-        current.runner,
-        current.environment_profile,
-        current.execution_contract,
-        current.recipe,
-        current.observed,
-    )
-    candidate = PyrunFile(state.path, state.entry_root, executions)
+    executions[result.execution_id] = replace(current, confirmed=True)
+    candidate = PyrunFile(state.path, state.entry_root, executions, state.schema)
     atomic_write_text(
         state.path,
         validated_pyrun_serialization(candidate, project_root=project_root),
@@ -464,9 +450,7 @@ def _compare_with_profile(expected: Path, regenerated: Path, profile: str) -> bo
     }
     comparator = comparators.get(profile)
     if comparator is None:
-        raise _ComparisonFailure(
-            "unsupported_format", f"unknown profile: {profile}"
-        )
+        raise _ComparisonFailure("unsupported_format", f"unknown profile: {profile}")
     if profile == "directory":
         return comparator(expected, regenerated)
     left_identity = _regular_identity(expected)
@@ -596,9 +580,7 @@ def _json_equal(left: object, right: object) -> bool:
         elif first != second:
             return False
         elif isinstance(first, float) and first == 0.0:
-            if math.copysign(1.0, first) != math.copysign(
-                1.0, cast(float, second)
-            ):
+            if math.copysign(1.0, first) != math.copysign(1.0, cast(float, second)):
                 return False
     return True
 
@@ -711,9 +693,10 @@ def _compare_numpy_container(expected: Path, regenerated: Path, suffix: str) -> 
             return _numpy_array_equal(left, right)
         _preflight_npz(expected)
         _preflight_npz(regenerated)
-        with np.load(expected, allow_pickle=False) as first, np.load(
-            regenerated, allow_pickle=False
-        ) as second:
+        with (
+            np.load(expected, allow_pickle=False) as first,
+            np.load(regenerated, allow_pickle=False) as second,
+        ):
             if sorted(first.files) != sorted(second.files):
                 return False
             for name in sorted(first.files):
@@ -784,13 +767,9 @@ def _object_value_equal(
 
     nodes[0] += 1
     if nodes[0] > MAX_ARRAY_MEMBERS or depth > MAX_JSON_DEPTH:
-        raise _ComparisonFailure(
-            "resource_limit", "object structure limit exceeded"
-        )
+        raise _ComparisonFailure("resource_limit", "object structure limit exceeded")
     if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
-        return _object_ndarray_equal(
-            left, right, depth=depth, nodes=nodes
-        )
+        return _object_ndarray_equal(left, right, depth=depth, nodes=nodes)
     if type(left) is not type(right):
         return False
     if isinstance(left, float):
@@ -828,18 +807,14 @@ def _primitive_array_equal(left: object, right: object) -> bool:
     if first.dtype.kind == "c":
         return _primitive_array_equal(
             first.real, second.real
-        ) and _primitive_array_equal(
-            first.imag, second.imag
-        )
+        ) and _primitive_array_equal(first.imag, second.imag)
     if first.dtype.kind == "f":
         nan_equal = np.isnan(first) & np.isnan(second)
         ordinary_equal = first == second
         if not bool(np.all(nan_equal | ordinary_equal)):
             return False
         zeros = ordinary_equal & (first == 0)
-        return bool(
-            np.array_equal(np.signbit(first[zeros]), np.signbit(second[zeros]))
-        )
+        return bool(np.array_equal(np.signbit(first[zeros]), np.signbit(second[zeros])))
     return bool(np.array_equal(first, second))
 
 
@@ -886,9 +861,9 @@ def _compare_hdf5(expected: Path, regenerated: Path) -> bool:
                 if not _hdf5_attrs_equal(left.attrs, right.attrs):
                     return False
                 if kind == "dataset":
-                    if not isinstance(
-                        right, h5py.Dataset
-                    ) or not _hdf5_dataset_equal(left, right):
+                    if not isinstance(right, h5py.Dataset) or not _hdf5_dataset_equal(
+                        left, right
+                    ):
                         return False
             return True
     except _ComparisonFailure:
@@ -946,9 +921,7 @@ def _hdf5_dataset_equal(left: object, right: object) -> bool:
     row_members = max(1, math.prod(first.shape[1:]))
     itemsize = max(1, first.dtype.itemsize)
     if row_members * itemsize * 2 > MAX_WORKING_MEMORY:
-        raise _ComparisonFailure(
-            "resource_limit", "HDF5 row exceeds working memory"
-        )
+        raise _ComparisonFailure("resource_limit", "HDF5 row exceeds working memory")
     step = max(
         1,
         min(
@@ -1050,11 +1023,9 @@ def _compare_directories(expected: Path, regenerated: Path) -> bool:
         if not _compare_with_profile(left_path, right_path, profile):
             return False
     return left_projection == tuple(
-        (relative, kind)
-        for relative, kind, _path in _directory_members(expected)
+        (relative, kind) for relative, kind, _path in _directory_members(expected)
     ) and right_projection == tuple(
-        (relative, kind)
-        for relative, kind, _path in _directory_members(regenerated)
+        (relative, kind) for relative, kind, _path in _directory_members(regenerated)
     )
 
 
@@ -1149,7 +1120,7 @@ def _record_execution(request: _StagingRequest) -> str:
     ]
     record = {
         "bytes": retained_bytes,
-        "complete": attempt.checkpoint.state == "complete",
+        "complete": successful_checkpoint_state(attempt.checkpoint.state),
         "diagnostics": diagnostics,
         "entry": attempt.entry,
         "execution_id": attempt.execution_id,
@@ -1241,9 +1212,7 @@ def load_recorded_comparisons(
     ):
         raise ActionError("reproduction.staging.invalid", str(path))
     results = tuple(
-        _decode_recorded_comparison(
-            item, workspace, verify_outputs=verify_outputs
-        )
+        _decode_recorded_comparison(item, workspace, verify_outputs=verify_outputs)
         for item in cast(list[object], value["executions"])
     )
     identities = [(item.entry, item.execution_id) for item in results]
@@ -1288,9 +1257,7 @@ def _decode_recorded_comparison(
     ):
         raise ActionError("reproduction.staging.invalid", "comparison is invalid")
     artifacts = tuple(
-        _decode_recorded_artifact(
-            item, workspace, verify_outputs=verify_outputs
-        )
+        _decode_recorded_artifact(item, workspace, verify_outputs=verify_outputs)
         for item in cast(list[object], outputs)
     )
     identities = [item.artifact for item in artifacts]
@@ -1356,8 +1323,7 @@ def _decode_recorded_artifact(
         and (
             not isinstance(evidence_definition, str)
             or _SHA256_RE.fullmatch(evidence_definition) is None
-            or value.get("evidence_contract")
-            != EVIDENCE_COMPARISON_RESULT_CONTRACT
+            or value.get("evidence_contract") != EVIDENCE_COMPARISON_RESULT_CONTRACT
         )
     ):
         raise ActionError("reproduction.staging.invalid", "output is invalid")
@@ -1385,9 +1351,7 @@ def _decode_recorded_artifact(
     )
 
 
-def _recorded_fingerprint(
-    value: object, artifact: str
-) -> Mapping[str, object] | None:
+def _recorded_fingerprint(value: object, artifact: str) -> Mapping[str, object] | None:
     if value is None:
         return None
     return parse_fingerprint(value, artifact).as_dict()
@@ -1426,8 +1390,10 @@ def _require_recorded_output_current(
             raise ActionError("reproduction.staging.invalid", "output path is invalid")
         return
     assert path is not None
-    if path.is_symlink() or (kind == "file" and not path.is_file()) or (
-        kind == "directory" and not path.is_dir()
+    if (
+        path.is_symlink()
+        or (kind == "file" and not path.is_file())
+        or (kind == "directory" and not path.is_dir())
     ):
         raise ActionError(
             "reproduction.staging.output_changed", f"recorded output changed: {path}"
@@ -1449,9 +1415,7 @@ def _available_bytes(source: Path, kind: str) -> int:
             raise ActionError("reproduction.staging.kind_changed", str(source))
         members = _directory_members(source)
         return sum(
-            path.stat().st_size
-            for _, item_kind, path in members
-            if item_kind == "file"
+            path.stat().st_size for _, item_kind, path in members if item_kind == "file"
         )
     raise ActionError("reproduction.staging.kind_invalid", kind)
 
@@ -1484,9 +1448,7 @@ def _observed_fingerprint(path: Path) -> Mapping[str, object] | None:
                 if member.type == "directory":
                     entries.append(member)
                 else:
-                    digest, _ = observe_file_content(
-                        path / PurePosixPath(member.path)
-                    )
+                    digest, _ = observe_file_content(path / PurePosixPath(member.path))
                     entries.append(type(member)(member.path, "file", digest))
             return compose_directory_fingerprint(tuple(entries)).as_dict()
     except (OSError, ValueError, _ComparisonFailure):
@@ -1511,9 +1473,7 @@ def _require_unchanged(path: Path, identity: tuple[int, int, int, int]) -> None:
         raise _ComparisonFailure("comparator_error", "artifact changed while reading")
 
 
-def _read_bounded(
-    path: Path, *, maximum_memory: int = MAX_WORKING_MEMORY
-) -> bytes:
+def _read_bounded(path: Path, *, maximum_memory: int = MAX_WORKING_MEMORY) -> bytes:
     identity = _regular_identity(path)
     if identity[2] > maximum_memory:
         raise _ComparisonFailure("resource_limit", "decoder working memory exceeded")

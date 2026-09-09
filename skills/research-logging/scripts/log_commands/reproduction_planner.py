@@ -114,6 +114,7 @@ class _PlanningState:
     selected_entries: tuple[str, ...]
     entry_target: bool
     include_all: bool
+    jobs: int
     selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
     owners: Mapping[str, tuple[_Owner, ...]]
@@ -233,11 +234,14 @@ def plan_reproduction(
     *,
     entry: EntryContext | None,
     include_all: bool,
+    jobs: int = 1,
     selection_policy: SelectionPolicy = INCREMENTAL_SELECTION,
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
 
     _require_selection_policy(selection_policy)
+    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs <= 0:
+        raise ActionError("reproduction.jobs.invalid", "--jobs must be positive")
     _require_existing_locks_available(log, entry)
     admitted = _admit_validation(log)
     validation_snapshot, validation_state = admitted[:2]
@@ -258,6 +262,7 @@ def plan_reproduction(
         selected_ids,
         entry is not None,
         include_all,
+        jobs,
         selection_policy,
         entries,
         _owner_index(entries, project_root),
@@ -268,6 +273,14 @@ def plan_reproduction(
     _apply_cycle_and_dependency_failures(state)
     prior = _load_prior_results(log)
     ordered = _select_and_order(state, prior)
+    if jobs > 1 and any(
+        state.selected[key].entry.pyrun.schema == "research-log-pyrun/v2"
+        for key in ordered
+    ):
+        raise ActionError(
+            "reproduction.jobs.migration_required",
+            "--jobs greater than one requires pyrun exclusivity migration",
+        )
     plan = _project_plan(
         state,
         ordered,
@@ -823,9 +836,7 @@ def _entry_validation_blockers(
             )
         )
         if finding_ids:
-            result.setdefault(entry, []).append(
-                (str(group["chain_id"]), finding_ids)
-            )
+            result.setdefault(entry, []).append((str(group["chain_id"]), finding_ids))
     return {entry: tuple(groups) for entry, groups in sorted(result.items())}
 
 
@@ -1070,6 +1081,12 @@ def _project_plan(
                     output for output, _ in owner.execution.recipe.outputs
                 ),
                 "auto_reproduce": owner.execution.auto_reproduce,
+                "exclusive": (
+                    True
+                    if owner.entry.pyrun.schema == "research-log-pyrun/v2"
+                    else owner.execution.exclusive
+                ),
+                **_execution_claims(state, owner),
             }
         )
     authority_files = [
@@ -1079,7 +1096,9 @@ def _project_plan(
     ]
     execution_snapshot = [
         {
-            "digest": canonical_execution_source_digest(owner.execution.as_dict()),
+            "digest": canonical_execution_source_digest(
+                owner.execution.as_dict(schema=owner.entry.pyrun.schema)
+            ),
             "entry": owner.entry.context.id,
             "execution_id": identity,
         }
@@ -1131,7 +1150,70 @@ def _project_plan(
         tuple(executions),
         boundaries,
         failures,
+        state.jobs,
     )
+
+
+def _execution_claims(state: _PlanningState, owner: _Owner) -> dict[str, object]:
+    """Project immutable portable scheduling claims for one execution."""
+
+    entry_root = owner.entry.context.root
+    identity_tail = owner.execution_id.rsplit(":", 1)[-1]
+    run_path = f"<run>/executions/{owner.entry.context.id}/{identity_tail}"
+    read_paths: set[str] = set()
+    if owner.entry.data is not None:
+        for name in owner.execution.recipe.inputs:
+            resource = owner.entry.data.by_name.get(name)
+            if resource is not None:
+                read_paths.add(
+                    _claim_source_path(
+                        Path(resource.canonical_target), state.project_root
+                    )
+                )
+    write_paths = {
+        _claim_run_path(
+            output_target_path(
+                output,
+                entry_root=entry_root,
+                project_root=state.project_root,
+                authored=False,
+            ),
+            state.project_root,
+        )
+        for output, _ in owner.execution.recipe.outputs
+    }
+    return {
+        "read_paths": sorted(read_paths),
+        "write_paths": sorted(write_paths),
+        "run_path": run_path,
+        "writable_paths": sorted(
+            {
+                *write_paths,
+                f"<run>/runtime/{owner.entry.context.id}/{identity_tail}",
+                f"<run>/diagnostics/{owner.entry.context.id}/{identity_tail}",
+            }
+        ),
+    }
+
+
+def _claim_source_path(path: Path, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return f"<project>/{resolved.relative_to(project_root).as_posix()}"
+    except ValueError:
+        return resolved.as_posix()
+
+
+def _claim_run_path(path: Path, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(project_root).as_posix()
+    except ValueError as error:
+        raise ActionError(
+            "reproduction.claim.external_write",
+            f"generated output escapes the project: {resolved}",
+        ) from error
+    return f"<run>/workspace/{relative}"
 
 
 def _admit_validation(
@@ -1321,9 +1403,7 @@ def _recheck_validation_result(plan: ReproductionPlan, log: LogContext) -> None:
     if not isinstance(projection_path, str) or not isinstance(projection_digest, str):
         raise ActionError("reproduction.source.invalid", "invalid published validation")
     if _digest(log.root / projection_path) != projection_digest:
-        raise ActionError(
-            "reproduction.source.changed", "published validation changed"
-        )
+        raise ActionError("reproduction.source.changed", "published validation changed")
 
 
 def _recheck_executions(
@@ -1350,12 +1430,17 @@ def _recheck_executions(
                 project_root=project_root,
             )
         execution = loaded[entry_id].executions.get(identity)
+        encoded = (
+            execution.as_dict(schema=loaded[entry_id].schema)
+            if execution is not None
+            else None
+        )
         digest = (
-            canonical_execution_source_digest(execution.as_dict())
-            if execution is not None
+            canonical_execution_source_digest(encoded)
+            if encoded is not None
             and plan.source_snapshot.get("schema") == SOURCE_SNAPSHOT_SCHEMA
-            else canonical_record_digest(execution.as_dict())
-            if execution is not None
+            else canonical_record_digest(encoded)
+            if encoded is not None
             else None
         )
         if execution is None or digest != expected:

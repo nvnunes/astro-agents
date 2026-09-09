@@ -45,20 +45,27 @@ checkpoint, result, report, or other state:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-all] [--recheck] --dry-run
+  [--include-all] [--recheck] [--jobs <positive-integer>] --dry-run
 ```
 
 Launch the same scope by omitting `--dry-run`:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-all] [--recheck]
+  [--include-all] [--recheck] [--jobs <positive-integer>]
 ```
 
 Without `--entry`, the target is exactly the named log. With `--entry`, the
 target is exactly that entry. Evidence dependencies outside the selected scope
 remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
+
+`--jobs` defaults to `1`, preserving serial execution. A larger value is an
+immutable per-run concurrency cap: dependency readiness, conflicting path
+claims, and project-wide exclusivity may keep actual concurrency lower. Inspect
+the dry-run's `jobs`, `exclusive`, and path-claim fields before a parallel
+launch. Existing pyrun v2 metadata supports only `--jobs 1` until the explicit
+exclusivity migration is complete.
 
 The default selection is incremental: current results satisfy their artifact
 cases, while new, unconfirmed, failed, stale, and dependency-affected eligible
@@ -91,6 +98,9 @@ same-path `resume`; resume remains guarded by the original source snapshot.
 The same command may retry a run whose sole operational failure was
 reproduction-result publication; that retry reuses durable comparisons and
 terminal attempts rather than rerunning commands.
+Status reports every active execution and worker; queued work is not presented
+as execution time. Resume always reuses the accepted `jobs` value and cannot
+override it.
 
 Accepted run folders live at
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`,

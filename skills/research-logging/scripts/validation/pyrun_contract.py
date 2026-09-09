@@ -19,6 +19,7 @@ PYRUN_ROLE_OPTIONS = {
 }
 PYRUN_ENV_OPTION = "--env"
 PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
+PYRUN_EXCLUSIVE_OPTION = "--exclusive"
 PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
     PYRUN_CODE_ENVIRONMENT
 )
@@ -54,6 +55,7 @@ class PyrunLayout:
     environment: tuple[tuple[str, str], ...]
     recipe_parameters: tuple[str, ...]
     auto_reproduce: bool
+    exclusive: bool
 
 
 @dataclass
@@ -64,6 +66,7 @@ class _RunnerState:
     signature_prefix: list[str] = field(default_factory=list)
     recipe_prefix: list[str] = field(default_factory=list)
     auto_reproduce: bool = True
+    exclusive: bool = False
 
 
 def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
@@ -77,15 +80,22 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
 
     index = 0
     state = _RunnerState()
-    runner_options = PYRUN_CAPTURE_STREAMS.keys() | PYRUN_ROLE_OPTIONS.keys() | {
-        PYRUN_ENV_OPTION,
-        PYRUN_DISABLE_AUTO_REPRODUCE_OPTION,
-    }
+    runner_options = (
+        PYRUN_CAPTURE_STREAMS.keys()
+        | PYRUN_ROLE_OPTIONS.keys()
+        | {
+            PYRUN_ENV_OPTION,
+            PYRUN_DISABLE_AUTO_REPRODUCE_OPTION,
+            PYRUN_EXCLUSIVE_OPTION,
+        }
+    )
     while index < len(arguments):
         option = arguments[index]
         if (
             option.startswith("--auto-reproduce")
             and option != PYRUN_DISABLE_AUTO_REPRODUCE_OPTION
+            or option.startswith("--exclusive")
+            and option != PYRUN_EXCLUSIVE_OPTION
             or option in {"--slow", "--no-slow"}
         ):
             raise PyrunContractError("invalid automatic-reproduction option")
@@ -97,6 +107,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         or state.declarations
         or state.environment
         or not state.auto_reproduce
+        or state.exclusive
     ):
         if index >= len(arguments) or arguments[index] != "--":
             raise PyrunContractError("runner options require -- before the script")
@@ -126,6 +137,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         tuple(sorted(state.environment.items())),
         tuple((*state.recipe_prefix, *script_arguments)),
         state.auto_reproduce,
+        state.exclusive,
     )
 
 
@@ -137,6 +149,11 @@ def _consume_runner_option(
         if not state.auto_reproduce:
             raise PyrunContractError("duplicate --auto-reproduce=false declaration")
         state.auto_reproduce = False
+        return index + 1
+    if option == PYRUN_EXCLUSIVE_OPTION:
+        if state.exclusive:
+            raise PyrunContractError("duplicate --exclusive declaration")
+        state.exclusive = True
         return index + 1
     if index + 1 >= len(arguments):
         raise PyrunContractError(f"{option} lacks target")

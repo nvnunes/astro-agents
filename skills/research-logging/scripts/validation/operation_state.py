@@ -18,6 +18,10 @@ RUNTIME_CACHE_DIRECTORIES = frozenset(
 REORGANIZE_RESIDUE = "reorganize-residue"
 REGISTRY_RESIDUE = "registry-residue"
 REGISTRY_RESIDUE_PREFIX = "registry-residue-"
+PYRUN_EXCLUSIVITY_MIGRATION_RESIDUE = "pyrun-exclusivity-migration"
+PYRUN_EXCLUSIVITY_MIGRATION_SCHEMA = (
+    "research-log-pyrun-exclusivity-migration-transaction/1"
+)
 LOCK_OWNER_SCHEMA = "research-log-operation-owner/1"
 MAX_LOCK_OWNER_BYTES = 64 * 1024
 LockMode = Literal["shared", "exclusive"]
@@ -162,7 +166,12 @@ def _read_lock_owner(path: Path) -> dict[str, object] | None:
     return value
 
 
-def require_mutation_ready(log_root: Path, *, entry_id: str | None = None) -> None:
+def require_mutation_ready(
+    log_root: Path,
+    *,
+    entry_id: str | None = None,
+    allow_pyrun_exclusivity_migration: bool = False,
+) -> None:
     """Refuse mutation while recognized hard-crash residue remains."""
 
     directory = operation_directory(log_root)
@@ -175,6 +184,38 @@ def require_mutation_ready(log_root: Path, *, entry_id: str | None = None) -> No
     for path in paths:
         if path.exists() or path.is_symlink():
             raise OSError(f"research-log mutation requires Repair: {path}")
+    migration = directory / PYRUN_EXCLUSIVITY_MIGRATION_RESIDUE / "transaction.json"
+    if not allow_pyrun_exclusivity_migration and (
+        migration.exists() or migration.is_symlink()
+    ):
+        transaction_id = _migration_transaction_id(migration)
+        detail = f" {transaction_id}" if transaction_id is not None else ""
+        raise OSError(
+            "research-log mutation is blocked by pyrun exclusivity migration"
+            f"{detail}; run log pyrun migrate-exclusivity --path LOG: {migration}"
+        )
+
+
+def _migration_transaction_id(path: Path) -> str | None:
+    """Return a recognized migration transaction identity for diagnostics."""
+
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            raw = handle.read(64 * 1024 * 1024 + 1)
+        if len(raw) > 64 * 1024 * 1024:
+            return None
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if (
+        isinstance(value, dict)
+        and value.get("schema") == PYRUN_EXCLUSIVITY_MIGRATION_SCHEMA
+        and isinstance(value.get("transaction_id"), str)
+    ):
+        return value["transaction_id"]
+    return None
 
 
 def begin_reorganization(log_root: Path) -> Path:

@@ -6,10 +6,17 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-PLAN_SCHEMA = "research-log-reproduction-plan/2"
+LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
+PLAN_SCHEMA = "research-log-reproduction-plan/3"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
+
+
+def successful_checkpoint_state(state: object) -> bool:
+    """Return whether a checkpoint is successful in either supported schema."""
+
+    return state in {"complete", "succeeded"}
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,7 @@ class ReproductionPlan:
     executions: tuple[Mapping[str, object], ...]
     boundaries: tuple[Mapping[str, object], ...]
     failures: tuple[Mapping[str, object], ...]
+    jobs: int = 1
 
     def as_dict(self) -> dict[str, object]:
         """Return the exact public v1 field set."""
@@ -35,6 +43,7 @@ class ReproductionPlan:
             "executions": [dict(value) for value in self.executions],
             "failures": [dict(value) for value in self.failures],
             "include_all": self.include_all,
+            "jobs": self.jobs,
             "schema": PLAN_SCHEMA,
             "source_snapshot": dict(self.source_snapshot),
             "summary": self.summary,

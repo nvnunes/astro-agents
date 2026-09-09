@@ -237,6 +237,22 @@ comparable commands that should not run during automatic reproduction:
 ./pyrun --auto-reproduce=false -- scripts/run_simulation.py --output-data data/result.json
 ```
 
+Add `--exclusive` before `--` when managed reproduction must run the command
+alone across the project, including commands that internally use worker pools,
+threaded native libraries, a GPU, coordinated children, or uncontended timing.
+This is scheduling metadata only: direct `pyrun` execution is unchanged, and
+the option does not alter the execution ID or reserve unrelated host work.
+
+```bash
+./pyrun --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
+```
+
+For a v3 record's later policy-only change, edit Markdown first, then use `log
+pyrun update --exclusive true|false`. For a legacy v2 record, edit Markdown,
+run the write-free `log pyrun migrate-exclusivity --path <log> --dry-run`, then
+run the same migration without `--dry-run`; no policy-update command is needed.
+Do not edit `pyrun.json` by hand.
+
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader
 to follow a cross-reference merely to find the reproduction command.

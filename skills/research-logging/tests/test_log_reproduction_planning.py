@@ -882,6 +882,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     "executions",
                     "failures",
                     "include_all",
+                    "jobs",
                     "schema",
                     "source_snapshot",
                     "summary",
@@ -1265,6 +1266,19 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(
                 len({value["execution_id"] for value in plan.executions}), 1
             )
+            for value in plan.executions:
+                entry = value["entry"]
+                digest = str(value["execution_id"]).rsplit(":", 1)[-1]
+                self.assertEqual(
+                    value["run_path"], f"<run>/executions/{entry}/{digest}"
+                )
+                self.assertIn(
+                    f"<run>/diagnostics/{entry}/{digest}",
+                    value["writable_paths"],
+                )
+                self.assertIn(
+                    f"<run>/runtime/{entry}/{digest}", value["writable_paths"]
+                )
 
     def test_existing_overlapping_entry_lock_blocks_preview(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -70,11 +70,16 @@ def entry_lock_under_log(entry: EntryContext) -> Iterator[None]:
 
 
 @contextmanager
-def log_lock(log: LogContext) -> Iterator[None]:
+def log_lock(
+    log: LogContext, *, allow_pyrun_exclusivity_migration: bool = False
+) -> Iterator[None]:
     """Hold the canonical log lock exclusively."""
 
     with operation_lock(log.root, "log.lock", mode="exclusive"):
-        require_mutation_ready(log.root)
+        require_mutation_ready(
+            log.root,
+            allow_pyrun_exclusivity_migration=allow_pyrun_exclusivity_migration,
+        )
         yield
 
 
@@ -89,7 +94,10 @@ def log_creation_lock(log: LogCreationContext) -> Iterator[None]:
 
 @contextmanager
 def log_and_entry_locks(
-    log: LogContext, entries: Iterable[EntryContext]
+    log: LogContext,
+    entries: Iterable[EntryContext],
+    *,
+    allow_pyrun_exclusivity_migration: bool = False,
 ) -> Iterator[None]:
     """Hold the log lock, then unique entry locks in stable ID order."""
 
@@ -99,7 +107,12 @@ def log_and_entry_locks(
     ):
         raise ValueError("operation locks require unique entries from one log")
     with ExitStack() as stack:
-        stack.enter_context(log_lock(log))
+        stack.enter_context(
+            log_lock(
+                log,
+                allow_pyrun_exclusivity_migration=allow_pyrun_exclusivity_migration,
+            )
+        )
         for entry in selected:
             stack.enter_context(entry_lock_under_log(entry))
         yield

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import NoReturn, Sequence
+from typing import Mapping, NoReturn, Sequence, cast
 
 from .context import resolve_entry, resolve_log, resolve_log_creation
 from .model import (
@@ -86,7 +86,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "retention": _dispatch_retention,
         }
         result = dispatch[family](arguments)
-        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+        if isinstance(result, int):
+            return result
+        if isinstance(result, str):
+            print(result, end="")
+        elif isinstance(result, Mapping):
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        else:
+            print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
     except (ActionError, OSError, UnicodeError) as error:
         return _report_failure(
@@ -101,7 +108,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _report_failure(
-    family: str, selected_task: str, error: Exception, *, dry_run: bool = False,
+    family: str,
+    selected_task: str,
+    error: Exception,
+    *,
+    dry_run: bool = False,
 ) -> int:
     """Emit one bounded expected operational or contract failure."""
 
@@ -395,9 +406,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
             ),
         )
     elif args.action == "rename":
-        result = data.rename(
-            entry, args.old_name, args.new_name, dry_run=args.dry_run
-        )
+        result = data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
     elif args.action == "refresh":
         result = data.refresh(entry, args.name, dry_run=args.dry_run)
     elif args.action == "remove":
@@ -497,27 +506,70 @@ def _add_data_update_parser(
     )
 
 
-def _dispatch_pyrun(arguments: Sequence[str]) -> ActionResult:
+def _dispatch_pyrun(
+    arguments: Sequence[str],
+) -> ActionResult | Mapping[str, object] | str | int:
     parser = _AuthoringParser(prog="log pyrun")
     actions = parser.add_subparsers(dest="action", required=True)
     update = actions.add_parser(
         "update", help="Apply one Markdown-first execution policy change"
     )
+    migrate = actions.add_parser(
+        "migrate-exclusivity",
+        help="Convert one complete log from pyrun v2 to v3 exclusivity metadata",
+    )
+    migrate.add_argument("--path", required=True, type=Path)
+    migrate.add_argument("--dry-run", action="store_true")
+    migrate.add_argument("--format", choices=("text", "json"), default="text")
     _entry_arguments(update)
     update.add_argument("--execution-id", required=True)
-    update.add_argument(
+    policy = update.add_mutually_exclusive_group(required=True)
+    policy.add_argument(
         "--auto-reproduce",
-        required=True,
         choices=("true", "false"),
         help="exact automatic-reproduction policy",
     )
+    policy.add_argument(
+        "--exclusive",
+        choices=("true", "false"),
+        help="exact managed-reproduction exclusivity policy",
+    )
     args = parser.parse_args(arguments)
+    if args.action == "migrate-exclusivity":
+        from .pyrun_exclusivity_migration import (
+            format_migration_result,
+            migrate_exclusivity,
+        )
+
+        result = migrate_exclusivity(resolve_log(args.path), dry_run=args.dry_run)
+        if result["status"] == "refused":
+            output = (
+                json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+                if args.format == "json"
+                else format_migration_result(result)
+            )
+            print(output, end="")
+            diagnostic = cast(Sequence[object], result["diagnostics"])[0]
+            assert isinstance(diagnostic, Mapping)
+            print(
+                f"log: {diagnostic['code']}: {diagnostic['message']}",
+                file=sys.stderr,
+            )
+            return 2
+        return result if args.format == "json" else format_migration_result(result)
     from . import pyrun_policy
 
-    return pyrun_policy.update_auto_reproduce(
-        resolve_entry(resolve_log(args.path), args.entry),
+    entry = resolve_entry(resolve_log(args.path), args.entry)
+    if args.auto_reproduce is not None:
+        return pyrun_policy.update_auto_reproduce(
+            entry,
+            execution_id_value=args.execution_id,
+            auto_reproduce=args.auto_reproduce == "true",
+        )
+    return pyrun_policy.update_exclusive(
+        entry,
         execution_id_value=args.execution_id,
-        auto_reproduce=args.auto_reproduce == "true",
+        exclusive=args.exclusive == "true",
     )
 
 
@@ -739,6 +791,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser.add_argument("--entry")
     parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(arguments)
     log = resolve_log(args.path)
@@ -749,6 +802,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             log,
             entry=args.entry,
             include_all=args.include_all,
+            jobs=args.jobs,
             recheck=args.recheck,
         )
         print(plan.serialized())
@@ -758,6 +812,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
                 log,
                 entry=args.entry,
                 include_all=args.include_all,
+                jobs=args.jobs,
                 recheck=args.recheck,
             )
         )
@@ -777,6 +832,7 @@ def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
         resolve_log(args.path), validation_id=args.validation, batch_id=args.batch
     )
     from .inspection_cli import print_producer
+
     print_producer(value, args.path, args.format)
     return 0 if complete else 2
 
@@ -891,6 +947,7 @@ def _dispatch_findings(arguments: Sequence[str]) -> int:
     else:
         result = show_finding(log, check_id=args.id)
     from .inspection_cli import print_findings
+
     print_findings(result, log.root, args.format)
     return 0
 

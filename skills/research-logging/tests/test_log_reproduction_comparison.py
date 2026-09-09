@@ -522,7 +522,7 @@ def _execution_id(execution: object) -> str:
 
 def _complete_attempt(fixture: _Fixture) -> ExecutionAttempt:
     checkpoint = ExecutionCheckpoint(
-        "e001", fixture.identity, "complete", "checkpoint.json", "now", ()
+        "e001", fixture.identity, "succeeded", "checkpoint.json", "now", ()
     )
     return ExecutionAttempt(
         "e001",

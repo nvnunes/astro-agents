@@ -561,6 +561,12 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "automatic reproduction.",
         "record",
     ),
+    "pyrun.exclusive.mismatch": FindingPresentation(
+        "Exclusive Reproduction Policy Mismatch",
+        "The Markdown command and its execution record disagree about "
+        "exclusive scheduling.",
+        "record",
+    ),
     "pyrun.outputs.invalid": FindingPresentation(
         "Invalid Output-Support Registry",
         "The output-support registry does not satisfy its schema or ownership "

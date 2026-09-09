@@ -149,7 +149,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/output-alias-before-dedup-1"
+RULES_VERSION = "research-log-mechanical/parallel-reproduction-policy-3"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -695,18 +695,24 @@ def _read_entry_data(
         return None, None
     for resource in data_file.inputs:
         registration = {
-            "entry": entry_id, "name": resource.name, "path": resource.canonical_target,
+            "entry": entry_id,
+            "name": resource.name,
+            "path": resource.canonical_target,
         }
         try:
             _verify_input(resource, state)
         except MechanicalContractError as error:
             observed = (
-                dict(error.observed) if isinstance(error.observed, Mapping)
+                dict(error.observed)
+                if isinstance(error.observed, Mapping)
                 else {"value": error.observed}
             )
             error = MechanicalContractError(
-                error.code, error.subject, {**observed, "registration": registration},
-                error.rule, outcome=error.outcome,
+                error.code,
+                error.subject,
+                {**observed, "registration": registration},
+                error.rule,
+                outcome=error.outcome,
             )
             check = _record_entry_surface_error(
                 entry_id, f"input:{resource.name}", error, state
@@ -942,9 +948,12 @@ def _record_raw_output_findings(invocation: Invocation, state: _ScanState) -> No
             "target": relationship.target,
             "path": relationship.path,
         }
-        identity = _command_check_identity(
-            invocation.entry, invocation.fence, invocation.ordinal
-        ) + f":output:{number}"
+        identity = (
+            _command_check_identity(
+                invocation.entry, invocation.fence, invocation.ordinal
+            )
+            + f":output:{number}"
+        )
         dependencies = ({"output_argument": argument},)
         if relationship.named_input is not None:
             state.checks.append(
@@ -1134,7 +1143,7 @@ def _validate_execution_bindings(
             "sha256": state.output_file_observations.get(record_path),
         }
     }
-    authored_policy: dict[str, bool] = {}
+    authored_policy: dict[str, tuple[bool, bool]] = {}
     for invocation in state.invocations:
         if invocation.material_owner != owner:
             continue
@@ -1146,11 +1155,17 @@ def _validate_execution_bindings(
             )
         except MechanicalContractError:
             continue
-        authored_policy[execution_id(recipe)] = invocation.auto_reproduce
+        authored_policy[execution_id(recipe)] = (
+            invocation.auto_reproduce,
+            invocation.exclusive,
+        )
     for identity, execution in sorted(execution_state.executions.items()):
         subject = f"{execution_state.path}:executions[{identity!r}]"
         expected_policy = authored_policy.get(identity)
-        if expected_policy is not None and expected_policy != execution.auto_reproduce:
+        if (
+            expected_policy is not None
+            and expected_policy[0] != execution.auto_reproduce
+        ):
             state.checks.append(
                 _error_check(
                     f"conformance:{entry_id}:pyrun-policy:{identity}",
@@ -1160,8 +1175,26 @@ def _validate_execution_bindings(
                         subject,
                         {
                             "entry": entry_id,
-                            "markdown_auto_reproduce": expected_policy,
+                            "markdown_auto_reproduce": expected_policy[0],
                             "recorded_auto_reproduce": execution.auto_reproduce,
+                        },
+                        "Pyrun Execution Policy",
+                    ),
+                    dependencies=(dependency,),
+                )
+            )
+        if expected_policy is not None and expected_policy[1] != execution.exclusive:
+            state.checks.append(
+                _error_check(
+                    f"conformance:{entry_id}:pyrun-exclusive:{identity}",
+                    CheckScope.CONFORMANCE,
+                    EngineV2Error(
+                        "pyrun.exclusive.mismatch",
+                        subject,
+                        {
+                            "entry": entry_id,
+                            "markdown_exclusive": expected_policy[1],
+                            "recorded_exclusive": execution.exclusive,
                         },
                         "Pyrun Execution Policy",
                     ),

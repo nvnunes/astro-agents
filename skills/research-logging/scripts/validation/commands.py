@@ -164,6 +164,7 @@ class Invocation:
     recipe_parameters: tuple[str, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     auto_reproduce: bool = True
+    exclusive: bool = False
     authored_group: tuple[str, ...] = ()
 
 
@@ -198,6 +199,7 @@ class _ParsedCommand:
     recipe_parameters: tuple[str, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     auto_reproduce: bool = True
+    exclusive: bool = False
     authored_group: tuple[str, ...] = ()
 
 
@@ -266,7 +268,7 @@ def discover_commands(
     command_failures: list[CommandDiscoveryFailure] = []
     duplicate_counts: dict[str, int] = {}
     concrete_invocations = 0
-    for fence_number, (body, eligible) in enumerate(_command_fences(text), 1):
+    for fence_number, (body, eligible, _) in enumerate(_command_fences(text), 1):
         parsed, failures = _parse_fence(body)
         if failures:
             command_failures.append(
@@ -383,7 +385,7 @@ def command_input_names(
     """Return data-token names present in statically parsed command arguments."""
 
     names: set[str] = set()
-    for body, eligible in _command_fences(text):
+    for body, eligible, _ in _command_fences(text):
         if require_experimental_context and not eligible:
             continue
         parsed, _ = _parse_fence(body)
@@ -399,10 +401,16 @@ def command_input_names(
     return frozenset(names)
 
 
-def _command_fences(text: str) -> list[tuple[str, bool]]:
+def command_fence_opening_lines(text: str) -> tuple[int, ...]:
+    """Return one-based opening lines for discovered shell command fences."""
+
+    return tuple(line for _, _, line in _command_fences(text))
+
+
+def _command_fences(text: str) -> list[tuple[str, bool, int]]:
     lines = text.splitlines()
     eligible = _experimental_sections(lines)
-    result: list[tuple[str, bool]] = []
+    result: list[tuple[str, bool, int]] = []
     index = 0
     while index < len(lines):
         opening = FENCE_RE.fullmatch(lines[index].strip())
@@ -425,7 +433,7 @@ def _command_fences(text: str) -> list[tuple[str, bool]]:
             index += 1
         index += 1
         if language in SHELL_LANGUAGES:
-            result.append(("\n".join(body), eligible[start]))
+            result.append(("\n".join(body), eligible[start], start + 1))
     return result
 
 
@@ -573,6 +581,7 @@ def _parse_command(
         recipe_parameters,
         environment,
         auto_reproduce,
+        exclusive,
     ) = _pyrun_layout(ordinary, executable_index)
     argument_start = script_index + 1
     options, positionals = split_argument_values(ordinary[argument_start:])
@@ -589,6 +598,7 @@ def _parse_command(
         recipe_parameters,
         environment,
         auto_reproduce,
+        exclusive,
         authored_group,
     )
 
@@ -602,6 +612,7 @@ def _pyrun_layout(
     Mapping[str, str],
     tuple[str, ...],
     tuple[tuple[str, str], ...],
+    bool,
     bool,
 ]:
     """Resolve the script, signature, captures, and explicit material roles."""
@@ -618,6 +629,7 @@ def _pyrun_layout(
         layout.recipe_parameters,
         layout.environment,
         layout.auto_reproduce,
+        layout.exclusive,
     )
 
 
@@ -696,6 +708,7 @@ def _build_invocation(
         recipe_parameters,
         command.environment,
         command.auto_reproduce,
+        command.exclusive,
         command.authored_group,
     )
 

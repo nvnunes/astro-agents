@@ -5,11 +5,13 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from types import SimpleNamespace
+from typing import Sequence, cast
 from unittest import mock
 
 from log_commands.context import LogContext
@@ -22,6 +24,8 @@ from log_commands.reproduction_execution import (
     ExecutionCheckpoint,
     ExecutionControl,
     _generated_output_paths,
+    _load_checkpoint,
+    _output_already_materialized,
     _seatbelt_profile,
     completed_execution_attempts,
     execute_planned_recipe,
@@ -40,6 +44,9 @@ from validation.pyrun_state import (
 
 
 class _FixtureConfinement(ConfinementBackend):
+    def __init__(self) -> None:
+        self.writable_roots: tuple[Path, ...] = ()
+
     def preflight(self) -> None:
         pass
 
@@ -50,7 +57,8 @@ class _FixtureConfinement(ConfinementBackend):
         writable_roots: Sequence[Path],
         readonly_paths: Sequence[tuple[Path, str]],
     ) -> list[str]:
-        del writable_roots, readonly_paths
+        self.writable_roots = tuple(writable_roots)
+        del readonly_paths
         return list(command)
 
 
@@ -164,6 +172,76 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_plan_jobs_caps_parallel_ready_executions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            identities = tuple(
+                "pyrun-exec/v1:" + str(index) * 64 for index in range(1, 5)
+            )
+            plan = replace(
+                fixture.plan,
+                jobs=2,
+                executions=tuple(
+                    {
+                        "depends_on": [],
+                        "entry": "e001",
+                        "execution_id": identity,
+                        "order": index,
+                        "outputs": [f"data/{index}.txt"],
+                        "auto_reproduce": True,
+                        "exclusive": False,
+                    }
+                    for index, identity in enumerate(identities, 1)
+                ),
+            )
+            lock = threading.Lock()
+            active = 0
+            maximum = 0
+
+            def execute(*args, **kwargs):
+                nonlocal active, maximum
+                planned = args[2]
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.1)
+                with lock:
+                    active -= 1
+                identity = planned["execution_id"]
+                checkpoint = ExecutionCheckpoint(
+                    "e001", identity, "succeeded", "checkpoint.json", "now", ()
+                )
+                return ExecutionAttempt(
+                    "e001", identity, 0, False, None, None, checkpoint, (), "", ""
+                )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._generated_output_paths",
+                    return_value={},
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution.execute_planned_recipe",
+                    side_effect=execute,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.acquire_scheduling_permit",
+                    return_value=SimpleNamespace(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_scheduling_permit"
+                ),
+            ):
+                result = execute_reproduction_plan(fixture.log, plan, workspace)
+
+            self.assertEqual(maximum, 2)
+            self.assertEqual(len(result.attempts), 4)
+
     def test_generated_output_projection_loads_each_entry_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
@@ -215,7 +293,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 workspace,
                 ExecutionControl(confinement=_FixtureConfinement()),
             )
-            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
 
             with mock.patch(
                 "log_commands.reproduction_execution.load_pyrun_state",
@@ -253,9 +331,7 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             self.assertIn("(deny default)", profile)
             self.assertNotIn("allow network", profile)
-            self.assertIn(
-                f'(allow file-write* (subpath "{root / "work"}"))', profile
-            )
+            self.assertIn(f'(allow file-write* (subpath "{root / "work"}"))', profile)
             self.assertIn(
                 f'(deny file-write* (literal "{root / "work" / "source.txt"}"))',
                 profile,
@@ -282,7 +358,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 ExecutionControl(confinement=_FixtureConfinement()),
             )
 
-            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
             self.assertIsNone(attempt.failure_code)
             self.assertIsNotNone(attempt.checkpoint.started_at)
             self.assertIsNotNone(attempt.checkpoint.finished_at)
@@ -292,6 +368,300 @@ class ReproductionExecutionTests(unittest.TestCase):
             copied = workspace.map_source(fixture.output)
             self.assertEqual(copied.read_text(), "SOURCE\n")
             self.assertTrue((workspace.run_root / attempt.checkpoint.path).is_file())
+
+    def test_attempt_uses_private_entry_runtime_and_diagnostic_roots(self) -> None:
+        script = (
+            "import argparse\n"
+            "from pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "Path('scratch.txt').write_text('private')\n"
+            "Path(a.output).write_text(Path(a.source).read_text())\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), script)
+            workspace = fixture.workspace()
+            confinement = _FixtureConfinement()
+
+            attempt = execute_planned_recipe(
+                fixture.log,
+                fixture.plan,
+                fixture.planned,
+                workspace,
+                ExecutionControl(confinement=confinement),
+            )
+
+            tail = fixture.identity.rsplit(":", 1)[-1]
+            attempt_root = workspace.staging_root / "e001" / tail
+            relative_entry = fixture.entry_root.relative_to(fixture.project)
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
+            self.assertEqual(
+                (attempt_root / relative_entry / "scratch.txt").read_text(),
+                "private",
+            )
+            self.assertFalse(
+                (workspace.map_source(fixture.entry_root) / "scratch.txt").exists()
+            )
+            self.assertEqual(
+                set(confinement.writable_roots),
+                {
+                    attempt_root,
+                    workspace.runtime_root / "e001" / tail,
+                    workspace.diagnostics_root / "e001" / tail,
+                },
+            )
+            self.assertNotIn(workspace.work_project, confinement.writable_roots)
+
+    def test_exception_after_permit_writes_failed_checkpoint_before_release(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            planned = {
+                "depends_on": [],
+                "entry": "e001",
+                "execution_id": fixture.identity,
+                "order": 1,
+                "outputs": ["data/result.txt"],
+                "auto_reproduce": True,
+                "exclusive": False,
+            }
+            plan = replace(fixture.plan, jobs=1, executions=(planned,))
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution.execute_planned_recipe",
+                    side_effect=ActionError("fixture.failure", "failed before launch"),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.acquire_scheduling_permit",
+                    return_value=SimpleNamespace(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_scheduling_permit"
+                ) as release,
+            ):
+                batch = execute_reproduction_plan(fixture.log, plan, workspace)
+
+            self.assertEqual(batch.attempts[0].checkpoint.state, "failed")
+            self.assertEqual(batch.attempts[0].failure_code, "fixture.failure")
+            checkpoint = workspace.run_root / batch.attempts[0].checkpoint.path
+            self.assertEqual(json.loads(checkpoint.read_text())["state"], "failed")
+            release.assert_called_once()
+
+    def test_progress_failure_after_permit_is_terminal_and_releases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            planned = {
+                "depends_on": [],
+                "entry": "e001",
+                "execution_id": fixture.identity,
+                "order": 1,
+                "outputs": ["data/result.txt"],
+                "auto_reproduce": True,
+                "exclusive": False,
+            }
+            plan = replace(fixture.plan, jobs=1, executions=(planned,))
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_planner."
+                    "verify_reproduction_runtime_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution.execute_planned_recipe"
+                ) as execute,
+                mock.patch(
+                    "log_commands.reproduction_scheduler.acquire_scheduling_permit",
+                    return_value=SimpleNamespace(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_scheduling_permit"
+                ) as release,
+            ):
+                with self.assertRaisesRegex(ActionError, "progress failed"):
+                    execute_reproduction_plan(
+                        fixture.log,
+                        plan,
+                        workspace,
+                        ExecutionControl(
+                            progress=mock.Mock(
+                                side_effect=ActionError(
+                                    "fixture.progress", "progress failed"
+                                )
+                            )
+                        ),
+                    )
+
+            execute.assert_not_called()
+            checkpoint = json.loads(
+                next((workspace.run_root / "checkpoints").glob("*.json")).read_text()
+            )
+            self.assertEqual(checkpoint["state"], "failed")
+            self.assertEqual(checkpoint["failure"]["code"], "fixture.progress")
+            release.assert_called_once()
+
+    def test_prelaunch_failure_has_no_synthetic_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            with (
+                mock.patch(
+                    "log_commands.reproduction_execution._launch_process",
+                    side_effect=OSError("launch failed"),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.stop_all",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.records",
+                    return_value=(),
+                ),
+            ):
+                attempt = execute_planned_recipe(
+                    fixture.log,
+                    fixture.plan,
+                    fixture.planned,
+                    workspace,
+                    ExecutionControl(confinement=_FixtureConfinement()),
+                )
+
+            self.assertEqual(attempt.checkpoint.state, "failed")
+            self.assertIsNone(attempt.checkpoint.started_at)
+            self.assertIsNone(attempt.checkpoint.finished_at)
+            self.assertIsNone(attempt.checkpoint.elapsed_seconds)
+            loaded = _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+            self.assertIsNotNone(loaded)
+            self.assertIsNone(cast(ExecutionCheckpoint, loaded).elapsed_seconds)
+
+    def test_v3_loader_rejects_legacy_checkpoint_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            checkpoint = (
+                workspace.run_root
+                / "checkpoints"
+                / ("e001-" + fixture.identity.rsplit(":", 1)[-1] + ".json")
+            )
+            value = ExecutionCheckpoint(
+                "e001",
+                fixture.identity,
+                "partial",
+                checkpoint.relative_to(workspace.run_root).as_posix(),
+                None,
+                (),
+            ).as_dict()
+            value.pop("failure")
+            checkpoint.write_text(
+                json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ActionError, "checkpoint fields"):
+                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+            self.assertEqual(
+                cast(
+                    ExecutionCheckpoint,
+                    _load_checkpoint(workspace, "e001", fixture.identity, legacy=True),
+                ).state,
+                "partial",
+            )
+
+    def test_checkpoint_loader_rejects_noncanonical_outputs_and_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            checkpoint = (
+                workspace.run_root
+                / "checkpoints"
+                / ("e001-" + fixture.identity.rsplit(":", 1)[-1] + ".json")
+            )
+            output = {
+                "artifact": "data/result.txt",
+                "fingerprint": _fingerprint(fixture.output).as_dict(),
+            }
+            value = ExecutionCheckpoint(
+                "e001",
+                fixture.identity,
+                "failed",
+                checkpoint.relative_to(workspace.run_root).as_posix(),
+                None,
+                (output, output),
+                failure={
+                    "code": "fixture.failed",
+                    "message": "failed",
+                    "recorded_at": "2030-01-01T00:00:00Z",
+                },
+            ).as_dict()
+            checkpoint.write_text(
+                json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ActionError, "outputs are not canonical"):
+                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+
+            value["outputs"] = []
+            value["failure"] = {
+                "code": "",
+                "message": "failed",
+                "recorded_at": "not-a-time",
+            }
+            checkpoint.write_text(
+                json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ActionError, "failure is invalid"):
+                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+
+    def test_directory_materialization_never_removes_existing_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            target = root / "target"
+            private.mkdir()
+            target.mkdir()
+            (private / "value.txt").write_text("new\n", encoding="utf-8")
+            retained = target / "value.txt"
+            retained.write_text("retained\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(OSError, "cannot be atomically replaced"):
+                _output_already_materialized(
+                    private, target, "data/result", "directory"
+                )
+
+            self.assertEqual(retained.read_text(encoding="utf-8"), "retained\n")
+
+    def test_legacy_execution_preserves_v2_checkpoint_and_workspace_shape(self) -> None:
+        script = (
+            "import argparse\n"
+            "from pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "Path(a.output).write_text(Path(a.source).read_text())\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), script)
+            workspace = fixture.workspace()
+            attempt = execute_planned_recipe(
+                fixture.log,
+                fixture.plan,
+                fixture.planned,
+                workspace,
+                ExecutionControl(confinement=_FixtureConfinement(), legacy=True),
+            )
+
+            checkpoint = json.loads(
+                (workspace.run_root / attempt.checkpoint.path).read_text()
+            )
+            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertNotIn("failure", checkpoint)
+            self.assertEqual(
+                workspace.map_source(fixture.output).read_text(), "source\n"
+            )
 
     def test_captures_declared_stream_directly_in_output_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -337,7 +707,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 ExecutionControl(confinement=_FixtureConfinement()),
             )
 
-            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
             self.assertEqual(
                 workspace.map_source(fixture.output).read_text(), "captured\n"
             )
@@ -384,9 +754,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             workspace = fixture.workspace()
 
-            with self.assertRaisesRegex(
-                ActionError, "pyrun.output.binding_invalid"
-            ):
+            with self.assertRaisesRegex(ActionError, "pyrun.output.binding_invalid"):
                 execute_planned_recipe(
                     fixture.log,
                     fixture.plan,
@@ -412,7 +780,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
 
             self.assertEqual(attempt.failure_code, "execution_failed")
-            self.assertEqual(attempt.checkpoint.state, "partial")
+            self.assertEqual(attempt.checkpoint.state, "failed")
             self.assertIsNotNone(attempt.checkpoint.started_at)
             self.assertIsNotNone(attempt.checkpoint.finished_at)
             self.assertGreaterEqual(attempt.checkpoint.elapsed_seconds or -1, 0)
@@ -438,7 +806,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             final.write_text("retained final\n", encoding="utf-8")
             consume = fixture.entry_root / "scripts" / "consume.py"
             consume.write_text(consumer, encoding="utf-8")
-            fixture.data["inputs"].append(
+            cast(list[object], fixture.data["inputs"]).append(
                 {
                     "fingerprint": _fingerprint(fixture.output).as_dict(),
                     "kind": "file",
@@ -510,8 +878,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             workspace = fixture.workspace()
 
             with mock.patch(
-                "log_commands.reproduction_planner."
-                "verify_reproduction_runtime_snapshot"
+                "log_commands.reproduction_planner.verify_reproduction_runtime_snapshot"
             ):
                 result = execute_reproduction_plan(
                     fixture.log,
@@ -531,7 +898,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                     (attempt.checkpoint.state, attempt.failure_code)
                     for attempt in result.attempts
                 ],
-                [("complete", None), ("complete", None)],
+                [("succeeded", None), ("succeeded", None)],
                 failures,
             )
             self.assertEqual(
@@ -540,8 +907,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertEqual(fixture.output.read_text(), "retained\n")
 
     @unittest.skipUnless(
-        sys.platform == "darwin"
-        and os.environ.get("REPRODUCTION_SANDBOX_TEST") == "1",
+        sys.platform == "darwin" and os.environ.get("REPRODUCTION_SANDBOX_TEST") == "1",
         "requires an explicitly enabled host Seatbelt test",
     )
     def test_host_confinement_denies_boundary_write_and_network(self) -> None:
@@ -571,7 +937,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 ExecutionControl(confinement=DarwinSeatbelt()),
             )
 
-            self.assertEqual(attempt.checkpoint.state, "complete")
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
             self.assertEqual(
                 workspace.map_source(fixture.output).read_text(), "write,network"
             )
@@ -606,8 +972,8 @@ class ReproductionExecutionTests(unittest.TestCase):
                 ExecutionControl(resume=True, confinement=_FixtureConfinement()),
             )
 
-            self.assertEqual(first.checkpoint.state, "complete")
-            self.assertEqual(second.checkpoint.state, "complete")
+            self.assertEqual(first.checkpoint.state, "succeeded")
+            self.assertEqual(second.checkpoint.state, "succeeded")
             self.assertEqual(second.checkpoint.started_at, first.checkpoint.started_at)
             self.assertGreaterEqual(
                 second.checkpoint.elapsed_seconds or -1,
@@ -644,7 +1010,7 @@ class ReproductionExecutionTests(unittest.TestCase):
 
             self.assertTrue(attempt.stopped)
             self.assertEqual(attempt.failure_code, "stop_requested")
-            self.assertEqual(attempt.checkpoint.state, "partial")
+            self.assertEqual(attempt.checkpoint.state, "stopped")
             self.assertIsNotNone(attempt.checkpoint.started_at)
             self.assertIsNone(attempt.checkpoint.finished_at)
             self.assertGreater(attempt.checkpoint.elapsed_seconds or 0, 0)
@@ -897,16 +1263,13 @@ class ReproductionExecutionTests(unittest.TestCase):
             plan = replace(fixture.plan, executions=(planned,))
 
             with mock.patch(
-                "log_commands.reproduction_planner."
-                "verify_reproduction_runtime_snapshot"
+                "log_commands.reproduction_planner.verify_reproduction_runtime_snapshot"
             ):
                 result = execute_reproduction_plan(
                     fixture.log,
                     plan,
                     workspace,
-                    ExecutionControl(
-                        resume=True, confinement=_FixtureConfinement()
-                    ),
+                    ExecutionControl(resume=True, confinement=_FixtureConfinement()),
                 )
 
             self.assertEqual(result.attempts, ())

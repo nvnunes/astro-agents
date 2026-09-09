@@ -6,23 +6,39 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Mapping, cast
+from typing import Mapping, Sequence, cast
 from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
-from log_commands.reproduction_execution import ExecutionBatch
+from log_commands.reproduction_execution import (
+    ExecutionAttempt,
+    ExecutionBatch,
+    ExecutionCheckpoint,
+    WorkerRecord,
+)
 from log_commands.reproduction_jobs import (
+    LEGACY_RUN_SCHEMA,
     RUN_SCHEMA,
     _accepted_record,
     _acquire_scope_locks,
+    _checkpoint_dicts,
     _close_fds,
+    _combined_attempt_workers,
+    _continue_failed_cleanup,
+    _execution_progress,
+    _failed_checkpoint_references,
     _find_run,
+    _finish_failed,
     _load_run,
+    _marker_identity,
     _reconcile_lost_supervisor,
+    _reconciled_worker_history,
     _require_no_promotion_conflict,
+    _resumable_execution_references,
     _status_projection,
+    _verify_checkpoint_inventory,
     dry_run_reproduction,
     format_reproduction_status,
     launch_reproduction,
@@ -35,6 +51,317 @@ from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_resume_sets_use_every_schema_specific_terminal_checkpoint(self) -> None:
+        identity_a = "pyrun-exec/v1:" + "1" * 64
+        identity_b = "pyrun-exec/v1:" + "2" * 64
+        identity_c = "pyrun-exec/v1:" + "3" * 64
+        record = {
+            "schema": RUN_SCHEMA,
+            "checkpoints": [
+                {"entry": "e001", "execution_id": identity_a, "state": "stopped"},
+                {"entry": "e002", "execution_id": identity_b, "state": "stopped"},
+                {"entry": "e003", "execution_id": identity_c, "state": "failed"},
+            ],
+        }
+
+        self.assertEqual(
+            _resumable_execution_references(record, mode="stopped"),
+            frozenset((f"e001:{identity_a}", f"e002:{identity_b}")),
+        )
+        self.assertEqual(
+            _failed_checkpoint_references(record),
+            frozenset((f"e003:{identity_c}",)),
+        )
+
+    def test_cleanup_retry_preserves_compound_worker_identity_and_history(
+        self,
+    ) -> None:
+        identity = "pyrun-exec/v1:" + "1" * 64
+        prior = {
+            "entry": "e003",
+            "execution_id": identity,
+            "last_observed_at": "2030-01-01T00:00:03Z",
+            "parent_worker_id": None,
+            "pid": 4321,
+            "registered_at": "2030-01-01T00:00:02Z",
+            "state": "running",
+            "worker_id": "worker-4321",
+        }
+        survivor = {
+            **prior,
+            "last_observed_at": "2030-01-01T00:00:04Z",
+            "registered_at": "2030-01-01T00:00:04Z",
+        }
+
+        workers = _reconciled_worker_history([prior], [survivor], legacy=False)
+
+        self.assertEqual(workers[0]["registered_at"], "2030-01-01T00:00:02Z")
+        self.assertEqual(workers[0]["last_observed_at"], "2030-01-01T00:00:04Z")
+        self.assertEqual(
+            _marker_identity("reproduce-fixture", "reproduce-fixture:e003:" + "1" * 64),
+            ("e003", identity),
+        )
+
+    def test_failed_cleanup_retry_retains_failed_intent_without_deadlock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log, run_root, run_id = _write_active_run(Path(directory))
+            identity = "pyrun-exec/v1:" + "1" * 64
+            survivor = {
+                "entry": "e003",
+                "execution_id": identity,
+                "last_observed_at": "2030-01-01T00:00:04Z",
+                "parent_worker_id": None,
+                "pid": 4321,
+                "registered_at": "2030-01-01T00:00:04Z",
+                "state": "running",
+                "worker_id": "worker-4321",
+            }
+
+            def retry(
+                retry_log: LogContext,
+                retry_root: Path,
+                *,
+                terminal_status: str,
+            ) -> None:
+                self.assertEqual(terminal_status, "failed")
+                self.assertTrue(_continue_failed_cleanup(retry_log, retry_root))
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._terminate_marked_workers",
+                    side_effect=([survivor], []),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._wait_for_cleanup_retry",
+                    side_effect=retry,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_run_scheduling"
+                ) as release,
+            ):
+                _finish_failed(log, run_root, ActionError("fixture.failed", "failed"))
+
+            record = _load_run(run_root / "run.json")
+            self.assertEqual(
+                cast(Mapping[str, object], record["state"])["status"], "failed"
+            )
+            self.assertEqual(
+                cast(Sequence[Mapping[str, object]], record["checkpoints"])[0]["state"],
+                "failed",
+            )
+            self.assertEqual(
+                cast(Sequence[Mapping[str, object]], record["workers"])[0][
+                    "registered_at"
+                ],
+                "2030-01-01T00:00:01Z",
+            )
+            release.assert_called_once_with(Path(directory).resolve(), run_id)
+
+    def test_lost_supervisor_recovers_durable_failed_cleanup_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log, run_root, run_id = _write_active_run(
+                Path(directory), failure_intent=True
+            )
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._terminate_marked_workers",
+                    return_value=[],
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_run_scheduling"
+                ) as release,
+            ):
+                _reconcile_lost_supervisor(log, run_root)
+
+            record = _load_run(run_root / "run.json")
+            state = cast(Mapping[str, object], record["state"])
+            self.assertEqual(state["status"], "failed")
+            self.assertIsNone(state["phase"])
+            self.assertEqual(
+                cast(Sequence[Mapping[str, object]], record["checkpoints"])[0]["state"],
+                "failed",
+            )
+            release.assert_called_once_with(Path(directory).resolve(), run_id)
+
+    def test_checkpoint_inventory_is_bounded_and_schema_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            checkpoints = run_root / "checkpoints"
+            checkpoints.mkdir()
+            (checkpoints / "foreign.json").write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ActionError, "checkpoint record"):
+                _checkpoint_dicts(run_root, legacy=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            checkpoints = run_root / "checkpoints"
+            checkpoints.mkdir()
+            for index in range(2_049):
+                (checkpoints / f"{index:04d}.json").touch()
+            with self.assertRaisesRegex(ActionError, "entry bound"):
+                _checkpoint_dicts(run_root, legacy=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_active_run(Path(directory))
+            identity = "pyrun-exec/v1:" + "2" * 64
+            foreign = {
+                "completed_at": None,
+                "elapsed_seconds": None,
+                "entry": "e999",
+                "execution_id": identity,
+                "failure": None,
+                "finished_at": None,
+                "outputs": [],
+                "path": "checkpoints/e999-" + "2" * 64 + ".json",
+                "started_at": None,
+                "state": "active",
+            }
+            atomic_write_text(
+                run_root / cast(str, foreign["path"]),
+                json.dumps(foreign, indent=2, sort_keys=True) + "\n",
+            )
+            with self.assertRaisesRegex(ActionError, "absent from the accepted plan"):
+                _checkpoint_dicts(run_root, legacy=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_active_run(Path(directory))
+            checkpoint = next((run_root / "checkpoints").iterdir())
+            checkpoint.rename(checkpoint.with_name("foreign.json"))
+            with self.assertRaisesRegex(ActionError, "file location"):
+                _checkpoint_dicts(run_root, legacy=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_active_run(Path(directory))
+            record = _load_run(run_root / "run.json")
+            checkpoint_path = next((run_root / "checkpoints").iterdir())
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint["state"] = "stopped"
+            checkpoint["failure"] = {
+                "code": "stop_requested",
+                "message": "stopped",
+                "recorded_at": "2030-01-01T00:00:03Z",
+            }
+            atomic_write_text(
+                checkpoint_path,
+                json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
+            )
+            with self.assertRaisesRegex(ActionError, "inventory changed"):
+                _verify_checkpoint_inventory(run_root, record)
+
+    def test_parallel_stop_retains_workers_from_every_attempt(self) -> None:
+        identity_a = "pyrun-exec/v1:" + "1" * 64
+        identity_b = "pyrun-exec/v1:" + "2" * 64
+
+        def attempt(
+            entry: str, identity: str, pid: int, state: str
+        ) -> ExecutionAttempt:
+            checkpoint = ExecutionCheckpoint(
+                entry, identity, "stopped", "checkpoint.json", None, ()
+            )
+            worker = WorkerRecord(
+                f"worker-{pid}",
+                None,
+                pid,
+                identity,
+                state,
+                "2030-01-01T00:00:01Z",
+                "2030-01-01T00:00:02Z",
+                entry,
+            )
+            return ExecutionAttempt(
+                entry,
+                identity,
+                None,
+                True,
+                "stop_requested",
+                "stopped",
+                checkpoint,
+                (worker,),
+                "",
+                "",
+            )
+
+        workers = _combined_attempt_workers(
+            (
+                attempt("e001", identity_a, 4001, "running"),
+                attempt("e002", identity_b, 4002, "exited"),
+            ),
+            legacy=False,
+        )
+
+        self.assertEqual(
+            [(item["entry"], item["state"]) for item in workers],
+            [("e001", "running"), ("e002", "exited")],
+        )
+
+    def test_parallel_progress_uses_compound_identity_for_reversed_finishes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs/research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs/research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-compound"
+            run_root = (
+                project / "tmp/reproduction/2030-01-01" / f"reproduce-research-{run_id}"
+            )
+            run_root.mkdir(parents=True)
+            identity = "pyrun-exec/v1:" + "1" * 64
+            items = tuple(
+                {
+                    "depends_on": [],
+                    "entry": entry,
+                    "execution_id": identity,
+                    "order": order,
+                    "outputs": [f"data/{entry}.txt"],
+                    "auto_reproduce": True,
+                    "exclusive": False,
+                    "read_paths": [],
+                    "run_path": f"<run>/executions/{entry}/" + "1" * 64,
+                    "writable_paths": [
+                        f"<run>/diagnostics/{entry}/" + "1" * 64,
+                        f"<run>/runtime/{entry}/" + "1" * 64,
+                        f"<run>/workspace/data/{entry}.txt",
+                    ],
+                    "write_paths": [f"<run>/workspace/data/{entry}.txt"],
+                }
+                for order, entry in enumerate(("e001", "e002"), 1)
+            )
+            plan = replace(
+                _plan(),
+                target={"entry": None, "kind": "log"},
+                jobs=2,
+                executions=items,
+            )
+            record = _accepted_record(
+                log, plan, run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+
+            _execution_progress(log, run_root, "started", ("e001", identity), None)
+            _execution_progress(log, run_root, "started", ("e002", identity), None)
+            _execution_progress(log, run_root, "finished", ("e002", identity), None)
+
+            state = cast(
+                Mapping[str, object], _load_run(run_root / "run.json")["state"]
+            )
+            self.assertEqual(
+                state["active_executions"],
+                [{"entry": "e001", "execution_id": identity}],
+            )
+            _execution_progress(log, run_root, "finished", ("e001", identity), None)
+            state = cast(
+                Mapping[str, object], _load_run(run_root / "run.json")["state"]
+            )
+            self.assertEqual(state["active_executions"], [])
+
     def test_status_finds_run_beneath_intentional_project_tmp_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -180,6 +507,7 @@ class ReproductionJobTests(unittest.TestCase):
                     log,
                     entry=mock.ANY,
                     include_all=include_all,
+                    jobs=1,
                     selection_policy="recheck",
                 )
                 safety.assert_called_once_with()
@@ -262,7 +590,7 @@ class ReproductionJobTests(unittest.TestCase):
                     )
                     cast(dict[str, object], record["state"]).update(
                         {
-                            "current_execution": expected["current_execution"],
+                            "active_executions": expected["active_executions"],
                             "latest_execution_diagnostic": expected[
                                 "latest_execution_diagnostic"
                             ],
@@ -277,19 +605,28 @@ class ReproductionJobTests(unittest.TestCase):
                         {
                             "completed_at": (
                                 item["finished_at"]
-                                if item["state"] == "complete"
+                                if item["state"] == "succeeded"
                                 else None
                             ),
                             "elapsed_seconds": item["elapsed_seconds"],
                             "entry": item["entry"],
                             "execution_id": item["execution_id"],
                             "finished_at": item["finished_at"],
+                            "failure": item["failure"],
                             "outputs": [],
-                            "path": "executions/example/checkpoint.json",
+                            "path": (
+                                "checkpoints/"
+                                + item["entry"]
+                                + "-"
+                                + item["execution_id"].removeprefix("pyrun-exec/v1:")
+                                + ".json"
+                            ),
                             "started_at": item["started_at"],
                             "state": item["state"],
                         }
-                        for item in expected["execution_timings"]
+                        for item in cast(
+                            list[Mapping[str, object]], expected["execution_timings"]
+                        )
                     ]
                     path = run_root / "run.json"
                     path.write_text(
@@ -331,6 +668,53 @@ class ReproductionJobTests(unittest.TestCase):
 
             with self.assertRaisesRegex(Exception, "fields are invalid"):
                 _load_run(path)
+
+    def test_legacy_run_remains_readable_with_serial_status_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs" / "research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs" / "research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            run_root = (
+                project
+                / "tmp/reproduction/2030-01-01"
+                / "reproduce-research-e003-reproduce-20300101t000000z-fixture"
+            )
+            run_root.mkdir(parents=True)
+            record = _accepted_record(
+                LogContext(summary, log_root),
+                _plan(),
+                "reproduce-20300101t000000z-fixture",
+                run_root,
+                accepted_at="2030-01-01T00:00:00Z",
+            )
+            record["schema"] = LEGACY_RUN_SCHEMA
+            record.pop("jobs")
+            plan = cast(dict[str, object], record["plan"])
+            plan.pop("jobs")
+            execution = cast(list[dict[str, object]], plan["executions"])[0]
+            for field in (
+                "exclusive",
+                "read_paths",
+                "run_path",
+                "writable_paths",
+                "write_paths",
+            ):
+                execution.pop(field)
+            state = cast(dict[str, object], record["state"])
+            state["current_execution"] = None
+            state.pop("active_executions")
+            path = run_root / "run.json"
+            atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+            loaded = _load_run(path)
+            status = _status_projection(loaded)
+
+            self.assertEqual(status["schema"], "research-log-reproduction-status/2")
+            self.assertNotIn("jobs", status)
+            self.assertIsNone(status["current_execution"])
 
     def test_launch_records_plan_before_detached_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -386,6 +770,7 @@ class ReproductionJobTests(unittest.TestCase):
                 log,
                 entry=mock.ANY,
                 include_all=False,
+                jobs=1,
                 selection_policy="recheck",
             )
             spawn.assert_called_once()
@@ -414,14 +799,21 @@ class ReproductionJobTests(unittest.TestCase):
                 }
             ],
             "include_all": False,
+            "jobs": 1,
             "progress": {
                 "artifact_outcomes": {},
                 "completed_executions": 0,
                 "total_executions": 2,
             },
             "run_id": "reproduce-20300101t000000z-fixture",
+            "schema": RUN_SCHEMA,
             "state": {
-                "current_execution": "pyrun-exec/v1:" + "1" * 64,
+                "active_executions": [
+                    {
+                        "entry": "e003",
+                        "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                    }
+                ],
                 "latest_execution_diagnostic": None,
                 "operational_failure": None,
                 "phase": "executing",
@@ -437,7 +829,7 @@ class ReproductionJobTests(unittest.TestCase):
 
         self.assertEqual(len(cast(list[object], status["execution_timings"])), 1)
         self.assertIn(
-            "Active execution time: 12.5 seconds",
+            "Active execution time (e003): 12.5 seconds",
             format_reproduction_status(status),
         )
 
@@ -590,20 +982,53 @@ class ReproductionJobTests(unittest.TestCase):
                 / f"reproduce-research-e003-{run_id}"
             )
             run_root.mkdir(parents=True)
+            identity = "pyrun-exec/v1:" + "1" * 64
+            checkpoint = {
+                "completed_at": None,
+                "elapsed_seconds": 2.0,
+                "entry": "e003",
+                "execution_id": identity,
+                "failure": None,
+                "finished_at": None,
+                "outputs": [],
+                "path": "checkpoints/e003-" + "1" * 64 + ".json",
+                "started_at": "2030-01-01T00:00:01Z",
+                "state": "active",
+            }
+            (run_root / "checkpoints").mkdir()
+            atomic_write_text(
+                run_root / cast(str, checkpoint["path"]),
+                json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
+            )
+            record = _accepted_record(
+                log,
+                _plan(),
+                run_id,
+                run_root,
+                accepted_at="2030-01-01T00:00:00Z",
+            )
+            cast(dict[str, object], record["state"]).update(
+                {
+                    "active_executions": [{"entry": "e003", "execution_id": identity}],
+                    "phase": "executing",
+                }
+            )
+            record["checkpoints"] = [checkpoint]
+            record["workers"] = [
+                {
+                    "entry": "e003",
+                    "execution_id": identity,
+                    "last_observed_at": "2030-01-01T00:00:03Z",
+                    "parent_worker_id": None,
+                    "pid": 4321,
+                    "registered_at": "2030-01-01T00:00:02Z",
+                    "state": "exited",
+                    "worker_id": "worker-4321",
+                }
+            ]
             atomic_write_text(
                 run_root / "run.json",
-                json.dumps(
-                    _accepted_record(
-                        log,
-                        _plan(),
-                        run_id,
-                        run_root,
-                        accepted_at="2030-01-01T00:00:00Z",
-                    ),
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
             )
 
             with (
@@ -622,6 +1047,22 @@ class ReproductionJobTests(unittest.TestCase):
                     "code"
                 ],
                 "supervisor_lost",
+            )
+            terminal = cast(
+                list[Mapping[str, object]],
+                _load_run(run_root / "run.json")["checkpoints"],
+            )
+            self.assertEqual(terminal[0]["state"], "stopped")
+            self.assertEqual(
+                cast(Mapping[str, object], terminal[0]["failure"])["code"],
+                "supervisor_lost",
+            )
+            self.assertEqual(
+                cast(
+                    list[Mapping[str, object]],
+                    _load_run(run_root / "run.json")["workers"],
+                )[0]["registered_at"],
+                "2030-01-01T00:00:02Z",
             )
             terminate.assert_called_once_with(run_id)
             spawn.assert_not_called()
@@ -684,6 +1125,7 @@ class ReproductionJobTests(unittest.TestCase):
                     "status": "failed",
                     "operational_failure": {
                         "code": "reproduction.publication.failed",
+                        "entry": None,
                         "execution_id": None,
                         "message": "publication failed",
                         "recorded_at": "2030-01-01T00:00:05Z",
@@ -781,6 +1223,79 @@ class ReproductionJobTests(unittest.TestCase):
             self.assertIsNone(preserved["phase"])
 
 
+def _write_active_run(
+    project: Path, *, failure_intent: bool = False
+) -> tuple[LogContext, Path, str]:
+    (project / ".git").mkdir()
+    log_root = project / "docs" / "research"
+    log_root.mkdir(parents=True)
+    summary = project / "docs" / "research.md"
+    summary.write_text("# Research\n", encoding="utf-8")
+    log = LogContext(summary, log_root)
+    run_id = "reproduce-20300101t000000z-fixture"
+    run_root = (
+        project / "tmp/reproduction/2030-01-01" / f"reproduce-research-e003-{run_id}"
+    )
+    run_root.mkdir(parents=True)
+    identity = "pyrun-exec/v1:" + "1" * 64
+    checkpoint = {
+        "completed_at": None,
+        "elapsed_seconds": 2.0,
+        "entry": "e003",
+        "execution_id": identity,
+        "failure": None,
+        "finished_at": None,
+        "outputs": [],
+        "path": "checkpoints/e003-" + "1" * 64 + ".json",
+        "started_at": "2030-01-01T00:00:01Z",
+        "state": "active",
+    }
+    (run_root / "checkpoints").mkdir()
+    atomic_write_text(
+        run_root / cast(str, checkpoint["path"]),
+        json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
+    )
+    record = _accepted_record(
+        log,
+        _plan(),
+        run_id,
+        run_root,
+        accepted_at="2030-01-01T00:00:00Z",
+    )
+    state = cast(dict[str, object], record["state"])
+    state.update(
+        {
+            "active_executions": [{"entry": "e003", "execution_id": identity}],
+            "phase": "stopping" if failure_intent else "executing",
+        }
+    )
+    if failure_intent:
+        state["operational_failure"] = {
+            "code": "fixture.failed",
+            "entry": None,
+            "execution_id": None,
+            "message": "failed",
+            "recorded_at": "2030-01-01T00:00:02Z",
+        }
+    record["checkpoints"] = [checkpoint]
+    record["workers"] = [
+        {
+            "entry": "e003",
+            "execution_id": identity,
+            "last_observed_at": "2030-01-01T00:00:02Z",
+            "parent_worker_id": None,
+            "pid": 4321,
+            "registered_at": "2030-01-01T00:00:01Z",
+            "state": "running",
+            "worker_id": "worker-4321",
+        }
+    ]
+    atomic_write_text(
+        run_root / "run.json", json.dumps(record, indent=2, sort_keys=True) + "\n"
+    )
+    return log, run_root, run_id
+
+
 def _plan() -> ReproductionPlan:
     execution = "pyrun-exec/v1:" + "1" * 64
     return ReproductionPlan(
@@ -798,6 +1313,15 @@ def _plan() -> ReproductionPlan:
                 "order": 1,
                 "outputs": ["data/result.txt"],
                 "auto_reproduce": True,
+                "exclusive": False,
+                "read_paths": [],
+                "run_path": "<run>/executions/e003/" + "1" * 64,
+                "writable_paths": [
+                    "<run>/diagnostics/e003/" + "1" * 64,
+                    "<run>/runtime/e003/" + "1" * 64,
+                    "<run>/workspace/data/result.txt",
+                ],
+                "write_paths": ["<run>/workspace/data/result.txt"],
             },
         ),
         (),
@@ -824,14 +1348,16 @@ def _status_fixture(name: str) -> dict[str, object]:
             "skipped": 0,
         },
         "completed_executions": 0,
-        "current_execution": None,
+        "active_executions": [],
+        "active_workers": [],
         "execution_timings": [],
         "include_all": False,
+        "jobs": 1,
         "latest_execution_diagnostic": None,
         "operational_failure": None,
         "phase": name,
         "run_id": "reproduce-20300101t000000z-fixture",
-        "schema": "research-log-reproduction-status/2",
+        "schema": "research-log-reproduction-status/3",
         "status": None,
         "summary": "docs/research.md",
         "surviving_workers": [],
@@ -855,17 +1381,19 @@ def _status_fixture(name: str) -> dict[str, object]:
     if updated is not None:
         timestamps["updated_at"] = f"2030-01-01T00:00:{updated}Z"
     if name in {"executing", "comparing"}:
-        value["current_execution"] = execution
+        if name == "executing":
+            value["active_executions"] = [{"entry": "e003", "execution_id": execution}]
         value["execution_timings"] = [
             {
                 "elapsed_seconds": 12.5,
                 "entry": "e003",
                 "execution_id": execution,
+                "failure": None,
                 "finished_at": (
                     "2030-01-01T00:00:02Z" if name == "comparing" else None
                 ),
                 "started_at": "2030-01-01T00:00:01Z",
-                "state": "complete" if name == "comparing" else "active",
+                "state": "succeeded" if name == "comparing" else "active",
             }
         ]
     if name in {"publishing", "complete"}:
@@ -874,12 +1402,14 @@ def _status_fixture(name: str) -> dict[str, object]:
     if name == "stopping":
         value["latest_execution_diagnostic"] = {
             "code": "worker_cleanup_incomplete",
+            "entry": "e003",
             "execution_id": execution,
             "message": "One worker survived shutdown.",
             "recorded_at": "2030-01-01T00:00:04Z",
         }
         value["surviving_workers"] = [
             {
+                "entry": "e003",
                 "execution_id": execution,
                 "last_observed_at": "2030-01-01T00:00:04Z",
                 "parent_worker_id": None,
@@ -889,12 +1419,15 @@ def _status_fixture(name: str) -> dict[str, object]:
                 "worker_id": "worker-4321",
             }
         ]
+        value["active_workers"] = value["surviving_workers"]
+        value["active_executions"] = [{"entry": "e003", "execution_id": execution}]
     if name == "stopped":
         value["phase"] = None
         value["status"] = "stopped"
         timestamps["stopped_at"] = "2030-01-01T00:00:05Z"
         value["latest_execution_diagnostic"] = {
             "code": "stop_requested",
+            "entry": "e003",
             "execution_id": execution,
             "message": "Reproduction was stopped by request.",
             "recorded_at": "2030-01-01T00:00:05Z",
@@ -906,6 +1439,7 @@ def _status_fixture(name: str) -> dict[str, object]:
     if name == "failed":
         value["operational_failure"] = {
             "code": "publication_failed",
+            "entry": None,
             "execution_id": None,
             "message": "Final publication failed.",
             "recorded_at": "2030-01-01T00:00:06Z",

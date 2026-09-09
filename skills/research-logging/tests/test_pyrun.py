@@ -146,9 +146,7 @@ def add_directory_input(entry: Path, name: str, directory: Path) -> None:
 def execution_records(entry: Path) -> dict[str, dict[str, object]]:
     """Return the execution map published by one test entry."""
 
-    return json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))[
-        "executions"
-    ]
+    return json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))["executions"]
 
 
 def execution_for_output(entry: Path, output: str) -> dict[str, object]:
@@ -337,6 +335,26 @@ class PyrunResolutionTests(unittest.TestCase):
                 "scripts/model.py",
             ],
             ["--auto-reproduce=true", "--", "scripts/model.py"],
+        ):
+            with self.assertRaises(PYRUN_MODULE.PyrunContractError):
+                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+
+    def test_exclusive_is_policy_outside_execution_identity(self) -> None:
+        ordinary = PYRUN_MODULE.parse_pyrun_arguments(
+            ["scripts/model.py", "--mode", "exact"]
+        )
+        exclusive = PYRUN_MODULE.parse_pyrun_arguments(
+            ["--exclusive", "--", "scripts/model.py", "--mode", "exact"]
+        )
+
+        self.assertFalse(ordinary.exclusive)
+        self.assertTrue(exclusive.exclusive)
+        self.assertEqual(exclusive.recipe_parameters, ordinary.recipe_parameters)
+        self.assertEqual(exclusive.parameters, ordinary.parameters)
+        for arguments in (
+            ["--exclusive", "scripts/model.py"],
+            ["--exclusive", "--exclusive", "--", "scripts/model.py"],
+            ["--exclusive=false", "--", "scripts/model.py"],
         ):
             with self.assertRaises(PYRUN_MODULE.PyrunContractError):
                 PYRUN_MODULE.parse_pyrun_arguments(arguments)
@@ -913,9 +931,7 @@ target.mkdir()
 
             self.assertEqual(result.returncode, 0, result.stderr)
             record = execution_for_output(entry, "data/result.csv")
-            self.assertEqual(
-                record["recipe"]["parameters"], ["./data/result.csv"]
-            )
+            self.assertEqual(record["recipe"]["parameters"], ["./data/result.csv"])
 
     def test_other_role_contract_rejects_invalid_forms_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -987,8 +1003,9 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v2")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v3")
             record = execution_for_output(entry, "data/output.csv")
+            self.assertIs(record["exclusive"], False)
             self.assertIs(record["confirmed"], True)
             self.assertEqual(record["recipe"]["script"], "scripts/build.py")
             self.assertEqual(record["recipe"]["parameters"], command[3:])
@@ -1126,9 +1143,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = execution_for_output(entry, "data/scoped.txt")["observed"][
-                "code"
-            ]
+            code = execution_for_output(entry, "data/scoped.txt")["observed"]["code"]
             self.assertEqual(
                 set(code),
                 {
@@ -1176,9 +1191,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = execution_for_output(entry, "data/children.txt")["observed"][
-                "code"
-            ]
+            code = execution_for_output(entry, "data/children.txt")["observed"]["code"]
             self.assertEqual(set(code), {"scripts/child.py", "scripts/child_helper.py"})
 
     def test_preserves_imported_package_resource_access(self) -> None:
@@ -1717,9 +1730,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             self.assertEqual(separate.stderr, "err\n")
             self.assertEqual((entry / "data/out.log").read_text(), "out\n")
             self.assertEqual((entry / "data/err.log").read_text(), "err\n")
-            self.assertEqual(
-                recorded_outputs(entry), {"data/err.log", "data/out.log"}
-            )
+            self.assertEqual(recorded_outputs(entry), {"data/err.log", "data/out.log"})
             self.assertEqual(
                 execution_for_output(entry, "data/out.log")["recipe"]["parameters"],
                 [
@@ -1884,9 +1895,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
                 encoding="utf-8",
             )
 
-            result = run(
-                [sys.executable, str(PYRUN), "scripts/write.py"], cwd=entry
-            )
+            result = run([sys.executable, str(PYRUN), "scripts/write.py"], cwd=entry)
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("requires execution-state migration", result.stderr)
@@ -1936,7 +1945,7 @@ class PyrunRuntimeTests(unittest.TestCase):
                 str(conda_python),
             )
             before = execution_records(entry)
-            execution_id, = before
+            (execution_id,) = before
 
             activated = run(
                 command,
@@ -2025,9 +2034,7 @@ class PyrunRuntimeTests(unittest.TestCase):
             conda_python.parent.mkdir(parents=True)
             conda_python.write_text("not executable\n", encoding="utf-8")
 
-            result = run(
-                ["./pyrun", "scripts/print_executable.py"], cwd=entry
-            )
+            result = run(["./pyrun", "scripts/print_executable.py"], cwd=entry)
 
             self.assertEqual(result.returncode, 2)
             self.assertEqual(
@@ -2051,9 +2058,7 @@ class PyrunRuntimeTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 2)
-            self.assertEqual(
-                result.stderr, "pyrun: supported python3 is unavailable\n"
-            )
+            self.assertEqual(result.stderr, "pyrun: supported python3 is unavailable\n")
             self.assertNotIn("Traceback", result.stderr)
 
     def test_direct_launcher_reports_missing_project_root(self) -> None:

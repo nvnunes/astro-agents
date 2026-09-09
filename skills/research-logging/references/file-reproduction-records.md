@@ -14,7 +14,12 @@ Reproduce may create or update only these generated paths:
   for an entry run, where the date is the UTC date of immutable
   `accepted_at`; and
 - the existing operation-lock paths used to protect the selected log or entry
-  and serialize reproduction publication.
+  and serialize reproduction publication; and
+- `<project>/.cache/research-log-operations/reproduction-scheduler.json`, the
+  bounded generated coordinator for active ordinary/exclusive permits and
+  waiting exclusive tickets; and
+- `<project>/.cache/research-log-operations/reproduction-scheduler.lock`, the
+  existing-operation-lock mutex that serializes coordinator updates.
 
 `reproduction/results.json` is the cumulative machine authority for published
 artifact outcomes and run history. `reproduction.md` is its human-only
@@ -34,6 +39,13 @@ diagnostic, non-authoritative research material. Reproduction does not delete,
 relocate, or make a second copy of those outputs. A researcher may delete the
 folder manually; later reporting prunes a run-history row only when absence can
 be proved, and otherwise reports unknown availability.
+
+New runs use the strict run/status v3 shapes. They retain the immutable `jobs`
+cap, every active entry-qualified execution, complete worker history, and
+per-attempt `active`, `succeeded`, `failed`, or `stopped` checkpoints. A
+scheduling permit is released only after terminal checkpoint publication and
+worker exit. Existing v2 runs remain readable and keep their original serial
+record; they are never rewritten into v3.
 
 ## Research Boundary
 

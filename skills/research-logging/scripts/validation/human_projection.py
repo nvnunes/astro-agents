@@ -195,6 +195,11 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The material no longer matches its declared fingerprint.",
         "record",
     ),
+    "data.fingerprint.unobserved": FindingPresentation(
+        "Unobserved Generated Fingerprint",
+        "The generated material does not yet have an observed fingerprint.",
+        "record",
+    ),
     "data.git.projection_missing": FindingPresentation(
         "Missing Git Source Projection",
         "The command does not pass both the repository locator and pinned commit.",

@@ -3440,6 +3440,7 @@ failure preserves the original error without dumping the complete payload;
 | `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
 | `data.origin.invalid` | provenance | An origin boundary hides a confirmed `pyrun` producer. |
 | `data.target.missing` | provenance | A local input or selected member is absent. |
+| `data.fingerprint.unobserved` | provenance | Generated material has not yet received a fingerprint observation from successful production. |
 | `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
 | `directory.producer.conflict` | provenance | A generated directory lacks one exclusive earlier producer covering its root and consumed members. |

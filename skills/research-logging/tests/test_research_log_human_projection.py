@@ -15,7 +15,7 @@ RESULTS = importlib.import_module("validation.mechanical_results")
 
 class HumanProjectionTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(HUMAN.CATALOG), 130)
+        self.assertEqual(len(HUMAN.CATALOG), 131)
         prefixes = {code.split(".", 1)[0] for code in HUMAN.CATALOG}
         candidates = set()
         scripts = Path(__file__).parents[1] / "scripts" / "validation"
@@ -32,8 +32,45 @@ class HumanProjectionTests(unittest.TestCase):
                     and node.value.split(".", 1)[0] in prefixes
                 ):
                     candidates.add(node.value)
+        data_contract = scripts.parent / "research_log_data.py"
+        tree = ast.parse(data_contract.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_fail"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                candidates.add(node.args[0].value)
         non_codes = {"locator.expect.identities", "locator.expect.shape"}
         self.assertLessEqual(candidates - non_codes, set(HUMAN.CATALOG))
+
+    def test_unobserved_generated_fingerprint_has_human_presentation(self) -> None:
+        check = RESULTS.MechanicalCheck(
+            "provenance:e001:generated",
+            RESULTS.CheckScope.PROVENANCE,
+            RESULTS.CheckStatus.FAIL,
+            "generated",
+            failure=RESULTS.FailurePayload(
+                "data.fingerprint.unobserved",
+                "generated",
+                {"kind": "file", "location": "data/generated.csv"},
+                "Fingerprints",
+            ),
+        )
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "/project/docs/study.md", "rules", "2026-09-09", (check,)
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn("#### Unobserved Generated Fingerprint — 1 target", report)
+        self.assertIn(
+            "The generated material does not yet have an observed fingerprint.",
+            report,
+        )
 
     def test_human_report_bounds_each_issue_type_at_ten_targets(self) -> None:
         checks = []

@@ -432,7 +432,13 @@ def _recover_publication(
     result = next(
         item for item in published.results.runs if item.run_id == manifest_run["run_id"]
     )
-    _finish_complete(log, run_root, result.artifact_outcomes, finished)
+    _finish_complete(
+        log,
+        run_root,
+        cast(str, manifest_run["run_id"]),
+        result.artifact_outcomes,
+        finished,
+    )
 
 
 def _runtime_plan(
@@ -457,9 +463,7 @@ def _runtime_plan(
             raise ActionError("reproduction.recovery.source_changed", identity)
         executions.append(
             {
-                "digest": canonical_execution_source_digest(
-                    execution.as_dict()
-                ),
+                "digest": canonical_execution_source_digest(execution.as_dict()),
                 "entry": entry_id,
                 "execution_id": identity,
             }

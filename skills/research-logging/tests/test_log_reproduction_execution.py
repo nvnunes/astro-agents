@@ -23,6 +23,7 @@ from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionCheckpoint,
     ExecutionControl,
+    ReproductionControlPlaneError,
     _generated_output_paths,
     _load_checkpoint,
     _output_already_materialized,
@@ -454,7 +455,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertEqual(json.loads(checkpoint.read_text())["state"], "failed")
             release.assert_called_once()
 
-    def test_progress_failure_after_permit_is_terminal_and_releases(self) -> None:
+    def test_progress_failure_before_launch_is_control_plane_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             workspace = fixture.workspace()
@@ -500,12 +501,97 @@ class ReproductionExecutionTests(unittest.TestCase):
                     )
 
             execute.assert_not_called()
+            self.assertEqual(
+                list((workspace.run_root / "checkpoints").glob("*.json")), []
+            )
+            release.assert_called_once()
+
+    def test_worker_callback_failure_stops_launched_child_and_propagates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            process = SimpleNamespace(pid=4217)
+            launched = SimpleNamespace(process=process, pumps=(), stream_errors=[])
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_execution._launch_process",
+                    return_value=launched,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.register_root"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.records",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.stop_all",
+                    return_value=(),
+                ) as stop_all,
+            ):
+                with self.assertRaisesRegex(
+                    ReproductionControlPlaneError, "worker state failed"
+                ):
+                    execute_planned_recipe(
+                        fixture.log,
+                        fixture.plan,
+                        fixture.planned,
+                        workspace,
+                        ExecutionControl(
+                            confinement=_FixtureConfinement(),
+                            worker_progress=mock.Mock(
+                                side_effect=ActionError(
+                                    "fixture.worker_state", "worker state failed"
+                                )
+                            ),
+                        ),
+                    )
+
+            stop_all.assert_called_once()
             checkpoint = json.loads(
                 next((workspace.run_root / "checkpoints").glob("*.json")).read_text()
             )
-            self.assertEqual(checkpoint["state"], "failed")
-            self.assertEqual(checkpoint["failure"]["code"], "fixture.progress")
-            release.assert_called_once()
+            self.assertEqual(checkpoint["state"], "active")
+            self.assertIsNotNone(checkpoint["started_at"])
+
+    def test_checkpoint_persistence_failure_stops_launched_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            launched = SimpleNamespace(
+                process=SimpleNamespace(pid=4218), pumps=(), stream_errors=[]
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_execution._launch_process",
+                    return_value=launched,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_execution._WorkerRegistry.stop_all",
+                    return_value=(),
+                ) as stop_all,
+                mock.patch(
+                    "log_commands.reproduction_execution.os.replace",
+                    side_effect=OSError("checkpoint write failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ReproductionControlPlaneError, "checkpoint write failed"
+                ):
+                    execute_planned_recipe(
+                        fixture.log,
+                        fixture.plan,
+                        fixture.planned,
+                        workspace,
+                        ExecutionControl(confinement=_FixtureConfinement()),
+                    )
+
+            stop_all.assert_called_once()
+            self.assertEqual(
+                list((workspace.run_root / "checkpoints").glob("*.json")), []
+            )
 
     def test_prelaunch_failure_has_no_synthetic_timing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

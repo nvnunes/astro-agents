@@ -14,10 +14,19 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
+from typing import (
+    BinaryIO,
+    Callable,
+    Iterable,
+    Mapping,
+    Protocol,
+    Sequence,
+    TypeVar,
+    cast,
+)
 
 import psutil
 from research_log_data import (
@@ -49,6 +58,7 @@ from .reproduction_paths import canonical_run_root
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 RUNNER_MARKER = "RESEARCH_LOG_REPRODUCTION_RUN_ID"
+_T = TypeVar("_T")
 MAX_WORKERS_PER_EXECUTION = 1_024
 MAX_WORKERS_PER_RUN = 4_096
 POLL_SECONDS = 0.1
@@ -196,6 +206,32 @@ class ExecutionControl:
     worker_progress: Callable[[str, str, tuple[WorkerRecord, ...]], None] = (
         lambda _entry, _execution_id, _workers: None
     )
+
+
+class ReproductionControlPlaneError(ActionError):
+    """A callback or durable-state write failed outside research execution."""
+
+    def __init__(self, error: BaseException, *, cleanup_incomplete: bool = False):
+        if isinstance(error, ReproductionControlPlaneError):
+            code = error.code
+        else:
+            code = cast(str, getattr(error, "code", "reproduction.job.failed"))
+        message = str(error) or type(error).__name__
+        super().__init__(code, message)
+        self.cleanup_incomplete = cleanup_incomplete
+
+
+class _ControlPlaneState:
+    """Share the first control-plane failure across concurrent attempts."""
+
+    def __init__(self) -> None:
+        self.failure = threading.Event()
+        self.errors: list[ReproductionControlPlaneError] = []
+
+    def record(self, error: ReproductionControlPlaneError) -> None:
+        if not self.errors:
+            self.errors.append(error)
+        self.failure.set()
 
 
 @dataclass(frozen=True)
@@ -483,7 +519,7 @@ def execute_planned_recipe(
     if not control.resume:
         _clear_outputs(prepared.output_paths.values())
     prior = (
-        _load_checkpoint(
+        _load_checkpoint_control_plane(
             workspace,
             prepared.entry,
             prepared.execution_id,
@@ -516,8 +552,11 @@ def execute_planned_recipe(
         _RunCallbacks(
             control.stop_requested,
             launched,
-            lambda workers: control.worker_progress(
-                prepared.entry, prepared.execution_id, workers
+            lambda workers: _control_plane_call(
+                control.worker_progress,
+                prepared.entry,
+                prepared.execution_id,
+                workers,
             ),
         ),
     )
@@ -727,9 +766,11 @@ def _run_prepared(
             launched = _launch_process(prepared, command, stack)
             started_at = _utc_now()
             started_monotonic = time.monotonic()
-            callbacks.on_launch(started_at)
-            registry.register_root(launched.process.pid)
-            callbacks.on_workers(registry.records())
+            _control_plane_call(callbacks.on_launch, started_at)
+            _control_plane_call(registry.register_root, launched.process.pid)
+            _control_plane_call(
+                callbacks.on_workers, _control_plane_call(registry.records)
+            )
             outcome = _monitor_process(
                 launched.process,
                 registry,
@@ -739,8 +780,21 @@ def _run_prepared(
             failure_code, failure_message = _finish_streams(
                 launched, outcome.failure_code, outcome.failure_message
             )
+    except ReproductionControlPlaneError as error:
+        try:
+            survivors = _control_plane_call(registry.stop_all)
+        except BaseException as cleanup_error:
+            raise ReproductionControlPlaneError(
+                cleanup_error, cleanup_incomplete=True
+            ) from error
+        if survivors:
+            raise ReproductionControlPlaneError(
+                ActionError("worker_cleanup_incomplete", _survivor_message(survivors)),
+                cleanup_incomplete=True,
+            ) from error
+        raise
     except BaseException as error:
-        survivors = registry.stop_all()
+        survivors = _control_plane_call(registry.stop_all)
         return (
             _ProcessOutcome(
                 None,
@@ -751,7 +805,7 @@ def _run_prepared(
                     else cast(str, getattr(error, "code", "execution_exception"))
                 ),
                 _survivor_message(survivors) if survivors else str(error),
-                registry.records(),
+                _control_plane_call(registry.records),
             ),
             started_at,
             (
@@ -766,7 +820,7 @@ def _run_prepared(
             outcome.stopped,
             failure_code,
             failure_message,
-            registry.records(),
+            _control_plane_call(registry.records),
         ),
         started_at,
         max(0.0, time.monotonic() - started_monotonic),
@@ -854,11 +908,11 @@ def _monitor_process(
     failure_code: str | None = None
     failure_message: str | None = None
     while process.poll() is None:
-        registry.refresh()
-        on_workers(registry.records())
+        _control_plane_call(registry.refresh)
+        _control_plane_call(on_workers, _control_plane_call(registry.records))
         if stop_requested():
             stopped = True
-            survivors = registry.stop_all()
+            survivors = _control_plane_call(registry.stop_all)
             if survivors:
                 failure_code = "worker_cleanup_incomplete"
                 failure_message = _survivor_message(survivors)
@@ -870,17 +924,23 @@ def _monitor_process(
             returncode = process.wait(timeout=FORCED_STOP_SECONDS)
         except subprocess.TimeoutExpired:
             returncode = None
-    registry.refresh()
-    on_workers(registry.records())
+    _control_plane_call(registry.refresh)
+    _control_plane_call(on_workers, _control_plane_call(registry.records))
     if not stopped:
-        survivors = registry.wait_for_descendants(WORKER_SETTLE_SECONDS)
+        survivors = _control_plane_call(
+            registry.wait_for_descendants, WORKER_SETTLE_SECONDS
+        )
         if survivors:
-            remaining = registry.stop_all()
+            remaining = _control_plane_call(registry.stop_all)
             failure_code = "worker_survived"
             failure_message = _survivor_message(remaining or survivors)
             stopped = bool(remaining)
     return _ProcessOutcome(
-        returncode, stopped, failure_code, failure_message, registry.records()
+        returncode,
+        stopped,
+        failure_code,
+        failure_message,
+        _control_plane_call(registry.records),
     )
 
 
@@ -980,17 +1040,25 @@ def execute_reproduction_plan(
     for planned in ordered:
         _execution_source(log, workspace, _required_string(planned, "entry"), sources)
 
-    runtime = _PlanExecutionContext(
-        log, plan, workspace, control, backend, sources, generated
+    control_state = _ControlPlaneState()
+    runtime_control = replace(
+        control,
+        stop_requested=lambda: (
+            control_state.failure.is_set() or control.stop_requested()
+        ),
     )
-
+    runtime = _PlanExecutionContext(
+        log, plan, workspace, runtime_control, backend, sources, generated
+    )
     with ThreadPoolExecutor(
         max_workers=plan.jobs, thread_name_prefix="reproduce"
     ) as pool:
         while schedule.pending or schedule.running:
-            if control.stop_requested():
+            if runtime_control.stop_requested():
                 schedule.stopped = True
-            progress_made = _resolve_pending(schedule, workspace, sources, control)
+            progress_made = _resolve_pending_controlled(
+                schedule, workspace, sources, runtime_control, control_state
+            )
             if schedule.stopped:
                 if not schedule.running:
                     break
@@ -1005,12 +1073,18 @@ def execute_reproduction_plan(
                     or progress_made
                 )
             if schedule.running:
-                _collect_finished(schedule, control)
+                _collect_finished(
+                    schedule,
+                    runtime_control,
+                    control_state,
+                )
             elif schedule.pending and not progress_made and not schedule.stopped:
                 raise ActionError(
                     "reproduction.scheduler.deadlock",
                     "no pending execution can become ready",
                 )
+    if control_state.errors:
+        raise control_state.errors[0]
     ordered_attempts = tuple(
         schedule.attempts[reference]
         for reference in (
@@ -1054,10 +1128,10 @@ def _execute_scheduled_recipe(
     identity = _required_string(planned, "execution_id")
     checkpoint: ExecutionCheckpoint | None = None
     try:
-        checkpoint = _load_checkpoint(
+        checkpoint = _load_checkpoint_control_plane(
             workspace, entry_id, identity, legacy=control.legacy
         )
-        control.progress("started", entry_id, identity, None)
+        _control_plane_call(control.progress, "started", entry_id, identity, None)
         attempt = execute_planned_recipe(
             context.log,
             context.plan,
@@ -1074,6 +1148,10 @@ def _execute_scheduled_recipe(
                 worker_progress=control.worker_progress,
             ),
         )
+    except ReproductionControlPlaneError as error:
+        if not error.cleanup_incomplete:
+            release_scheduling_permit(permit)
+        raise
     except BaseException as error:
         attempt = _exception_attempt(
             workspace,
@@ -1165,11 +1243,11 @@ def _resolve_pending(
             continue
         if reference in schedule.complete:
             schedule.reused.append(reference)
-            control.progress("reused", entry_id, identity, None)
+            _control_plane_call(control.progress, "reused", entry_id, identity, None)
             schedule.pending.remove(planned)
             progress_made = True
             continue
-        checkpoint = _load_checkpoint(
+        checkpoint = _load_checkpoint_control_plane(
             workspace, entry_id, identity, legacy=control.legacy
         )
         if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
@@ -1177,9 +1255,11 @@ def _resolve_pending(
         if not control.resume or not _checkpoint_outputs_current(
             checkpoint, sources[entry_id], workspace, identity, legacy=control.legacy
         ):
-            raise ActionError(
-                "reproduction.checkpoint.changed",
-                f"completed checkpoint is not reusable: {reference}",
+            raise ReproductionControlPlaneError(
+                ActionError(
+                    "reproduction.checkpoint.changed",
+                    f"completed checkpoint is not reusable: {reference}",
+                )
             )
         schedule.reused.append(reference)
         schedule.complete.add(reference)
@@ -1192,10 +1272,25 @@ def _resolve_pending(
                 _PreparationOptions(sources[entry_id]),
             )
             _materialize_outputs(prepared, workspace, sources[entry_id])
-        control.progress("reused", entry_id, identity, None)
+        _control_plane_call(control.progress, "reused", entry_id, identity, None)
         schedule.pending.remove(planned)
         progress_made = True
     return progress_made
+
+
+def _resolve_pending_controlled(
+    schedule: _BatchSchedule,
+    workspace: ReproductionWorkspace,
+    sources: Mapping[str, _ExecutionSource],
+    control: ExecutionControl,
+    control_state: _ControlPlaneState,
+) -> bool:
+    try:
+        return _resolve_pending(schedule, workspace, sources, control)
+    except ReproductionControlPlaneError as error:
+        control_state.record(error)
+        schedule.stopped = True
+        return False
 
 
 def _launch_ready(
@@ -1222,18 +1317,40 @@ def _launch_ready(
     return bool(launchable[:slots])
 
 
-def _collect_finished(schedule: _BatchSchedule, control: ExecutionControl) -> None:
+def _collect_finished(
+    schedule: _BatchSchedule,
+    control: ExecutionControl,
+    control_state: _ControlPlaneState,
+) -> None:
     done, _ = wait(tuple(schedule.running), return_when=FIRST_COMPLETED)
     for future in done:
         schedule.running.pop(future)
-        attempt = future.result()
+        try:
+            attempt = future.result()
+        except ReproductionControlPlaneError as error:
+            control_state.record(error)
+            schedule.stopped = True
+            continue
         if attempt is None:
             schedule.stopped = True
             continue
         reference = _execution_reference(attempt.entry, attempt.execution_id)
         schedule.attempts[reference] = attempt
         schedule.complete.add(reference)
-        control.progress("finished", attempt.entry, attempt.execution_id, attempt)
+        if control_state.failure.is_set():
+            continue
+        try:
+            _control_plane_call(
+                control.progress,
+                "finished",
+                attempt.entry,
+                attempt.execution_id,
+                attempt,
+            )
+        except ReproductionControlPlaneError as error:
+            control_state.record(error)
+            schedule.stopped = True
+            continue
         control.attempt_completed(attempt)
         if attempt.stopped:
             schedule.stopped = True
@@ -2194,21 +2311,50 @@ def _checkpoint_path(
 def _write_checkpoint(
     path: Path, checkpoint: ExecutionCheckpoint, *, legacy: bool = False
 ) -> None:
-    value = checkpoint.as_dict()
-    if legacy:
-        value.pop("failure")
-    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+        value = checkpoint.as_dict()
+        if legacy:
+            value.pop("failure")
+        payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            _sync_directory(path.parent)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    except ReproductionControlPlaneError:
+        raise
+    except BaseException as error:
+        raise ReproductionControlPlaneError(error) from error
+
+
+def _load_checkpoint_control_plane(
+    workspace: ReproductionWorkspace,
+    entry: str,
+    execution_id: str,
+    *,
+    legacy: bool,
+) -> ExecutionCheckpoint | None:
+    try:
+        return _load_checkpoint(workspace, entry, execution_id, legacy=legacy)
+    except ReproductionControlPlaneError:
+        raise
+    except BaseException as error:
+        raise ReproductionControlPlaneError(error) from error
+
+
+def _control_plane_call(callback: Callable[..., _T], *args: object) -> _T:
+    try:
+        return callback(*args)
+    except ReproductionControlPlaneError:
+        raise
+    except BaseException as error:
+        raise ReproductionControlPlaneError(error) from error
 
 
 def _required_string(value: Mapping[str, object], name: str) -> str:

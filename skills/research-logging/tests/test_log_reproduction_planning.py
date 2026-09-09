@@ -244,6 +244,48 @@ def _write_projection(
 
 
 class ReproductionPlanningTests(unittest.TestCase):
+    def test_fresh_incremental_run_retries_a_prior_failed_automatic_case(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            final = entry.root / "data" / "final.txt"
+            raw.write_text("raw", encoding="utf-8")
+            final.write_text("retained", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "final")
+            identity, execution = fixture.execution(
+                entry,
+                "produce",
+                {"raw": raw},
+                {"final": final},
+                confirmed=True,
+            )
+            fixture.write_pyrun(entry, [(identity, execution)])
+
+            with mock.patch(
+                "log_commands.reproduction_planner._load_prior_results",
+                return_value={
+                    (entry.id, "data/final.txt"): {
+                        "outcome": "failed",
+                        "recorded_at": "2030-01-01T00:00:00Z",
+                    }
+                },
+            ):
+                plan = _plan(fixture, entry)
+
+            self.assertEqual(
+                [item["execution_id"] for item in plan.executions], [identity]
+            )
+
     def test_batch_admission_keeps_independent_work_and_blocks_dependents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
@@ -308,9 +350,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "commands": [
                             _projected_command(
                                 outputs=(
-                                    (
-                                        entry.root / "data" / "dependent.csv"
-                                    ).as_posix(),
+                                    (entry.root / "data" / "dependent.csv").as_posix(),
                                 )
                             )
                         ],
@@ -476,9 +516,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "commands": [
                             _projected_command(
                                 outputs=(
-                                    (
-                                        entry.root / "data" / "admitted.csv"
-                                    ).as_posix(),
+                                    (entry.root / "data" / "admitted.csv").as_posix(),
                                 )
                             )
                         ],
@@ -486,9 +524,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "findings": [],
                     },
                     {
-                        "artifacts": [
-                            (entry.root / "data" / "blocked.csv").as_posix()
-                        ],
+                        "artifacts": [(entry.root / "data" / "blocked.csv").as_posix()],
                         "chain_id": "blocked-chain",
                         "commands": [
                             _projected_command(
@@ -519,9 +555,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             _apply_validation_admission(state, projection)
 
             self.assertEqual(state.blocked, {("e001", "blocked")})
-            self.assertEqual(
-                state.admitted_batches, {("e001", "admitted-chain")}
-            )
+            self.assertEqual(state.admitted_batches, {("e001", "admitted-chain")})
             self.assertEqual(
                 state.excluded_batches,
                 {("e001", "blocked-chain"): ("provenance:e001b:blocked",)},
@@ -595,9 +629,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                             "commands": [
                                 _projected_command(
                                     outputs=(
-                                        (
-                                            entry.root / "data" / "other.csv"
-                                        ).as_posix(),
+                                        (entry.root / "data" / "other.csv").as_posix(),
                                     ),
                                     inputs=(target,),
                                 )

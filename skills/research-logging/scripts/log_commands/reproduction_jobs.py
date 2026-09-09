@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -114,6 +115,13 @@ class _CheckpointTerminal:
     message: str
 
 
+@dataclass(frozen=True)
+class _RunStateContext:
+    log: LogContext
+    root: Path
+    run_id: str
+
+
 _RUN_STATE_THREAD_LOCK = threading.Lock()
 
 
@@ -197,7 +205,7 @@ def reproduction_status(
 
     root = _find_run(log, run_id)
     if reconcile:
-        _reconcile_lost_supervisor(log, root)
+        _reconcile_lost_supervisor(log, root, run_id)
     record = _load_run(root / "run.json")
     return _status_projection(record)
 
@@ -244,7 +252,7 @@ def stop_reproduction(log: LogContext, run_id: str) -> Mapping[str, object]:
     """Request bounded worker-tree shutdown and wait for a stable result."""
 
     root = _find_run(log, run_id)
-    _reconcile_lost_supervisor(log, root)
+    _reconcile_lost_supervisor(log, root, run_id)
     with _run_state_lock(log, run_id):
         record = _load_run(root / "run.json")
         state = cast(dict[str, object], record["state"])
@@ -287,7 +295,7 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
     """Resume stopped execution or retry failed result publication in place."""
 
     root = _find_run(log, run_id)
-    _reconcile_lost_supervisor(log, root)
+    _reconcile_lost_supervisor(log, root, run_id)
     record = _load_run(root / "run.json")
     _verify_checkpoint_inventory(root, record)
     state = cast(Mapping[str, object], record["state"])
@@ -304,21 +312,34 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
         verify_reproduction_runtime_snapshot(log, _plan_from_record(record))
         (root / "stop.request").unlink(missing_ok=True)
         now = _utc_now()
-        updated = _load_run(root / "run.json")
-        updated_state = cast(dict[str, object], updated["state"])
-        updated_state.update(
-            {
-                "status": None,
-                "phase": "accepted",
-                "operational_failure": None,
-            }
-        )
-        _clear_active(updated_state)
-        timestamps = cast(dict[str, object], updated["timestamps"])
-        timestamps["resumed_at"] = now
-        timestamps["stopped_at"] = None
-        timestamps["updated_at"] = now
-        _write_run(root, updated)
+        with _run_state_lock(log, run_id):
+            updated = _load_run(root / "run.json")
+            _require_run_identity(updated, run_id)
+            updated_state = cast(dict[str, object], updated["state"])
+            current_publication_retry = _is_publication_retry(updated)
+            if updated_state["status"] != "stopped" and not current_publication_retry:
+                raise ActionError(
+                    "reproduction.resume.invalid_state",
+                    "run state changed before resume",
+                )
+            if current_publication_retry != publication_retry:
+                raise ActionError(
+                    "reproduction.resume.invalid_state",
+                    "run recovery mode changed before resume",
+                )
+            updated_state.update(
+                {
+                    "status": None,
+                    "phase": "accepted",
+                    "operational_failure": None,
+                }
+            )
+            _clear_active(updated_state)
+            timestamps = cast(dict[str, object], updated["timestamps"])
+            timestamps["resumed_at"] = now
+            timestamps["stopped_at"] = None
+            timestamps["updated_at"] = now
+            _write_run(root, updated)
         _spawn_supervisor(
             log,
             root,
@@ -400,8 +421,9 @@ def supervise_reproduction(
     _verify_checkpoint_inventory(run_root, record)
     plan = _plan_from_record(record)
     run_id = cast(str, record["run_id"])
+    run_state = _RunStateContext(log, run_root, run_id)
     try:
-        _transition(log, run_root, phase="preflight", started=True)
+        _transition(run_state, phase="preflight", started=True)
         preflight_execution_safety(confinement)
         workspace = (
             open_existing_workspace(resolve_project_root(log.root), run_root, run_id)
@@ -455,7 +477,7 @@ def supervise_reproduction(
             comparison = _compare_and_confirm(log, plan, workspace, attempt)
             comparisons[(attempt.entry, attempt.execution_id)] = comparison
 
-        _transition(log, run_root, phase="executing")
+        _transition(run_state, phase="executing")
         batch = execute_reproduction_plan(
             log,
             plan,
@@ -469,22 +491,22 @@ def supervise_reproduction(
                 legacy=record.get("schema") == LEGACY_RUN_SCHEMA,
                 attempt_completed=completed,
                 progress=lambda event, entry, identity, attempt: _execution_progress(
-                    log, run_root, event, (entry, identity), attempt
+                    run_state, event, (entry, identity), attempt
                 ),
                 worker_progress=lambda entry, identity, workers: _execution_workers(
-                    log, run_root, entry, identity, workers
+                    run_state, entry, identity, workers
                 ),
             ),
         )
         if batch.stopped:
-            _finish_stopped(log, run_root, batch.attempts)
+            _finish_stopped(log, run_root, run_id, batch.attempts)
             return
-        _transition(log, run_root, phase="comparing", current_execution=None)
+        _transition(run_state, phase="comparing", current_execution=None)
         verify_reproduction_runtime_snapshot(log, plan)
         recorded_comparisons = load_recorded_comparisons(
             plan, workspace, verify_outputs=False
         )
-        _transition(log, run_root, phase="publishing")
+        _transition(run_state, phase="publishing")
         current = _load_run(run_root / "run.json")
         accepted_at = cast(Mapping[str, str | None], current["timestamps"])[
             "accepted_at"
@@ -503,11 +525,11 @@ def supervise_reproduction(
             ),
         )
         run = next(item for item in published.results.runs if item.run_id == run_id)
-        _finish_complete(log, run_root, run.artifact_outcomes, finished)
+        _finish_complete(log, run_root, run_id, run.artifact_outcomes, finished)
         _close_fds(inherited_locks)
         _validate_reproduced_log(log)
     except BaseException as error:
-        _finish_failed(log, run_root, error)
+        _finish_failed(log, run_root, run_id, error)
 
 
 def _compare_and_confirm(
@@ -726,16 +748,27 @@ def _run_state_lock(log: LogContext, run_id: str) -> Iterator[None]:
             yield
 
 
+@contextmanager
+def _locked_run(run: _RunStateContext) -> Iterator[dict[str, object]]:
+    with _run_state_lock(run.log, run.run_id):
+        record = _load_run(run.root / "run.json")
+        _require_run_identity(record, run.run_id)
+        yield record
+
+
+def _require_run_identity(record: Mapping[str, object], run_id: str) -> None:
+    if record.get("run_id") != run_id:
+        raise ActionError("reproduction.run.invalid", "run ID changed")
+
+
 def _execution_progress(
-    log: LogContext,
-    run_root: Path,
+    run: _RunStateContext,
     event: str,
     execution: tuple[str, str],
     attempt: ExecutionAttempt | None,
 ) -> None:
     entry, identity = execution
-    with _run_state_lock(log, cast(str, _load_run(run_root / "run.json")["run_id"])):
-        record = _load_run(run_root / "run.json")
+    with _locked_run(run) as record:
         state = cast(dict[str, object], record["state"])
         progress = cast(dict[str, object], record["progress"])
         if "active_executions" not in state:
@@ -793,7 +826,7 @@ def _execution_progress(
                 ),
             )
             record["checkpoints"] = _checkpoint_dicts(
-                run_root, legacy=record.get("schema") == LEGACY_RUN_SCHEMA
+                run.root, legacy=record.get("schema") == LEGACY_RUN_SCHEMA
             )
             if attempt.failure_code is not None:
                 state["latest_execution_diagnostic"] = _failure(
@@ -806,7 +839,7 @@ def _execution_progress(
                     ),
                 )
         _stamp(record)
-        _write_run(run_root, record)
+        _write_run(run.root, record)
 
 
 def _execution_progress_reference(
@@ -817,18 +850,14 @@ def _execution_progress_reference(
 
 
 def _execution_workers(
-    log: LogContext,
-    run_root: Path,
+    run: _RunStateContext,
     entry: str,
     identity: str,
     workers: Sequence[WorkerRecord],
 ) -> None:
     """Persist the current complete worker history for one active execution."""
 
-    record = _load_run(run_root / "run.json")
-    run_id = cast(str, record["run_id"])
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
+    with _locked_run(run) as record:
         legacy = record.get("schema") == LEGACY_RUN_SCHEMA
         retained = [
             item
@@ -848,7 +877,7 @@ def _execution_workers(
             key=lambda item: _worker_sort_key(item, legacy=legacy),
         )
         _stamp(record)
-        _write_run(run_root, record)
+        _write_run(run.root, record)
 
 
 def _plan_order(record: Mapping[str, object], reference: Mapping[str, object]) -> int:
@@ -897,17 +926,13 @@ def _clear_active(state: dict[str, object]) -> None:
 
 
 def _transition(
-    log: LogContext,
-    run_root: Path,
+    run: _RunStateContext,
     *,
     phase: str,
     current_execution: str | None | object = ...,
     started: bool = False,
 ) -> None:
-    record = _load_run(run_root / "run.json")
-    run_id = cast(str, record["run_id"])
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
+    with _locked_run(run) as record:
         state = cast(dict[str, object], record["state"])
         state["phase"] = phase
         if current_execution is not ...:
@@ -919,40 +944,66 @@ def _transition(
         if started and timestamps["started_at"] is None:
             timestamps["started_at"] = _utc_now()
         _stamp(record)
-        _write_run(run_root, record)
+        _write_run(run.root, record)
 
 
 def _finish_stopped(
     log: LogContext,
     run_root: Path,
+    run_id: str,
     attempts: Sequence[ExecutionAttempt],
     *,
     wait_for_retry: bool = True,
 ) -> None:
     latest = attempts[-1] if attempts else None
-    record = _load_run(run_root / "run.json")
-    legacy = record.get("schema") == LEGACY_RUN_SCHEMA
-    workers = _combined_attempt_workers(
-        attempts,
-        legacy=legacy,
-        prior=cast(Sequence[Mapping[str, object]], record["workers"]),
-    )
-    observed_survivors = _terminate_marked_workers(cast(str, record["run_id"]))
-    if legacy:
-        for worker in observed_survivors:
-            cast(dict[str, object], worker).pop("entry", None)
-    workers = _reconciled_worker_history(workers, observed_survivors, legacy=legacy)
-    survivors = [item for item in workers if item["state"] == "running"]
+    observed_survivors = _terminate_marked_workers(run_id)
+    with _run_state_lock(log, run_id):
+        record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
+        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        if legacy:
+            for worker in observed_survivors:
+                cast(dict[str, object], worker).pop("entry", None)
+        workers = _combined_attempt_workers(
+            attempts,
+            legacy=legacy,
+            prior=cast(Sequence[Mapping[str, object]], record["workers"]),
+        )
+        workers = _reconciled_worker_history(workers, observed_survivors, legacy=legacy)
+        survivors = [item for item in workers if item["state"] == "running"]
+        if survivors:
+            state = cast(dict[str, object], record["state"])
+            state.update({"status": None, "phase": "stopping"})
+            if latest is not None:
+                state["latest_execution_diagnostic"] = _failure(
+                    "worker_cleanup_incomplete",
+                    latest.failure_message or "One or more workers survived shutdown.",
+                    latest.execution_id,
+                    _FailureContext(
+                        entry=latest.entry,
+                        include_entry="active_executions" in state,
+                    ),
+                )
+            record["workers"] = workers
+            _stamp(record)
+            _write_run(run_root, record)
     if survivors:
-        _mark_stopping(log, run_root, workers, latest)
         if wait_for_retry:
-            _wait_for_cleanup_retry(log, run_root)
+            _wait_for_cleanup_retry(log, run_root, run_id)
         return
     from .reproduction_scheduler import release_run_scheduling
 
-    release_run_scheduling(resolve_project_root(log.root), cast(str, record["run_id"]))
-    with _run_state_lock(log, cast(str, record["run_id"])):
+    release_run_scheduling(resolve_project_root(log.root), run_id)
+    with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
+        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        workers = _combined_attempt_workers(
+            attempts,
+            legacy=legacy,
+            prior=cast(Sequence[Mapping[str, object]], record["workers"]),
+        )
+        workers = _reconciled_worker_history(workers, (), legacy=legacy)
         now = _utc_now()
         state = cast(dict[str, object], record["state"])
         state.update({"status": "stopped", "phase": None})
@@ -1037,34 +1088,12 @@ def _reconciled_worker_history(
     )
 
 
-def _mark_stopping(
+def _wait_for_cleanup_retry(
     log: LogContext,
     run_root: Path,
-    workers: Sequence[Mapping[str, object]],
-    latest: ExecutionAttempt | None,
-) -> None:
-    record = _load_run(run_root / "run.json")
-    with _run_state_lock(log, cast(str, record["run_id"])):
-        record = _load_run(run_root / "run.json")
-        state = cast(dict[str, object], record["state"])
-        state.update({"status": None, "phase": "stopping"})
-        if latest is not None:
-            state["latest_execution_diagnostic"] = _failure(
-                "worker_cleanup_incomplete",
-                latest.failure_message or "One or more workers survived shutdown.",
-                latest.execution_id,
-                _FailureContext(
-                    entry=latest.entry,
-                    include_entry="active_executions" in state,
-                ),
-            )
-        record["workers"] = list(workers)
-        _stamp(record)
-        _write_run(run_root, record)
-
-
-def _wait_for_cleanup_retry(
-    log: LogContext, run_root: Path, *, terminal_status: str = "stopped"
+    run_id: str,
+    *,
+    terminal_status: str = "stopped",
 ) -> None:
     request = run_root / "stop.request"
     observed = request.stat().st_mtime_ns if request.exists() else 0
@@ -1075,16 +1104,22 @@ def _wait_for_cleanup_retry(
             continue
         observed = current
         complete = (
-            _continue_failed_cleanup(log, run_root)
+            _continue_failed_cleanup(log, run_root, run_id)
             if terminal_status == "failed"
-            else _retry_stopped_cleanup(log, run_root)
+            else _retry_stopped_cleanup(log, run_root, run_id)
         )
         if complete:
             return
 
 
-def _retry_stopped_cleanup(log: LogContext, run_root: Path) -> bool:
-    _finish_stopped(log, run_root, (), wait_for_retry=False)
+def _retry_stopped_cleanup(log: LogContext, run_root: Path, run_id: str) -> bool:
+    _finish_stopped(
+        log,
+        run_root,
+        run_id,
+        (),
+        wait_for_retry=False,
+    )
     return (
         cast(Mapping[str, object], _load_run(run_root / "run.json")["state"])["status"]
         == "stopped"
@@ -1094,12 +1129,13 @@ def _retry_stopped_cleanup(log: LogContext, run_root: Path) -> bool:
 def _finish_complete(
     log: LogContext,
     run_root: Path,
+    run_id: str,
     counts: Mapping[str, int],
     finished: str,
 ) -> None:
-    record = _load_run(run_root / "run.json")
-    with _run_state_lock(log, cast(str, record["run_id"])):
+    with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
         state = cast(dict[str, object], record["state"])
         state.update(
             {
@@ -1118,13 +1154,14 @@ def _finish_complete(
         _write_run(run_root, record)
 
 
-def _finish_failed(log: LogContext, run_root: Path, error: BaseException) -> None:
+def _finish_failed(
+    log: LogContext, run_root: Path, run_id: str, error: BaseException
+) -> None:
     if not (run_root / "run.json").is_file():
         return
-    record = _load_run(run_root / "run.json")
-    run_id = cast(str, record["run_id"])
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
         now = _utc_now()
         state = cast(dict[str, object], record["state"])
         state.update({"status": None, "phase": "stopping"})
@@ -1139,20 +1176,19 @@ def _finish_failed(log: LogContext, run_root: Path, error: BaseException) -> Non
         )
         _stamp(record)
         _write_run(run_root, record)
-    if not _continue_failed_cleanup(log, run_root):
-        _wait_for_cleanup_retry(log, run_root, terminal_status="failed")
+    if not _continue_failed_cleanup(log, run_root, run_id):
+        _wait_for_cleanup_retry(log, run_root, run_id, terminal_status="failed")
 
 
-def _continue_failed_cleanup(log: LogContext, run_root: Path) -> bool:
-    record = _load_run(run_root / "run.json")
-    run_id = cast(str, record["run_id"])
-    legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+def _continue_failed_cleanup(log: LogContext, run_root: Path, run_id: str) -> bool:
     survivors = _terminate_marked_workers(run_id)
-    if legacy:
-        for worker in survivors:
-            cast(dict[str, object], worker).pop("entry", None)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
+        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        if legacy:
+            for worker in survivors:
+                cast(dict[str, object], worker).pop("entry", None)
         state = cast(dict[str, object], record["state"])
         if state["status"] is not None:
             return state["status"] == "failed"
@@ -1191,6 +1227,7 @@ def _continue_failed_cleanup(log: LogContext, run_root: Path) -> bool:
     release_run_scheduling(resolve_project_root(log.root), run_id)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
         state = cast(dict[str, object], record["state"])
         if state["status"] is not None:
             return state["status"] == "failed"
@@ -1203,8 +1240,9 @@ def _continue_failed_cleanup(log: LogContext, run_root: Path) -> bool:
     return True
 
 
-def _reconcile_lost_supervisor(log: LogContext, run_root: Path) -> None:
+def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> None:
     record = _load_run(run_root / "run.json")
+    _require_run_identity(record, run_id)
     if cast(Mapping[str, object], record["state"])["status"] is not None:
         return
     pid = _supervisor_pid(run_root)
@@ -1214,15 +1252,15 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path) -> None:
     if state["phase"] == "stopping" and isinstance(
         state.get("operational_failure"), Mapping
     ):
-        _continue_failed_cleanup(log, run_root)
+        _continue_failed_cleanup(log, run_root, run_id)
         return
-    survivors = _terminate_marked_workers(cast(str, record["run_id"]))
+    survivors = _terminate_marked_workers(run_id)
     if record.get("schema") == LEGACY_RUN_SCHEMA:
         for worker in survivors:
             cast(dict[str, object], worker).pop("entry", None)
-    run_id = cast(str, record["run_id"])
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
         state = cast(dict[str, object], record["state"])
         if state["status"] is not None:
             return
@@ -1261,6 +1299,7 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path) -> None:
     release_run_scheduling(resolve_project_root(log.root), run_id)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
+        _require_run_identity(record, run_id)
         state = cast(dict[str, object], record["state"])
         if state["status"] is not None:
             return
@@ -1578,15 +1617,10 @@ def _running_workers(
 
 
 def _load_run(path: Path) -> dict[str, object]:
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or path.stat().st_size > MAX_RUN_RECORD_BYTES
-    ):
-        raise ActionError("reproduction.run.invalid", f"invalid run record: {path}")
+    raw = _read_run_snapshot(path)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise ActionError("reproduction.run.invalid", str(error)) from error
     common_fields = {
         "checkpoints",
@@ -1643,14 +1677,36 @@ def _load_run(path: Path) -> dict[str, object]:
         raise ActionError("reproduction.run.invalid", "run lifecycle is incoherent")
     _validate_run_members(value)
     _plan_from_record(value)
-    canonical = _canonical(value)
-    if path.read_text(encoding="utf-8") != canonical:
+    canonical = _canonical(value).encode("utf-8")
+    if raw != canonical:
         raise ActionError("reproduction.run.invalid", "run record is not canonical")
     if "latest_failure" in state:
         failure = state.pop("latest_failure")
         state["latest_execution_diagnostic"] = None if status == "failed" else failure
         state["operational_failure"] = failure if status == "failed" else None
     return cast(dict[str, object], value)
+
+
+def _read_run_snapshot(path: Path) -> bytes:
+    """Read one regular run record through a bounded immutable descriptor."""
+
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError("run record is not a regular file")
+            if metadata.st_size > MAX_RUN_RECORD_BYTES:
+                raise OSError("run record crossed its byte bound")
+            raw = handle.read(MAX_RUN_RECORD_BYTES + 1)
+        if len(raw) > MAX_RUN_RECORD_BYTES:
+            raise OSError("run record crossed its byte bound")
+        return raw
+    except OSError as error:
+        raise ActionError("reproduction.run.invalid", str(error)) from error
 
 
 def _validate_run_members(value: Mapping[str, object]) -> None:

@@ -1126,6 +1126,15 @@ after process or host failure. Cardinality and byte limits are defined in
 [Fixed Resource Bounds](#fixed-resource-bounds) and do not weaken this state
 contract.
 
+Every `run.json` load validates one bounded immutable byte snapshot. File-type,
+size, decoding, member validation, and canonical serialization checks apply to
+that same snapshot; a reader must not decode one generation and compare it with
+a later path read. Stable malformed and noncanonical records still fail closed
+with `reproduction.run.invalid`. Writers continue to publish by atomic
+replacement, and every read-modify-write transition loads mutable state only
+after acquiring the run-state lock. Callbacks retain the already accepted,
+immutable run ID rather than reading unlocked mutable state to rediscover it.
+
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
@@ -1167,6 +1176,15 @@ with a non-null `operational_failure` is the durable failed-terminal intent.
 Recovery preserves that intent, finishes worker and permit cleanup, and then
 publishes `status: "failed"`; it must not reinterpret the transition as a user
 stop.
+
+Callback, checkpoint, worker-history, and run-state persistence errors are
+control-plane failures, not research-command outcomes. Such a failure stops and
+reconciles the affected worker tree, preserves terminal operational intent, and
+ends the run as `failed` after cleanup. If a child was launched, that launch
+consumes its attempt in the run even when the control plane cannot publish a
+research result; same-run resume must not invoke it again. Genuine child exits,
+capture failures, output materialization failures, comparisons, and dependency
+skips remain execution or artifact outcomes.
 
 ### Stop
 

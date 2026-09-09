@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionBatch,
     ExecutionCheckpoint,
+    ReproductionControlPlaneError,
     WorkerRecord,
 )
 from log_commands.reproduction_jobs import (
@@ -31,6 +33,7 @@ from log_commands.reproduction_jobs import (
     _combined_attempt_workers,
     _continue_failed_cleanup,
     _execution_progress,
+    _execution_workers,
     _failed_checkpoint_references,
     _find_run,
     _finish_failed,
@@ -41,11 +44,13 @@ from log_commands.reproduction_jobs import (
     _reconciled_worker_history,
     _require_no_promotion_conflict,
     _resumable_execution_references,
+    _RunStateContext,
     _status_projection,
     _verify_checkpoint_inventory,
     dry_run_reproduction,
     format_reproduction_status,
     launch_reproduction,
+    reproduction_status,
     resume_reproduction,
     supervise_reproduction,
 )
@@ -55,6 +60,63 @@ from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_control_plane_failure_finishes_run_operationally(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log, run_root, run_id = _write_accepted_run(
+                Path(directory),
+                run_id="reproduce-20300101t000000z-control",
+            )
+            error = ReproductionControlPlaneError(
+                ActionError("fixture.persistence", "run-state write failed")
+            )
+
+            with (
+                mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
+                mock.patch(
+                    "log_commands.reproduction_jobs.populate_output_workspace",
+                    return_value=object(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs.load_recorded_comparisons",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs.completed_execution_attempts",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs.execute_reproduction_plan",
+                    side_effect=error,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._terminate_marked_workers",
+                    return_value=[],
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_run_scheduling"
+                ),
+            ):
+                supervise_reproduction(log, run_root, mode="fresh", inherited_locks=())
+
+            status = _status_projection(_load_run(run_root / "run.json"))
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(
+                cast(Mapping[str, object], status["operational_failure"])["code"],
+                "fixture.persistence",
+            )
+            self.assertEqual(
+                status["artifact_outcomes"],
+                {
+                    "changed": 0,
+                    "comparison_failed": 0,
+                    "failed": 0,
+                    "matched": 0,
+                    "skipped": 0,
+                },
+            )
+            with self.assertRaisesRegex(ActionError, "only a stopped run"):
+                resume_reproduction(log, run_id)
+
     def test_exact_legacy_artifact_rejections_are_publication_retry_only(self) -> None:
         record = {
             "schema": RUN_SCHEMA,
@@ -74,9 +136,7 @@ class ReproductionJobTests(unittest.TestCase):
             "checkpoints": [{"state": "succeeded"}, {"state": "failed"}],
         }
 
-        unrelated = cast(dict[str, object], record["state"])[
-            "operational_failure"
-        ]
+        unrelated = cast(dict[str, object], record["state"])["operational_failure"]
         assert isinstance(unrelated, dict)
         for message in (
             LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
@@ -168,11 +228,15 @@ class ReproductionJobTests(unittest.TestCase):
             def retry(
                 retry_log: LogContext,
                 retry_root: Path,
+                retry_run_id: str,
                 *,
                 terminal_status: str,
             ) -> None:
                 self.assertEqual(terminal_status, "failed")
-                self.assertTrue(_continue_failed_cleanup(retry_log, retry_root))
+                self.assertEqual(retry_run_id, run_id)
+                self.assertTrue(
+                    _continue_failed_cleanup(retry_log, retry_root, retry_run_id)
+                )
 
             with (
                 mock.patch(
@@ -187,7 +251,12 @@ class ReproductionJobTests(unittest.TestCase):
                     "log_commands.reproduction_scheduler.release_run_scheduling"
                 ) as release,
             ):
-                _finish_failed(log, run_root, ActionError("fixture.failed", "failed"))
+                _finish_failed(
+                    log,
+                    run_root,
+                    run_id,
+                    ActionError("fixture.failed", "failed"),
+                )
 
             record = _load_run(run_root / "run.json")
             self.assertEqual(
@@ -219,7 +288,7 @@ class ReproductionJobTests(unittest.TestCase):
                     "log_commands.reproduction_scheduler.release_run_scheduling"
                 ) as release,
             ):
-                _reconcile_lost_supervisor(log, run_root)
+                _reconcile_lost_supervisor(log, run_root, run_id)
 
             record = _load_run(run_root / "run.json")
             state = cast(Mapping[str, object], record["state"])
@@ -393,9 +462,10 @@ class ReproductionJobTests(unittest.TestCase):
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
             )
 
-            _execution_progress(log, run_root, "started", ("e001", identity), None)
-            _execution_progress(log, run_root, "started", ("e002", identity), None)
-            _execution_progress(log, run_root, "finished", ("e002", identity), None)
+            run_state = _RunStateContext(log, run_root, run_id)
+            _execution_progress(run_state, "started", ("e001", identity), None)
+            _execution_progress(run_state, "started", ("e002", identity), None)
+            _execution_progress(run_state, "finished", ("e002", identity), None)
 
             state = cast(
                 Mapping[str, object], _load_run(run_root / "run.json")["state"]
@@ -404,11 +474,100 @@ class ReproductionJobTests(unittest.TestCase):
                 state["active_executions"],
                 [{"entry": "e001", "execution_id": identity}],
             )
-            _execution_progress(log, run_root, "finished", ("e001", identity), None)
+            _execution_progress(run_state, "finished", ("e001", identity), None)
             state = cast(
                 Mapping[str, object], _load_run(run_root / "run.json")["state"]
             )
             self.assertEqual(state["active_executions"], [])
+
+    def test_parallel_progress_workers_and_status_share_canonical_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log_root = project / "docs/research"
+            log_root.mkdir(parents=True)
+            summary = project / "docs/research.md"
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary, log_root)
+            run_id = "reproduce-20300101t000000z-concurrent"
+            run_root = (
+                project / "tmp/reproduction/2030-01-01" / f"reproduce-research-{run_id}"
+            )
+            run_root.mkdir(parents=True)
+            identity = "pyrun-exec/v1:" + "1" * 64
+            executions = tuple(
+                {
+                    "auto_reproduce": True,
+                    "depends_on": [],
+                    "entry": entry,
+                    "exclusive": False,
+                    "execution_id": identity,
+                    "order": order,
+                    "outputs": [f"data/{entry}.txt"],
+                    "read_paths": [],
+                    "run_path": f"<run>/executions/{entry}/" + "1" * 64,
+                    "writable_paths": [],
+                    "write_paths": [],
+                }
+                for order, entry in enumerate(("e001", "e002"), 1)
+            )
+            plan = replace(
+                _plan(),
+                target={"entry": None, "kind": "log"},
+                jobs=2,
+                executions=executions,
+            )
+            record = _accepted_record(
+                log, plan, run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+            barrier = threading.Barrier(3)
+            errors: list[BaseException] = []
+            run_state = _RunStateContext(log, run_root, run_id)
+
+            def update(entry: str, pid: int) -> None:
+                try:
+                    _execution_progress(run_state, "started", (entry, identity), None)
+                    worker = WorkerRecord(
+                        f"worker-{pid}",
+                        None,
+                        pid,
+                        identity,
+                        "exited",
+                        "2030-01-01T00:00:01Z",
+                        "2030-01-01T00:00:02Z",
+                        entry,
+                    )
+                    _execution_workers(run_state, entry, identity, (worker,))
+                    barrier.wait()
+                    _execution_progress(run_state, "finished", (entry, identity), None)
+                except BaseException as error:
+                    errors.append(error)
+
+            threads = [
+                threading.Thread(target=update, args=(entry, pid))
+                for entry, pid in (("e001", 4101), ("e002", 4102))
+            ]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            while any(thread.is_alive() for thread in threads):
+                reproduction_status(log, run_id, reconcile=False)
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            loaded = _load_run(run_root / "run.json")
+            self.assertEqual(
+                cast(Mapping[str, object], loaded["state"])["active_executions"], []
+            )
+            self.assertEqual(
+                cast(Mapping[str, object], loaded["progress"])["completed_executions"],
+                2,
+            )
 
     def test_status_finds_run_beneath_intentional_project_tmp_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -716,6 +875,51 @@ class ReproductionJobTests(unittest.TestCase):
 
             with self.assertRaisesRegex(Exception, "fields are invalid"):
                 _load_run(path)
+
+    def test_run_loader_validates_one_snapshot_during_atomic_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_accepted_run(Path(directory))
+            path = run_root / "run.json"
+            original = path.read_text(encoding="utf-8")
+            replacement = json.loads(original)
+            cast(dict[str, object], replacement["timestamps"])["updated_at"] = (
+                "2030-01-01T00:00:01Z"
+            )
+            replacement_text = json.dumps(replacement, indent=2, sort_keys=True) + "\n"
+
+            real_canonical = json.dumps
+
+            def replace_at_former_second_read(value: Mapping[str, object]) -> str:
+                atomic_write_text(path, replacement_text)
+                return (
+                    real_canonical(value, ensure_ascii=False, indent=2, sort_keys=True)
+                    + "\n"
+                )
+
+            with mock.patch(
+                "log_commands.reproduction_jobs._canonical",
+                side_effect=replace_at_former_second_read,
+            ):
+                loaded = _load_run(path)
+
+            self.assertEqual(
+                cast(Mapping[str, object], loaded["timestamps"])["updated_at"],
+                "2030-01-01T00:00:00Z",
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), replacement_text)
+
+    def test_run_loader_rejects_stable_noncanonical_and_malformed_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_accepted_run(Path(directory))
+            path = run_root / "run.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            path.write_text(json.dumps(record), encoding="utf-8")
+            with self.assertRaisesRegex(ActionError, "not canonical"):
+                _load_run(path)
+            path.write_text("{malformed\n", encoding="utf-8")
+            with self.assertRaises(ActionError) as caught:
+                _load_run(path)
+            self.assertEqual(caught.exception.code, "reproduction.run.invalid")
 
     def test_legacy_run_remains_readable_with_serial_status_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1086,7 +1290,7 @@ class ReproductionJobTests(unittest.TestCase):
                 ) as terminate,
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
-                _reconcile_lost_supervisor(log, run_root)
+                _reconcile_lost_supervisor(log, run_root, run_id)
 
             stopped = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(stopped["status"], "stopped")
@@ -1269,6 +1473,31 @@ class ReproductionJobTests(unittest.TestCase):
             preserved = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(preserved["status"], "stopped")
             self.assertIsNone(preserved["phase"])
+
+
+def _write_accepted_run(
+    project: Path,
+    *,
+    run_id: str = "reproduce-20300101t000000z-fixture",
+) -> tuple[LogContext, Path, str]:
+    (project / ".git").mkdir()
+    log_root = project / "docs/research"
+    log_root.mkdir(parents=True)
+    summary = project / "docs/research.md"
+    summary.write_text("# Research\n", encoding="utf-8")
+    log = LogContext(summary, log_root)
+    run_root = (
+        project / "tmp/reproduction/2030-01-01" / f"reproduce-research-e003-{run_id}"
+    )
+    run_root.mkdir(parents=True)
+    record = _accepted_record(
+        log, _plan(), run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
+    )
+    atomic_write_text(
+        run_root / "run.json",
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+    )
+    return log, run_root, run_id
 
 
 def _write_active_run(

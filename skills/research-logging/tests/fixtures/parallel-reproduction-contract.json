@@ -1,0 +1,300 @@
+{
+  "record_shapes": {
+    "checkpoint": [
+      "entry",
+      "execution_id",
+      "state",
+      "path",
+      "completed_at",
+      "started_at",
+      "finished_at",
+      "elapsed_seconds",
+      "failure",
+      "outputs"
+    ],
+    "diagnostic": ["code", "message", "entry", "execution_id", "recorded_at"],
+    "plan_execution": [
+      "order",
+      "entry",
+      "execution_id",
+      "depends_on",
+      "outputs",
+      "auto_reproduce",
+      "exclusive",
+      "read_paths",
+      "write_paths",
+      "run_path",
+      "writable_paths"
+    ],
+    "plan_top": [
+      "schema",
+      "summary",
+      "target",
+      "include_all",
+      "jobs",
+      "validation_snapshot",
+      "source_snapshot",
+      "cases",
+      "executions",
+      "boundaries",
+      "failures"
+    ],
+    "run_state": [
+      "status",
+      "phase",
+      "active_executions",
+      "latest_execution_diagnostic",
+      "operational_failure"
+    ],
+    "run_top": [
+      "schema",
+      "run_id",
+      "summary",
+      "target",
+      "include_all",
+      "jobs",
+      "source_snapshot",
+      "validation_snapshot",
+      "plan",
+      "state",
+      "progress",
+      "timestamps",
+      "paths",
+      "workers",
+      "checkpoints"
+    ],
+    "scheduler_permit": [
+      "permit_id",
+      "kind",
+      "run_id",
+      "entry",
+      "execution_id",
+      "plan_order",
+      "supervisor_pid",
+      "read_paths",
+      "write_paths",
+      "run_path",
+      "writable_paths",
+      "granted_at"
+    ],
+    "scheduler_top": ["schema", "next_ticket", "waiters", "active"],
+    "scheduler_waiter": [
+      "ticket",
+      "run_id",
+      "entry",
+      "execution_id",
+      "plan_order",
+      "supervisor_pid",
+      "registered_at"
+    ],
+    "status_top": [
+      "schema",
+      "run_id",
+      "summary",
+      "target",
+      "include_all",
+      "jobs",
+      "status",
+      "phase",
+      "active_executions",
+      "active_workers",
+      "execution_timings",
+      "completed_executions",
+      "total_executions",
+      "artifact_outcomes",
+      "timestamps",
+      "latest_execution_diagnostic",
+      "operational_failure",
+      "surviving_workers"
+    ],
+    "worker": [
+      "worker_id",
+      "parent_worker_id",
+      "pid",
+      "entry",
+      "execution_id",
+      "state",
+      "registered_at",
+      "last_observed_at"
+    ]
+  },
+  "scenarios": [
+    {
+      "executions": [
+        {
+          "depends_on": [],
+          "entry": "e001",
+          "exclusive": false,
+          "execution_id": "pyrun-exec/v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "order": 0,
+          "read_paths": ["<project>/origins/a.csv"],
+          "run_path": "<run>/entries/e001/aaaaaaaa",
+          "writable_paths": ["<run>/runtime/e001/aaaaaaaa"],
+          "write_paths": ["<run>/entries/e001/aaaaaaaa/data/a.csv"]
+        },
+        {
+          "depends_on": [],
+          "entry": "e002",
+          "exclusive": false,
+          "execution_id": "pyrun-exec/v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "order": 1,
+          "read_paths": ["<project>/origins/b.csv"],
+          "run_path": "<run>/entries/e002/bbbbbbbb",
+          "writable_paths": ["<run>/runtime/e002/bbbbbbbb"],
+          "write_paths": ["<run>/entries/e002/bbbbbbbb/data/b.csv"]
+        }
+      ],
+      "expected_transitions": [
+        {
+          "active_executions": [
+            {
+              "entry": "e001",
+              "execution_id": "pyrun-exec/v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "entry": "e002",
+              "execution_id": "pyrun-exec/v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "active_permits": 2,
+          "checkpoint_states": ["active", "active"],
+          "event": "both_admitted",
+          "maximum_active": 2,
+          "status_active_workers": 2
+        }
+      ],
+      "jobs": 2,
+      "name": "two-independent-commands"
+    },
+    {
+      "executions": [
+        {
+          "depends_on": [],
+          "entry": "e001",
+          "execution_id": "pyrun-exec/v1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "order": 0,
+          "terminal": "failed"
+        },
+        {
+          "depends_on": ["e001:pyrun-exec/v1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+          "entry": "e002",
+          "execution_id": "pyrun-exec/v1:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "order": 1
+        },
+        {
+          "depends_on": [],
+          "entry": "e003",
+          "execution_id": "pyrun-exec/v1:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "order": 2,
+          "terminal": "succeeded"
+        }
+      ],
+      "expected_transitions": [
+        {
+          "active_permit_retained": true,
+          "checkpoint": {
+            "failure": {
+              "code": "fixture.execution.failed",
+              "message": "Synthetic producer failure.",
+              "recorded_at": "2030-01-01T00:00:04Z"
+            },
+            "state": "failed"
+          },
+          "event": "producer_terminal_checkpoint_durable"
+        },
+        {
+          "active_permit_retained": false,
+          "dependent_disposition": "dependency_failed",
+          "event": "producer_permit_released"
+        },
+        {
+          "event": "independent_terminal",
+          "state": "succeeded"
+        }
+      ],
+      "jobs": 2,
+      "name": "dependency-failure-isolation"
+    },
+    {
+      "expected_transitions": [
+        {
+          "active": ["run-a:ordinary-1"],
+          "event": "exclusive_waiter_registered",
+          "ordinary_admission_open": false,
+          "waiters": [{"plan_order": 0, "run_id": "run-b", "ticket": 0}]
+        },
+        {
+          "active": ["run-b:exclusive"],
+          "event": "ordinary_drained",
+          "exclusive_active_alone": true,
+          "waiters": []
+        },
+        {
+          "active": ["run-a:ordinary-2"],
+          "event": "exclusive_terminal_checkpoint_then_release",
+          "permit_released_after_checkpoint": true
+        }
+      ],
+      "name": "exclusive-waiter-across-two-runs",
+      "runs": [
+        {
+          "jobs": 2,
+          "ready": ["ordinary-1", "ordinary-2"],
+          "run_id": "run-a"
+        },
+        {
+          "jobs": 1,
+          "ready": ["exclusive"],
+          "run_id": "run-b"
+        }
+      ]
+    },
+    {
+      "expected_transitions": [
+        {
+          "event": "stop_waiter",
+          "scheduler_waiter_removed_before_scope_release": true
+        },
+        {
+          "active_execution_retained": true,
+          "active_permit_retained": true,
+          "event": "recovery_worker_survives",
+          "phase": "stopping",
+          "scope_lock_retained": true
+        },
+        {
+          "active_execution_retained": false,
+          "active_permit_retained": false,
+          "checkpoint_state": "stopped",
+          "event": "recovery_cleanup_complete",
+          "scope_lock_released": true,
+          "status": "stopped"
+        },
+        {
+          "event": "resume",
+          "only_checkpoint_state_reinvoked": "stopped",
+          "permit_reacquired": true
+        }
+      ],
+      "name": "stop-recovery-and-surviving-worker"
+    },
+    {
+      "expected_transitions": [
+        {
+          "diagnostic": "reproduction.scheduler.legacy_active",
+          "event": "unmanaged-active-v2-blocks-v3-launch"
+        },
+        {
+          "event": "new-code-v2-resume",
+          "permit": "exclusive"
+        },
+        {
+          "event": "v2-resume-after-pyrun-v3-migration",
+          "outcome": "source_snapshot_changed"
+        }
+      ],
+      "name": "legacy-run-cutover-compatibility"
+    }
+  ],
+  "schema": "parallel-reproduction-contract/1"
+}

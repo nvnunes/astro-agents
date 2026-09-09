@@ -59,7 +59,7 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
-| `pyrun` execution state | `research-log-pyrun/v2`; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v3`; `research-log-pyrun/v2` is readable during the exclusivity migration; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -67,7 +67,7 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/directory-ownership-output-arguments-2` |
+| Mechanical rules | `research-log-mechanical/parallel-reproduction-policy-3` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
@@ -2868,6 +2868,13 @@ selectors declared in both directions. A selector applies to every occurrence
 of its option. An explicit declaration overrides automatic role inference from
 the option name.
 
+The same runner-option prefix accepts `--auto-reproduce=false` and the
+flag-only `--exclusive`. Each may occur at most once. Omitting `--exclusive`
+means non-exclusive scheduling; no value-bearing, negative, or child-argument
+spelling is equivalent. These are reproduction policies outside the normalized
+recipe and execution identity. `--exclusive` does not change ordinary direct
+execution or express a CPU, GPU, device, or host-affinity requirement.
+
 The runner and static command discovery use the same parsed declarations.
 Input kind comes from `data.json`: a whole-directory token is a directory, a
 file or exact directory-member token is a file, and a paired locator and commit
@@ -2925,10 +2932,12 @@ static binding validation makes no claim about that runtime behavior.
 
 For every current Markdown command whose structural recipe resolves to a
 recorded execution ID, validation also requires exact automatic-reproduction
-policy agreement. The exact authored `--auto-reproduce=false` option must map
-to `auto_reproduce: false`; omission must map to `true`. Stale policy syntax,
-an unsupported value, or a Markdown/JSON policy mismatch is a Structure
-failure. Policy remains outside execution identity.
+and exclusive-scheduling policy agreement. The exact authored
+`--auto-reproduce=false` option must map to `auto_reproduce: false`; omission
+must map to true. The authored `--exclusive` flag must map to `exclusive: true`;
+omission must map to false. Stale policy syntax, an unsupported value, or a
+Markdown/JSON policy mismatch is a Structure failure. Both policies remain
+outside execution identity.
 
 `pyrun` also accepts repeatable `--env NAME=value` runner options before the
 required `--` separator. It normalizes them by name into the persisted
@@ -2955,6 +2964,14 @@ owns its schema, execution identity, confirmation, and publication lifecycle.
 Mechanical validation reads it without execution or mutation and derives an
 output-keyed projection for the graph checks in this section. That internal
 projection is not another persisted execution-state file.
+
+Validation retains a bounded read-only decoder for strict
+`research-log-pyrun/v2` state after the Phase 19 cutover. It evaluates the existing recipe,
+automatic-policy, observation, confirmation, ownership, and graph contracts,
+but reports no invented exclusive value and performs no v3 policy-agreement
+claim. A log containing authored `--exclusive` commands with v2 state therefore
+fails Structure until the owning migration transaction publishes v3. Validation
+never writes or upgrades either schema.
 
 #### Legacy Output Records And Validation Projection
 

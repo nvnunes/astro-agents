@@ -2,11 +2,10 @@
 
 ## Status And Authority
 
-Status: active implementation specification. The reproduction implementation,
-metadata migration, bounded maintained-log evaluation, and cutover are
-complete. Phase 9 recheck support is also complete. Phase 10 validation
-hardening, the separately planned orphan-hygiene cleanup, and full
-maintained-corpus operation remain gated by the reproduction plan.
+Status: active implementation specification. The serial reproduction workflow
+and its maintained-log cutovers are complete. The Phase 19 version 3 parallel
+scheduling contract is frozen; implementation and exclusivity metadata
+migration remain pending until their plan gates pass.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -66,14 +65,17 @@ The initial implementation must use these versions:
 
 | Surface | Version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v2` |
+| Execution-state file | `research-log-pyrun/v3` |
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
 | Reproduction result | `research-log-reproduction-result/2` |
-| Durable run state | `research-log-reproduction-run/2` |
-| Run status projection | `research-log-reproduction-status/2` |
-| Dry-run plan | `research-log-reproduction-plan/2` |
+| Durable run state | `research-log-reproduction-run/3` |
+| Run status projection | `research-log-reproduction-status/3` |
+| Dry-run plan | `research-log-reproduction-plan/3` |
+| Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
+| Exclusivity migration result | `research-log-pyrun-exclusivity-migration-result/1` |
+| Exclusivity migration transaction | `research-log-pyrun-exclusivity-migration-transaction/1` |
 | Source snapshot | `research-log-reproduction-source-snapshot/3` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
@@ -134,6 +136,11 @@ the selected entry. Graph limits do not authorize broader scope.
 | Staging manifest encoded bytes | 64 MiB |
 | Registered workers per execution | 1,024 |
 | Registered workers per run | 4,096 |
+| Project scheduler record encoded bytes | 64 MiB |
+| Active project scheduling permits | 4,096 |
+| Waiting project exclusive tickets | 10,000 |
+| Exclusivity migration result encoded bytes | 64 MiB |
+| Exclusivity migration transaction encoded bytes | 64 MiB |
 | Checkpoints per run | 2,048 |
 | Outputs per checkpoint | 256 |
 | Structured diagnostic events per run | 1,000,000 |
@@ -202,6 +209,11 @@ discarding available run history or current artifact state.
   selected entry or log throughout an active run.
 - **Publication mutex:** the brief log-local lock used to serialize shared
   reproduction-result and report writes.
+- **Execution reference:** the compound `{entry, execution_id}` identity of one
+  planned execution. An execution ID alone is not unique across entries.
+- **Scheduling permit:** one project-coordinated ordinary or exclusive grant
+  held from immediately before worker launch until terminal attempt state is
+  durable and no worker from that attempt survives.
 
 ## Authority And Boundaries
 
@@ -279,11 +291,12 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v2",
+  "schema": "research-log-pyrun/v3",
   "executions": {
     "pyrun-exec/v1:0123456789abcdef...": {
       "confirmed": true,
       "auto_reproduce": true,
+      "exclusive": false,
       "last_run_at": "2030-01-01T00:00:00Z",
       "runner": "research-log-pyrun-runner/1",
       "environment_profile": "pyrun-standard/v1",
@@ -338,11 +351,14 @@ exactly:
 
 Top-level keys are exactly `schema` and `executions`. Execution-map keys are
 unique execution IDs. Every execution value has exactly `auto_reproduce`,
-`confirmed`, `last_run_at`, `runner`, `environment_profile`,
+`exclusive`, `confirmed`, `last_run_at`, `runner`, `environment_profile`,
 `execution_contract`, `recipe`, and `observed`.
 
-`auto_reproduce` and `confirmed` are required Booleans. `last_run_at` is either
-`null` or
+`auto_reproduce`, `exclusive`, and `confirmed` are required Booleans.
+`exclusive` states that reproduction must run the execution alone among all
+managed reproduction executions in the current Git project. It is scheduling
+policy, not a CPU, GPU, device, affinity, or external-process declaration.
+`last_run_at` is either `null` or
 a UTC RFC 3339 timestamp with whole seconds and `Z`. A metadata-rebuilt
 migration record uses `null` because no ordinary `pyrun` completion time is
 known. Version fields are required nonempty identifiers from the code-owned
@@ -438,7 +454,7 @@ The projection includes the normalized script, ordered replay parameters,
 explicit environment variables, direct input names, and complete output paths
 and kinds. The replay parameters make each runner-owned stream capture and its
 output identity explicit. It excludes observations, confirmation,
-automatic-reproduction policy,
+automatic-reproduction and exclusivity policy,
 timestamps, Markdown location, standard-environment profile, schema version,
 runner version, and execution-contract version.
 
@@ -552,6 +568,95 @@ Markdown-to-state disagreement is a refusal. The operation neither runs the
 recipe nor refreshes validation; ordinary validation remains the separate next
 authoring step.
 
+### Exclusive-Scheduling Policy
+
+`pyrun --exclusive -- script.py ...` records `exclusive: true`. Omitting
+`--exclusive` records `exclusive: false`. No value-bearing or negative spelling
+is accepted. The option affects managed reproduction scheduling only: ordinary
+direct `pyrun` execution is unchanged, and the runner does not reserve CPUs,
+GPUs, devices, host affinity, or unrelated host processes.
+
+Exclusivity is outside execution identity. A later Markdown-first policy change
+uses:
+
+```text
+log pyrun update --path LOG --entry ENTRY --execution-id ID --exclusive BOOL
+```
+
+`BOOL` is exactly `true` or `false`. `--exclusive` and `--auto-reproduce` are
+mutually exclusive update selectors so one operation changes one policy. The
+operation otherwise uses the same concrete-expansion agreement, entry locking,
+identity preservation, and validation boundary as automatic-reproduction
+policy updates.
+
+### Exclusivity Metadata Migration
+
+The one-time schema conversion uses:
+
+```text
+log pyrun migrate-exclusivity --path LOG [--dry-run] [--format text|json]
+```
+
+The operation accepts current strict `research-log-pyrun/v2` records and
+already-converted `research-log-pyrun/v3` records. It parses every current
+Markdown command and bounded loop expansion, requires exact agreement with
+every stored recipe and existing automatic policy, and derives `exclusive`
+only from the authored `--exclusive` option. It accounts for every stored and
+authored execution; an orphan, ambiguity, unsupported command, or disagreement
+aborts the complete log migration. It never reads the Phase 19 audit as machine
+authority and never executes a recipe.
+
+`--dry-run` is write-free and emits the same deterministic accounting as the
+mutating form. JSON output uses
+`research-log-pyrun-exclusivity-migration-result/1` and has exactly `schema`,
+`summary`, `status`, `changed`, `totals`, `entries`, `executions`, and
+`diagnostics`. `status` is `ready`, `complete`, or `refused`; `changed` is a
+Boolean. `totals` has exactly `authored_invocations`, `expanded_executions`,
+`stored_executions`, `converted_v2`, `unchanged_v3`, `exclusive_true`,
+`exclusive_false`, and `unaccounted`, all nonnegative integers. Entry items have
+exactly `entry`, `authored_invocations`, `expanded_executions`,
+`stored_executions`, `exclusive_true`, and `exclusive_false`. Execution items
+have exactly `entry`, `execution_id`, `script`, `markdown_path`, `line`,
+`invocation_kind`, `expansion_index`, `prior_schema`, `prior_exclusive`,
+`target_exclusive`, and `action`. `invocation_kind` is `direct` or
+`loop_expansion`; `expansion_index` is null for direct commands and otherwise
+the zero-based stable expansion index. `prior_exclusive` is null for v2 and a
+Boolean for v3; `action` is `convert` or `unchanged`. Arrays use canonical log,
+entry, Markdown-location, expansion, and execution-ID order. A ready or complete
+result requires `unaccounted: 0` and no diagnostics. Text is a complete human
+projection of the same object. Diagnostic items have exactly `code`, `message`,
+`entry`, `execution_id`, `markdown_path`, and `line`; inapplicable identity and
+location fields are null.
+
+The mutating form takes the exclusive log operation lock, first recovers or
+refuses recognized transaction residue, then repeats the complete
+reconciliation. It stages every affected entry record beneath
+`<log>/.cache/research-log-operations/pyrun-exclusivity-migration/`. The strict
+`transaction.json` uses
+`research-log-pyrun-exclusivity-migration-transaction/1` and has exactly
+`schema`, `transaction_id`, `state`, `created_at`, and `entries`. `state` is
+`prepared` or `committing`. Each stable-entry-order item has exactly `entry`,
+`target`, `original_digest`, `staged`, `staged_digest`, and `published`.
+
+After every staged v3 file and its directory are durable, the operation writes
+the `prepared` journal. Replacing it atomically with `state: committing` is the
+transaction commit point. Before that point, recovery removes intact staged
+files and changes no target. After that point, recovery rolls forward in stable
+entry order: a target matching `original_digest` receives its staged file, a
+target matching `staged_digest` is marked published, and any other state is a
+refusal that preserves the residue. Each successful replacement durably updates
+`published`; completion requires every target to match its staged digest before
+the residue is removed. Other operations that encounter recognized residue
+refuse with its transaction ID and direct the caller to this migration command;
+they never interpret an intermediate mixed schema. Mixed v2/v3 state without a
+valid journal is an unexplained refusal.
+
+The transaction preserves execution IDs, recipes, observations, confirmation,
+automatic policy, version fields, and `last_run_at`. An already-converted log
+must agree and is an idempotent no-op. An orphan, ambiguity, unsupported
+command, disagreement, or unaccounted identity refuses before staging; migration
+never repairs it.
+
 ### Retirement
 
 Retirement removes one complete execution and all of its output support through
@@ -660,12 +765,18 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--dry-run]
+log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--dry-run]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
 selects exactly that stable entry. There is no multi-log, all-log, or
 project-wide reproduction operation.
+
+`--jobs` accepts a positive decimal integer and defaults to 1. It is the maximum
+number of concurrently active executions in this run, not a promise that the
+cap can be reached. Graph readiness, path conflicts, project-wide exclusive
+coordination, and available work may reduce concurrency. The accepted value is
+immutable; status, stop, resume, recovery, and publication cannot override it.
 
 Evidence records inside the selected target define initial artifact cases.
 Only artifacts reachable from those current evidence roots participate in
@@ -765,7 +876,7 @@ resume. Plan, run, status, and cumulative-result JSON therefore gain no
 selection-policy field, schema version, or migration. Commands that consume an
 accepted run or only query published state do not accept `--recheck`.
 
-### Failures And Ordering
+### Failures And Parallel Ordering
 
 Missing or multiple producers, invalid boundaries, resource-limit violations,
 and cycles are mechanical artifact failures. A reachable dependency cycle
@@ -774,8 +885,36 @@ execution in the cycle runs. Independent acyclic components may continue.
 Artifacts not attempted after a required upstream failure are `skipped` with
 reason `dependency_failed`.
 
-The planner groups cases by execution ID, schedules each execution once in a
-deterministic dependency order, and preserves artifact-level result identity.
+The planner groups cases by execution reference, assigns every execution one
+stable topological order, and preserves artifact-level result identity. Runtime
+uses that order as the ready-queue tie breaker; completion order never changes
+the plan, case ordering, or publication ordering. An execution becomes ready
+only after every selected dependency has terminal durable state. A failed
+execution blocks only its transitive dependents with `dependency_failed`;
+independent ready work continues.
+
+The scheduler launches no ready execution that conflicts with running managed
+work. Each execution has canonical read, write, run-directory, and
+runner-writable claims derived from the accepted recipe and run layout. Two
+executions conflict when their output sets overlap, one writes an input read by
+the other, their run directories coincide, or their writable claims overlap or
+contain one another. Shared read-only inputs do not conflict. Claim comparison
+uses resolved normalized paths and rejects unsafe aliases rather than guessing.
+The run admits at most `jobs` active execution references at once.
+
+An execution with `exclusive: true` additionally requires the project-wide
+exclusive permit defined in [Project-Wide Scheduling](#project-wide-scheduling).
+Once any exclusive execution is ready, its durable waiter prevents new ordinary
+admissions project-wide. Existing ordinary work drains, the oldest stable
+exclusive waiter runs alone, and later ordinary arrivals cannot starve it.
+Multiple exclusive waiters use the coordinator's monotonic ticket, run ID, and
+stable plan order as their deterministic priority tuple.
+
+The executor must persist a producer's terminal checkpoint and output
+availability before releasing its scheduling permit or making dependents ready.
+Worker completion observed only in memory is insufficient. A failed producer's
+durable checkpoint similarly precedes dependent skips.
+
 An input beneath a declared directory output depends on that directory's
 producer just as an exact file output does. If that producer fails, the
 consumer is skipped with `dependency_failed`; the missing regenerated member
@@ -790,13 +929,24 @@ code-owned in [Fixed Resource Bounds](#fixed-resource-bounds). Exceeding a
 limit fails the affected planning operation; it never silently narrows the
 graph.
 
+### Frozen Scheduling Fixtures
+
+The controlled contract fixture at
+`skills/research-logging/tests/fixtures/parallel-reproduction-contract.json`
+defines the minimum synthetic scheduling cases: two independent commands under
+`jobs: 2`; a failed producer whose dependent is skipped while independent work
+completes; and an exclusive waiter across two runs that closes ordinary
+admission, drains active work, runs alone, and releases the queued ordinary
+execution. Implementation tests may add cases, but must preserve these fixture
+names and outcomes. The fixtures execute no maintained research command.
+
 ### Dry Run
 
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. It emits one
-deterministic `research-log-reproduction-plan/2` projection with exactly
-`schema`, `summary`, `target`, `include_all`, `validation_snapshot`,
+deterministic `research-log-reproduction-plan/3` projection with exactly
+`schema`, `summary`, `target`, `include_all`, `jobs`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
@@ -805,8 +955,14 @@ entry order and artifact path. Each case has exactly `entry`, `artifact`,
 or `failed`, and `reason` is null only when no qualification is needed.
 
 Executions are in deterministic run order and each has exactly `order`,
-`entry`, `execution_id`, `depends_on`, `outputs`, and `auto_reproduce`. `depends_on` and
-`outputs` are sorted unique identity arrays. A dependency reference is the
+`entry`, `execution_id`, `depends_on`, `outputs`, `auto_reproduce`, `exclusive`,
+`read_paths`, `write_paths`, `run_path`, and `writable_paths`. The four path
+claim fields are the immutable normalized scheduling projection; path arrays
+are sorted and unique. Before a run ID exists, run-local claims use the
+`<run>/...` portable prefix and project paths use `<project>/...`; acceptance
+resolves them beneath the chosen canonical run and project roots without
+changing their identity or creating dry-run state. `depends_on` and `outputs`
+are sorted unique identity arrays. A dependency reference is the
 entry-qualified string `<entry>:<execution_id>` because the same stable recipe
 identity may legitimately occur in more than one entry; `execution_id` itself
 remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
@@ -864,7 +1020,8 @@ CLI. It is immutable and names the durable state, output workspace, diagnostics,
 and staging paths for the life of the run. It is not derived from Markdown or
 an execution recipe.
 
-The accepted target, entry-or-log kind, and all-execution inclusion policy are immutable.
+The accepted target, entry-or-log kind, all-execution inclusion policy, and
+`jobs` value are immutable.
 Management commands use only the recorded scope:
 
 ```text
@@ -873,27 +1030,31 @@ log reproduce stop --path LOG --run-id RUN_ID
 log reproduce resume --path LOG --run-id RUN_ID
 ```
 
-They must reject `--entry` and `--include-all`.
+They must reject `--entry`, `--include-all`, and `--jobs`.
 
 ### Durable State
 
 Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/2`. Its top-level object has exactly:
+`research-log-reproduction-run/3`. Its top-level object has exactly:
 
 ```json
 {
-  "schema": "research-log-reproduction-run/2",
+  "schema": "research-log-reproduction-run/3",
   "run_id": "reproduce-...",
   "summary": "docs/research.md",
   "target": {"kind": "entry", "entry": "e003"},
   "include_all": false,
+  "jobs": 2,
   "source_snapshot": {},
   "validation_snapshot": {},
   "plan": {},
   "state": {
     "status": null,
     "phase": "executing",
-    "current_execution": "pyrun-exec/v1:...",
+    "active_executions": [
+      {"entry": "e003", "execution_id": "pyrun-exec/v1:..."},
+      {"entry": "e004", "execution_id": "pyrun-exec/v1:..."}
+    ],
     "latest_execution_diagnostic": null,
     "operational_failure": null
   },
@@ -922,29 +1083,43 @@ Each run directory contains one canonical `run.json` using
     "diagnostics": "diagnostics",
     "staging": "executions"
   },
-  "workers": [],
+  "workers": [
+    {
+      "worker_id": "worker-12347",
+      "parent_worker_id": null,
+      "pid": 12347,
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:...",
+      "state": "running",
+      "registered_at": "2030-01-01T00:00:01Z",
+      "last_observed_at": "2030-01-01T00:00:02Z"
+    }
+  ],
   "checkpoints": []
 }
 ```
 
 `target` has exactly `kind` and `entry`. `kind` is `entry` or `log`; `entry`
 is the stable entry ID for an entry target and null for a log target.
+The top-level `jobs` value must equal the immutable value in `plan`.
 `source_snapshot` and `validation_snapshot` are byte-for-byte the projections
 defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/2` object without its outer `schema` and must
+`research-log-reproduction-plan/3` object without its outer `schema` and must
 not change after acceptance.
 
 `state.status` is null while active and otherwise one terminal status:
 `complete`, `stopped`, or `failed`. `state.phase` is one of `accepted`,
 `planning`, `preflight`, `executing`, `comparing`, `publishing`, `stopping`, or
-null; it is null in terminal state. `current_execution` is an execution ID only
-while one execution is active and otherwise null.
+null; it is null in terminal state. `active_executions` is the stable-plan-order
+array of every execution reference with a live scheduling permit and is empty
+otherwise. Its length never exceeds `jobs`; an exclusive item is always the
+only member.
 `latest_execution_diagnostic` is null or the latest execution-level failure or
 stop diagnostic. `operational_failure` is null unless a run-level error
 prevents reproduction from reaching its completed publication endpoint. Each
-non-null diagnostic has exactly
-`code`, `message`, `execution_id`, and `recorded_at`; `execution_id` may be null
-for a run-level diagnostic. A complete run always has a null
+non-null diagnostic has exactly `code`, `message`, `entry`, `execution_id`, and
+`recorded_at`; `entry` and `execution_id` are both null for a run-level
+diagnostic. A complete run always has a null
 `operational_failure`, even when one or more artifact outcomes are failures.
 
 `progress` has exactly the fields shown. Every outcome count is a nonnegative
@@ -953,14 +1128,20 @@ null. Paths are normalized run-directory-relative paths except `run`, which is
 project-relative. Worker and checkpoint arrays are sorted by their stable
 identities.
 
-Each worker item has exactly `worker_id`, `parent_worker_id`, `pid`,
+Each worker item has exactly `worker_id`, `parent_worker_id`, `pid`, `entry`,
 `execution_id`, `state`, `registered_at`, and `last_observed_at`.
-`parent_worker_id` and `execution_id` may be null where their relationship is
-not applicable. Each checkpoint item has exactly `entry`, `execution_id`,
-`state`, `path`, `completed_at`, `started_at`, `finished_at`,
-`elapsed_seconds`, and `outputs`; `state` is `active`, `complete`, or `partial`,
-and fields unavailable in that state are null. Output entries use canonical
-output identities and observed fingerprints. Timing begins at the first
+`parent_worker_id`, `entry`, and `execution_id` may be null where their
+relationship is not applicable. `state` is exactly `running` or `exited`.
+Only `running` is live and may appear in `active_workers` or
+`surviving_workers`; an `exited` record is retained in run history but does not
+hold a permit. Each checkpoint item has exactly `entry`,
+`execution_id`, `state`, `path`, `completed_at`, `started_at`, `finished_at`,
+`elapsed_seconds`, `failure`, and `outputs`; `state` is `active`, `succeeded`,
+`failed`, or `stopped`. `failure` is null for active and succeeded attempts and
+otherwise has exactly `code`, `message`, and `recorded_at`. A stopped checkpoint
+is the only resumable attempt state; failed is terminal and is never retried in
+the same run. Fields unavailable in a state are null. Output entries use
+canonical output identities and observed fingerprints. Timing begins at the first
 supervised child launch. Elapsed time uses a monotonic clock and accumulates
 only active supervised runtime. A stopped resumable attempt preserves its
 first `started_at`, has no `finished_at`, and adds its resumed active interval
@@ -968,11 +1149,11 @@ to `elapsed_seconds`.
 
 The run record therefore durably retains:
 
-- run ID, log, target kind, target entry when applicable, and include-all
-  policy;
+- run ID, log, target kind, target entry when applicable, include-all policy,
+  and jobs cap;
 - accepted source and validation snapshots;
 - immutable deterministic execution plan;
-- run status, current phase, current execution, latest execution diagnostic,
+- run status, current phase, active executions, latest execution diagnostic,
   and operational failure;
 - accepted, started, updated, stopped, resumed, and finished timestamps where
   applicable;
@@ -984,23 +1165,27 @@ The run record therefore durably retains:
   continuation.
 
 Unknown fields fail. Checkpoint writes must be atomic and sufficient to
-distinguish completed work from an active or partial execution after process or
-host failure. Cardinality and byte limits are defined in
+distinguish `succeeded`, `failed`, or `stopped` work from an `active` execution
+after process or host failure. Cardinality and byte limits are defined in
 [Fixed Resource Bounds](#fixed-resource-bounds) and do not weaken this state
 contract.
 
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/2` object containing exactly `schema`,
-`run_id`, `summary`, `target`, `include_all`, `status`, `phase`,
-`current_execution`, `execution_timings`, `completed_executions`, `total_executions`,
+`research-log-reproduction-status/3` object containing exactly `schema`,
+`run_id`, `summary`, `target`, `include_all`, `jobs`, `status`, `phase`,
+`active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
 `operational_failure`, and `surviving_workers`. The values are the
 corresponding strict projection of `run.json`.
-`execution_timings` contains only launched executions, in checkpoint order,
-with exactly `entry`, `execution_id`, `state`, `started_at`, `finished_at`, and
-`elapsed_seconds`. Planned-but-queued executions are absent, so status does not
+`active_executions` uses the run-state execution-reference shape and order.
+`active_workers` contains every current worker record associated with those
+references and is empty when no execution is active.
+`execution_timings` contains only launched executions, in stable plan order,
+with exactly `entry`, `execution_id`, `state`, `started_at`, `finished_at`,
+`elapsed_seconds`, and `failure`. These fields are the checkpoint timing,
+terminal-state, and diagnostic projection. Planned-but-queued executions are absent, so status does not
 misrepresent queue time as execution time.
 `surviving_workers` is normally empty and, while stopping cleanup remains
 incomplete, contains the exact sorted worker records still observed alive.
@@ -1025,12 +1210,13 @@ complete run may contain any artifact outcome.
 ### Stop
 
 `stop` is the sole user operation for ending active work without deleting it.
-It signals the complete supervised worker tree for graceful shutdown, waits one
-fixed code-owned grace period, then force-terminates every survivor. It does
-not wait for the current execution to finish naturally.
+It cancels this run's project-scheduler waiters, signals every active supervised
+worker tree for graceful shutdown, waits one fixed code-owned grace period, then
+force-terminates every survivor. It does not wait for active executions to
+finish naturally.
 
 The run becomes `stopped` and releases its scope lock only after no supervised
-worker remains. It retains the same run ID, workspace path, checkpoints,
+worker or scheduling permit remains. It retains the same run ID, workspace path, checkpoints,
 partial outputs, and diagnostics.
 
 If forced termination leaves a survivor, the run remains active in `stopping`,
@@ -1042,10 +1228,12 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 `resume` is available for `stopped` runs and for a `failed` run whose sole
 operational failure is `reproduction.publication.failed`. It reacquires the
 original scope lock and reuses the same run-local output workspace and run
-paths. A stopped run skips completed execution checkpoints and reinvokes only
-its stopped execution in place, preserving script-native checkpoint and resume
-behavior. A publication retry reuses every durable comparison, terminal failed
-attempt, dependency skip, and complete checkpoint; it performs no second
+paths and immutable `jobs` cap. A stopped run skips `succeeded` and `failed`
+execution checkpoints and reinvokes only `stopped` executions in their original run paths,
+preserving script-native checkpoint and resume behavior. It restores the stable
+ready queue from the accepted plan and durable checkpoints, but does not reuse
+an expired scheduling permit. A publication retry reuses every durable comparison, terminal `failed`
+attempt, dependency skip, and `succeeded` checkpoint; it performs no second
 research-command attempt.
 
 Before executing, resume must verify exact agreement with the recorded recipes,
@@ -1068,9 +1256,10 @@ new attempt after an execution has terminally failed.
 Host or supervisor recovery performs reconciliation and worker cleanup only. It
 must never restart research execution automatically. Every formerly active run
 is reconciled, surviving registered workers receive the same bounded cleanup,
-and the run becomes reason-coded `stopped` only after no worker remains. The
-scope lock is not released earlier. Execution continues only after explicit
-`resume` passes ordinary guards.
+and its project-scheduler waiters and permits are reconciled under the scheduler
+mutex. The run becomes reason-coded `stopped` only after no worker or permit
+remains. The scope lock is not released earlier. Execution continues only after
+explicit `resume` passes ordinary guards.
 
 ### Exit Status
 
@@ -1119,8 +1308,19 @@ uses the project-local Python environment and recorded execution environment.
 Runner-owned temporary and cache locations, including `MPLCONFIGDIR` and
 `XDG_CACHE_HOME`, are located inside the run's allowed paths.
 
+For parallel execution, each attempt receives a distinct mirrored entry run
+directory and runner-temporary root. Its writable confinement is exactly that run directory, declared
+output targets outside that directory, runner capture targets, and its private
+temporary and diagnostic roots. Those paths form the accepted `run_path`,
+`write_paths`, and `writable_paths` claims. Regenerated dependencies are made
+read-only to consumers after their producer checkpoint is durable. The
+supervisor, not a child process, performs any atomic materialization into a
+shared dependency location. Two independent executions in the same entry may
+therefore run concurrently when their logical output, input, and writable
+claims do not conflict; a resumed `stopped` attempt reuses its original run path.
+
 Generated outputs, temporary files, checkpoints, captures, and diagnostics are
-confined to run-owned paths. Retained scripts, participating code, inputs,
+confined to the attempt's declared run-owned paths. Retained scripts, participating code, inputs,
 boundaries, comparison baselines, and the project-local environment remain
 read-only. A script that accepts but ignores a substituted output and attempts
 another write fails at runtime; static inspection never substitutes for this
@@ -1551,6 +1751,114 @@ ordinary `pyrun` publication refuse changes protected by an active reproduction
 entry or log lock. Raw filesystem edits and external origins do not participate
 in advisory locks and remain covered by exact snapshot and fingerprint checks.
 
+### Project-Wide Scheduling
+
+Project-wide ordinary and exclusive permits use the existing operation-lock
+implementation at the current Git project root, alongside rather than replacing
+entry and log scope locks. A brief project scheduler mutex protects one bounded
+generated coordinator record beneath the project operation-state directory.
+The record contains waiting exclusive tickets and active permits with run ID,
+execution reference, permit kind, supervisor identity, stable priority, and
+normalized path claims. It is coordination state, not research state or a
+reproduction result.
+
+The coordinator path is
+`<project>/.cache/research-log-operations/reproduction-scheduler.json`; its
+mutex is `reproduction-scheduler.lock` in the same operation-state directory.
+The strict canonical record has exactly:
+
+```json
+{
+  "schema": "research-log-reproduction-scheduler/1",
+  "next_ticket": 4,
+  "waiters": [
+    {
+      "ticket": 3,
+      "run_id": "reproduce-...",
+      "entry": "e003",
+      "execution_id": "pyrun-exec/v1:...",
+      "plan_order": 7,
+      "supervisor_pid": 12345,
+      "registered_at": "2030-01-01T00:00:02Z"
+    }
+  ],
+  "active": [
+    {
+      "permit_id": "permit-...",
+      "kind": "ordinary",
+      "run_id": "reproduce-...",
+      "entry": "e004",
+      "execution_id": "pyrun-exec/v1:...",
+      "plan_order": 2,
+      "supervisor_pid": 12346,
+      "read_paths": ["/project/docs/research/.../data/input.csv"],
+      "write_paths": ["/project/tmp/reproduction/.../data/output.csv"],
+      "run_path": "/project/tmp/reproduction/.../entries/e004",
+      "writable_paths": ["/project/tmp/reproduction/.../runtime/e004/..."],
+      "granted_at": "2030-01-01T00:00:03Z"
+    }
+  ]
+}
+```
+
+`next_ticket` is a nonnegative monotonically increasing integer within the
+record. Waiters are sorted by `(ticket, run_id, plan_order)` and active permits
+by `(run_id, plan_order, entry, execution_id)`. Each item has exactly the
+fields shown. An exclusive active permit has `kind: "exclusive"` and is the
+only active item. Paths are absolute normalized resolved paths used only for
+same-project scheduling conflict checks. Empty state is removed once no active
+or waiting run can reference it; the mutex path remains ordinary operation-lock
+state.
+
+An ordinary permit is admitted only when it conflicts with no active permit and
+no exclusive ticket is waiting. An exclusive execution first records its ticket,
+which closes ordinary admission, then waits without holding the scheduler mutex.
+After active permits drain, the first `(ticket, run_id, plan_order)` tuple
+becomes the sole active exclusive permit. A later ticket cannot overtake it. Scheduling never reserves
+unrelated host processes or coordinates projects that do not share the current
+Git root.
+
+The lock order is scope lock, scheduler mutex, run-state lock, entry-local
+confirmation lock, log publication mutex. No code may acquire an earlier lock
+while holding a later one. The scheduler mutex is never held while waiting for
+capacity, running or stopping workers, comparing artifacts, publishing results,
+or invoking validation. A transition that touches coordinator and run state
+takes the locks in that order and writes idempotent state so reconciliation can
+finish either side after interruption.
+
+A scheduling permit is released only after the attempt's `succeeded`, `failed`,
+or `stopped` checkpoint is durable and every registered worker is gone. An incomplete stop
+or recovery retains the active permit and scope lock while a worker survives.
+A stopped waiter removes its ticket before releasing its scope lock. Recovery
+reconciles coordinator entries against strict run state and live supervised
+process identity; it may remove a proved-dead waiter or permit but never infer a
+completed attempt or launch work. Coordinator corruption or unavailable process
+inspection is an operational refusal, not permission to bypass exclusion.
+
+Existing `research-log-reproduction-run/2` jobs are never rewritten. Their
+original serial supervisor, status/2 projection, stop, resume, recovery, and
+publication semantics remain available through a version-dispatched
+compatibility path. Before accepting the first v3 run, and before every later
+v3 launch while v2 state exists, the CLI performs a bounded project run scan.
+An active v2 run with its pre-upgrade supervisor or any unreconciled worker
+blocks v3 acceptance with `reproduction.scheduler.legacy_active`; the CLI does
+not attempt retroactive enrollment. A v2 run started or explicitly resumed by
+the new implementation acquires one conservative project-wide exclusive permit
+for each remaining execution so it cannot overlap v3 managed work.
+
+A stopped v2 run remains resumable only while its original source snapshot
+still matches byte-for-byte under the v2 decoder. Exclusivity migration changes
+that snapshot and therefore makes such a resume stale; it refuses normally
+rather than projecting v3 state back into v2. Status, stop, recovery, report,
+and retained diagnostics remain readable after migration.
+Existing `research-log-pyrun/v2` execution records remain readable by ordinary
+non-exclusive `pyrun`, automatic-policy updates, validation, migration, and
+reproduction with `--jobs 1`. Such reproduction projects every selected v2
+execution as conservatively exclusive; `--jobs` greater than one is refused.
+These compatibility operations preserve v2 and never add or guess the missing
+field. Only `migrate-exclusivity` writes v3; direct or policy invocations that
+request exclusivity refuse v2 with a migration-required diagnostic.
+
 ### Shared Publication
 
 Concurrent distinct-entry runs share `reproduction/results.json`,
@@ -1709,10 +2017,17 @@ completion, or required action. It never controls the job.
 
 ## Compatibility And Evolution
 
-The execution and reproduction cutover is complete. Ordinary `pyrun` and
-Reproduce require `pyrun.json`; neither executes legacy `pyrun-outputs.json`
-records or derives reproduction recipes from Markdown. The legacy validation
-Reproduction section is not a current report surface.
+The original execution and reproduction cutover is complete. Ordinary `pyrun`
+and Reproduce require `pyrun.json`; neither executes legacy
+`pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
+legacy validation Reproduction section is not a current report surface.
+
+Parallel scheduling introduces `research-log-pyrun/v3` and reproduction plan,
+run, and status version 3. Version 2 execution records and accepted runs use
+only the bounded compatibility paths defined above. No accepted run is upgraded
+in place, and no consumer may decode a v2 object with v3 defaults. The
+exclusivity migration is complete only after every maintained log has atomically
+converted and passed ordinary validation.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded
@@ -1739,13 +2054,15 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-The command-oriented execution state, migration, planning, safety, run-local
-execution, exact and evidence-scoped artifact comparison, durable comparison
+The command-oriented version 2 execution state, migration, serial planning,
+safety, run-local execution, exact and evidence-scoped artifact comparison, durable comparison
 records, immediate confirmation, independent result publication, current
 projection, bounded read-only queries, durable job control, stop and same-path
 resume, publication retry, lost-supervisor reconciliation, ordinary
 post-reproduction validation, and whole-execution copy-based promotion are
-implemented. Promotion retains its own approved targeted Evidence and
+implemented. The version 3 parallel-scheduling contract is frozen; its
+implementation and maintained-corpus exclusivity migration remain pending.
+Promotion retains its own approved targeted Evidence and
 Provenance refresh without running general validation; reproduction has no
 targeted-validation path. Maintained-corpus initialization and the bounded
 entry-level cutover evaluation are complete. Full maintained-corpus

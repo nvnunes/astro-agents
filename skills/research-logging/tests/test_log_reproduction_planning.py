@@ -227,7 +227,7 @@ def _write_projection(
         ).hexdigest(),
         "result_date": record.result_date,
         "rules_version": record.rules_version,
-        "schema": "research-log-published-validation/1",
+        "schema": "research-log-published-validation/2",
         "source_identity": "source",
         "summary": record.summary,
         "unresolved": unresolved,
@@ -290,6 +290,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "e001",
                         "findings": [
                             {
+                                "admission_effect": "chain",
+                                "affected_chains": ["blocked-chain"],
+                                "affected_entries": ["e001"],
                                 "code": "lineage.missing",
                                 "identity": "provenance:e001:blocked",
                                 "scope": "provenance",
@@ -331,6 +334,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "e001",
                         "findings": [
                             {
+                                "admission_effect": "none",
+                                "affected_chains": [],
+                                "affected_entries": [],
                                 "code": "orphan.material.unused",
                                 "identity": "orphan:e001:independent",
                                 "scope": "orphan",
@@ -411,6 +417,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "e001b",
                         "findings": [
                             {
+                                "admission_effect": "entry",
+                                "affected_chains": [],
+                                "affected_entries": ["e001"],
                                 "code": "lineage.missing",
                                 "identity": "provenance:e001:blocked",
                                 "scope": "provenance",
@@ -491,6 +500,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "e001b",
                         "findings": [
                             {
+                                "admission_effect": "chain",
+                                "affected_chains": ["blocked-chain"],
+                                "affected_entries": ["e001"],
                                 "code": "lineage.missing",
                                 "identity": "provenance:e001b:blocked",
                                 "scope": "provenance",
@@ -979,6 +991,187 @@ class ReproductionPlanningTests(unittest.TestCase):
                 )
             )
 
+    def test_changed_script_blocks_only_its_dependants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            paths = {
+                name: entry.root / "data" / f"{name}.txt"
+                for name in ("raw", "middle", "final", "independent")
+            }
+            for name, path in paths.items():
+                path.write_text(name, encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", paths["raw"], origin=True),
+                    fixture.item(entry, "middle", paths["middle"], origin=False),
+                    fixture.item(entry, "final", paths["final"], origin=False),
+                    fixture.item(
+                        entry,
+                        "independent",
+                        paths["independent"],
+                        origin=False,
+                    ),
+                ],
+            )
+            fixture.evidence(entry, "final", "independent")
+            upstream = fixture.execution(
+                entry,
+                "upstream",
+                {"raw": paths["raw"]},
+                {"middle": paths["middle"]},
+            )
+            downstream = fixture.execution(
+                entry,
+                "downstream",
+                {"middle": paths["middle"]},
+                {"final": paths["final"]},
+            )
+            independent = fixture.execution(
+                entry,
+                "independent",
+                {"raw": paths["raw"]},
+                {"independent": paths["independent"]},
+            )
+            fixture.write_pyrun(entry, [upstream, downstream, independent])
+            (entry.root / upstream[1].recipe.script).write_text(
+                "# changed\n", encoding="utf-8"
+            )
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(
+                [value["execution_id"] for value in plan.executions],
+                [independent[0]],
+            )
+            self.assertEqual(
+                {
+                    (value["artifact"], value["disposition"], value["reason"])
+                    for value in plan.cases
+                },
+                {
+                    ("data/middle.txt", "failed", "script_changed"),
+                    ("data/final.txt", "skipped", "dependency_failed"),
+                    ("data/independent.txt", "run", None),
+                },
+            )
+            snapshotted = {
+                value["execution_id"] for value in plan.source_snapshot["executions"]
+            }
+            self.assertNotIn(upstream[0], snapshotted)
+            self.assertIn(independent[0], snapshotted)
+
+    def test_missing_baseline_can_produce_a_valid_no_work_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            final = entry.root / "data" / "final.txt"
+            raw.write_text("raw", encoding="utf-8")
+            final.write_text("final", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "final")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"final": final}
+            )
+            fixture.write_pyrun(entry, [execution])
+            final.unlink()
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(plan.cases[0]["disposition"], "failed")
+            self.assertEqual(plan.cases[0]["reason"], "baseline_unavailable")
+
+    def test_missing_direct_input_is_local_to_its_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            final = entry.root / "data" / "final.txt"
+            raw.write_text("raw", encoding="utf-8")
+            final.write_text("final", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "final", final, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "final")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"final": final}
+            )
+            fixture.write_pyrun(entry, [execution])
+            raw.unlink()
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(plan.cases[0]["reason"], "direct_input_unavailable")
+
+    def test_shared_changed_code_blocks_each_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            first_output = entry.root / "data" / "first.txt"
+            second_output = entry.root / "data" / "second.txt"
+            shared = entry.root / "scripts" / "shared.py"
+            for path, value in (
+                (raw, "raw"),
+                (first_output, "first"),
+                (second_output, "second"),
+                (shared, "# shared"),
+            ):
+                path.write_text(value, encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "first", first_output, origin=False),
+                    fixture.item(entry, "second", second_output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "first", "second")
+            executions = []
+            for name, output in (
+                ("first", first_output),
+                ("second", second_output),
+            ):
+                identity, execution = fixture.execution(
+                    entry, name, {"raw": raw}, {name: output}
+                )
+                executions.append(
+                    (
+                        identity,
+                        replace(
+                            execution,
+                            observed=replace(
+                                execution.observed,
+                                code=(("scripts/shared.py", _fingerprint(shared)),),
+                            ),
+                        ),
+                    )
+                )
+            fixture.write_pyrun(entry, executions)
+            shared.write_text("# changed", encoding="utf-8")
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(
+                {value["reason"] for value in plan.cases},
+                {"participating_code_changed"},
+            )
+
     def test_entry_evidence_from_another_entry_is_skipped_not_executed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
@@ -1358,6 +1551,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "e001",
                         "findings": [
                             {
+                                "admission_effect": "none",
+                                "affected_chains": [],
+                                "affected_entries": [],
                                 "code": "provenance.output.unconfirmed",
                                 "dependencies": [],
                                 "identity": unconfirmed.identity,
@@ -1382,7 +1578,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(admitted, record)
             self.assertEqual(snapshot["rules_version"], RULES_VERSION)
             self.assertEqual(
-                projection["schema"], "research-log-published-validation/1"
+                projection["schema"], "research-log-published-validation/2"
             )
 
     def test_validation_admission_blocks_graph_failure_beside_unconfirmed(self) -> None:
@@ -1450,6 +1646,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "entry": "log",
                         "findings": [
                             {
+                                "admission_effect": "log",
+                                "affected_chains": [],
+                                "affected_entries": [],
                                 "code": blocking.failure.code,
                                 "dependencies": [],
                                 "identity": blocking.identity,

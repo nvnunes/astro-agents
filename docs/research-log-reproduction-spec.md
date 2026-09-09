@@ -74,7 +74,7 @@ The initial implementation must use these versions:
 | Run status projection | `research-log-reproduction-status/3` |
 | Dry-run plan | `research-log-reproduction-plan/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/3` |
+| Source snapshot | `research-log-reproduction-source-snapshot/4` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -736,14 +736,19 @@ Unconfirmed runnable recipes are deliberately eligible so reproduction can
 establish confirmation.
 
 The validation subsystem's persisted batch projection determines finding
-membership and admission. Reproduction must not reconstruct groups or classify
-raw check failures independently. A selected execution output must map to
-exactly one projected chain; a blocking unresolved group or ambiguous mapping
-excludes the affected work. Summary provenance that depends on
+membership and admission through validation-owned `none`, `chain`, `entry`,
+and `log` effects with exact affected identities. Reproduction must not
+reconstruct groups or classify raw check failures independently. `none` remains
+reportable without affecting executable work; `chain` excludes one projected
+chain; `entry` excludes runnable work in one physical entry; and `log` refuses
+the complete plan. A selected execution output must map to exactly one
+projected chain; an absent or ambiguous execution-to-chain mapping remains a
+whole-run integrity failure. Summary provenance that depends on
 `provenance.output.unconfirmed` remains a non-failing dependent check and
-does not create an additional admission blocker. A summary-target
-failure with any other cause remains subject to the normal Structure,
-Evidence, or failed-Provenance-artifact gate.
+does not create an additional admission blocker. A summary-only unresolved
+reference with no association to evidence, registered data, execution state,
+or runnable material has effect `none`; its reporting does not block unrelated
+execution.
 
 Projected chain and entry-scoped unresolved-group `entry` values are exact
 entry-document IDs. Reproduction resolves each through the canonical entry
@@ -925,20 +930,21 @@ null rather than omitted. Failures are sorted artifact projections with exactly
 The validation snapshot records `result_path`, `result_date`, `rules_version`,
 `result_digest`, `source_projection_digest`, `projection_path`,
 `projection_digest`, `validation_id`, and `batch_admission`. The admission
-projection uses `research-log-reproduction-batch-admission/1` and lists every
+projection uses `research-log-reproduction-batch-admission/2` and lists every
 admitted chain plus every excluded chain with its blocking finding IDs. The two
 file digests cover the exact completed result and batch projection;
 `source_projection_digest` covers the validation-owned complete research-source
 projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/3` and has exactly `schema`,
+`research-log-reproduction-source-snapshot/4` and has exactly `schema`,
 `authority_files`, `executions`, and `materials`. `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
-for the plan. `executions` records each selected execution ID and the SHA-256
+for the plan. `executions` records each runnable execution ID and the SHA-256
 digest of its canonical execution record after omitting only the mutable
 `confirmed` field. `materials` records every current script, participating code
-file, direct input, retained boundary, and comparison baseline by canonical
+file, direct input, retained boundary, and comparison baseline required by
+runnable work or an accepted retained boundary, by canonical
 identity, role, kind, and closed fingerprint. All arrays are unique and
 canonically sorted.
 
@@ -1461,15 +1467,18 @@ artifact outcome. When the selected evidence root itself is non-automatic or is
 produced outside an entry target, that selected artifact is respectively
 `skipped` with reason `non_automatic` or `outside_entry`.
 
-The complete v1 reason vocabulary is `baseline_unavailable`,
+The complete v2 reason vocabulary adds preflight-locality reasons to the prior
+set. It is `baseline_changed`, `baseline_unavailable`,
 `boundary_changed`, `boundary_unavailable`, `capture_failed`,
 `comparator_error`, `content_changed`, `cross_log_generated_input`,
-`dependency_cycle`, `dependency_failed`, `evidence_comparison_failed`,
+`dependency_cycle`, `dependency_failed`, `direct_input_changed`,
+`direct_input_unavailable`, `evidence_comparison_failed`,
 `execution_exception`, `execution_failed`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
 `multiple_producers`, `output_materialization_failed`, `output_missing`,
-`outside_entry`, `reproduction.run.invalid`, `resource_limit`, `safety_failure`,
-`non_automatic`, `stop_requested`,
+`outside_entry`, `participating_code_changed`,
+`participating_code_unavailable`, `reproduction.run.invalid`, `resource_limit`,
+`safety_failure`, `script_changed`, `script_unavailable`, `non_automatic`, `stop_requested`,
 `unsupported_format`, `validation_blocked`, `worker_cleanup_incomplete`, and
 `worker_survived`.
 

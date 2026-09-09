@@ -17,6 +17,72 @@ OPERATION_STATE = importlib.import_module("validation.operation_state")
 
 
 class FindingsCliTests(unittest.TestCase):
+    def test_projection_owns_none_entry_and_log_admission_effects(self) -> None:
+        from validation.batch_projection import build_batch_projection
+
+        checks = (
+            RESULTS.MechanicalCheck(
+                "summary:reference:missing",
+                RESULTS.CheckScope.EVIDENCE,
+                RESULTS.CheckStatus.FAIL,
+                "docs/study.md",
+                failure=RESULTS.FailurePayload(
+                    "summary.reference.unresolved",
+                    "docs/study.md",
+                    {},
+                    "Summary References",
+                ),
+            ),
+            RESULTS.MechanicalCheck(
+                "entry:e001:output:missing",
+                RESULTS.CheckScope.CONFORMANCE,
+                RESULTS.CheckStatus.FAIL,
+                "entries/e001.md",
+                failure=RESULTS.FailurePayload(
+                    "command.output.invalid",
+                    "entries/e001.md",
+                    {},
+                    "Recorded Commands",
+                ),
+            ),
+            RESULTS.MechanicalCheck(
+                "global:authority:invalid",
+                RESULTS.CheckScope.CONFORMANCE,
+                RESULTS.CheckStatus.FAIL,
+                "docs/study.md",
+                failure=RESULTS.FailurePayload(
+                    "validation.authority.invalid",
+                    "docs/study.md",
+                    {},
+                    "Validation Authority",
+                ),
+            ),
+        )
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "docs/study.md", "test-rules", "2026-09-09", checks
+        )
+
+        projection = build_batch_projection(
+            record, invocations=(), registries=(), source_identity="source"
+        )
+
+        effects = {
+            finding["identity"]: (
+                finding["admission_effect"],
+                finding["affected_entries"],
+            )
+            for group in projection["unresolved"]
+            for finding in group["findings"]
+        }
+        self.assertEqual(
+            effects,
+            {
+                "summary:reference:missing": ("none", []),
+                "entry:e001:output:missing": ("entry", ["e001"]),
+                "global:authority:invalid": ("log", []),
+            },
+        )
+
     def test_projection_groups_only_unique_same_entry_producer_edges(self) -> None:
         from validation.batch_projection import build_batch_projection
         from validation.commands import Invocation, MaterialRelationship
@@ -61,7 +127,23 @@ class FindingsCliTests(unittest.TestCase):
             invocation("cross-entry", entry="e002", inputs=("/y",), ordinal=1),
         )
         record = RESULTS.MechanicalGeneratedRecord.build(
-            "/project/study.md", "test-rules", "2026-09-08", ()
+            "/project/study.md",
+            "test-rules",
+            "2026-09-08",
+            (
+                RESULTS.MechanicalCheck(
+                    "producer",
+                    RESULTS.CheckScope.CONFORMANCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "/x",
+                    failure=RESULTS.FailurePayload(
+                        "command.output.invalid",
+                        "/x",
+                        {"owner": "e001", "path": "/x"},
+                        "Recorded Commands",
+                    ),
+                ),
+            ),
         )
 
         projection = build_batch_projection(
@@ -92,6 +174,19 @@ class FindingsCliTests(unittest.TestCase):
         )
         self.assertEqual(
             projection["validation_id"], reversed_projection["validation_id"]
+        )
+        self.assertTrue(
+            any(chain["findings"] for chain in projection["chains"]), projection
+        )
+        attached = next(chain for chain in projection["chains"] if chain["findings"])
+        self.assertEqual(
+            attached["findings"][0]["admission_effect"], "chain"
+        )
+        self.assertEqual(
+            attached["findings"][0]["affected_chains"], [attached["chain_id"]]
+        )
+        self.assertEqual(
+            attached["findings"][0]["affected_entries"], ["e001"]
         )
 
     def test_projection_preserves_directory_root_without_false_fan_out(self) -> None:
@@ -439,6 +534,9 @@ class FindingsCliTests(unittest.TestCase):
                     "entry": "e001",
                     "findings": [
                         {
+                            "admission_effect": "none",
+                            "affected_chains": [],
+                            "affected_entries": [],
                             "code": "orphan.material.unused",
                             "dependencies": [],
                             "identity": f"orphan:e001:{number:03}",
@@ -460,7 +558,7 @@ class FindingsCliTests(unittest.TestCase):
                 ).hexdigest(),
                 "result_date": record.result_date,
                 "rules_version": record.rules_version,
-                "schema": "research-log-published-validation/1",
+                "schema": "research-log-published-validation/2",
                 "source_identity": "source",
                 "summary": record.summary,
                 "unresolved": unresolved,

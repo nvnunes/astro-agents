@@ -833,7 +833,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
             refreshed = run_log(root, "validate", "--path", str(logical))
             self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
             current = json.loads(path.read_text())
-            self.assertEqual(current["schema"], "research-log-published-validation/1")
+            self.assertEqual(current["schema"], "research-log-published-validation/2")
             self.assertIn("validation_id", current)
             self.assertNotIn("projection_id", current)
             self.assertNotIn("projection", refreshed.stdout)

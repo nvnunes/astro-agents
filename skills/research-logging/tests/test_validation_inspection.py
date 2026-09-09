@@ -54,7 +54,7 @@ def sample(root: Path, *, members: int = 2, chain: str = "A") -> tuple:
         ],
     }
     projection = {
-        "schema": "research-log-published-validation/1",
+        "schema": "research-log-published-validation/2",
         "validation_id": "new-projection",
         "source_identity": "source",
         "unresolved": [],

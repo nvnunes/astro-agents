@@ -16,7 +16,6 @@ from research_log_data import (
     Fingerprint,
     InputResource,
     load_data_file,
-    observe_file_content,
     observe_fingerprint,
     parse_fingerprint,
     resolve_input_token,
@@ -26,12 +25,7 @@ from validation.controller import evaluate_current_record
 from validation.engine import RULES_VERSION
 from validation.evidence import EvidenceFile, load_evidence_file
 from validation.evidence_comparison import evidence_comparison_identity
-from validation.mechanical_results import (
-    CheckScope,
-    CheckStatus,
-    CompletionState,
-    MechanicalGeneratedRecord,
-)
+from validation.mechanical_results import CompletionState, MechanicalGeneratedRecord
 from validation.operation_state import operation_directory
 from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
@@ -54,6 +48,7 @@ from .context import (
 from .model import ActionError
 from .reproduction_contract import (
     LEGACY_SOURCE_SNAPSHOT_SCHEMA,
+    PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
     SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
     canonical_execution_source_digest,
@@ -108,6 +103,15 @@ class _Failure:
     dependencies: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _BoundaryRequest:
+    kind: str
+    entry: _EntryState
+    resource: InputResource
+    artifact: str
+    consumer: _Owner | None
+
+
 @dataclass
 class _PlanningState:
     log: LogContext
@@ -135,6 +139,9 @@ class _PlanningState:
     cycle_members: set[ExecutionKey] = field(default_factory=set)
     blocked: set[ExecutionKey] = field(default_factory=set)
     materials: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
+    material_owners: dict[tuple[str, str], set[ExecutionKey | None]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
     authority_paths: set[Path] = field(default_factory=set)
     admitted_batches: set[tuple[str, str]] = field(default_factory=set)
     excluded_batches: dict[tuple[str, str], tuple[str, ...]] = field(
@@ -481,7 +488,10 @@ def _trace_resource(
         return
     artifact = _artifact(resource, owner_entry, state)
     if resource.origin:
-        _boundary(state, "origin", owner_entry, resource, artifact)
+        _verified_boundary(
+            state,
+            _BoundaryRequest("origin", owner_entry, resource, artifact, consumer),
+        )
         return
     candidates = _resource_owners(state.owners, resource.canonical_target)
     in_scope = tuple(
@@ -491,7 +501,12 @@ def _trace_resource(
     )
     if not in_scope:
         if state.entry_target:
-            _verified_boundary(state, "cross_entry", owner_entry, resource, artifact)
+            _verified_boundary(
+                state,
+                _BoundaryRequest(
+                    "cross_entry", owner_entry, resource, artifact, consumer
+                ),
+            )
             if consumer is None:
                 execution_id = (
                     candidates[0].execution_id if len(candidates) == 1 else None
@@ -528,7 +543,12 @@ def _trace_resource(
         return
     producer = in_scope[0]
     if not producer.execution.auto_reproduce and not state.include_all:
-        _verified_boundary(state, "non_automatic", owner_entry, resource, artifact)
+        _verified_boundary(
+            state,
+            _BoundaryRequest(
+                "non_automatic", owner_entry, resource, artifact, consumer
+            ),
+        )
         if consumer is None:
             state.cases[(owner_entry.context.id, artifact)] = _case(
                 owner_entry.context.id,
@@ -577,11 +597,16 @@ def _trace_execution(owner: _Owner, state: _PlanningState, *, depth: int) -> Non
             )
             state.blocked.add(key)
             continue
-        state.materials[("input", resource.canonical_target)] = _material(
-            resource.canonical_target,
-            "input",
-            resource.kind,
-            resource.fingerprint,
+        _retain_material(
+            state,
+            ("input", resource.canonical_target),
+            _material(
+                resource.canonical_target,
+                "input",
+                resource.kind,
+                resource.fingerprint,
+            ),
+            owner=key,
         )
         _trace_resource(resource, owner.entry, state, consumer=owner, depth=depth + 1)
     state.visiting.pop()
@@ -596,16 +621,33 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         entry_root=owner.entry.context.root,
         project_root=state.project_root,
     )
-    _verify_regular(script, execution.observed.script, "script")
-    state.materials[("script", script.resolve().as_posix())] = _material(
-        script.resolve().as_posix(), "script", "file", execution.observed.script
+    failures: list[tuple[str, str]] = []
+    script_identity = script.resolve().as_posix()
+    failure = _material_failure(
+        script, "file", execution.observed.script, "script"
     )
+    if failure is None:
+        _retain_material(
+            state,
+            ("script", script_identity),
+            _material(script_identity, "script", "file", execution.observed.script),
+            owner=owner.key,
+        )
+    else:
+        failures.append(failure)
     for name, fingerprint in execution.observed.code:
         path = code_target_path(name, entry_root=owner.entry.context.root)
-        _verify_regular(path, fingerprint, "participating code")
-        state.materials[("code", path.resolve().as_posix())] = _material(
-            path.resolve().as_posix(), "code", "file", fingerprint
-        )
+        identity = path.resolve().as_posix()
+        failure = _material_failure(path, "file", fingerprint, "participating_code")
+        if failure is None:
+            _retain_material(
+                state,
+                ("code", identity),
+                _material(identity, "code", "file", fingerprint),
+                owner=owner.key,
+            )
+        else:
+            failures.append(failure)
     for output, kind in execution.recipe.outputs:
         fingerprint = dict(execution.observed.outputs)[output]
         target = (
@@ -617,9 +659,33 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
             .resolve()
             .as_posix()
         )
-        state.materials[("baseline", target)] = _material(
-            target, "comparison_baseline", kind, fingerprint
+        failure = _material_failure(
+            Path(target), kind, fingerprint, "comparison_baseline"
         )
+        if failure is None:
+            _retain_material(
+                state,
+                ("baseline", target),
+                _material(target, "comparison_baseline", kind, fingerprint),
+                owner=owner.key,
+            )
+        else:
+            failures.append(failure)
+    if failures:
+        state.blocked.add(owner.key)
+        reason = sorted(failures)[0][0]
+        details = tuple(sorted(detail for _reason, detail in failures))
+        for output, _kind in execution.recipe.outputs:
+            _record_failure(
+                state,
+                _Failure(
+                    owner.entry.context.id,
+                    output,
+                    owner.execution_id,
+                    reason,
+                    details,
+                ),
+            )
 
 
 def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str | None:
@@ -651,51 +717,92 @@ def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str 
 
 def _verified_boundary(
     state: _PlanningState,
-    kind: str,
-    entry: _EntryState,
-    resource: InputResource,
-    artifact: str,
+    request: _BoundaryRequest,
 ) -> None:
     try:
-        observed = observe_fingerprint(resource).fingerprint
+        observed = observe_fingerprint(request.resource).fingerprint
     except (OSError, ValueError) as error:
+        _record_boundary_failure(
+            state,
+            request,
+            (
+                "direct_input_unavailable"
+                if request.consumer is not None
+                else "boundary_unavailable"
+            ),
+            (request.resource.canonical_target, str(error)),
+        )
+        return
+    if observed.as_dict() != request.resource.fingerprint.as_dict():
+        _record_boundary_failure(
+            state,
+            request,
+            (
+                "direct_input_changed"
+                if request.consumer is not None
+                else "boundary_changed"
+            ),
+            (request.resource.canonical_target,),
+        )
+        return
+    _boundary(state, request)
+
+
+def _record_boundary_failure(
+    state: _PlanningState,
+    request: _BoundaryRequest,
+    reason: str,
+    details: tuple[str, ...],
+) -> None:
+    consumer = request.consumer
+    if consumer is None:
         _record_failure(
             state,
             _Failure(
-                entry.context.id,
-                artifact,
+                request.entry.context.id,
+                request.artifact,
                 None,
-                "boundary_unavailable",
-                (str(error),),
+                reason,
+                details,
             ),
         )
         return
-    if observed.as_dict() != resource.fingerprint.as_dict():
+    state.blocked.add(consumer.key)
+    for output, _kind in consumer.execution.recipe.outputs:
         _record_failure(
             state,
-            _Failure(entry.context.id, artifact, None, "boundary_changed"),
+            _Failure(
+                consumer.entry.context.id,
+                output,
+                consumer.execution_id,
+                reason,
+                details,
+            ),
         )
-        return
-    _boundary(state, kind, entry, resource, artifact)
 
 
 def _boundary(
     state: _PlanningState,
-    kind: str,
-    entry: _EntryState,
-    resource: InputResource,
-    artifact: str,
+    request: _BoundaryRequest,
 ) -> None:
+    entry = request.entry
+    resource = request.resource
+    artifact = request.artifact
     value: dict[str, object] = {
         "artifact": artifact,
         "entry": entry.context.id,
         "fingerprint": resource.fingerprint.as_dict(),
-        "kind": kind,
+        "kind": request.kind,
         "name": resource.name,
     }
-    state.boundaries[(kind, entry.context.id, artifact)] = value
-    state.materials[("boundary", resource.canonical_target)] = _material(
-        resource.canonical_target, "boundary", resource.kind, resource.fingerprint
+    state.boundaries[(request.kind, entry.context.id, artifact)] = value
+    _retain_material(
+        state,
+        ("boundary", resource.canonical_target),
+        _material(
+            resource.canonical_target, "boundary", resource.kind, resource.fingerprint
+        ),
+        owner=request.consumer.key if request.consumer is not None else None,
     )
     if len(state.boundaries) > MAX_BOUNDARIES:
         raise ActionError("reproduction.plan.resource_limit", "boundary limit exceeded")
@@ -770,6 +877,7 @@ def _apply_validation_admission(
 ) -> None:
     """Exclude only executions owned by validation-blocked command batches."""
 
+    _validate_projected_admission(projection)
     blocked = _blocked_validation_batches(projection)
     entry_blockers = _entry_validation_blockers(projection)
     _require_resolved_validation_blockers(projection)
@@ -782,6 +890,34 @@ def _apply_validation_admission(
         _apply_execution_admission(state, key, owner, chains, blocked)
 
 
+def _validate_projected_admission(projection: Mapping[str, object]) -> None:
+    for group in _mapping_items(projection.get("chains")):
+        entry = _projected_physical_entry(group.get("entry"))
+        chain_id = str(group.get("chain_id"))
+        for finding in _mapping_items(group.get("findings")):
+            effect = _finding_effect(finding)
+            if effect not in {"none", "chain"} or (
+                effect == "chain"
+                and not _finding_affects_chain(finding, entry, chain_id)
+            ):
+                raise ActionError(
+                    "reproduction.validation.scope_unresolved",
+                    "validation chain has inconsistent admission ownership",
+                )
+    for group in _mapping_items(projection.get("unresolved")):
+        for finding in _mapping_items(group.get("findings")):
+            effect = _finding_effect(finding)
+            entries = _string_items(finding.get("affected_entries"))
+            chains = _string_items(finding.get("affected_chains"))
+            if effect == "chain" or chains or (
+                effect == "entry" and len(entries) != 1
+            ) or (effect in {"none", "log"} and entries):
+                raise ActionError(
+                    "reproduction.validation.scope_unresolved",
+                    "validation finding has inconsistent admission ownership",
+                )
+
+
 def _blocked_validation_batches(
     projection: Mapping[str, object],
 ) -> dict[tuple[str, str], tuple[str, ...]]:
@@ -792,7 +928,8 @@ def _blocked_validation_batches(
             sorted(
                 str(finding["identity"])
                 for finding in _mapping_items(group.get("findings"))
-                if _blocks_reproduction(finding)
+                if _finding_effect(finding) == "chain"
+                and _finding_affects_chain(finding, entry, str(group["chain_id"]))
             )
         )
         if finding_ids:
@@ -804,8 +941,8 @@ def _require_resolved_validation_blockers(
     projection: Mapping[str, object],
 ) -> None:
     for group in _mapping_items(projection.get("unresolved")):
-        if group.get("entry") == "log" and any(
-            _blocks_reproduction(finding)
+        if any(
+            _finding_effect(finding) == "log"
             for finding in _mapping_items(group.get("findings"))
         ):
             raise ActionError(
@@ -819,19 +956,18 @@ def _entry_validation_blockers(
 ) -> dict[str, tuple[tuple[str, tuple[str, ...]], ...]]:
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     for group in _mapping_items(projection.get("unresolved")):
-        entry = group.get("entry")
-        if entry == "log":
-            continue
-        entry = _projected_physical_entry(entry)
-        finding_ids = tuple(
-            sorted(
-                str(finding["identity"])
-                for finding in _mapping_items(group.get("findings"))
-                if _blocks_reproduction(finding)
+        by_entry: dict[str, list[str]] = {}
+        for finding in _mapping_items(group.get("findings")):
+            if _finding_effect(finding) != "entry":
+                continue
+            for entry in _string_items(finding.get("affected_entries")):
+                by_entry.setdefault(_projected_physical_entry(entry), []).append(
+                    str(finding["identity"])
+                )
+        for entry, identities in sorted(by_entry.items()):
+            result.setdefault(entry, []).append(
+                (str(group["chain_id"]), tuple(sorted(set(identities))))
             )
-        )
-        if finding_ids:
-            result.setdefault(entry, []).append((str(group["chain_id"]), finding_ids))
     return {entry: tuple(groups) for entry, groups in sorted(result.items())}
 
 
@@ -961,18 +1097,26 @@ def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
     return tuple(item for item in _sequence_items(value) if isinstance(item, Mapping))
 
 
-def _blocks_reproduction(finding: Mapping[str, object]) -> bool:
-    if finding.get("status") != CheckStatus.FAIL.value:
-        return False
-    if finding.get("scope") in {
-        CheckScope.CONFORMANCE.value,
-        CheckScope.EVIDENCE.value,
-    }:
-        return True
-    return (
-        finding.get("scope") == CheckScope.PROVENANCE.value
-        and finding.get("code") != "provenance.output.unconfirmed"
-    )
+def _finding_effect(finding: Mapping[str, object]) -> str:
+    effect = finding.get("admission_effect")
+    if effect not in {"none", "chain", "entry", "log"}:
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            "validation finding has no supported admission effect",
+        )
+    return str(effect)
+
+
+def _finding_affects_chain(
+    finding: Mapping[str, object], entry: str, chain_id: str
+) -> bool:
+    entries = tuple(_string_items(finding.get("affected_entries")))
+    chains = tuple(_string_items(finding.get("affected_chains")))
+    return entries == (entry,) and chains == (chain_id,)
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    return tuple(item for item in _sequence_items(value) if isinstance(item, str))
 
 
 def _select_and_order(
@@ -1127,6 +1271,7 @@ def _project_plan(
         for path in sorted(state.authority_paths, key=lambda item: item.as_posix())
         if path.name != "pyrun.json"
     ]
+    runnable = set(state.selected) - state.blocked
     execution_snapshot = [
         {
             "digest": canonical_execution_source_digest(
@@ -1136,9 +1281,15 @@ def _project_plan(
             "execution_id": identity,
         }
         for (_, identity), owner in sorted(state.selected.items())
+        if owner.key in runnable
     ]
     materials = sorted(
-        state.materials.values(),
+        (
+            value
+            for key, value in state.materials.items()
+            if None in state.material_owners[key]
+            or bool(state.material_owners[key] & runnable)
+        ),
         key=lambda value: (str(value["role"]), str(value["identity"])),
     )
     snapshot = source_snapshot(
@@ -1168,7 +1319,7 @@ def _project_plan(
             }
             for entry, chain in sorted(state.excluded_batches)
         ],
-        "schema": "research-log-reproduction-batch-admission/1",
+        "schema": "research-log-reproduction-batch-admission/2",
     }
     return ReproductionPlan(
         _canonical_path(state.log.summary, state.project_root),
@@ -1388,7 +1539,10 @@ def verify_reproduction_runtime_snapshot(
 ) -> None:
     """Verify immutable run sources while allowing owned confirmation writes."""
 
-    if plan.source_snapshot.get("schema") == LEGACY_SOURCE_SNAPSHOT_SCHEMA:
+    if plan.source_snapshot.get("schema") in {
+        LEGACY_SOURCE_SNAPSHOT_SCHEMA,
+        PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
+    }:
         verify_reproduction_snapshot(log, plan)
         return
     if plan.source_snapshot.get("schema") != SOURCE_SNAPSHOT_SCHEMA:
@@ -1471,7 +1625,8 @@ def _recheck_executions(
         digest = (
             canonical_execution_source_digest(encoded)
             if encoded is not None
-            and plan.source_snapshot.get("schema") == SOURCE_SNAPSHOT_SCHEMA
+            and plan.source_snapshot.get("schema")
+            in {PRELOCAL_SOURCE_SNAPSHOT_SCHEMA, SOURCE_SNAPSHOT_SCHEMA}
             else canonical_record_digest(encoded)
             if encoded is not None
             else None
@@ -1571,15 +1726,53 @@ def _material(
     }
 
 
-def _verify_regular(path: Path, expected: Fingerprint, label: str) -> None:
+def _retain_material(
+    state: _PlanningState,
+    key: tuple[str, str],
+    value: dict[str, object],
+    *,
+    owner: ExecutionKey | None,
+) -> None:
+    state.materials[key] = value
+    state.material_owners[key].add(owner)
+
+
+def _material_failure(
+    path: Path,
+    kind: str,
+    expected: Fingerprint,
+    role: str,
+) -> tuple[str, str] | None:
+    identity = path.resolve().as_posix()
+    resource = InputResource(
+        "planning-material",
+        kind,
+        identity,
+        expected,
+        True,
+        identity,
+    )
     try:
-        digest, _ = observe_file_content(path)
+        observed = observe_fingerprint(resource).fingerprint
     except (OSError, ValueError) as error:
-        raise ActionError(
-            "reproduction.material.unavailable", f"{label} unavailable: {path}: {error}"
-        ) from error
-    if expected.algorithm != "sha256" or expected.digest != digest:
-        raise ActionError("reproduction.material.changed", f"{label} changed: {path}")
+        reason = {
+            "script": "script_unavailable",
+            "participating_code": "participating_code_unavailable",
+            "comparison_baseline": "baseline_unavailable",
+        }[role]
+        return reason, f"{role}:{identity}:{error}"
+    if observed.as_dict() == expected.as_dict():
+        return None
+    reason = {
+        "script": "script_changed",
+        "participating_code": "participating_code_changed",
+        "comparison_baseline": "baseline_changed",
+    }[role]
+    return (
+        reason,
+        f"{role}:{identity}:expected={expected.content_identity}:"
+        f"observed={observed.content_identity}",
+    )
 
 
 def _check_graph_bounds(state: _PlanningState) -> None:

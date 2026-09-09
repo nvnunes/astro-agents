@@ -319,6 +319,9 @@ def _valid_findings(value: object) -> bool:
     if not isinstance(value, list):
         return False
     required = {
+        "admission_effect",
+        "affected_chains",
+        "affected_entries",
         "code",
         "dependencies",
         "identity",
@@ -333,13 +336,37 @@ def _valid_findings(value: object) -> bool:
         and set(item) == required
         and all(
             isinstance(item.get(key), str)
-            for key in ("code", "identity", "rule", "scope", "status", "subject")
+            for key in (
+                "admission_effect",
+                "code",
+                "identity",
+                "rule",
+                "scope",
+                "status",
+                "subject",
+            )
         )
+        and item.get("admission_effect") in {"none", "chain", "entry", "log"}
+        and _string_list(item.get("affected_chains"))
+        and _string_list(item.get("affected_entries"))
+        and _valid_admission_effect(item)
         and isinstance(item.get("dependencies"), list)
         and all(isinstance(child, dict) for child in item["dependencies"])
         and isinstance(item.get("observed"), dict)
         for item in value
     )
+
+
+def _valid_admission_effect(item: Mapping[str, object]) -> bool:
+    effect = item.get("admission_effect")
+    chains = item.get("affected_chains")
+    entries = item.get("affected_entries")
+    assert isinstance(chains, list) and isinstance(entries, list)
+    if effect in {"none", "log"}:
+        return not chains and not entries
+    if effect == "entry":
+        return not chains and len(entries) == 1
+    return effect == "chain" and len(chains) == 1 and len(entries) == 1
 
 
 def _valid_chain(value: Mapping[str, object]) -> bool:

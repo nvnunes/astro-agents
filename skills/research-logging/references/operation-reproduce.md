@@ -73,6 +73,14 @@ executions are selected. When the researcher explicitly asks to recheck, check
 again, or rerun already-current reproduction results, add `--recheck`. State
 whether the preview or launch uses incremental or recheck selection.
 
+Treat a valid partial plan as useful work. A pre-existing changed or missing
+script, participating code file, direct input, retained boundary, or comparison
+baseline fails only its owning execution when the planner can identify it;
+dependants are skipped and independent executions remain runnable. Validation's
+published admission effect similarly decides whether a finding affects no
+execution, one chain, one physical entry, or the complete log. Do not repair or
+reinterpret any of these findings during reproduction.
+
 The default run excludes executions with `auto_reproduce: false`.
 `--include-all` includes them and requires separate explicit researcher
 authorization. A request to recheck does not authorize non-automatic

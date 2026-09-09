@@ -14,7 +14,7 @@ from .json_codec import canonical_json
 from .mechanical_results import CheckStatus, MechanicalCheck, MechanicalGeneratedRecord
 from .repair_batches import build_repair_batches
 
-PROJECTION_SCHEMA = "research-log-published-validation/1"
+PROJECTION_SCHEMA = "research-log-published-validation/2"
 MAX_PROJECTED_CHAINS = 10_000
 MAX_PROJECTED_COMMANDS = 10_000
 _ENTRY_RE = re.compile(r"(?:^|:)(e[0-9]+[a-z]?)(?::|$)", re.IGNORECASE)
@@ -362,7 +362,17 @@ def _attach_findings(
             selected = next(iter(candidates.values()))
             findings = selected["findings"]
             assert isinstance(findings, list)
-            findings.append(_finding(check))
+            blocks = _blocks_reproduction(check)
+            findings.append(
+                _finding(
+                    check,
+                    effect="chain" if blocks else "none",
+                    affected_chains=(str(selected["chain_id"]),) if blocks else (),
+                    affected_entries=(
+                        (_physical_entry(str(selected["entry"])),) if blocks else ()
+                    ),
+                )
+            )
     for chain in chains:
         chain["findings"] = sorted(
             _mapping_items(chain.get("findings")),
@@ -378,19 +388,34 @@ def _unresolved_groups(
         for chain in chains
         for finding in _mapping_items(chain.get("findings"))
     }
-    grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for check in checks:
         if (
             check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}
             and check.identity not in assigned
         ):
-            grouped[_finding_entry(check) or "log"].append(_finding(check))
+            entry = _finding_entry(check)
+            effect = _unresolved_admission_effect(check, entry)
+            physical_entry = _physical_entry(entry) if entry is not None else None
+            grouped[(entry or "log", effect)].append(
+                _finding(
+                    check,
+                    effect=effect,
+                    affected_entries=(physical_entry,)
+                    if effect == "entry" and physical_entry is not None
+                    else (),
+                )
+            )
     result: list[dict[str, object]] = []
-    for entry, findings in sorted(grouped.items()):
+    for (entry, effect), findings in sorted(grouped.items()):
         findings.sort(key=lambda value: str(value["identity"]))
         identity = hashlib.sha256(
             canonical_json(
-                {"entry": entry, "findings": [value["identity"] for value in findings]}
+                {
+                    "effect": effect,
+                    "entry": entry,
+                    "findings": [value["identity"] for value in findings],
+                }
             ).encode("utf-8")
         ).hexdigest()
         result.append(
@@ -404,9 +429,18 @@ def _unresolved_groups(
     return result
 
 
-def _finding(check: MechanicalCheck) -> dict[str, object]:
+def _finding(
+    check: MechanicalCheck,
+    *,
+    effect: str,
+    affected_chains: Sequence[str] = (),
+    affected_entries: Sequence[str] = (),
+) -> dict[str, object]:
     assert check.failure is not None
     return {
+        "admission_effect": effect,
+        "affected_chains": list(affected_chains),
+        "affected_entries": list(affected_entries),
         "code": check.failure.code,
         "dependencies": [dict(value) for value in check.dependencies],
         "identity": check.identity,
@@ -416,6 +450,37 @@ def _finding(check: MechanicalCheck) -> dict[str, object]:
         "status": check.status.value,
         "subject": check.subject,
     }
+
+
+def _unresolved_admission_effect(
+    check: MechanicalCheck, entry: str | None
+) -> str:
+    """Classify one unassigned finding without making reproduction reinterpret it."""
+
+    if not _blocks_reproduction(check) or check.failure is None:
+        return "none"
+    if check.failure.code == "summary.reference.unresolved":
+        return "none"
+    return "entry" if entry is not None else "log"
+
+
+def _blocks_reproduction(check: MechanicalCheck) -> bool:
+    if check.status is not CheckStatus.FAIL:
+        return False
+    if check.scope.value in {"conformance", "evidence"}:
+        return True
+    return (
+        check.scope.value == "provenance"
+        and check.failure is not None
+        and check.failure.code != "provenance.output.unconfirmed"
+    )
+
+
+def _physical_entry(entry: str) -> str:
+    match = re.fullmatch(r"(e[0-9]+)[a-z]?", entry, re.IGNORECASE)
+    if match is None:
+        raise BatchProjectionError(f"invalid projected entry identity: {entry}")
+    return match.group(1).lower()
 
 
 def _finding_entry(check: MechanicalCheck) -> str | None:

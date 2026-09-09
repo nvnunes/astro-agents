@@ -67,11 +67,11 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/parallel-reproduction-policy-3` |
+| Mechanical rules | `research-log-mechanical/parallel-reproduction-policy-4` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
-| Published validation | `research-log-published-validation/1` |
+| Published validation | `research-log-published-validation/2` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Batch validation | `research-log-batch-validation/2` |
 | Inspection cache | `research-log-inspection-store/3` (SQLite user version 3) |
@@ -4074,7 +4074,7 @@ they do not parse reports or recalculate counts.
 
 #### Published Validation And Repair Batches
 
-Every completed publication writes `research-log-published-validation/1` to
+Every completed publication writes `research-log-published-validation/2` to
 `validation/batches.json`, atomically with the result and human report. It
 retains the exact result, source, and rules identities and a content-derived
 `validation_id`. `source_identity` is the SHA-256 identity of the bounded
@@ -4089,6 +4089,19 @@ change command admission, chain membership, or reproduction eligibility.
 Retain `unresolved` provenance finding groups for existing admission consumers,
 using the original chain-assignment rules. They are related diagnostic views,
 not additional repair work: `repair_batches` alone owns the primary queue.
+
+Every projected failed or unavailable finding also records exactly
+`admission_effect`, `affected_chains`, and `affected_entries`. The effect is
+`none`, `chain`, `entry`, or `log`; affected arrays are sorted stable
+identities. `chain` names exactly one projected chain and its owning physical
+entry, `entry` names exactly one physical entry and no chain, and `none` and
+`log` name neither. Assign `none` when the finding cannot affect executable
+graph authority, including a summary-only unresolved reference with no
+association to runnable material. Assign `chain` when existing projection
+evidence identifies one command chain, `entry` when executable authority is
+localized only to one physical entry, and `log` only when safe executable
+separation cannot be established below the log. Reproduction consumes these
+effects and identities directly; it does not reclassify scopes or error codes.
 
 Add `repair_batches` separately. Every direct `fail` or `unavailable` finding
 has exactly one primary batch. Related views may reference that finding but

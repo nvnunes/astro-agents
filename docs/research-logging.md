@@ -982,6 +982,14 @@ training cost:
 <skill>/scripts/log reproduce --path <log> [--entry <entry-id>] --include-all
 ```
 
+A dry run may now be a valid partial plan: an attributable pre-existing source,
+input, boundary, or baseline problem fails only the affected execution and
+skips its dependants, while independent eligible work remains runnable.
+Summary-only validation findings that have no executable association remain
+visible without blocking reproduction. A whole-log refusal is reserved for
+validation or graph authority that cannot be localized safely, unsafe
+confinement or ownership, or runnable material that changes after acceptance.
+
 All-execution inclusion is independent from recheck selection. `--recheck`
 alone still excludes non-automatic executions; use both flags only when both
 behaviors are intended.

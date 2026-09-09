@@ -9,7 +9,8 @@ from typing import Any, Mapping, Sequence
 LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
 PLAN_SCHEMA = "research-log-reproduction-plan/3"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
+PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 
 

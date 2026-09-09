@@ -179,7 +179,9 @@ class CompleteProvenanceContext:
     origin_boundary_cache: MutableMapping[
         tuple[str, int], ProvenanceFinding | None
     ] = field(default_factory=dict)
-    canonical_mapping_cache: MutableMapping[int, str] = field(default_factory=dict)
+    canonical_mapping_cache: MutableMapping[
+        int, tuple[Mapping[str, object], str]
+    ] = field(default_factory=dict)
 
 
 def _collect_scalar_matches(
@@ -275,7 +277,9 @@ class _EvaluationConfig:
     origin_boundary_cache: MutableMapping[
         tuple[str, int], ProvenanceFinding | None
     ] | None = None
-    canonical_mapping_cache: MutableMapping[int, str] | None = None
+    canonical_mapping_cache: MutableMapping[
+        int, tuple[Mapping[str, object], str]
+    ] | None = None
 
 
 def evaluate_provenance(
@@ -993,7 +997,7 @@ def _invocation_dependency_cached(
 def _provenance_dependency_json(
     value: _ProvenanceDependency,
     producer_index: ProducerIndex,
-    cache: MutableMapping[int, str] | None,
+    cache: MutableMapping[int, tuple[Mapping[str, object], str]] | None,
 ) -> str:
     """Serialize the unchanged dependency contract with reusable mappings."""
 
@@ -1019,19 +1023,22 @@ def _provenance_dependency_json(
 
 
 def _canonical_mapping_sequence(
-    values: Sequence[Mapping[str, object]], cache: MutableMapping[int, str] | None
+    values: Sequence[Mapping[str, object]],
+    cache: MutableMapping[int, tuple[Mapping[str, object], str]] | None,
 ) -> str:
-    """Serialize mappings in order while reusing their exact canonical forms."""
+    """Serialize mappings while retaining and verifying memoized objects."""
 
     if cache is None:
         return canonical_json(values)
     serialized: list[str] = []
     for value in values:
         identity = id(value)
-        item = cache.get(identity)
-        if item is None:
+        cached = cache.get(identity)
+        if cached is None or cached[0] is not value:
             item = canonical_json(value)
-            cache[identity] = item
+            cache[identity] = (value, item)
+        else:
+            item = cached[1]
         serialized.append(item)
     return "[" + ",".join(serialized) + "]"
 

@@ -114,7 +114,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 "version": "end-to-end-provenance-2",
             }
         )
-        cache: dict[int, str] = {}
+        cache: dict[int, tuple[dict[str, object], str]] = {}
 
         actual = PROVENANCE._provenance_dependency_json(value, index, cache)
 
@@ -123,6 +123,21 @@ class ProvenanceLineageTests(unittest.TestCase):
         self.assertEqual(
             PROVENANCE._provenance_dependency_json(value, index, cache), expected
         )
+
+    def test_cached_mapping_serialization_rejects_reused_object_identity(self) -> None:
+        current = {"output": "current.csv"}
+        superseded = {"output": "superseded.csv"}
+        cache = {
+            id(current): (
+                superseded,
+                PROVENANCE.canonical_json(superseded),
+            )
+        }
+
+        actual = PROVENANCE._canonical_mapping_sequence((current,), cache)
+
+        self.assertEqual(actual, PROVENANCE.canonical_json((current,)))
+        self.assertIs(cache[id(current)][0], current)
 
     def test_complete_traversals_reuse_origin_boundary_conclusion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

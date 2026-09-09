@@ -8,14 +8,20 @@ import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
+from research_log_paths import (
+    VALIDATION_BATCHES,
+    VALIDATION_REPORT,
+    VALIDATION_RESULTS,
+)
+
 from .filesystem import FileIdentity, file_identity
 from .operation_state import operation_lock, require_mutation_ready
 
 PUBLISHABLE_PATHS = frozenset(
     {
-        "validation.md",
-        "validation/batches.json",
-        "validation/results.json",
+        VALIDATION_REPORT,
+        VALIDATION_BATCHES,
+        VALIDATION_RESULTS,
     }
 )
 

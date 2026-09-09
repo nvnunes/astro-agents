@@ -482,7 +482,7 @@ class InspectionTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0)
             self.assertIn("results.store.write_failed", completed.stderr)
             self.assertIn("Result not cached", completed.stdout)
-            self.assertTrue((path / "validation/results.json").exists())
+            self.assertTrue((path / ".cache/validation/results.json").exists())
 
     def test_missing_unsupported_malformed_and_busy_store_fail_precisely(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -31,6 +31,21 @@ from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
+    def test_report_does_not_read_the_former_result_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "research.md"
+            log_root = summary.with_suffix("")
+            legacy = log_root / "reproduction" / "results.json"
+            legacy.parent.mkdir(parents=True)
+            summary.write_text("# Research\n", encoding="utf-8")
+            legacy.write_text(_results().serialized(), encoding="utf-8")
+
+            with self.assertRaisesRegex(ActionError, "no cached reproduction"):
+                reproduction_report(
+                    LogContext(summary.resolve(), log_root.resolve()), entry=None
+                )
+
     def test_dispatcher_exposes_bounded_human_dry_run_summary(self) -> None:
         log = mock.sentinel.log
         executions = tuple(
@@ -105,7 +120,7 @@ class ReproductionQueryTests(unittest.TestCase):
             (root / ".git").mkdir()
             summary = root / "docs" / "research.md"
             log_root = summary.with_suffix("")
-            reproduction = log_root / "reproduction"
+            reproduction = log_root / ".cache" / "reproduction"
             reproduction.mkdir(parents=True)
             summary.write_text("# Research\n", encoding="utf-8")
             text = _results().serialized()

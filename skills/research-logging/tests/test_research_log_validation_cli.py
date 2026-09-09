@@ -132,7 +132,7 @@ class ValidationCliTests(unittest.TestCase):
                 self.assertNotIn("record", result)
                 self.assertEqual(
                     result["generated"]["mechanical"],
-                    (summary.with_suffix("") / "validation/results.json")
+                    (summary.with_suffix("") / ".cache/validation/results.json")
                     .resolve()
                     .as_posix(),
                 )
@@ -221,7 +221,10 @@ class ValidationCliTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         (
-                            good_summary.with_suffix("") / "validation" / "results.json"
+                            good_summary.with_suffix("")
+                            / ".cache"
+                            / "validation"
+                            / "results.json"
                         ).is_file(),
                         not dry_run,
                     )

@@ -366,9 +366,9 @@ class FindingsCliTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             projection = json.loads(
-                (summary.with_suffix("") / "validation" / "batches.json").read_text(
-                    encoding="utf-8"
-                )
+                (
+                    summary.with_suffix("") / ".cache" / "validation" / "batches.json"
+                ).read_text(encoding="utf-8")
             )
             selected = next(
                 value
@@ -409,7 +409,7 @@ class FindingsCliTests(unittest.TestCase):
                 str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            result_path = summary.with_suffix("") / "validation/results.json"
+            result_path = summary.with_suffix("") / ".cache/validation/results.json"
             before = result_path.read_bytes()
 
             listed = run_log(
@@ -526,7 +526,7 @@ class FindingsCliTests(unittest.TestCase):
                 "2026-09-05",
                 checks,
             )
-            result_path = summary.with_suffix("") / "validation/results.json"
+            result_path = summary.with_suffix("") / ".cache/validation/results.json"
             write(result_path, record.canonical_json() + "\n")
             unresolved = [
                 {
@@ -573,7 +573,7 @@ class FindingsCliTests(unittest.TestCase):
                 ).encode("utf-8")
             ).hexdigest()
             write(
-                summary.with_suffix("") / "validation/batches.json",
+                summary.with_suffix("") / ".cache/validation/batches.json",
                 json.dumps(body) + "\n",
             )
 
@@ -605,7 +605,7 @@ class FindingsCliTests(unittest.TestCase):
             self.assertEqual(missing.returncode, 2)
             self.assertIn("findings.result.missing", missing.stderr)
 
-            result_path = summary.with_suffix("") / "validation/results.json"
+            result_path = summary.with_suffix("") / ".cache/validation/results.json"
             write(result_path, '{"schema":"research-log-mechanical/2"}\n')
             unsupported = run_log(
                 root, "findings", "list", "--format", "json", "--path", log_path
@@ -639,7 +639,7 @@ class FindingsCliTests(unittest.TestCase):
                 root, "validate", "--format", "json", "--path", log_path
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            projection_path = summary.with_suffix("") / "validation/batches.json"
+            projection_path = summary.with_suffix("") / ".cache/validation/batches.json"
             projection = json.loads(projection_path.read_text(encoding="utf-8"))
             projection["chains"][0]["commands"] = ["malformed"]
             body = {
@@ -673,7 +673,7 @@ class FindingsCliTests(unittest.TestCase):
                 root, "validate", "--format", "json", "--path", log_path
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            result_path = summary.with_suffix("") / "validation/results.json"
+            result_path = summary.with_suffix("") / ".cache/validation/results.json"
             payload = json.loads(result_path.read_text())
             passing = next(
                 check["identity"]

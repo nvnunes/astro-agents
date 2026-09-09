@@ -1970,6 +1970,8 @@ maintenance action before validation is rerun.
 The preflight recognizes unsupported generated state only at these exact paths,
 relative to the maintained-log root:
 
+- `validation/results.json` or `validation/batches.json` from the former
+  machine-state location;
 - `validation/manifest.json`;
 - `validation/outcomes`, `validation/judgments`, or `validation/failures`;
 - `validation/.cache/cache.json` or
@@ -1983,7 +1985,7 @@ relative to the maintained-log root:
 - `validation-state`; and
 - `.research-log-validation.lock`.
 
-When no active `validation/results.json` exists, the preflight also treats
+When no active `.cache/validation/results.json` exists, the preflight also treats
 `validation.md` as unsupported generated state if its bounded prefix contains
 the `| Entry | Date | Checked | Reproducibility |` table header or the
 `## Status Summary` marker. It does not parse any unsupported JSON, shard,
@@ -3330,7 +3332,7 @@ Each eligible standalone file or atomic generated output directory is
 connected, declared-retained, or orphaned. An exact bundle-member edge remains
 member-specific in the evidence and command graph, but it connects the complete
 bundle membership for ownership and orphan classification.
-`validation/results.json` records authoritative artifact-level orphan
+`.cache/validation/results.json` records authoritative artifact-level orphan
 checks. A named command input, named command output, or evidence reference counts
 as registry use. Output declaration use does not connect an unreached artifact
 to evidence. An unused data item produces one `orphan.input.unused` check; unused
@@ -3359,7 +3361,7 @@ the graph still identifies its current producer.
 
 `validation.md` reports one Hygiene finding count that combines orphan
 artifacts, unmatched outputs, and unused input declarations. Their distinct
-machine-readable checks remain in `validation/results.json` for repair.
+machine-readable checks remain in `.cache/validation/results.json` for repair.
 Machine-readable orphan metadata may group maximal all-orphan directories
 below, but never equal to, the owning entry root. Starting with each child
 directory, collapse the highest directory whose every eligible file is
@@ -3884,7 +3886,7 @@ in `Current Versions` and contains:
   generated reports.
 
 The explicit JSON CLI envelope does not duplicate the complete generated record on
-standard output. `validation/results.json` owns those checks. An unpublished
+standard output. `.cache/validation/results.json` owns those checks. An unpublished
 dry-run or incomplete evaluation retains the complete validation-result record
 in its result because no replacement bundle was installed. An
 unsupported-metadata envelope contains
@@ -3906,8 +3908,8 @@ publishing either the result or the rebuilt cache.
 A completed published evaluation owns exactly these active generated paths:
 
 ```text
-<log>/validation/results.json
-<log>/validation/batches.json
+<log>/.cache/validation/results.json
+<log>/.cache/validation/batches.json
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
 <log>/.cache/research-log-inspection.sqlite3
@@ -3928,8 +3930,9 @@ writable evaluation also owns the shared generated SQLite paths:
 <project>/.cache/research-log-fingerprints.sqlite3-shm
 ```
 
-`validation/results.json` is authoritative and uses the mechanical-record
-schema listed in `Current Versions`. Its exact top-level fields are `schema`,
+`.cache/validation/results.json` is the current disposable machine authority
+and uses the mechanical-record schema listed in `Current Versions`. Its exact
+top-level fields are `schema`,
 `summary`, `rules_version`, `result_date`, `completion`, `checks`, and
 `scopes`. Checks are unique and sorted by `identity`; each contains
 `identity`, `scope`, `status`, `subject`, `dependencies`, and, only for
@@ -3944,7 +3947,7 @@ Versions`. It has independent `check_comparison` and `evidence_selections`
 components.
 `check_comparison` retains only passing dependency-bearing checks, with the
 rules version, exact dependency projection, strict serialized check, and exact
-SHA-256 identity of the authoritative `validation/results.json` from which
+SHA-256 identity of the authoritative `.cache/validation/results.json` from which
 the baseline was built. `evidence_selections` retains strict serialized
 successful `SelectionResult` values keyed by strong source content identity,
 source profile, canonical locator identity, and locator-evaluator version.
@@ -4000,7 +4003,8 @@ writable run may repopulate each bypassed cache; combining the two flags or
 using `--recompute` bypasses both. A dry run that bypasses both opens neither
 cache and leaves generated state byte-identical.
 
-`validation.md` is a deterministic nonauthoritative human document. It contains
+`validation.md` is a deterministic, source-controlled, nonauthoritative human
+document. It contains
 one validated date, a compact Area and Result table, and bounded findings
 grouped by entry and human issue type. Reproduction has no section in this
 document; its independent human projection is `<log>/reproduction.md`. The
@@ -4075,10 +4079,15 @@ they do not parse reports or recalculate counts.
 #### Published Validation And Repair Batches
 
 Every completed publication writes `research-log-published-validation/2` to
-`validation/batches.json`, atomically with the result and human report. It
+`.cache/validation/batches.json`, atomically with the result and human report. It
 retains the exact result, source, and rules identities and a content-derived
 `validation_id`. `source_identity` is the SHA-256 identity of the bounded
 starting research-source snapshot accepted for that evaluation.
+
+The JSON publication is ignored local cache state and a full validation can
+rebuild it. `validation.md` is the only source-controlled validation output.
+The former `validation/results.json` and `validation/batches.json` paths are
+unsupported and are never read as fallbacks.
 
 Keep `chains` as the provenance projection: every same-entry connected component
 of unique producer-to-consumer edges, with commands, material collections, edges,
@@ -4287,7 +4296,7 @@ inspection and persistence, not mechanical findings or repair authority.
 Use one tool-owned SQLite database,
 `<log>/.cache/research-log-inspection.sqlite3`, with store schema
 `research-log-inspection-store/3`. It retains immutable evaluation snapshots;
-`validation/results.json`, `batches.json`, and `validation.md` continue to own
+`.cache/validation/results.json`, `batches.json`, and `validation.md` continue to own
 the latest published validation. The inspection database and its companions
 are generated, Git-ignored state. Keep the latest full result and the latest
 result for each original request, keyed by origin validation and requested batch

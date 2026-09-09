@@ -8,8 +8,8 @@ execution state; validation reads it but never writes or repairs it.
 
 Mechanical Validate may create or update only these generated paths:
 
-- `<log>/validation/results.json`;
-- `<log>/validation/batches.json`;
+- `<log>/.cache/validation/results.json`;
+- `<log>/.cache/validation/batches.json`;
 - `<log>/validation.md`;
 - `<log>/.cache/research-log-inspection.sqlite3` and its journal companions;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
@@ -18,15 +18,18 @@ Mechanical Validate may create or update only these generated paths:
 - `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
   and shared-memory companions.
 
-`validation/results.json` is the authoritative complete machine-readable
-result. `validation/batches.json` contains provenance chains and primary repair
-batches, including inspection groups without an established common cause. Ordinary diagnosis and Repair use cached `log results`
-views. Current uncached publications remain accessible through `log findings`;
-neither operation loads generated files or the cache database directly.
-`validation.md` is a concise validation-only human projection. Validate and
-Repair do not parse it. Reproduction is a separate operation with
-`reproduction/results.json` and `reproduction.md`; mechanical validation
-preserves both.
+`.cache/validation/results.json` is the current local machine-readable result.
+`.cache/validation/batches.json` contains its provenance chains and primary
+repair batches, including inspection groups without an established common
+cause. Both are disposable and a full validation rebuilds them. Ordinary
+diagnosis and Repair use `log results` and `log findings`; they do not parse
+generated files directly. Missing current machine state requires a full
+validation before findings queries or reproduction admission.
+
+`validation.md` is the concise, source-controlled human projection. Validate
+and Repair do not parse it as machine authority. Reproduction is a separate
+operation with `.cache/reproduction/results.json` and `reproduction.md`;
+mechanical validation preserves both.
 
 The human report contains the validation date, one compact Area and Result
 table, and findings grouped by entry and human issue type. Each issue group
@@ -46,7 +49,7 @@ diagnostics. Use the printed text-inspection command for omitted details.
 Inspection never evaluates research files. Cache-write failure warns without
 discarding the validation outcome and supplies no new result ID.
 
-All cache files are disposable generated state. The nearest
+All files below `.cache/` are disposable generated state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every
 `.cache/` directory in source control and research-log discovery. `--dry-run`
 publishes no result or cache changes beyond the generated coordination lock.
@@ -78,6 +81,12 @@ lock for its complete read-only lifecycle. An incomplete evaluation or
 publication failure does not replace the prior completed bundle. A dry run
 publishes nothing. If another maintained operation owns a conflicting lock,
 report its supplied owner metadata once and stop; do not retry or poll.
+
+The machine bundle is local cache state; `validation.md` is its durable human
+summary. Removing the cache does not alter the committed report, but machine
+queries and reproduction admission require validation to rebuild current state.
+The former `validation/results.json` and `validation/batches.json` locations are
+unsupported after the one-time path migration and are never read as fallbacks.
 
 Do not edit generated records by hand. Report unsupported generated metadata
 and request separate authorization before archiving it outside the active log

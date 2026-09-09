@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from research_log_paths import VALIDATION_BATCHES
 from validation.batch_projection import build_batch_projection
 from validation.controller import evaluate_entries_record
 from validation.filesystem import BoundedTraversalError, bounded_descendants
@@ -42,7 +43,7 @@ def _findings(projection: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def _snapshot(
     log: LogContext, entries: set[str], dependencies: set[str]
 ) -> tuple[Any, ...]:
-    paths = {log.summary, log.root / "validation/batches.json"}
+    paths = {log.summary, log.root / VALIDATION_BATCHES}
     roots = {_resolve_entry_root(log, entry).root for entry in entries}
     paths.update(Path(path) for path in dependencies)
     roots.update(path for path in paths if path.is_dir())
@@ -312,7 +313,7 @@ def validate_repair_batch(
     log: LogContext, *, validation_id: str, batch_id: str
 ) -> tuple[dict[str, Any], bool]:
     """Evaluate and retain one exact published primary request; never publish it."""
-    path = log.root / "validation/batches.json"
+    path = log.root / VALIDATION_BATCHES
     before = _publication_identity(path)
     published = load_batch_projection(log)
     stat = _publication_identity(path)

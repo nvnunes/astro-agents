@@ -202,14 +202,14 @@ def _plan(
 
 
 def _admission(fixture: _Fixture) -> dict[str, object]:
-    path = fixture.log_root / "validation" / "results.json"
-    path.parent.mkdir(exist_ok=True)
+    path = fixture.log_root / ".cache" / "validation" / "results.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("fixture\n", encoding="utf-8")
     digest, _ = research_source_projection(fixture.summary)
     return {
         "result_date": "2026-09-06",
         "result_digest": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "result_path": "validation/results.json",
+        "result_path": ".cache/validation/results.json",
         "rules_version": "fixture/1",
         "source_projection_digest": digest,
     }
@@ -272,7 +272,7 @@ def _write_projection(
             body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
-    (fixture.log_root / "validation" / "batches.json").write_text(
+    (fixture.log_root / ".cache" / "validation" / "batches.json").write_text(
         json.dumps(body) + "\n", encoding="utf-8"
     )
 
@@ -768,8 +768,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [(value["kind"], value["name"]) for value in ordinary.boundaries],
                 [("non_automatic", "seed")],
             )
-            self.assertFalse((fixture.log_root / "reproduction").exists())
-            self.assertFalse((fixture.log_root / ".cache").exists())
+            self.assertFalse((fixture.log_root / ".cache" / "reproduction").exists())
 
             complete = _plan(fixture, entry, include_all=True)
             self.assertEqual(
@@ -1326,7 +1325,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             fixture.write_pyrun(entry, [execution])
             _write_json(
-                fixture.log_root / "reproduction" / "results.json",
+                fixture.log_root / ".cache" / "reproduction" / "results.json",
                 {
                     "artifacts": [
                         {
@@ -1605,8 +1604,8 @@ class ReproductionPlanningTests(unittest.TestCase):
                     unconfirmed,
                 ),
             )
-            path = fixture.log_root / "validation" / "results.json"
-            path.parent.mkdir()
+            path = fixture.log_root / ".cache" / "validation" / "results.json"
+            path.parent.mkdir(parents=True)
             path.write_text(record.canonical_json() + "\n", encoding="utf-8")
             _write_projection(
                 fixture,
@@ -1698,8 +1697,8 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "2026-09-06",
                 checks,
             )
-            path = fixture.log_root / "validation" / "results.json"
-            path.parent.mkdir()
+            path = fixture.log_root / ".cache" / "validation" / "results.json"
+            path.parent.mkdir(parents=True)
             path.write_text(record.canonical_json() + "\n", encoding="utf-8")
             blocking = checks[2]
             assert blocking.failure is not None

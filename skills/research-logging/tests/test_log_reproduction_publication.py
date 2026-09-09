@@ -159,8 +159,8 @@ class ReproductionPublicationTests(unittest.TestCase):
             validation = MechanicalGeneratedRecord.build(
                 summary.resolve().as_posix(), RULES_VERSION, "2030-01-01", ()
             )
-            validation_path = log_root / "validation" / "results.json"
-            validation_path.parent.mkdir()
+            validation_path = log_root / ".cache" / "validation" / "results.json"
+            validation_path.parent.mkdir(parents=True)
             validation_path.write_text(
                 validation.canonical_json() + "\n", encoding="utf-8"
             )
@@ -243,8 +243,8 @@ class ReproductionPublicationTests(unittest.TestCase):
                 validation = MechanicalGeneratedRecord.build(
                     summary.resolve().as_posix(), RULES_VERSION, "2030-01-01", ()
                 )
-                validation_path = log_root / "validation" / "results.json"
-                validation_path.parent.mkdir()
+                validation_path = log_root / ".cache" / "validation" / "results.json"
+                validation_path.parent.mkdir(parents=True)
                 validation_path.write_text(
                     validation.canonical_json() + "\n", encoding="utf-8"
                 )
@@ -316,7 +316,7 @@ class ReproductionPublicationTests(unittest.TestCase):
                         )
 
                 result = ReproductionResults.from_json(
-                    (log_root / "reproduction" / "results.json").read_text(
+                    (log_root / ".cache" / "reproduction" / "results.json").read_text(
                         encoding="utf-8"
                     )
                 )
@@ -347,8 +347,8 @@ class ReproductionPublicationTests(unittest.TestCase):
             validation = MechanicalGeneratedRecord.build(
                 summary.resolve().as_posix(), RULES_VERSION, "2030-01-01", ()
             )
-            validation_path = log_root / "validation" / "results.json"
-            validation_path.parent.mkdir()
+            validation_path = log_root / ".cache" / "validation" / "results.json"
+            validation_path.parent.mkdir(parents=True)
             validation_text = validation.canonical_json() + "\n"
             validation_path.write_text(validation_text, encoding="utf-8")
             run_id = "reproduce-20300101t000000z-publication"
@@ -408,7 +408,7 @@ class ReproductionPublicationTests(unittest.TestCase):
                     ),
                 )
 
-            result_path = log_root / "reproduction" / "results.json"
+            result_path = log_root / ".cache" / "reproduction" / "results.json"
             decoded = ReproductionResults.from_json(
                 result_path.read_text(encoding="utf-8")
             )

@@ -61,7 +61,8 @@ part of that workflow, not the organizing principle for the whole log.
 Each research log has a current Markdown summary and a directory with the same
 base name. The directory contains numbered entry folders, entry documents,
 supporting material, evidence records that connect results to sources, and
-generated validation records. The summary describes the current state; entries
+source-controlled validation and reproduction summaries. Disposable machine
+state lives below `.cache/`. The summary describes the current state; entries
 and their saved material preserve the detailed research record.
 
 The minimum structure is:
@@ -71,8 +72,6 @@ The minimum structure is:
 <log>/
   entries/
   reproduction.md
-  reproduction/
-    results.json
 ```
 
 A populated log may contain:
@@ -83,10 +82,13 @@ A populated log may contain:
   refs.bib
   scripts/
   validation.md
-  validation/
   reproduction.md
-  reproduction/
   .cache/
+    validation/
+      results.json
+      batches.json
+    reproduction/
+      results.json
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
@@ -1104,9 +1106,11 @@ human-readable issue type. Each group shows at most ten targets and states when
 more were omitted. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
 
-The tools maintain generated validation files and caches alongside these
-reports. Ask the agent to inspect a finding rather than editing those files.
-Validation reads the research record but changes only its own generated output.
+The Markdown reports are the committed human surfaces. The tools maintain their
+detailed, rebuildable machine state below `<log>/.cache/`; a fresh checkout or
+cleared cache requires validation or reproduction to rebuild it. Ask the agent
+to inspect a finding rather than editing generated files. Validation reads the
+research record but changes only its own generated output.
 
 ### Resolving findings
 

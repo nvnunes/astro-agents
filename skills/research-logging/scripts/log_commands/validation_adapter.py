@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence, cast
 
+from research_log_paths import VALIDATION_REPORT, VALIDATION_RESULTS
 from validation.controller import (
     ValidationControllerError,
     ValidationRequest,
@@ -98,8 +99,8 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     log_root = summary.with_suffix("")
     return {
         "generated": {
-            "human": (log_root / "validation.md").as_posix(),
-            "mechanical": (log_root / "validation/results.json").as_posix(),
+            "human": (log_root / VALIDATION_REPORT).as_posix(),
+            "mechanical": (log_root / VALIDATION_RESULTS).as_posix(),
         },
         "metrics": result.get("metrics", {}),
         "published": True,
@@ -245,7 +246,7 @@ def _batch_row(
         title=title,
         summary=summary.resolve().as_posix(),
         human_report=(log_root / "validation.md").resolve().as_posix(),
-        mechanical_report=(log_root / "validation" / "results.json")
+        mechanical_report=(log_root / VALIDATION_RESULTS)
         .resolve()
         .as_posix(),
         published=bool(outcome.result.get("published")),
@@ -266,7 +267,7 @@ def _blocked_batch_row(
         title=title,
         summary=summary.resolve().as_posix(),
         human_report=(log_root / "validation.md").resolve().as_posix(),
-        mechanical_report=(log_root / "validation" / "results.json")
+        mechanical_report=(log_root / VALIDATION_RESULTS)
         .resolve()
         .as_posix(),
         published=False,

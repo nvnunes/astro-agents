@@ -540,7 +540,7 @@ class FingerprintCacheTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            report = root / "validation" / "results.json"
+            report = root / ".cache" / "validation" / "results.json"
             payload = b'{"schema":"fixture"}\n'
             write(report, payload.decode())
             digest = hashlib.sha256(payload).hexdigest()

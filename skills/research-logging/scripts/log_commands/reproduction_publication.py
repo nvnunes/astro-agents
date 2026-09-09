@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Mapping, Sequence, cast
 
 from research_log_data import DataContractError, parse_fingerprint
+from research_log_paths import (
+    REPRODUCTION_REPORT,
+    REPRODUCTION_RESULTS,
+    VALIDATION_RESULTS,
+)
 from validation.engine import RULES_VERSION
 from validation.human_projection import load_report_context, provenance_artifact_counts
 from validation.mechanical_results import (
@@ -92,7 +97,7 @@ def publish_completed_reproduction(
                 project_root,
                 project_reproduction_command_inventory(log, request.plan.target),
             )
-            result_path = log.root / "reproduction" / "results.json"
+            result_path = log.root / REPRODUCTION_RESULTS
             summary = log.summary.resolve().relative_to(project_root).as_posix()
             current = load_results_or_empty(
                 result_path, summary=summary, updated_at=request.finished_at
@@ -124,7 +129,7 @@ def publish_completed_reproduction(
             )
             updates: dict[Path, str | None] = {
                 result_path: merged.serialized(),
-                log.root / "reproduction.md": report,
+                log.root / REPRODUCTION_REPORT: report,
             }
             verify_reproduction_runtime_snapshot(log, request.plan)
             atomic_write_texts(updates)
@@ -388,10 +393,11 @@ def _execution_timings(
 
 
 def _load_validation(log: LogContext) -> MechanicalGeneratedRecord:
-    path = log.root / "validation" / "results.json"
+    path = log.root / VALIDATION_RESULTS
     if path.is_symlink() or not path.is_file():
         raise ActionError(
-            "reproduction.validation.missing", f"missing validation result: {path}"
+            "reproduction.validation.missing",
+            f"missing cached validation result; run full validation: {path}",
         )
     try:
         return MechanicalGeneratedRecord.from_json(path.read_text(encoding="utf-8"))

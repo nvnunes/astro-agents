@@ -108,7 +108,7 @@ class LogInitTests(unittest.TestCase):
             self.assertEqual(initialized, logical)
             self.assertEqual(
                 sorted(path.name for path in logical.iterdir()),
-                ["entries", "reproduction", "reproduction.md"],
+                [".cache", "entries", "reproduction.md"],
             )
             self.assertEqual(list((logical / "entries").iterdir()), [])
             summary = logical.with_suffix(".md").read_text(encoding="utf-8")
@@ -120,7 +120,9 @@ class LogInitTests(unittest.TestCase):
             self.assertIn("\n## Entries\n\n## Summary\n", summary)
             self.assertTrue(summary.endswith(scaffold.AI_DISCLOSURE + "\n"))
             results = json.loads(
-                (logical / "reproduction/results.json").read_text(encoding="utf-8")
+                (logical / ".cache/reproduction/results.json").read_text(
+                    encoding="utf-8"
+                )
             )
             self.assertEqual(results["artifacts"], [])
             self.assertEqual(results["runs"], [])
@@ -330,7 +332,7 @@ class LogAddTests(unittest.TestCase):
             summary.write_text(customized, encoding="utf-8")
             generated = {
                 logical / "validation.md": b"human\n",
-                logical / "validation" / "results.json": b"machine\n",
+                logical / ".cache" / "validation" / "results.json": b"machine\n",
             }
             for path, value in generated.items():
                 path.parent.mkdir(parents=True, exist_ok=True)

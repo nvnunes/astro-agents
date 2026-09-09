@@ -48,8 +48,9 @@ syntax. Match recovered results to the invocation's scope and time; an older res
 does not prove a failed or interrupted invocation completed.
 
 Inspect validation state through CLI text views. Do not read, parse, or search
-`validation.md`, `validation/results.json`, `validation/batches.json`, or the
-inspection database. JSON output is for programmatic consumers.
+`validation.md`, `.cache/validation/results.json`,
+`.cache/validation/batches.json`, or the inspection database. JSON output is
+for programmatic consumers.
 
 ## Correct The Source
 

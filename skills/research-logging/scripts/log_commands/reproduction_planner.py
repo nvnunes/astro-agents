@@ -20,6 +20,11 @@ from research_log_data import (
     parse_fingerprint,
     resolve_input_token,
 )
+from research_log_paths import (
+    REPRODUCTION_RESULTS,
+    VALIDATION_BATCHES,
+    VALIDATION_RESULTS,
+)
 from validation.batch_projection import PROJECTION_SCHEMA
 from validation.controller import evaluate_current_record
 from validation.engine import RULES_VERSION
@@ -1457,10 +1462,11 @@ def _claim_run_path(path: Path, project_root: Path) -> str:
 def _admit_validation(
     log: LogContext,
 ) -> tuple[dict[str, object], MechanicalGeneratedRecord, Mapping[str, object]]:
-    path = log.root / "validation" / "results.json"
+    path = log.root / VALIDATION_RESULTS
     if path.is_symlink() or not path.is_file():
         raise ActionError(
-            "reproduction.validation.missing", f"missing validation result: {path}"
+            "reproduction.validation.missing",
+            f"missing cached validation result; run full validation: {path}",
         )
     try:
         raw = path.read_bytes()
@@ -1498,7 +1504,7 @@ def _admit_validation(
             "reproduction.validation.publication_invalid",
             "published validation is unsupported",
         )
-    projection_path = log.root / "validation" / "batches.json"
+    projection_path = log.root / VALIDATION_BATCHES
     source_digest, _ = research_source_projection(log.summary)
     return (
         {
@@ -1524,7 +1530,7 @@ def _load_prior_results(
         load_reproduction_results,
     )
 
-    path = log.root / "reproduction" / "results.json"
+    path = log.root / REPRODUCTION_RESULTS
     if not path.exists() and not path.is_symlink():
         return {}
     try:

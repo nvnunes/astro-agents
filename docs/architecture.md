@@ -272,6 +272,10 @@ Future validation changes must preserve these invariants:
   agents manage research material and do not modify validation or reproduction
   artifacts. Reproduction agents manage only generated reproduction state and
   never promote staged outputs into retained research material automatically.
+- **Committed reports, disposable machine state:** `validation.md` and
+  `reproduction.md` are the source-controlled human summaries. Detailed
+  validation and reproduction JSON lives below each log's ignored `.cache/`
+  directory and can be rebuilt by rerunning the owning operation.
 - **Low-cost evolution:** Generated record and cache schemas evolve
   independently. Cache state is disposable; authored evidence-format changes
   use an explicit upgrade rather than compatibility branches in validation.

@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from research_log_paths import VALIDATION_BATCHES
+
 from .inspection_store import (
     ContentWriter,
     InspectionError,
@@ -280,7 +282,7 @@ def save_result(
 def _require_projection(summary: Path, request: dict[str, str]) -> None:
     if "published_stat" not in request:
         return
-    path = summary.with_suffix("") / "validation/batches.json"
+    path = summary.with_suffix("") / VALIDATION_BATCHES
     stat = path.stat()
     actual = encode(
         [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]

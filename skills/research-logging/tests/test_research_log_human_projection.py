@@ -139,7 +139,7 @@ class HumanProjectionTests(unittest.TestCase):
             context=context,
             published=False,
             human_report="/project/docs/study/validation.md",
-            mechanical_report="/project/docs/study/validation/results.json",
+            mechanical_report="/project/docs/study/.cache/validation/results.json",
         )
 
         self.assertIn("| Structure | Clear |", report)

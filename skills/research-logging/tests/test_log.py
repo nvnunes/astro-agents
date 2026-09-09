@@ -838,10 +838,10 @@ class LogEvidenceTests(unittest.TestCase):
             logical, entry = fixture(Path(directory))
             generated = (
                 logical / "validation.md",
-                logical / "validation" / "results.json",
+                logical / ".cache" / "validation" / "results.json",
             )
             generated[0].write_text("existing report\n", encoding="utf-8")
-            generated[1].parent.mkdir()
+            generated[1].parent.mkdir(parents=True)
             generated[1].write_text("existing record\n", encoding="utf-8")
             generated_before = {path: path.read_bytes() for path in generated}
             arguments = (
@@ -1167,10 +1167,10 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
             logical, entry = fixture(Path(directory))
             generated = (
                 logical / "validation.md",
-                logical / "validation" / "results.json",
+                logical / ".cache" / "validation" / "results.json",
             )
             generated[0].write_text("existing report\n", encoding="utf-8")
-            generated[1].parent.mkdir()
+            generated[1].parent.mkdir(parents=True)
             generated[1].write_text("existing record\n", encoding="utf-8")
             unrelated = entry / "notes.txt"
             unrelated.write_text("unrelated\n", encoding="utf-8")

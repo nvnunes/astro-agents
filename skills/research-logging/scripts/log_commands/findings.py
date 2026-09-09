@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from research_log_paths import VALIDATION_BATCHES, VALIDATION_RESULTS
 from validation.batch_projection import PROJECTION_SCHEMA
 from validation.filesystem import BoundedFileReadError, bounded_file_bytes
 from validation.human_projection import project_findings
@@ -165,12 +166,11 @@ def load_batch_projection(
 
     if record is None:
         record = _load_record(log)
-    path = log.root / "validation" / "batches.json"
+    path = log.root / VALIDATION_BATCHES
     if path.is_symlink() or not path.is_file():
         raise ActionError(
             "findings.validation_unavailable",
-            "published validation predates published validation; "
-            "full validation is required",
+            "cached validation batches are missing; full validation is required",
         )
     value = _read_json(
         path, maximum_bytes=MAX_PROJECTION_BYTES, label="published validation"
@@ -228,11 +228,11 @@ def load_batch_projection(
 
 
 def _load_record(log: LogContext) -> MechanicalGeneratedRecord:
-    path = log.root / "validation" / "results.json"
+    path = log.root / VALIDATION_RESULTS
     if path.is_symlink() or not path.is_file():
         raise ActionError(
             "findings.result.missing",
-            f"no published mechanical result for {log.summary}",
+            f"no cached mechanical result; run full validation for {log.summary}",
         )
     value = _read_json(path, maximum_bytes=MAX_RESULT_BYTES, label="result")
     schema = value.get("schema")

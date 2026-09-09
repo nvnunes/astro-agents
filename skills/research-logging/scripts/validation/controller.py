@@ -10,6 +10,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from research_log_paths import (
+    VALIDATION_BATCHES,
+    VALIDATION_REPORT,
+    VALIDATION_RESULTS,
+)
+
 from .batch_projection import build_batch_projection
 from .engine import RULES_VERSION, mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
@@ -43,6 +49,8 @@ from .validation_cache import ValidationCache, ValidationCacheError
 
 RESULT_SCHEMA = "research-log-validation-result/1"
 UNSUPPORTED_GENERATED_PATHS = (
+    "validation/batches.json",
+    "validation/results.json",
     "validation/manifest.json",
     "validation/outcomes",
     "validation/judgments",
@@ -324,14 +332,14 @@ def _run_validation(
                 + "\n"
             ).encode("utf-8")
             outputs = {
-                "validation/batches.json": projection_bytes,
-                "validation.md": compose_validation_report(
+                VALIDATION_BATCHES: projection_bytes,
+                VALIDATION_REPORT: compose_validation_report(
                     record, context=report_context, groups=finding_groups
                 ).encode(),
             }
             mechanical_changed = report_identity != mechanical_digest
             if mechanical_changed:
-                outputs["validation/results.json"] = mechanical
+                outputs[VALIDATION_RESULTS] = mechanical
             published_identities = publish_validation_outputs_locked(
                 log_root,
                 outputs,
@@ -346,10 +354,10 @@ def _run_validation(
             )
             if mechanical_changed:
                 fingerprint_cache.remember_regular_file(
-                    log_root / "validation" / "results.json",
+                    log_root / VALIDATION_RESULTS,
                     digest=mechanical_digest,
                     expected_size=len(mechanical),
-                    expected_identity=published_identities["validation/results.json"],
+                    expected_identity=published_identities[VALIDATION_RESULTS],
                 )
             validation_cache.finish_published_run(
                 record.checks,
@@ -373,7 +381,7 @@ def _run_validation(
 def _current_report_identity(
     log_root: Path, fingerprint_cache: FingerprintCache
 ) -> str | None:
-    path = log_root / "validation" / "results.json"
+    path = log_root / VALIDATION_RESULTS
     if path.is_symlink() or not path.is_file():
         return None
     try:
@@ -418,8 +426,8 @@ def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
         for relative in UNSUPPORTED_GENERATED_PATHS
         if (log_root / relative).is_symlink() or (log_root / relative).exists()
     ]
-    report = log_root / "validation.md"
-    if report.is_file() and not (log_root / "validation/results.json").is_file():
+    report = log_root / VALIDATION_REPORT
+    if report.is_file() and not (log_root / VALIDATION_RESULTS).is_file():
         try:
             with report.open("rb") as handle:
                 raw_prefix = handle.read(1024 * 1024 + 1)
@@ -507,8 +515,8 @@ def _completed_result(
             record,
             context=report_context,
             published=published,
-            human_report=(log_root / "validation.md").as_posix(),
-            mechanical_report=(log_root / "validation" / "results.json").as_posix(),
+            human_report=(log_root / VALIDATION_REPORT).as_posix(),
+            mechanical_report=(log_root / VALIDATION_RESULTS).as_posix(),
         ),
         "schema": RESULT_SCHEMA,
         "status": record.completion.value,

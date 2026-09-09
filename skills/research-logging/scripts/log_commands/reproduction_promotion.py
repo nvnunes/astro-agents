@@ -13,6 +13,12 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
 from research_log_data import DataFile, Fingerprint, load_data_file, parse_fingerprint
+from research_log_paths import (
+    REPRODUCTION_REPORT,
+    REPRODUCTION_RESULTS,
+    VALIDATION_REPORT,
+    VALIDATION_RESULTS,
+)
 from validation.human_projection import load_report_context
 from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
@@ -474,7 +480,7 @@ def _report_candidates(
             "reproduction.validation.refresh_failed", str(error)
         ) from error
     project = resolve_project_root(log.root)
-    result_path = log.root / "reproduction" / "results.json"
+    result_path = log.root / REPRODUCTION_RESULTS
     results = reconcile_run_folders(
         load_reproduction_results(result_path), project_root=project
     )
@@ -484,14 +490,14 @@ def _report_candidates(
     context = load_report_context(log.summary)
     return {
         result_path: results.serialized(),
-        log.root / "reproduction.md": compose_reproduction_report(
+        log.root / REPRODUCTION_REPORT: compose_reproduction_report(
             projected,
             context=context,
             currentness=currentness,
             folder_links_from=log.root,
         ),
-        log.root / "validation" / "results.json": validation.canonical_json() + "\n",
-        log.root / "validation.md": compose_validation_report(
+        log.root / VALIDATION_RESULTS: validation.canonical_json() + "\n",
+        log.root / VALIDATION_REPORT: compose_validation_report(
             validation, context=context
         ),
     }

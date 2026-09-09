@@ -6,7 +6,7 @@ Use this file when Reproduce creates, reads, or publishes generated state.
 
 Reproduce may create or update only these generated paths:
 
-- `<log>/reproduction/results.json`;
+- `<log>/.cache/reproduction/results.json`;
 - `<log>/reproduction.md`;
 - `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<run-id>/` for a log
   run, or
@@ -21,13 +21,18 @@ Reproduce may create or update only these generated paths:
 - `<project>/.cache/research-log-operations/reproduction-scheduler.lock`, the
   existing-operation-lock mutex that serializes coordinator updates.
 
-`reproduction/results.json` is the cumulative machine authority for published
+`.cache/reproduction/results.json` is the current local machine authority for
 artifact outcomes, per-run command accounting, and run history.
-`reproduction.md` is its human-only projection. Agents do not parse either file
-during ordinary work; use `log reproduce report --path <log> --summary` for the
-compact per-log view, `log reproduce report --root <project> --summary` for the
-cross-log view, and the complete report or bounded artifact `list` and `show`
-routes for detail.
+`reproduction.md` is its source-controlled human-only projection. Agents do not
+parse either file during ordinary work; use
+`log reproduce report --path <log> --summary` for the compact per-log view,
+`log reproduce report --root <project> --summary` for the cross-log view, and
+the complete report or bounded artifact `list` and `show` routes for detail.
+
+The machine record is disposable and rebuildable by reproduction. Removing it
+discards local result history and saved-state reuse, so the next reproduction
+is a cold run. The committed Markdown report remains a human snapshot and is
+never used to reconstruct machine state.
 
 The current result schema is `research-log-reproduction-result/3`. Every newly
 published run counts every command in its log or entry target exactly once as
@@ -91,3 +96,5 @@ hidden.
 Do not edit generated records by hand. Do not use a reproduction agent to
 promote run-local artifacts. Promotion is an explicit research mutation that
 copies one complete execution output set under researcher direction.
+The former `reproduction/results.json` location is unsupported after the
+one-time path migration and is never read as a fallback.

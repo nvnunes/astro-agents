@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Mapping, cast
 
+from research_log_paths import REPRODUCTION_RESULTS
 from validation.discovery import discover_summaries
 from validation.human_projection import load_report_context
 
@@ -347,10 +348,11 @@ def show_reproduction_artifact(
 def _current(
     log: LogContext,
 ) -> tuple[ReproductionResults, Mapping[tuple[str, str], ArtifactCurrentness]]:
-    path = log.root / "reproduction" / "results.json"
+    path = log.root / REPRODUCTION_RESULTS
     if path.is_symlink() or not path.is_file():
         raise ActionError(
-            "reproduction.results.missing", f"no published reproduction result: {path}"
+            "reproduction.results.missing",
+            f"no cached reproduction result; rerun reproduction: {path}",
         )
     try:
         results = load_reproduction_results(path)

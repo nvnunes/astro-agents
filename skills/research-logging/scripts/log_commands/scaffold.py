@@ -9,6 +9,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from research_log_paths import REPRODUCTION_REPORT, REPRODUCTION_RESULTS
 from validation.human_projection import ReportContext
 
 from .context import (
@@ -112,15 +113,17 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
 
     title = _title(arguments.title, "log.title.invalid")
     summary = _initial_summary(log, title)
-    reproduction = log.root / "reproduction"
-    reproduction_results = reproduction / "results.json"
-    reproduction_report = log.root / "reproduction.md"
+    reproduction_results = log.root / REPRODUCTION_RESULTS
+    reproduction = reproduction_results.parent
+    cache = reproduction.parent
+    reproduction_report = log.root / REPRODUCTION_REPORT
     paths = tuple(
         path.as_posix()
         for path in (
             log.summary,
             log.root,
             log.root / "entries",
+            cache,
             reproduction,
             reproduction_results,
             reproduction_report,
@@ -135,6 +138,7 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
             _make_directory(log.root, created)
             entries = log.root / "entries"
             _make_directory(entries, created)
+            _make_directory(cache, created)
             _make_directory(reproduction, created)
             atomic_create_text(log.summary, summary)
             created.append(log.summary)

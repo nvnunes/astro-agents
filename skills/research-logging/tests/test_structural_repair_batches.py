@@ -766,7 +766,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
                 document.read_text().replace("--input-catalog", "--catalog")
             )
             run_log(root, "validate", "--path", str(logical))
-            path = logical / "validation/batches.json"
+            path = logical / ".cache/validation/batches.json"
             published = json.loads(path.read_text())
             batch = published["repair_batches"][0]["batch_id"]
             request = (
@@ -813,7 +813,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
             )
             initial = run_log(root, "validate", "--path", str(logical))
             self.assertEqual(initial.returncode, 0, initial.stderr)
-            path = logical / "validation/batches.json"
+            path = logical / ".cache/validation/batches.json"
             old = json.loads(path.read_text())
             old["schema"] = "research-log-batch-projection/2"
             old["projection_id"] = old.pop("validation_id")
@@ -887,7 +887,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
                 document.read_text().replace("--input-catalog", "--catalog")
             )
             run_log(root, "validate", "--path", str(logical))
-            publication = logical / "validation/batches.json"
+            publication = logical / ".cache/validation/batches.json"
             canonical = publication.resolve()
             published = json.loads(publication.read_text())
             batch = next(
@@ -1112,7 +1112,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
                 "--format",
                 "json",
             )
-            published_bytes = (logical / "validation/batches.json").read_bytes()
+            published_bytes = (logical / ".cache/validation/batches.json").read_bytes()
             document.write_text(original)
             from validation.operation_state import operation_lock
 
@@ -1135,7 +1135,8 @@ class StructuralRepairBatchTests(unittest.TestCase):
                 len(result["reconciliation"]), batch["primary_finding_count"]
             )
             self.assertEqual(
-                (logical / "validation/batches.json").read_bytes(), published_bytes
+                (logical / ".cache/validation/batches.json").read_bytes(),
+                published_bytes,
             )
             recovered = inspect_result(
                 logical,

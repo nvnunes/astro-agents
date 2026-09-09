@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
+from research_log_paths import REPRODUCTION_RESULTS
 from validation.operation_state import operation_lock, require_mutation_ready
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
@@ -601,7 +602,7 @@ def _dependency_skips(
 
 
 def _published_run_present(log: LogContext, run_id: str) -> bool:
-    path = log.root / "reproduction" / "results.json"
+    path = log.root / REPRODUCTION_RESULTS
     if not path.is_file() or path.is_symlink():
         return False
     value = _load_json_file(path)

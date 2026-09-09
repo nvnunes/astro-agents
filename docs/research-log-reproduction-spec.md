@@ -177,7 +177,7 @@ also consume the ordinary file, path, and directory limits.
 
 | Resource | Limit |
 | --- | ---: |
-| `reproduction/results.json` encoded bytes | 64 MiB |
+| `.cache/reproduction/results.json` encoded bytes | 64 MiB |
 | Current artifact records | 10,000 |
 | Retained or availability-unknown run records | 10,000 |
 
@@ -226,11 +226,11 @@ The operational authority is:
 | `evidence.json` | Reproduction roots and exact retained evidence-source identity |
 | `data.json` | Named material location, fingerprint, and origin/generated classification |
 | `pyrun.json` | Current executable recipes and observed execution state |
-| `validation/results.json` and `validation/batches.json` | Reproduction admission result and per-chain projection |
-| `validation.md` | Disposable human validation projection only |
-| `reproduction/results.json` | Cumulative authoritative reproduction results and published run index |
+| `.cache/validation/results.json` and `.cache/validation/batches.json` | Reproduction admission result and per-chain projection |
+| `validation.md` | Source-controlled human validation projection only |
+| `.cache/reproduction/results.json` | Disposable local reproduction results and run index |
 | Durable run directory | Active, stopped, failed, and staged run-specific operational state |
-| `reproduction.md` | Disposable human reproduction projection only |
+| `reproduction.md` | Source-controlled human reproduction projection only |
 
 `evidence.json`, `data.json`, and `pyrun.json` together are the complete
 reproduction graph and execution authority. Reproduction must not derive case
@@ -726,7 +726,7 @@ current coverage or execution planning.
 ### Admission Gate
 
 Before accepting or previewing work, reproduction requires current completed
-`validation/results.json` and `validation/batches.json` for the exact source
+`.cache/validation/results.json` and `.cache/validation/batches.json` for the exact source
 snapshot. Incomplete, malformed, unsupported, stale, or mutually inconsistent
 validation state blocks the plan. Current findings are admitted per connected
 same-entry command chain: Structure, Evidence, and failed Provenance findings
@@ -1518,7 +1518,8 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 
 ### Authoritative Result
 
-`<log>/reproduction/results.json` is strict canonical UTF-8 JSON using
+`<log>/.cache/reproduction/results.json` is disposable local state encoded as
+strict canonical UTF-8 JSON using
 `research-log-reproduction-result/3`. It has exactly this shape:
 
 ```json
@@ -1675,7 +1676,7 @@ outcomes.
 ### Currentness
 
 Every artifact result records `recorded_at`, the commit time of that result to
-`reproduction/results.json`, regardless of outcome. A result is implicitly
+`.cache/reproduction/results.json`, regardless of outcome. A result is implicitly
 stale when the producing execution has a non-null `last_run_at` later than
 `recorded_at`. Recipe, script, code, input, validation, and dependency changes
 may also make a case ineligible or require new work under the graph contract.
@@ -1895,7 +1896,7 @@ reproduction-run records.
 
 ### Shared Publication
 
-Concurrent distinct-entry runs share `reproduction/results.json`,
+Concurrent distinct-entry runs share `.cache/reproduction/results.json`,
 `reproduction.md`, and active-run indexing. Their shared writes must use one
 brief log-local publication mutex built on the existing lock infrastructure.
 It is not a reproduction scope lock and is not held during planning, execution,
@@ -1919,7 +1920,7 @@ outcome rolls it back.
 After reproduction-result publication succeeds and the run becomes complete,
 the supervisor releases its reproduction scope lock and invokes ordinary
 mechanical validation for that log as a separate operation. Validation owns
-and publishes `validation/results.json`, `validation/batches.json`, and
+and publishes `.cache/validation/results.json`, `.cache/validation/batches.json`, and
 `validation.md`; reproduction never
 performs a targeted confirmation refresh. Validation findings or an
 operational validation failure do not change the complete reproduction status,
@@ -1948,15 +1949,22 @@ Its shared-state changes use the publication mutex.
 Reproduction owns:
 
 ```text
-<log>/reproduction/results.json
+<log>/.cache/reproduction/results.json
 <log>/reproduction.md
 ```
 
-Validation continues to own `validation/results.json`,
-`validation/batches.json`, and `validation.md`.
+Validation continues to own `.cache/validation/results.json`,
+`.cache/validation/batches.json`, and `validation.md`.
 Cutover removes the legacy Reproduction result section from `validation.md`.
 Validation may link to `reproduction.md` but must not duplicate reproduction
 state.
+
+The machine JSON paths are ignored cache state. The former
+`reproduction/results.json`, `validation/results.json`, and
+`validation/batches.json` locations are removed during the path cutover and are
+never read as fallbacks. A missing reproduction result means a cold cache; a
+new reproduction rebuilds current outcomes instead of reconstructing them from
+Markdown.
 
 Every maintained summary receives:
 
@@ -1964,13 +1972,14 @@ Every maintained summary receives:
 Reproduction: [latest report](<log>/reproduction.md)
 ```
 
-Cutover creates an empty authoritative result and a report stating that no
-reproduction has yet completed. It must not infer a historical reproduction
-result.
+Cutover creates an empty local result and a report stating that no reproduction
+has yet completed. Removing the local result makes the next reproduction a cold
+run; it must not infer historical machine state from the report.
 
 ### Human Report
 
-`reproduction.md` is deterministic, generated, nonauthoritative human output.
+`reproduction.md` is deterministic, generated, source-controlled,
+nonauthoritative human output.
 No researcher or agent edits it. One centralized compositor produces both the
 file and the complete ready-to-present output of:
 

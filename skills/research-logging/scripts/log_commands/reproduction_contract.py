@@ -12,6 +12,7 @@ LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
+MAX_PLAN_SUMMARY_ENTRIES = 20
 
 
 def successful_checkpoint_state(state: object) -> bool:
@@ -61,6 +62,75 @@ class ReproductionPlan:
         if len(text.encode("utf-8")) > MAX_PLAN_BYTES:
             raise ValueError("reproduction dry-run plan crossed its byte bound")
         return text
+
+
+def format_reproduction_plan_summary(
+    plan: ReproductionPlan, *, recheck: bool
+) -> str:
+    """Return the bounded human projection of one valid dry-run plan."""
+
+    entry_counts: dict[str, tuple[int, int]] = {}
+    exclusive_count = 0
+    required_claims = {"read_paths", "write_paths", "run_path", "writable_paths"}
+    claims_complete = True
+    for execution in plan.executions:
+        entry = execution.get("entry")
+        if not isinstance(entry, str):
+            raise ValueError("reproduction plan execution has an invalid entry")
+        count, entry_exclusive = entry_counts.get(entry, (0, 0))
+        is_exclusive = execution.get("exclusive") is True
+        entry_counts[entry] = (count + 1, entry_exclusive + int(is_exclusive))
+        exclusive_count += int(is_exclusive)
+        claims_complete = claims_complete and required_claims <= set(execution)
+
+    target_kind = plan.target.get("kind")
+    target_entry = plan.target.get("entry")
+    target = str(target_kind)
+    if target_entry is not None:
+        target = f"{target} {target_entry}"
+    selection = "Recheck" if recheck else "Incremental"
+    eligibility = "all eligible executions" if plan.include_all else "automatic only"
+    failure_count = len(plan.failures)
+    admission = "Ready with localized failures" if failure_count else "Ready"
+    execution_count = len(plan.executions)
+    lines = [
+        f"Reproduction preview for `{plan.summary}`",
+        "",
+        f"- Target: {target}",
+        f"- Admission: {admission}",
+        f"- Selection: {selection}; {eligibility}",
+        f"- Concurrency cap: {plan.jobs}",
+        f"- Artifact cases: {len(plan.cases)}",
+        (
+            f"- Runnable executions: {execution_count} "
+            f"({execution_count - exclusive_count} ordinary, "
+            f"{exclusive_count} exclusive)"
+        ),
+        f"- Local planning failures: {failure_count} artifacts",
+        f"- Boundaries: {len(plan.boundaries)}",
+        (
+            "- Scheduling path claims: "
+            + ("Complete" if claims_complete else "Incomplete")
+        ),
+    ]
+    selected_entries = sorted(entry_counts.items())[:MAX_PLAN_SUMMARY_ENTRIES]
+    if selected_entries:
+        lines.extend(
+            [
+                "",
+                "| Entry | Runnable | Exclusive |",
+                "| --- | ---: | ---: |",
+                *(
+                    f"| `{entry}` | {counts[0]} | {counts[1]} |"
+                    for entry, counts in selected_entries
+                ),
+            ]
+        )
+    omitted = len(entry_counts) - len(selected_entries)
+    if omitted:
+        noun = "entry" if omitted == 1 else "entries"
+        lines.extend(["", f"{omitted} additional {noun} omitted."])
+    return "\n".join(lines) + "\n"
 
 
 def source_snapshot(

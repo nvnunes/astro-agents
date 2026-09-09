@@ -774,7 +774,14 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="print a bounded human summary of a dry-run plan",
+    )
     args = parser.parse_args(arguments)
+    if args.summary and not args.dry_run:
+        parser.error("--summary requires --dry-run")
     log = resolve_log(args.path)
     from .reproduction_jobs import dry_run_reproduction, launch_reproduction
 
@@ -786,7 +793,15 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             jobs=args.jobs,
             recheck=args.recheck,
         )
-        print(plan.serialized())
+        if args.summary:
+            from .reproduction_contract import format_reproduction_plan_summary
+
+            print(
+                format_reproduction_plan_summary(plan, recheck=args.recheck),
+                end="",
+            )
+        else:
+            print(plan.serialized())
     else:
         print(
             launch_reproduction(

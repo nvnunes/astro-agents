@@ -9,6 +9,7 @@ from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.dispatcher import main
+from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_queries import (
     list_reproduction_artifacts,
@@ -26,6 +27,74 @@ from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
+    def test_dispatcher_exposes_bounded_human_dry_run_summary(self) -> None:
+        log = mock.sentinel.log
+        executions = tuple(
+            {
+                "entry": f"e{number:03d}",
+                "exclusive": number == 1,
+                "read_paths": [],
+                "run_path": f"<run>/executions/e{number:03d}/fixture",
+                "writable_paths": [],
+                "write_paths": [],
+            }
+            for number in range(1, 22)
+        )
+        plan = ReproductionPlan(
+            "docs/research.md",
+            {"entry": None, "kind": "log"},
+            False,
+            {},
+            source_snapshot(authority_files=(), executions=(), materials=()),
+            ({},) * 25,
+            executions,
+            ({},) * 3,
+            ({},) * 2,
+            4,
+        )
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
+                "log_commands.reproduction_jobs.dry_run_reproduction",
+                return_value=plan,
+            ) as dry_run,
+            redirect_stdout(output),
+        ):
+            status = main(
+                [
+                    "reproduce",
+                    "--path",
+                    "/project/log",
+                    "--jobs",
+                    "4",
+                    "--dry-run",
+                    "--summary",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertIn("- Admission: Ready with localized failures", output.getvalue())
+        self.assertIn("- Selection: Incremental; automatic only", output.getvalue())
+        self.assertIn("- Concurrency cap: 4", output.getvalue())
+        self.assertIn("- Artifact cases: 25", output.getvalue())
+        self.assertIn(
+            "- Runnable executions: 21 (20 ordinary, 1 exclusive)",
+            output.getvalue(),
+        )
+        self.assertIn("- Local planning failures: 2 artifacts", output.getvalue())
+        self.assertIn("- Scheduling path claims: Complete", output.getvalue())
+        self.assertIn("| `e020` | 1 | 0 |", output.getvalue())
+        self.assertNotIn("| `e021` |", output.getvalue())
+        self.assertIn("1 additional entry omitted.", output.getvalue())
+        dry_run.assert_called_once_with(
+            log, entry=None, include_all=False, jobs=4, recheck=False
+        )
+
+    def test_dispatcher_rejects_summary_for_a_real_launch(self) -> None:
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(["reproduce", "--path", "/project/log", "--summary"])
+
     def test_report_list_and_show_share_current_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

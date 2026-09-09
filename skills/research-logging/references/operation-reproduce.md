@@ -45,8 +45,12 @@ checkpoint, result, report, or other state:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-all] [--recheck] [--jobs <positive-integer>] --dry-run
+  [--include-all] [--recheck] [--jobs <positive-integer>] --dry-run --summary
 ```
+
+Use `--summary` for the bounded CLI-owned human projection. Present it
+unchanged; do not request or parse the complete JSON plan. Programmatic
+consumers that need the complete deterministic plan may omit `--summary`.
 
 Launch the same scope by omitting `--dry-run`:
 
@@ -62,10 +66,10 @@ another entry or log.
 
 `--jobs` defaults to `1`, preserving serial execution. A larger value is an
 immutable per-run concurrency cap: dependency readiness, conflicting path
-claims, and project-wide exclusivity may keep actual concurrency lower. Inspect
-the dry-run's `jobs`, `exclusive`, and path-claim fields before a parallel
-launch. Entry-local execution state must use `research-log-pyrun/v3`; earlier
-schemas are unsupported.
+claims, and project-wide exclusivity may keep actual concurrency lower. Before
+a parallel launch, use the dry-run summary to verify the cap, runnable and
+exclusive counts, and complete path claims. Entry-local execution state must
+use `research-log-pyrun/v3`; earlier schemas are unsupported.
 
 The default selection is incremental: current results satisfy their artifact
 cases, while new, unconfirmed, failed, stale, and dependency-affected eligible

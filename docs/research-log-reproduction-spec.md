@@ -703,7 +703,7 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--dry-run]
+log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--dry-run [--summary]]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
@@ -899,10 +899,20 @@ names and outcomes. The fixtures execute no maintained research command.
 
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
-launch. It emits one
+launch. By default, it emits one
 deterministic `research-log-reproduction-plan/3` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
+
+`--summary` is valid only with `--dry-run` and replaces the complete JSON
+projection on standard output with a bounded human projection. It reports the
+target, admission state, incremental-or-recheck and automatic-or-all selection,
+concurrency cap, artifact-case count, runnable ordinary and exclusive execution
+counts, localized planning-failure count, boundary count, scheduling-path-claim
+completeness, and per-entry runnable and exclusive counts. The entry table is
+limited to the first 20 stable entry IDs and reports the number omitted. The
+summary is presentation only; it applies the same complete planning and final
+source recheck and does not alter the deterministic plan contract.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
 entry order and artifact path. Each case has exactly `entry`, `artifact`,

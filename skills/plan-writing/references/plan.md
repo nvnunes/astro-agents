@@ -81,7 +81,7 @@ For a sharded plan:
 - Choose technical reviews during design: scope, purpose, and milestone. Distinguish iteration checks from completion gates; reference applicable project gates without duplicating them.
 - Incorporate reviews completed during planning into the affected instructions. Do not schedule the same review again unless a specific later change will invalidate its conclusions.
 - A final integration step contains only work that requires the assembled result. Keep component checks with their owning work.
-- For each necessary gate, state what must pass, what failure blocks, and what independent work may continue. Avoid generic review-after-every-step rules.
+- Scope each necessary gate to its actual dependents: state what must pass, what failure blocks, and what independent work may continue. Avoid generic review-after-every-step rules.
 
 Place cheap representative checks before expensive work whose approach depends
 on consequential assumptions, including output persistence when relevant.

@@ -26,5 +26,6 @@ duplicating work or losing progress. Report uncertainty when state is unknown.
 
 Inspect named paths and bounded results. Reuse inventories only while source
 state remains applicable. Use existing timing, status, or logs to investigate
-unexpected slowness before repeating work. Keep the investigation scoped to
-the delay rather than building a benchmarking project.
+unexpected slowness before repeating work. Retry only to test a concrete
+hypothesis that could change the execution decision. Otherwise, record the
+unresolved operation and continue work it does not block.

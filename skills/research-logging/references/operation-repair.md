@@ -68,6 +68,9 @@ source records or script. Preserve the original in version control or a backup.
 `log data add-generated --pending-confirmation` admits a retained output with one
 structurally valid, unambiguous same-log producer. It cannot bypass a missing
 producer or replace ordinary pre-production declaration.
+For an existing declaration whose files were restored, use
+`log data refresh --pending-confirmation` to record their current fingerprint
+under the same producer checks. This does not confirm execution.
 
 Derive reconstructed fields from retained evidence; keep reconstructed execution
 support `confirmed: false`. Never hand-edit generated validation. Only when malformed

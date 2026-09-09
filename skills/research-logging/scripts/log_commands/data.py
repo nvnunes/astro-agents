@@ -247,8 +247,19 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         return _result("update", "dry-run" if arguments.dry_run else "changed", True)
 
 
-def refresh(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
-    """Refresh one intentional byte identity without changing its semantics."""
+def refresh(
+    entry: EntryContext,
+    name: str,
+    *,
+    dry_run: bool,
+    pending_confirmation: bool = False,
+) -> ActionResult:
+    """Observe current bytes, optionally admitting unconfirmed generated support.
+
+    Pending confirmation requires the same unambiguous producer as pending
+    registration. Neither mode changes the declaration's semantics or execution
+    records.
+    """
 
     with entry_lock(entry):
         current = _required(entry)
@@ -257,15 +268,22 @@ def refresh(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
             raise ActionError(
                 "data.reference.read_only", "refresh the producer declaration"
             )
+        if pending_confirmation and existing.origin:
+            raise ActionError(
+                "data.pending.invalid",
+                "pending confirmation applies only to generated inputs",
+            )
         observed = observe_fingerprint(existing)
         candidate = replace(existing, fingerprint=observed.fingerprint)
         built = _build(entry, _replace(current, name, candidate))
-        _require_boundary(entry, built, candidate)
+        producer = _require_boundary(
+            entry, built, candidate, pending_confirmation=pending_confirmation
+        )
         if candidate == existing:
-            return _result("refresh", "unchanged", False)
+            return _result("refresh", "unchanged", False, producer)
         if not dry_run:
             remove_or_write(built.path, built.canonical_json())
-        return _result("refresh", "dry-run" if dry_run else "changed", True)
+        return _result("refresh", "dry-run" if dry_run else "changed", True, producer)
 
 
 def remove(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:

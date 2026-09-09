@@ -126,6 +126,106 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class LogDataTests(unittest.TestCase):
+    def test_refresh_restored_generated_material_keeps_confirmation_pending(
+        self,
+    ) -> None:
+        for kind in ("file", "directory"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                logical, entry = scaffold(Path(directory))
+                common = ("--path", str(logical), "--entry", "e001")
+                script = entry / "scripts" / "build.py"
+                script.write_text("raise RuntimeError('must not run')\n")
+                document = entry / "e001.md"
+                command = './pyrun scripts/build.py --output "<restored>"'
+                document.write_text(
+                    "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
+                    + command
+                    + "\n```\n\n`Results:`\n\nRetained output.\n"
+                )
+                declared = run(
+                    entry,
+                    "data",
+                    "add-generated",
+                    *common,
+                    "--kind",
+                    kind,
+                    "restored",
+                    "data/restored",
+                )
+                self.assertEqual(declared.returncode, 0, declared.stderr)
+                before = (entry / "data.json").read_bytes()
+                before_item = data_inputs(entry)[0]
+                self.assertNotIn("digest", before_item["fingerprint"])
+                target = entry / "data" / "restored"
+                if kind == "directory":
+                    target.mkdir()
+                    material = target / "case.ini"
+                else:
+                    material = target
+                material.write_bytes(b"restored original\n")
+
+                strict = run(entry, "data", "refresh", *common, "restored")
+                self.assertEqual(result(strict)["code"], "provenance.output.unrecorded")
+                checked = run(
+                    entry,
+                    "data",
+                    "refresh",
+                    *common,
+                    "restored",
+                    "--pending-confirmation",
+                    "--dry-run",
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertEqual((entry / "data.json").read_bytes(), before)
+                refreshed = run(
+                    entry,
+                    "data",
+                    "refresh",
+                    *common,
+                    "restored",
+                    "--pending-confirmation",
+                )
+                self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+                self.assertEqual(
+                    result(refreshed)["records"][0]["confirmation"], "pending"
+                )
+                after_item = data_inputs(entry)[0]
+                self.assertIn("digest", after_item.pop("fingerprint"))
+                before_item.pop("fingerprint")
+                self.assertEqual(after_item, before_item)
+                self.assertEqual(material.read_bytes(), b"restored original\n")
+                self.assertFalse((entry / "pyrun.json").exists())
+                repeated = run(
+                    entry,
+                    "data",
+                    "refresh",
+                    *common,
+                    "restored",
+                    "--pending-confirmation",
+                )
+                self.assertEqual(result(repeated)["status"], "unchanged")
+
+                registered = (entry / "data.json").read_bytes()
+                for commands, code in (
+                    ("", "producer.missing"),
+                    (command + "\n" + command, "producer.ambiguous"),
+                ):
+                    document.write_text(
+                        "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
+                        + commands
+                        + "\n```\n\n`Results:`\n\nRetained output.\n"
+                    )
+                    blocked = run(
+                        entry,
+                        "data",
+                        "refresh",
+                        *common,
+                        "restored",
+                        "--pending-confirmation",
+                    )
+                    self.assertEqual(result(blocked)["code"], code)
+                    self.assertEqual((entry / "data.json").read_bytes(), registered)
+
     def test_help_is_progressive(self) -> None:
         family = run(Path.cwd(), "data", "--help")
         action = run(Path.cwd(), "data", "add-origin", "--help")
@@ -784,6 +884,26 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
             self.assertEqual(result(confirmed)["status"], "unchanged")
+
+            registry_before = (entry / "data.json").read_bytes()
+            support_before = (entry / "pyrun.json").read_bytes()
+            generated.write_text("value\nchanged\n", encoding="utf-8")
+            stale_refresh = run(
+                entry, "data", "refresh", *common, "generated",
+                "--pending-confirmation",
+            )
+            self.assertEqual(
+                result(stale_refresh)["code"], "provenance.output.signature_mismatch"
+            )
+            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
+            self.assertEqual((entry / "pyrun.json").read_bytes(), support_before)
+
+            origin_refresh = run(
+                entry, "data", "refresh", *common, "source",
+                "--pending-confirmation",
+            )
+            self.assertEqual(result(origin_refresh)["code"], "data.pending.invalid")
+            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
 
     def test_use_references_one_direct_generated_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

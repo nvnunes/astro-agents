@@ -351,6 +351,11 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     _entry_arguments(refresh)
     _mutation_argument(refresh)
     refresh.add_argument("name")
+    refresh.add_argument(
+        "--pending-confirmation",
+        action="store_true",
+        help="fingerprint restored generated material before reproduction confirms it",
+    )
     remove = actions.add_parser(
         "remove", help="Remove an input after command and evidence use"
     )
@@ -408,7 +413,12 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     elif args.action == "rename":
         result = data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
     elif args.action == "refresh":
-        result = data.refresh(entry, args.name, dry_run=args.dry_run)
+        result = data.refresh(
+            entry,
+            args.name,
+            dry_run=args.dry_run,
+            pending_confirmation=args.pending_confirmation,
+        )
     elif args.action == "remove":
         result = data.remove(entry, args.name, dry_run=args.dry_run)
     else:

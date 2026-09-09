@@ -129,14 +129,40 @@ must never stop, resume, promote, or otherwise control the run.
 After completion, retrieve the centralized human projection:
 
 ```bash
+<skill>/scripts/log reproduce report --path <log> --summary
+```
+
+Present the returned compact report unchanged. Its command tree relates total
+commands to policy-skipped, saved-state, and selected commands, then relates
+selected commands to succeeded, failed, and dependency-blocked outcomes. Its
+artifact tree relates current reachable artifacts to matched, not-matched, and
+not-compared outcomes, including the reasons artifacts were not compared. The
+totals are different units because one command may produce several artifacts.
+Do not combine them or reconstruct either tree yourself.
+
+For a cross-log overview, use the CLI-owned aggregation:
+
+```bash
+<skill>/scripts/log reproduce report --root <project> --summary
+```
+
+Present its two tables and coverage line unchanged. A dash means the value is
+unavailable, not zero. Use `--format json` with either summary route only for a
+programmatic consumer. If an older result reports that command accounting is
+unavailable, run reproduction again; do not reconstruct historical counts.
+
+When the researcher asks for every artifact, retained run, or entry-specific
+detail, retrieve the complete report instead:
+
+```bash
 <skill>/scripts/log reproduce report --path <log> [--entry <entry>]
 ```
 
-Present the returned report unchanged. Never hide or soften `changed`,
-`failed`, `comparison_failed`, `skipped`, or stale artifact results. Run status
-describes operational completion and is independent of artifact outcomes.
-Treat the subsequent validation outcome separately: its findings or failure do
-not invalidate completed reproduction work.
+Never hide or soften `changed`, `failed`, `comparison_failed`, `skipped`, or
+stale artifact results in that detail. Run status describes operational
+completion and is independent of artifact outcomes. Treat the subsequent
+validation outcome separately: its findings or failure do not invalidate
+completed reproduction work.
 
 An evidence-scoped artifact may report `matched` even when its complete file
 fingerprint differs. In that case, use the bounded artifact `show` result when

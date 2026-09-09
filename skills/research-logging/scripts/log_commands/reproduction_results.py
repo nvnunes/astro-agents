@@ -24,7 +24,8 @@ from .reproduction_paths import (
 )
 from .reproduction_planner import ReproductionStateProjection
 
-RESULT_SCHEMA = "research-log-reproduction-result/2"
+LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/2"
+RESULT_SCHEMA = "research-log-reproduction-result/3"
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
@@ -33,6 +34,20 @@ MAX_QUERY_RESULTS = 50
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 OUTCOMES = ("matched", "changed", "failed", "comparison_failed", "skipped")
+COMMAND_OUTCOMES = (
+    "not_automatic",
+    "reused",
+    "succeeded",
+    "failed",
+    "blocked",
+    "total",
+)
+ARTIFACT_NOT_COMPARED_REASONS = (
+    "command_failed",
+    "command_skipped_or_blocked",
+    "comparison_failed",
+    "stale",
+)
 RUN_STATUSES = ("complete", "failed", "stopped")
 PROFILES = (
     "directory",
@@ -222,6 +237,7 @@ class RunResult:
     artifact_outcomes: Mapping[str, int]
     folder: RunFolder
     executions: tuple[Mapping[str, object], ...] = ()
+    command_outcomes: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
         _run_id(self.run_id)
@@ -243,11 +259,18 @@ class RunResult:
             raise ReproductionResultError("run finished_at precedes accepted_at")
         _counts(self.artifact_outcomes)
         _execution_timings(self.executions)
+        if self.command_outcomes is not None:
+            _command_counts(self.command_outcomes)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "accepted_at": self.accepted_at,
             "artifact_outcomes": dict(self.artifact_outcomes),
+            "command_outcomes": (
+                dict(self.command_outcomes)
+                if self.command_outcomes is not None
+                else None
+            ),
             "finished_at": self.finished_at,
             "folder": self.folder.as_dict(),
             "include_all": self.include_all,
@@ -301,14 +324,15 @@ class ReproductionResults:
         item = _mapping(value, "result")
         if set(item) != {"artifacts", "runs", "schema", "summary", "updated_at"}:
             raise ReproductionResultError("result has incorrect fields")
-        if item["schema"] != RESULT_SCHEMA:
+        schema = item["schema"]
+        if schema not in {LEGACY_RESULT_SCHEMA, RESULT_SCHEMA}:
             raise ReproductionResultError("result schema is unsupported")
         artifacts = tuple(
             _decode_artifact(value, index)
             for index, value in enumerate(_sequence(item["artifacts"], "artifacts"))
         )
         runs = tuple(
-            _decode_run(value, index)
+            _decode_run(value, index, legacy=schema == LEGACY_RESULT_SCHEMA)
             for index, value in enumerate(_sequence(item["runs"], "runs"))
         )
         result = cls(
@@ -317,7 +341,12 @@ class ReproductionResults:
             artifacts,
             runs,
         )
-        if text != result.serialized():
+        expected = (
+            _legacy_serialized(result)
+            if schema == LEGACY_RESULT_SCHEMA
+            else result.serialized()
+        )
+        if text != expected:
             raise ReproductionResultError("result serialization is not canonical")
         return result
 
@@ -511,27 +540,13 @@ def compose_reproduction_report(
     artifacts = tuple(
         item for item in results.artifacts if entry is None or item.entry == entry
     )
-    counts = {outcome: 0 for outcome in OUTCOMES}
-    stale = 0
-    for item in artifacts:
-        counts[item.outcome] += 1
-        if not currentness.get(
-            (item.entry, item.artifact), ArtifactCurrentness(True)
-        ).current:
-            stale += 1
     latest = next((run for run in results.runs if run.status == "complete"), None)
-    lines = [
-        "# Reproduction",
-        "",
-        f"Generated: `{results.updated_at}`",
-        "",
-        "Latest completed run: "
-        + (f"`{latest.run_id}`" if latest is not None else "none"),
-        "",
-        "Current artifacts: "
-        + ", ".join(f"{counts[name]} {name}" for name in OUTCOMES)
-        + f", {stale} stale.",
-    ]
+    lines = _summary_lines(
+        results.updated_at,
+        latest,
+        artifact_summary_counts(artifacts, currentness=currentness),
+        heading="# Reproduction",
+    )
     stable_context_entries = {
         value for value in context.entries if re.fullmatch(r"e[0-9]+", value)
     }
@@ -570,6 +585,163 @@ def compose_reproduction_report(
     if not results.runs:
         lines.append("| — | — | not yet reproduced | — | — |")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def compose_reproduction_summary(
+    results: ReproductionResults,
+    *,
+    currentness: Mapping[tuple[str, str], ArtifactCurrentness] | None = None,
+) -> str:
+    """Render the concise balanced summary for one current log."""
+
+    currentness = currentness or {}
+    latest = next((run for run in results.runs if run.status == "complete"), None)
+    lines = _summary_lines(
+        results.updated_at,
+        latest,
+        artifact_summary_counts(results.artifacts, currentness=currentness),
+        heading="# Reproduction Summary",
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def artifact_summary_counts(
+    artifacts: Sequence[ArtifactResult],
+    *,
+    currentness: Mapping[tuple[str, str], ArtifactCurrentness] | None = None,
+) -> Mapping[str, object]:
+    """Project mutually exclusive current artifact outcomes for human reporting."""
+
+    currentness = currentness or {}
+    matched = 0
+    not_matched = 0
+    total = 0
+    not_compared = {name: 0 for name in ARTIFACT_NOT_COMPARED_REASONS}
+    for item in artifacts:
+        state = currentness.get((item.entry, item.artifact), ArtifactCurrentness(True))
+        if not state.current:
+            not_compared["stale"] += 1
+        elif item.outcome == "matched":
+            matched += 1
+        elif item.outcome == "changed":
+            not_matched += 1
+        elif item.outcome == "failed":
+            not_compared["command_failed"] += 1
+        elif item.outcome == "skipped":
+            not_compared["command_skipped_or_blocked"] += 1
+        else:
+            not_compared["comparison_failed"] += 1
+        total += 1
+    not_compared["total"] = sum(not_compared.values())
+    return {
+        "matched": matched,
+        "not_matched": not_matched,
+        "not_compared": not_compared,
+        "total": total,
+    }
+
+
+def command_summary_counts(commands: Mapping[str, int]) -> Mapping[str, object]:
+    """Nest stored command outcomes according to their selection lifecycle."""
+
+    checked = _command_counts(commands)
+    selected = checked["succeeded"] + checked["failed"] + checked["blocked"]
+    return {
+        "total": checked["total"],
+        "skipped_by_policy": checked["not_automatic"],
+        "reused": checked["reused"],
+        "selected": {
+            "total": selected,
+            "succeeded": checked["succeeded"],
+            "failed": checked["failed"],
+            "blocked": checked["blocked"],
+        },
+    }
+
+
+def _summary_lines(
+    updated_at: str,
+    latest: RunResult | None,
+    artifacts: Mapping[str, object],
+    *,
+    heading: str,
+) -> list[str]:
+    lines = [
+        heading,
+        "",
+        f"Generated: `{updated_at}`",
+        "",
+        "Latest completed run: "
+        + (f"`{latest.run_id}`" if latest is not None else "none"),
+        "",
+        "A command can produce more than one artifact, so the totals are not "
+        "expected to match.",
+        "A succeeded command ran to completion; artifact matching is shown separately.",
+        "",
+        "## Commands",
+        "",
+    ]
+    if latest is None or latest.command_outcomes is None:
+        lines.append(
+            "Command accounting is unavailable for this older result. Run "
+            "reproduction again to publish it."
+        )
+    else:
+        commands = command_summary_counts(latest.command_outcomes)
+        selected = cast(Mapping[str, int], commands["selected"])
+        lines.extend(
+            (
+                "```text",
+                f"{commands['total']} total",
+                f"├─ {commands['skipped_by_policy']} skipped by policy (not automatic)",
+                f"├─ {commands['reused']} reused from saved state",
+                f"└─ {selected['total']} selected for execution",
+                f"   ├─ {selected['succeeded']} succeeded",
+                f"   ├─ {selected['failed']} failed",
+                f"   └─ {selected['blocked']} blocked by another command failure",
+                "```",
+            )
+        )
+    not_compared = cast(Mapping[str, int], artifacts["not_compared"])
+    lines.extend(
+        (
+            "",
+            "## Artifacts",
+            "",
+        )
+    )
+    if latest is None:
+        lines.append("Artifact accounting is unavailable until reproduction completes.")
+    else:
+        reasons = [
+            (
+                not_compared["command_failed"],
+                "because their command failed",
+            ),
+            (
+                not_compared["command_skipped_or_blocked"],
+                "because their command was skipped or blocked",
+            ),
+            (
+                not_compared["comparison_failed"],
+                "because comparison failed",
+            ),
+            (not_compared["stale"], "because their prior result is stale"),
+        ]
+        visible = [(count, label) for count, label in reasons if count]
+        tree = [
+            "```text",
+            f"{artifacts['total']} total",
+            f"├─ {artifacts['matched']} matched",
+            f"├─ {artifacts['not_matched']} not matched",
+            f"└─ {not_compared['total']} not compared",
+        ]
+        for index, (count, label) in enumerate(visible):
+            branch = "└─" if index == len(visible) - 1 else "├─"
+            tree.append(f"   {branch} {count} {label}")
+        tree.append("```")
+        lines.extend(tree)
+    return lines
 
 
 def query_artifacts(
@@ -731,7 +903,7 @@ def _valid_evidence_comparison(value: Mapping[str, object]) -> bool:
     return True
 
 
-def _decode_run(value: object, index: int) -> RunResult:
+def _decode_run(value: object, index: int, *, legacy: bool = False) -> RunResult:
     item = _mapping(value, f"runs[{index}]")
     fields = {
         "accepted_at",
@@ -744,6 +916,8 @@ def _decode_run(value: object, index: int) -> RunResult:
         "status",
         "target",
     }
+    if not legacy:
+        fields.add("command_outcomes")
     if set(item) != fields:
         raise ReproductionResultError(f"runs[{index}] has incorrect fields")
     target = _target(item["target"])
@@ -771,6 +945,11 @@ def _decode_run(value: object, index: int) -> RunResult:
         counts,
         folder,
         executions,
+        (
+            None
+            if legacy or item["command_outcomes"] is None
+            else _command_counts(item["command_outcomes"])
+        ),
     )
 
 
@@ -854,6 +1033,21 @@ def _counts(value: object) -> Mapping[str, int]:
     ):
         raise ReproductionResultError("artifact outcome counts are invalid")
     return {name: cast(int, item[name]) for name in OUTCOMES}
+
+
+def _command_counts(value: object) -> Mapping[str, int]:
+    item = _mapping(value, "command_outcomes")
+    if set(item) != set(COMMAND_OUTCOMES) or any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in item.values()
+    ):
+        raise ReproductionResultError("command outcome counts are invalid")
+    result = {name: cast(int, item[name]) for name in COMMAND_OUTCOMES}
+    if result["total"] != sum(
+        result[name] for name in COMMAND_OUTCOMES if name != "total"
+    ):
+        raise ReproductionResultError("command outcome counts do not reconcile")
+    return result
 
 
 def _folder(value: object) -> RunFolder:
@@ -1044,7 +1238,19 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
         run.artifact_outcomes,
         RunFolder(run.folder.path, availability),
         run.executions,
+        run.command_outcomes,
     )
+
+
+def _legacy_serialized(results: ReproductionResults) -> str:
+    """Serialize the exact read-only v2 shape for canonicality checking."""
+
+    value = results.as_dict()
+    value["schema"] = LEGACY_RESULT_SCHEMA
+    runs = cast(list[dict[str, object]], value["runs"])
+    for run in runs:
+        run.pop("command_outcomes")
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _escape_code(value: str) -> str:

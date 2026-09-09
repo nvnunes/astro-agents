@@ -18,6 +18,7 @@ from log_commands.reproduction_planner import (
     SelectionPolicy,
     _admit_validation,
     plan_reproduction,
+    project_reproduction_command_inventory,
     project_reproduction_state,
     verify_reproduction_runtime_snapshot,
 )
@@ -212,6 +213,39 @@ def _admission(fixture: _Fixture) -> dict[str, object]:
         "rules_version": "fixture/1",
         "source_projection_digest": digest,
     }
+
+
+class ReproductionCommandInventoryTests(unittest.TestCase):
+    def test_inventory_counts_all_target_commands_and_policy_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            first = fixture.entry(1)
+            fixture.entry(2)
+            automatic_output = first.root / "data" / "automatic.txt"
+            manual_output = first.root / "data" / "manual.txt"
+            automatic_output.write_text("automatic", encoding="utf-8")
+            manual_output.write_text("manual", encoding="utf-8")
+            automatic = fixture.execution(
+                first, "automatic", {}, {"automatic": automatic_output}
+            )
+            manual = fixture.execution(
+                first,
+                "manual",
+                {},
+                {"manual": manual_output},
+                auto_reproduce=False,
+            )
+            fixture.write_pyrun(first, [automatic, manual])
+
+            whole_log = project_reproduction_command_inventory(
+                fixture.log, {"entry": None, "kind": "log"}
+            )
+            one_entry = project_reproduction_command_inventory(
+                fixture.log, {"entry": first.id, "kind": "entry"}
+            )
+
+            self.assertEqual((whole_log.total, whole_log.not_automatic), (2, 1))
+            self.assertEqual(one_entry, whole_log)
 
 
 def _write_projection(

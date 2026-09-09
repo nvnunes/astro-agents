@@ -738,16 +738,53 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     )
 
 
+def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log reproduce report")
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--path", type=Path)
+    selection.add_argument("--root", type=Path)
+    parser.add_argument("--entry")
+    parser.add_argument("--summary", action="store_true")
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    args = parser.parse_args(arguments)
+    if args.root is not None and not args.summary:
+        parser.error("--root requires --summary")
+    if args.entry is not None and (args.root is not None or args.summary):
+        parser.error("--entry is available only for a full per-log report")
+    if args.format == "json" and not args.summary:
+        parser.error("--format json requires --summary")
+    from .reproduction_queries import (
+        compose_root_reproduction_summary,
+        reproduction_report,
+        reproduction_summary,
+        reproduction_summary_text,
+        root_reproduction_summary,
+    )
+
+    if args.root is not None:
+        report_summary = root_reproduction_summary(args.root)
+        output = (
+            json.dumps(report_summary, ensure_ascii=False, sort_keys=True) + "\n"
+            if args.format == "json"
+            else compose_root_reproduction_summary(report_summary)
+        )
+        print(output, end="")
+        coverage = report_summary["coverage"]
+        assert isinstance(coverage, Mapping)
+        return 3 if coverage["unavailable"] else 0
+    log = resolve_log(args.path)
+    if not args.summary:
+        print(reproduction_report(log, entry=args.entry), end="")
+    elif args.format == "json":
+        print(json.dumps(reproduction_summary(log), ensure_ascii=False, sort_keys=True))
+    else:
+        print(reproduction_summary_text(log), end="")
+    return 0
+
+
 def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     if arguments and arguments[0] == "report":
-        parser = argparse.ArgumentParser(prog="log reproduce report")
-        parser.add_argument("--path", required=True, type=Path)
-        parser.add_argument("--entry")
-        args = parser.parse_args(arguments[1:])
-        from .reproduction_queries import reproduction_report
-
-        print(reproduction_report(resolve_log(args.path), entry=args.entry), end="")
-        return 0
+        return _dispatch_reproduction_report(arguments[1:])
     if arguments and arguments[0] == "artifacts":
         return _dispatch_reproduction_artifacts(arguments[1:])
     if arguments and arguments[0] == "promote":

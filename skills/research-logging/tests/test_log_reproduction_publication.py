@@ -9,10 +9,14 @@ from log_commands.context import LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_comparison import ArtifactComparison, ExecutionComparison
 from log_commands.reproduction_contract import ReproductionPlan
-from log_commands.reproduction_planner import ReproductionStateProjection
+from log_commands.reproduction_planner import (
+    ReproductionCommandInventory,
+    ReproductionStateProjection,
+)
 from log_commands.reproduction_publication import (
     CompletedPublication,
     _artifact_results,
+    _command_outcomes,
     publish_completed_reproduction,
 )
 from log_commands.reproduction_results import ReproductionResults
@@ -20,7 +24,121 @@ from validation.engine import RULES_VERSION
 from validation.mechanical_results import MechanicalGeneratedRecord
 
 
+def _case(
+    execution_id: str,
+    disposition: str,
+    reason: str | None,
+    *,
+    artifact: str = "data/result.csv",
+) -> dict[str, object]:
+    return {
+        "artifact": artifact,
+        "disposition": disposition,
+        "entry": "e001",
+        "execution_id": execution_id,
+        "reason": reason,
+    }
+
+
 class ReproductionPublicationTests(unittest.TestCase):
+    def test_command_outcomes_are_exhaustive_and_not_artifact_counts(self) -> None:
+        identities = {
+            name: "pyrun-exec/v1:" + digit * 64
+            for name, digit in zip(
+                ("manual", "reused", "success", "failure", "dependency", "blocked"),
+                "123456",
+                strict=True,
+            )
+        }
+        cases = (
+            _case(identities["manual"], "skipped", "non_automatic"),
+            _case(identities["reused"], "current", None),
+            _case(identities["success"], "run", None, artifact="data/one.csv"),
+            _case(identities["success"], "run", None, artifact="data/two.csv"),
+            _case(identities["failure"], "run", None),
+            _case(identities["dependency"], "run", None),
+            _case(identities["blocked"], "failed", "validation_blocked"),
+        )
+        planned = tuple(
+            {
+                "auto_reproduce": True,
+                "entry": "e001",
+                "execution_id": identities[name],
+            }
+            for name in ("success", "failure", "dependency")
+        )
+        plan = ReproductionPlan(
+            "docs/study.md",
+            {"entry": None, "kind": "log"},
+            False,
+            {},
+            {},
+            cases,
+            planned,
+            (),
+            (),
+        )
+        comparisons = (
+            ExecutionComparison(
+                "e001",
+                identities["success"],
+                (
+                    ArtifactComparison(
+                        "data/one.csv", "matched", None, None, None, None
+                    ),
+                    ArtifactComparison(
+                        "data/two.csv", "matched", None, None, None, None
+                    ),
+                ),
+                None,
+                True,
+            ),
+            ExecutionComparison(
+                "e001",
+                identities["failure"],
+                (
+                    ArtifactComparison(
+                        "data/failure.csv",
+                        "failed",
+                        "execution_failed",
+                        None,
+                        None,
+                        None,
+                    ),
+                ),
+                None,
+                False,
+            ),
+        )
+        request = CompletedPublication(
+            plan,
+            comparisons,
+            "reproduce-20300101t000000z-accounting",
+            "2030-01-01T00:00:00Z",
+            "2030-01-01T00:01:00Z",
+            Path("/tmp/reproduction-run"),
+            (
+                {
+                    "depends_on": [f"e001:{identities['failure']}"],
+                    "entry": "e001",
+                    "execution_id": identities["dependency"],
+                    "reason": "dependency_failed",
+                },
+            ),
+        )
+
+        self.assertEqual(
+            _command_outcomes(plan, request, ReproductionCommandInventory(8, 2)),
+            {
+                "blocked": 1,
+                "failed": 1,
+                "not_automatic": 2,
+                "reused": 3,
+                "succeeded": 1,
+                "total": 8,
+            },
+        )
+
     def test_publication_accepts_run_beneath_intentional_tmp_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -84,6 +202,11 @@ class ReproductionPublicationTests(unittest.TestCase):
                         frozenset({("e001", "data/result.csv")}), {}, {}
                     ),
                 ),
+                mock.patch(
+                    "log_commands.reproduction_publication."
+                    "project_reproduction_command_inventory",
+                    return_value=ReproductionCommandInventory(0, 0),
+                ),
             ):
                 published = publish_completed_reproduction(
                     LogContext(summary, log_root),
@@ -144,6 +267,11 @@ class ReproductionPublicationTests(unittest.TestCase):
                         "log_commands.reproduction_publication."
                         "project_reproduction_state",
                         return_value=state,
+                    ),
+                    mock.patch(
+                        "log_commands.reproduction_publication."
+                        "project_reproduction_command_inventory",
+                        return_value=ReproductionCommandInventory(0, 0),
                     ),
                 ):
                     for index, entry in enumerate(order, 1):
@@ -261,6 +389,11 @@ class ReproductionPublicationTests(unittest.TestCase):
                     return_value=ReproductionStateProjection(
                         frozenset({("e001", "data/result.csv")}), {}, {}
                     ),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_publication."
+                    "project_reproduction_command_inventory",
+                    return_value=ReproductionCommandInventory(0, 0),
                 ),
             ):
                 published = publish_completed_reproduction(

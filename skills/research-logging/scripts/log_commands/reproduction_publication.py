@@ -28,6 +28,8 @@ from .reproduction_comparison import (
 from .reproduction_contract import ReproductionPlan
 from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
+    ReproductionCommandInventory,
+    project_reproduction_command_inventory,
     project_reproduction_state,
     verify_reproduction_runtime_snapshot,
 )
@@ -80,12 +82,16 @@ def publish_completed_reproduction(
         artifacts = _artifact_results(request)
     except ReproductionResultError as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
-    run = _run_result(
-        request.plan, artifacts, request, project_root
-    )
     try:
         with operation_lock(log.root, "reproduction-publication.lock"):
             verify_reproduction_runtime_snapshot(log, request.plan)
+            run = _run_result(
+                request.plan,
+                artifacts,
+                request,
+                project_root,
+                project_reproduction_command_inventory(log, request.plan.target),
+            )
             result_path = log.root / "reproduction" / "results.json"
             summary = log.summary.resolve().relative_to(project_root).as_posix()
             current = load_results_or_empty(
@@ -264,6 +270,7 @@ def _run_result(
     artifacts: Sequence[ArtifactResult],
     request: CompletedPublication,
     project_root: Path,
+    inventory: ReproductionCommandInventory,
 ) -> RunResult:
     try:
         folder = project_tmp_relative(request.run_folder, project_root)
@@ -282,7 +289,65 @@ def _run_result(
         {outcome: counts[outcome] for outcome in OUTCOMES},
         RunFolder(folder, "available"),
         _execution_timings(plan, request.run_folder),
+        _command_outcomes(plan, request, inventory),
     )
+
+
+def _command_outcomes(
+    plan: ReproductionPlan,
+    request: CompletedPublication,
+    inventory: ReproductionCommandInventory,
+) -> Mapping[str, int]:
+    """Return one exhaustive command reconciliation for a completed run."""
+
+    planned: dict[tuple[str, str], bool] = {}
+    for item in plan.executions:
+        key = (_required(item, "entry"), _required(item, "execution_id"))
+        automatic = item.get("auto_reproduce")
+        if key in planned or not isinstance(automatic, bool):
+            raise ActionError(
+                "reproduction.publication.invalid",
+                "planned command accounting is invalid",
+            )
+        planned[key] = automatic
+    compared: dict[tuple[str, str], ExecutionComparison] = {}
+    for comparison in request.comparisons:
+        key = (comparison.entry, comparison.execution_id)
+        if key in compared:
+            raise ActionError(
+                "reproduction.publication.invalid",
+                "execution comparison is duplicated",
+            )
+        compared[key] = comparison
+    dependency_skips = _dependency_skip_index(request.dependency_skips)
+    if (
+        set(compared) & dependency_skips
+        or set(compared) | dependency_skips != set(planned)
+    ):
+        raise ActionError(
+            "reproduction.publication.invalid",
+            "terminal command outcomes do not match the accepted plan",
+        )
+
+    selected_not_automatic = sum(not automatic for automatic in planned.values())
+    not_automatic = inventory.not_automatic - selected_not_automatic
+    reused = inventory.total - not_automatic - len(planned)
+    if not_automatic < 0 or reused < 0:
+        raise ActionError(
+            "reproduction.publication.invalid",
+            "command inventory does not reconcile with the accepted plan",
+        )
+    succeeded = sum(comparison.complete for comparison in compared.values())
+    failed = len(compared) - succeeded
+    blocked = len(dependency_skips)
+    return {
+        "not_automatic": not_automatic,
+        "reused": reused,
+        "succeeded": succeeded,
+        "failed": failed,
+        "blocked": blocked,
+        "total": inventory.total,
+    }
 
 
 def _execution_timings(
@@ -345,11 +410,14 @@ def _require_admissible_validation(
         raise ActionError(
             "reproduction.validation.stale", "validation identity is not admissible"
         )
-    if any(
-        check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}
-        for check in record.checks
-        if check.scope in {CheckScope.CONFORMANCE, CheckScope.EVIDENCE}
-    ) or provenance_artifact_counts(record)[CheckStatus.FAIL.value]:
+    if (
+        any(
+            check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}
+            for check in record.checks
+            if check.scope in {CheckScope.CONFORMANCE, CheckScope.EVIDENCE}
+        )
+        or provenance_artifact_counts(record)[CheckStatus.FAIL.value]
+    ):
         raise ActionError(
             "reproduction.validation.blocked", "validation contains blocking findings"
         )

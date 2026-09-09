@@ -71,6 +71,14 @@ RECHECK_SELECTION: SelectionPolicy = "recheck"
 
 
 @dataclass(frozen=True)
+class ReproductionCommandInventory:
+    """All command execution units and policy exclusions in one target."""
+
+    total: int
+    not_automatic: int
+
+
+@dataclass(frozen=True)
 class _EntryState:
     context: EntryContext
     data: DataFile | None
@@ -370,6 +378,52 @@ def project_reproduction_state(log: LogContext) -> ReproductionStateProjection:
                 resolved = resolve_input_token(source.source, entry.data)
                 projector.resource(resolved.resource, entry)
     return projector.result()
+
+
+def project_reproduction_command_inventory(
+    log: LogContext, target: Mapping[str, object]
+) -> ReproductionCommandInventory:
+    """Count every command in a log or entry target without selecting evidence."""
+
+    project_root = resolve_project_root(log.root)
+    contexts = _entry_contexts(log)
+    kind = target.get("kind")
+    entry = target.get("entry")
+    if kind == "entry" and isinstance(entry, str):
+        contexts = tuple(context for context in contexts if context.id == entry)
+        if not contexts:
+            raise ActionError(
+                "reproduction.entry.unknown", f"unknown reproduction entry: {entry}"
+            )
+    elif target != {"entry": None, "kind": "log"}:
+        raise ActionError(
+            "reproduction.target.invalid", "reproduction target is invalid"
+        )
+
+    total = 0
+    not_automatic = 0
+    for context in contexts:
+        path = context.root / "pyrun.json"
+        try:
+            state = (
+                load_pyrun_state(
+                    path,
+                    entry_root=context.root,
+                    project_root=project_root,
+                )
+                if path.is_file() or path.is_symlink()
+                else empty_pyrun_state(context.root)
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            raise ActionError(
+                str(getattr(error, "code", "reproduction.metadata.invalid")),
+                str(error),
+            ) from error
+        total += len(state.executions)
+        not_automatic += sum(
+            not execution.auto_reproduce for execution in state.executions.values()
+        )
+    return ReproductionCommandInventory(total, not_automatic)
 
 
 def _load_entries(

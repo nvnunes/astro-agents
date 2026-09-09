@@ -22,9 +22,20 @@ Reproduce may create or update only these generated paths:
   existing-operation-lock mutex that serializes coordinator updates.
 
 `reproduction/results.json` is the cumulative machine authority for published
-artifact outcomes and run history. `reproduction.md` is its human-only
-projection. Agents do not parse either file during ordinary work; use `log
-reproduce report` and the bounded artifact `list` and `show` routes.
+artifact outcomes, per-run command accounting, and run history.
+`reproduction.md` is its human-only projection. Agents do not parse either file
+during ordinary work; use `log reproduce report --path <log> --summary` for the
+compact per-log view, `log reproduce report --root <project> --summary` for the
+cross-log view, and the complete report or bounded artifact `list` and `show`
+routes for detail.
+
+The current result schema is `research-log-reproduction-result/3`. Every newly
+published run counts every command in its log or entry target exactly once as
+not automatic, reused from saved state, succeeded, failed, or blocked by a
+selected command failure. Those command counts are separate from
+artifact counts because one command may produce several artifacts. The reader
+accepts canonical v2 results only so the next successful publication can write
+v3; it does not reconstruct historical command counts.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;

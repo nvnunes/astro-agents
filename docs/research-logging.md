@@ -1017,13 +1017,20 @@ Confirmations remain valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.
 
-On completion, the generated `<log>/reproduction.md` lists every current
-evidence artifact by entry and status. Retrieve the same centralized human
-projection with `log reproduce report --path <log> [--entry <entry-id>]`.
-Changed, failed, comparison-failed, skipped, and stale artifacts remain
-visible. Bounded `log reproduce artifacts list` and `show` commands provide
-exact machine details for diagnosis without requiring an agent to parse the
-generated files.
+On completion, retrieve the compact centralized projection with
+`log reproduce report --path <log> --summary`. It keeps commands from the
+latest completed run separate from current artifact state and explains why
+their totals need not match. Its two trees show command selection and execution
+as one hierarchy, then artifact comparison and non-comparison reasons as a
+second hierarchy. Use `log reproduce report --root <project> --summary` for a
+compact two-table comparison across every discovered log.
+
+The generated `<log>/reproduction.md` and the complete
+`log reproduce report --path <log> [--entry <entry-id>]` projection list every
+current evidence artifact by entry and status. Changed, failed,
+comparison-failed, skipped, and stale artifacts remain visible. Bounded
+`log reproduce artifacts list` and `show` commands provide exact machine
+details for diagnosis without requiring an agent to parse the generated files.
 
 After reproduction publication completes, the CLI runs ordinary validation for
 the affected log as a separate operation. Validation findings or an operational

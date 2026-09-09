@@ -16,6 +16,7 @@ from log_commands.reproduction_results import (
     RunFolder,
     RunResult,
     compose_reproduction_report,
+    compose_reproduction_summary,
     merge_reproduction_results,
     project_current_results,
     query_artifacts,
@@ -30,6 +31,19 @@ from validation.human_projection import (
 
 
 class ReproductionResultContractTests(unittest.TestCase):
+    def test_v2_result_is_readable_and_upgrades_without_inventing_counts(self) -> None:
+        value = _complete_results().as_dict()
+        value["schema"] = "research-log-reproduction-result/2"
+        for run in value["runs"]:
+            del run["command_outcomes"]
+
+        decoded = ReproductionResults.from_json(_canonical(value))
+
+        self.assertIsNone(decoded.runs[0].command_outcomes)
+        self.assertIn(
+            '"schema": "research-log-reproduction-result/3"', decoded.serialized()
+        )
+
     def test_evidence_comparison_details_round_trip_durably(self) -> None:
         comparison = ComparisonRecord(
             "evidence",
@@ -42,9 +56,7 @@ class ReproductionResultContractTests(unittest.TestCase):
                     "expected": [{"value": {"type": "integer", "value": "1"}}],
                     "id": "score",
                     "matched": True,
-                    "regenerated": [
-                        {"value": {"type": "integer", "value": "1"}}
-                    ],
+                    "regenerated": [{"value": {"type": "integer", "value": "1"}}],
                     "tolerance": None,
                 },
             ),
@@ -266,6 +278,40 @@ class ReproductionResultContractTests(unittest.TestCase):
 
 
 class ReproductionReportTests(unittest.TestCase):
+    def test_compact_summary_reconciles_commands_separately_from_artifacts(
+        self,
+    ) -> None:
+        result = _complete_results()
+        summary = compose_reproduction_summary(
+            result,
+            currentness={
+                ("e003", "data/matched.csv"): ArtifactCurrentness(
+                    False, "execution_reran"
+                )
+            },
+        )
+
+        self.assertIn(
+            "12 total\n"
+            "├─ 2 skipped by policy (not automatic)\n"
+            "├─ 3 reused from saved state\n"
+            "└─ 7 selected for execution\n"
+            "   ├─ 4 succeeded\n"
+            "   ├─ 1 failed\n"
+            "   └─ 2 blocked by another command failure",
+            summary,
+        )
+        self.assertIn(
+            "5 total\n"
+            "├─ 0 matched\n"
+            "├─ 1 not matched\n"
+            "└─ 4 not compared",
+            summary,
+        )
+        self.assertIn("1 because comparison failed", summary)
+        self.assertIn("1 because their prior result is stale", summary)
+        self.assertIn("totals are not expected to match", summary)
+
     def test_split_documents_project_as_one_stable_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "docs/study"
@@ -437,6 +483,15 @@ def _complete_results() -> ReproductionResults:
             "reproduce-research-reproduce-20300101t000000z-fixture",
             "available",
         ),
+        (),
+        {
+            "blocked": 2,
+            "failed": 1,
+            "not_automatic": 2,
+            "reused": 3,
+            "succeeded": 4,
+            "total": 12,
+        },
     )
     return ReproductionResults("docs/research.md", recorded_at, artifacts, (run,))
 

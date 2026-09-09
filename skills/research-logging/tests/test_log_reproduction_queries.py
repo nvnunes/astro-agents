@@ -9,11 +9,15 @@ from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.dispatcher import main
+from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_queries import (
+    compose_root_reproduction_summary,
     list_reproduction_artifacts,
     reproduction_report,
+    reproduction_summary,
+    root_reproduction_summary,
     show_reproduction_artifact,
 )
 from log_commands.reproduction_results import (
@@ -134,6 +138,7 @@ class ReproductionQueryTests(unittest.TestCase):
                     log, entry="e003", artifact="data/changed.bin"
                 )
                 report = reproduction_report(log, entry="e003")
+                summary_result = reproduction_summary(log)
 
             self.assertEqual(
                 (listing["matched"], listing["returned"], listing["omitted"]),
@@ -141,6 +146,101 @@ class ReproductionQueryTests(unittest.TestCase):
             )
             self.assertEqual(shown["artifact"]["outcome"], "changed")
             self.assertIn("| `data/changed.bin` | **changed** |", report)
+            self.assertEqual(
+                summary_result["commands"],
+                {
+                    "reused": 0,
+                    "selected": {
+                        "blocked": 0,
+                        "failed": 0,
+                        "succeeded": 1,
+                        "total": 1,
+                    },
+                    "skipped_by_policy": 0,
+                    "total": 1,
+                },
+            )
+            self.assertEqual(
+                summary_result["artifacts"],
+                {
+                    "matched": 0,
+                    "not_matched": 1,
+                    "not_compared": {
+                        "command_failed": 0,
+                        "command_skipped_or_blocked": 0,
+                        "comparison_failed": 0,
+                        "stale": 0,
+                        "total": 0,
+                    },
+                    "total": 1,
+                },
+            )
+
+    def test_root_summary_preserves_log_coverage_and_separate_totals(self) -> None:
+        complete = {
+            "artifacts": {
+                "matched": 2,
+                "not_matched": 1,
+                "not_compared": {
+                    "command_failed": 2,
+                    "command_skipped_or_blocked": 1,
+                    "comparison_failed": 0,
+                    "stale": 0,
+                    "total": 3,
+                },
+                "total": 6,
+            },
+            "commands": {
+                "reused": 2,
+                "selected": {
+                    "blocked": 1,
+                    "failed": 1,
+                    "succeeded": 2,
+                    "total": 4,
+                },
+                "skipped_by_policy": 1,
+                "total": 7,
+            },
+            "generated_at": "2030-01-01T00:00:00Z",
+            "run_id": "reproduce-20300101t000000z-fixture",
+            "schema": "research-log-reproduction-summary/1",
+            "status": "complete",
+            "summary": "docs/one.md",
+        }
+        missing = ActionError("reproduction.results.missing", "not published")
+        with (
+            mock.patch(
+                "log_commands.reproduction_queries.discover_summaries",
+                return_value={
+                    "root": "/project",
+                    "schema": "research-log-discovery-result/1",
+                    "summaries": ["/project/docs/one.md", "/project/docs/two.md"],
+                },
+            ),
+            mock.patch(
+                "log_commands.reproduction_queries.resolve_log",
+                side_effect=(mock.sentinel.one, mock.sentinel.two),
+            ),
+            mock.patch(
+                "log_commands.reproduction_queries.reproduction_summary",
+                side_effect=(complete, missing),
+            ),
+        ):
+            result = root_reproduction_summary(Path("/project"))
+
+        self.assertEqual(
+            result["coverage"],
+            {"complete": 1, "not_run": 1, "total": 2, "unavailable": 0},
+        )
+        self.assertEqual(result["totals"]["commands"]["total"], 7)
+        self.assertEqual(result["totals"]["artifacts"]["total"], 6)
+        report = compose_root_reproduction_summary(result)
+        self.assertIn("| `docs/one` | 1 | 2 | 2 | 1 | 1 | 7 |", report)
+        self.assertIn(
+            "| `docs/two` — not yet reproduced | — | — | — | — | — | — |",
+            report,
+        )
+        self.assertIn("| `docs/one` | 2 | 1 | 3 | 6 |", report)
 
     def test_dispatcher_exposes_report_and_artifact_routes(self) -> None:
         log = mock.sentinel.log
@@ -162,14 +262,39 @@ class ReproductionQueryTests(unittest.TestCase):
         with (
             mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
             mock.patch(
+                "log_commands.reproduction_queries.reproduction_summary",
+                return_value={"schema": "research-log-reproduction-summary/1"},
+            ),
+            redirect_stdout(output),
+        ):
+            status = main(
+                [
+                    "reproduce",
+                    "report",
+                    "--path",
+                    "/project/log",
+                    "--summary",
+                    "--format",
+                    "json",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            output.getvalue(),
+            '{"schema": "research-log-reproduction-summary/1"}\n',
+        )
+
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
                 "log_commands.reproduction_queries.list_reproduction_artifacts",
                 return_value={"matched": 0, "returned": 0, "omitted": 0},
             ),
             redirect_stdout(output),
         ):
-            status = main(
-                ["reproduce", "artifacts", "list", "--path", "/project/log"]
-            )
+            status = main(["reproduce", "artifacts", "list", "--path", "/project/log"])
 
         self.assertEqual(status, 0)
         self.assertIn('"matched": 0', output.getvalue())
@@ -214,9 +339,7 @@ class ReproductionQueryTests(unittest.TestCase):
             ) as launch,
             redirect_stdout(output),
         ):
-            status = main(
-                ["reproduce", "--path", "/project/log", "--recheck"]
-            )
+            status = main(["reproduce", "--path", "/project/log", "--recheck"])
 
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), "reproduce-fixture\n")
@@ -288,6 +411,15 @@ def _results() -> ReproductionResults:
             "skipped": 0,
         },
         RunFolder("tmp/reproduction/2030-01-01/reproduce-query", "available"),
+        (),
+        {
+            "blocked": 0,
+            "failed": 0,
+            "not_automatic": 0,
+            "reused": 0,
+            "succeeded": 1,
+            "total": 1,
+        },
     )
     return ReproductionResults("docs/research.md", recorded_at, (changed,), (run,))
 

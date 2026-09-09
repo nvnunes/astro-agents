@@ -69,7 +69,9 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/2` |
+| Reproduction result | `research-log-reproduction-result/3` |
+| Per-log summary | `research-log-reproduction-summary/1` |
+| Cross-log summary | `research-log-reproduction-root-summary/1` |
 | Durable run state | `research-log-reproduction-run/3` |
 | Run status projection | `research-log-reproduction-status/3` |
 | Dry-run plan | `research-log-reproduction-plan/3` |
@@ -1513,11 +1515,11 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 ### Authoritative Result
 
 `<log>/reproduction/results.json` is strict canonical UTF-8 JSON using
-`research-log-reproduction-result/2`. It has exactly this shape:
+`research-log-reproduction-result/3`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/2",
+  "schema": "research-log-reproduction-result/3",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1545,6 +1547,14 @@ set. It is `baseline_changed`, `baseline_unavailable`,
       "status": "complete",
       "accepted_at": "2030-01-01T00:00:00Z",
       "finished_at": "2030-01-01T00:05:00Z",
+      "command_outcomes": {
+        "not_automatic": 0,
+        "reused": 2,
+        "succeeded": 1,
+        "failed": 0,
+        "blocked": 0,
+        "total": 3
+      },
       "artifact_outcomes": {
         "matched": 1,
         "changed": 0,
@@ -1598,16 +1608,36 @@ resource outside the project retains its canonical absolute POSIX identity so
 the result identifies the same resource as `data.json`; noncanonical absolute
 forms remain invalid.
 
-Every run item has exactly the fields shown. Its `executions` array records one
-explicit timing projection for each launched attempt in accepted execution
-order. Planned work that never launched has no timing item. Timing is
+Every run item has exactly the fields shown. `command_outcomes` reconciles
+every command execution unit in the selected log or entry target into five
+mutually exclusive categories:
+
+- `not_automatic` is a command omitted by the default automatic
+  policy;
+- `reused` is an otherwise eligible command not selected because its saved state
+  satisfied the incremental run;
+- `succeeded` is an attempted command that reached its complete mechanical
+  endpoint, regardless of whether its artifacts matched;
+- `failed` is an attempted command that did not reach that endpoint; and
+- `blocked` is a selected command that was not attempted because another
+  selected command failed.
+
+`total` is exactly the sum of those five values. Each target command is
+counted once even when it produces several artifacts. New publications always
+record the complete mapping. A row decoded from the read-only v2 result format
+uses null; rerunning reproduction publishes current command accounting in v3.
+
+The `executions` array records one explicit timing projection for each launched
+attempt in accepted execution order. Planned work that never launched has no
+timing item. Timing is
 diagnostic only: it does not affect identity, currentness, selection,
 comparison, or confirmation. Its target follows the run-state
 target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is
 read through status and is added to the published index only when a lifecycle
 event safely publishes it. `finished_at` is null for a resumable stopped run.
-Outcome counts use all five required keys. `folder.path` is the normalized
-project-relative run directory; `availability` is `available` or `unknown`.
+Artifact outcome counts use all five required keys. `folder.path` is the
+normalized project-relative run directory; `availability` is `available` or
+`unknown`.
 A conclusively absent directory causes the whole run item to be removed rather
 than persisting an `absent` value. Current artifact records retain their run ID
 after that historical run item is removed; run-directory retention is not a
@@ -1938,18 +1968,50 @@ result.
 
 `reproduction.md` is deterministic, generated, nonauthoritative human output.
 No researcher or agent edits it. One centralized compositor produces both the
-file and the ready-to-present output of:
+file and the complete ready-to-present output of:
 
 ```text
 log reproduce report --path LOG [--entry ENTRY]
 ```
 
-The applicable CLI report must use the same counts, vocabulary, ordering, and
-wording as the file projection. A reproduction agent presents it unchanged and
-does not parse generated files or reconstruct a summary.
+The same CLI owns compact per-log and cross-log projections:
 
-The report header contains only generation time, latest completed run, and
-current artifact coverage counts. It has no aggregate pass/fail headline.
+```text
+log reproduce report --path LOG --summary [--format json]
+log reproduce report --root PROJECT --summary [--format json]
+```
+
+The applicable CLI projection must use the same counts, vocabulary, ordering,
+and wording as the file projection. A reproduction agent presents compact
+output unchanged by default and does not parse generated files or reconstruct
+a summary. It requests the complete per-log report only when the researcher
+asks for artifact or run detail.
+
+The compact per-log projection has two visibly separate trees. The command tree
+starts with every command in the target, separates commands skipped by policy,
+commands reused from saved state, and commands selected for execution, then
+nests `Succeeded`, `Failed`, and `Blocked` below the selected count. The artifact
+tree starts with every current reachable artifact, separates `Matched`, `Not
+matched`, and `Not compared`, then nests the reasons for non-comparison. A current
+`matched` result contributes to `Matched`, a current `changed` result contributes
+to `Not matched`, and failed, comparison-failed, skipped, or stale results
+contribute to `Not compared`. These three artifact categories are mutually
+exclusive and sum exactly to artifact `Total`.
+
+The projection explicitly states that command and artifact totals are different
+units and need not match because one command may produce several artifacts.
+It also states that a succeeded command ran to completion and that matching is
+reported separately at the artifact level.
+An older result without command accounting explicitly asks for a new
+reproduction run; the report does not reconstruct historical counts. The
+cross-log projection has one row per canonically discovered maintained summary,
+two compact tables, separate
+accounted totals, and explicit counts of complete, not-yet-reproduced, and
+unavailable logs. Its JSON form uses the schemas listed in
+[Versioned Surfaces](#versioned-surfaces).
+
+The complete report header contains generation time, latest completed run, and
+the same two summary trees. It has no aggregate pass/fail headline.
 
 The current-state body has one section per entry in canonical log order. Each
 heading contains the stable entry ID and human title and links to the exact
@@ -2028,6 +2090,12 @@ accepted reproduction runs use only the bounded historical compatibility paths
 defined above. No accepted run is upgraded in place, and no consumer may decode
 a v2 object with v3 defaults. The maintained-corpus execution-state cutover is
 complete.
+
+The result reader accepts canonical `research-log-reproduction-result/2` only
+as a read-only migration input. It does not invent command counts for those run
+rows. The next successful reproduction publication writes the complete result
+as `research-log-reproduction-result/3`; all newly published run rows contain
+command accounting.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded

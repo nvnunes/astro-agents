@@ -232,9 +232,9 @@ class RecordSurfaceTests(unittest.TestCase):
         repair = reference("operation-repair.md")
         self.assertIn("references/provenance-patterns.md", record)
         self.assertIn("references/provenance-patterns.md", data)
-        self.assertIn("If choosing a provenance shape", repair)
+        self.assertIn("Provenance shape", repair)
         self.assertIn("references/provenance-patterns.md", repair)
-        self.assertIn("Otherwise, skip the catalog", repair)
+        self.assertIn("Matching card", repair)
 
     def test_log_local_code_guidance_stays_in_script_reference(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -346,10 +346,10 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertIn(phrase, normalized)
 
         self.assertIn("repair, fix, resolve, correct, clean up, or remove", skill)
-        self.assertIn("narrowest authorized finding, causal", repair)
+        self.assertIn("Work on a bounded correction in the requested log", repair)
         self.assertIn(
-            "End repair for no matching findings only when a completed evaluation "
-            "covers the target and remains applicable to its current state.",
+            "Claim clearance only when completed evaluation covers the corrected "
+            "state.",
             " ".join(repair.split()),
         )
 
@@ -358,16 +358,16 @@ class RecordSurfaceTests(unittest.TestCase):
         repair = reference("operation-repair.md")
         for phrase in (
             "lists the class once",
-            "does not run full validation during the campaign",
+            "runs full validation once at that checkpoint",
             "skips the evidence-changing chain for researcher direction",
             "continues with the independent chain",
             "without polling or broadening scope",
         ):
             self.assertIn(phrase, cases)
-        self.assertIn("authorized batch's affected records", " ".join(repair.split()))
-        self.assertIn("including multiple entries when required", repair)
-        self.assertIn("Leave uninspected members", repair)
-        self.assertIn("Skip any case whose correction would require", repair)
+        normalized = " ".join(repair.split())
+        self.assertIn("It may span several batches", normalized)
+        self.assertIn("Do not inventory the whole project", normalized)
+        self.assertIn("Stop investigating once", repair)
 
     def test_record_sequences_separately_requested_validation(self) -> None:
         content = reference("operation-record-content.md")

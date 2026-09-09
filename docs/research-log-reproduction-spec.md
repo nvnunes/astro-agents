@@ -808,6 +808,15 @@ does not create an additional admission blocker. A summary-target
 failure with any other cause remains subject to the normal Structure,
 Evidence, or failed-Provenance-artifact gate.
 
+Projected chain and entry-scoped unresolved-group `entry` values are exact
+entry-document IDs. Reproduction resolves each through the canonical entry
+document grammar to its owning physical stable entry before matching selected
+executions or recording batch admission. Split documents such as `e001a` and
+`e001b` therefore share the `e001` execution owner without changing their
+published chain identities. Missing, invalid, absent, or multiply matching
+scopes still fail closed, and batch admission records the physical stable entry
+ID. Existing same-ID documents retain the identical mapping.
+
 ### Graph Construction
 
 Reproduction constructs a bounded graph only from current `evidence.json`,

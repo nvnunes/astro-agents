@@ -358,7 +358,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "unresolved": [
                     {
                         "chain_id": "unresolved-entry",
-                        "entry": "e001",
+                        "entry": "e001b",
                         "findings": [
                             {
                                 "code": "lineage.missing",
@@ -381,6 +381,136 @@ class ReproductionPlanningTests(unittest.TestCase):
                 state.excluded_batches,
                 {("e001", "unresolved-entry"): ("provenance:e001:blocked",)},
             )
+
+    def test_subdocument_chains_admit_and_block_their_physical_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+
+            def owner(identity: str, output: str):
+                value = mock.Mock()
+                value.entry.context = entry
+                value.execution_id = identity
+                value.execution.recipe.outputs = ((output, "file"),)
+                return value
+
+            admitted = owner("admitted", "data/admitted.csv")
+            blocked = owner("blocked", "data/blocked.csv")
+            state = mock.Mock()
+            state.project_root = fixture.root
+            state.selected = {
+                ("e001", "admitted"): admitted,
+                ("e001", "blocked"): blocked,
+            }
+            state.blocked = set()
+            state.admitted_batches = set()
+            state.excluded_batches = {}
+            state.failures = {}
+            state.cases = {}
+            projection = {
+                "chains": [
+                    {
+                        "artifacts": [
+                            (entry.root / "data" / "admitted.csv").as_posix()
+                        ],
+                        "chain_id": "admitted-chain",
+                        "entry": "e001a",
+                        "findings": [],
+                    },
+                    {
+                        "artifacts": [
+                            (entry.root / "data" / "blocked.csv").as_posix()
+                        ],
+                        "chain_id": "blocked-chain",
+                        "entry": "e001b",
+                        "findings": [
+                            {
+                                "code": "lineage.missing",
+                                "identity": "provenance:e001b:blocked",
+                                "scope": "provenance",
+                                "status": "fail",
+                            }
+                        ],
+                    },
+                ],
+                "unresolved": [],
+            }
+
+            from log_commands.reproduction_planner import _apply_validation_admission
+
+            _apply_validation_admission(state, projection)
+
+            self.assertEqual(state.blocked, {("e001", "blocked")})
+            self.assertEqual(
+                state.admitted_batches, {("e001", "admitted-chain")}
+            )
+            self.assertEqual(
+                state.excluded_batches,
+                {("e001", "blocked-chain"): ("provenance:e001b:blocked",)},
+            )
+
+    def test_subdocument_chain_matching_remains_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            owner = mock.Mock()
+            owner.entry.context = entry
+            owner.execution_id = "selected"
+            owner.execution.recipe.outputs = (("data/result.csv", "file"),)
+            target = (entry.root / "data" / "result.csv").as_posix()
+
+            for label, chains, expected in (
+                (
+                    "absent",
+                    [
+                        {
+                            "artifacts": [
+                                (entry.root / "data" / "other.csv").as_posix()
+                            ],
+                            "chain_id": "other-chain",
+                            "entry": "e001a",
+                            "findings": [],
+                        }
+                    ],
+                    "0 projected batch matches",
+                ),
+                (
+                    "ambiguous",
+                    [
+                        {
+                            "artifacts": [target],
+                            "chain_id": "first-chain",
+                            "entry": "e001a",
+                            "findings": [],
+                        },
+                        {
+                            "artifacts": [target],
+                            "chain_id": "second-chain",
+                            "entry": "e001b",
+                            "findings": [],
+                        },
+                    ],
+                    "2 projected batch matches",
+                ),
+            ):
+                with self.subTest(label=label):
+                    state = mock.Mock()
+                    state.project_root = fixture.root
+                    state.selected = {("e001", "selected"): owner}
+                    state.blocked = set()
+                    state.admitted_batches = set()
+                    state.excluded_batches = {}
+                    state.failures = {}
+                    state.cases = {}
+
+                    from log_commands.reproduction_planner import (
+                        _apply_validation_admission,
+                    )
+
+                    with self.assertRaisesRegex(ActionError, expected):
+                        _apply_validation_admission(
+                            state, {"chains": chains, "unresolved": []}
+                        )
 
     def test_unknown_selection_policy_is_rejected_before_planning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

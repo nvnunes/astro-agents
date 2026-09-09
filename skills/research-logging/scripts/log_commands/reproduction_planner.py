@@ -47,6 +47,7 @@ from .context import (
     EntryContext,
     LogContext,
     parse_entry_directory_name,
+    parse_entry_document_name,
     resolve_entry,
     resolve_project_root,
 )
@@ -794,6 +795,7 @@ def _blocked_validation_batches(
 ) -> dict[tuple[str, str], tuple[str, ...]]:
     blocked: dict[tuple[str, str], tuple[str, ...]] = {}
     for group in _mapping_items(projection.get("chains")):
+        entry = _projected_physical_entry(group.get("entry"))
         finding_ids = tuple(
             sorted(
                 str(finding["identity"])
@@ -802,7 +804,7 @@ def _blocked_validation_batches(
             )
         )
         if finding_ids:
-            blocked[(str(group["entry"]), str(group["chain_id"]))] = finding_ids
+            blocked[(entry, str(group["chain_id"]))] = finding_ids
     return blocked
 
 
@@ -826,8 +828,9 @@ def _entry_validation_blockers(
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     for group in _mapping_items(projection.get("unresolved")):
         entry = group.get("entry")
-        if not isinstance(entry, str) or entry == "log":
+        if entry == "log":
             continue
+        entry = _projected_physical_entry(entry)
         finding_ids = tuple(
             sorted(
                 str(finding["identity"])
@@ -885,7 +888,7 @@ def _apply_execution_admission(
     matches = [
         group
         for group in chains
-        if group.get("entry") == owner.entry.context.id
+        if _projected_physical_entry(group.get("entry")) == owner.entry.context.id
         and targets & {str(value) for value in _sequence_items(group.get("artifacts"))}
     ]
     if len(matches) != 1:
@@ -912,6 +915,23 @@ def _apply_execution_admission(
                 blockers,
             ),
         )
+
+
+def _projected_physical_entry(value: object) -> str:
+    """Resolve one projected entry-document ID to its physical entry owner."""
+
+    if not isinstance(value, str):
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            "projected batch has no valid entry scope",
+        )
+    identity = parse_entry_document_name(f"{value}.md")
+    if identity is None:
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            f"projected batch has invalid entry scope: {value}",
+        )
+    return identity.id
 
 
 def _sequence_items(value: object) -> Sequence[object]:

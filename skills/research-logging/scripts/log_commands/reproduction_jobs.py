@@ -50,6 +50,7 @@ from .reproduction_execution import (
 )
 from .reproduction_paths import (
     canonical_run_path,
+    is_checkpoint_temporary_name,
     iter_canonical_run_roots,
     run_leaf,
 )
@@ -88,6 +89,7 @@ MAX_RUN_RECORD_BYTES = 256 * 1024 * 1024
 MAX_STATUS_BYTES = 64 * 1024 * 1024
 MAX_RUN_DIRECTORIES = 100_000
 MAX_CHECKPOINTS = 2_048
+MAX_CHECKPOINT_DIRECTORY_ENTRIES = 2 * MAX_CHECKPOINTS
 STOP_WAIT_SECONDS = 45.0
 STATUS_POLL_SECONDS = 0.1
 FRESH_RUN = "fresh"
@@ -2223,12 +2225,19 @@ def _checkpoint_paths(root: Path) -> list[Path]:
     paths: list[Path] = []
     with os.scandir(root) as entries:
         for index, entry in enumerate(entries):
-            if index >= MAX_CHECKPOINTS:
+            if index >= MAX_CHECKPOINT_DIRECTORY_ENTRIES:
                 raise ActionError(
                     "reproduction.checkpoint.resource_limit",
                     "checkpoint directory crossed its entry bound",
                 )
+            if is_checkpoint_temporary_name(entry.name):
+                continue
             paths.append(Path(entry.path))
+            if len(paths) > MAX_CHECKPOINTS:
+                raise ActionError(
+                    "reproduction.checkpoint.resource_limit",
+                    "checkpoint directory crossed its checkpoint bound",
+                )
     return sorted(paths)
 
 

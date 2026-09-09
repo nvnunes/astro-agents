@@ -29,6 +29,7 @@ from log_commands.reproduction_jobs import (
     _accepted_record,
     _acquire_scope_locks,
     _checkpoint_dicts,
+    _checkpoint_paths,
     _close_fds,
     _combined_attempt_workers,
     _continue_failed_cleanup,
@@ -315,7 +316,7 @@ class ReproductionJobTests(unittest.TestCase):
             checkpoints.mkdir()
             for index in range(2_049):
                 (checkpoints / f"{index:04d}.json").touch()
-            with self.assertRaisesRegex(ActionError, "entry bound"):
+            with self.assertRaisesRegex(ActionError, "checkpoint bound"):
                 _checkpoint_dicts(run_root, legacy=False)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -364,6 +365,37 @@ class ReproductionJobTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ActionError, "inventory changed"):
                 _verify_checkpoint_inventory(run_root, record)
+
+    def test_checkpoint_inventory_ignores_only_reserved_atomic_temporaries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_active_run(Path(directory))
+            checkpoint = next((run_root / "checkpoints").glob("*.json"))
+            temporary = checkpoint.with_name(f".{checkpoint.name}.12345.tmp")
+            temporary.write_text("{\n", encoding="utf-8")
+
+            observed = _checkpoint_dicts(run_root, legacy=False)
+
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0]["path"], f"checkpoints/{checkpoint.name}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoints = Path(directory)
+            for index in range(2_048):
+                (checkpoints / f"e001-{index:064x}.json").touch()
+            temporary = checkpoints / (".e001-" + "0" * 64 + ".json.12345.tmp")
+            temporary.touch()
+
+            self.assertEqual(len(_checkpoint_paths(checkpoints)), 2_048)
+
+        with tempfile.TemporaryDirectory() as directory:
+            _log, run_root, _run_id = _write_active_run(Path(directory))
+            foreign = run_root / "checkpoints" / ".foreign.json.12345.tmp"
+            foreign.write_text("{\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ActionError, "invalid checkpoint path"):
+                _checkpoint_dicts(run_root, legacy=False)
 
     def test_parallel_stop_retains_workers_from_every_attempt(self) -> None:
         identity_a = "pyrun-exec/v1:" + "1" * 64

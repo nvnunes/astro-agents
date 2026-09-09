@@ -140,6 +140,7 @@ the selected entry. Graph limits do not authorize broader scope.
 | Active project scheduling permits | 4,096 |
 | Waiting project exclusive tickets | 10,000 |
 | Checkpoints per run | 2,048 |
+| Checkpoint-directory entries per run | 4,096 |
 | Outputs per checkpoint | 256 |
 | Structured diagnostic events per run | 1,000,000 |
 | Structured diagnostic bytes per run | 1 GiB |
@@ -1136,7 +1137,10 @@ Unknown fields fail. Checkpoint writes must be atomic and sufficient to
 distinguish `succeeded`, `failed`, or `stopped` work from an `active` execution
 after process or host failure. Cardinality and byte limits are defined in
 [Fixed Resource Bounds](#fixed-resource-bounds) and do not weaken this state
-contract.
+contract. A checkpoint-directory scan ignores only the writer-reserved atomic
+temporary form `.eNNN-<execution-digest>.json.<pid>.tmp`; every completed
+checkpoint and every other directory entry retains strict path, schema,
+membership, size, and canonical-serialization validation.
 
 Every `run.json` load validates one bounded immutable byte snapshot. File-type,
 size, decoding, member validation, and canonical serialization checks apply to

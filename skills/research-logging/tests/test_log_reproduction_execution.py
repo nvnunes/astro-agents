@@ -28,6 +28,7 @@ from log_commands.reproduction_execution import (
     _load_checkpoint,
     _output_already_materialized,
     _seatbelt_profile,
+    _write_checkpoint,
     completed_execution_attempts,
     execute_planned_recipe,
     execute_reproduction_plan,
@@ -173,6 +174,28 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_checkpoint_writer_uses_reserved_atomic_temporary_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoints = root / "checkpoints"
+            checkpoints.mkdir()
+            identity = "pyrun-exec/v1:" + "1" * 64
+            name = "e001-" + "1" * 64 + ".json"
+            path = checkpoints / name
+            checkpoint = ExecutionCheckpoint(
+                "e001",
+                identity,
+                "active",
+                f"checkpoints/{name}",
+                None,
+                (),
+            )
+
+            _write_checkpoint(path, checkpoint)
+
+            self.assertTrue(path.is_file())
+            self.assertEqual(list(checkpoints.glob(".*.tmp")), [])
+
     def test_plan_jobs_caps_parallel_ready_executions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")

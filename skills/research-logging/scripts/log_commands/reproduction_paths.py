@@ -9,6 +9,24 @@ from pathlib import Path, PurePosixPath
 REPRODUCTION_ROOT_NAME = "reproduction"
 RUN_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 RUN_LEAF_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,319}\Z")
+CHECKPOINT_NAME_RE = re.compile(r"e[0-9]{3}-[0-9a-f]{64}\.json\Z")
+CHECKPOINT_TEMP_NAME_RE = re.compile(
+    r"\.e[0-9]{3}-[0-9a-f]{64}\.json\.[1-9][0-9]*\.tmp\Z"
+)
+
+
+def checkpoint_temporary_path(path: Path, pid: int) -> Path:
+    """Return the reserved atomic-write path for one checkpoint generation."""
+
+    if CHECKPOINT_NAME_RE.fullmatch(path.name) is None or pid <= 0:
+        raise ValueError("invalid checkpoint temporary path input")
+    return path.with_name(f".{path.name}.{pid}.tmp")
+
+
+def is_checkpoint_temporary_name(name: str) -> bool:
+    """Return whether a directory entry has the reserved writer-temporary name."""
+
+    return CHECKPOINT_TEMP_NAME_RE.fullmatch(name) is not None
 
 
 def resolve_project_tmp(project_root: Path) -> Path:

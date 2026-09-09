@@ -53,7 +53,7 @@ from validation.pyrun_state import (
 from .context import EntryContext, LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import ReproductionPlan, successful_checkpoint_state
-from .reproduction_paths import canonical_run_root
+from .reproduction_paths import canonical_run_root, checkpoint_temporary_path
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -2316,7 +2316,7 @@ def _write_checkpoint(
         if legacy:
             value.pop("failure")
         payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary = checkpoint_temporary_path(path, os.getpid())
         try:
             with temporary.open("x", encoding="utf-8") as handle:
                 handle.write(payload)

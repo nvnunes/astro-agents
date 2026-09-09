@@ -247,11 +247,9 @@ the option does not alter the execution ID or reserve unrelated host work.
 ./pyrun --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
 ```
 
-For a v3 record's later policy-only change, edit Markdown first, then use `log
-pyrun update --exclusive true|false`. For a legacy v2 record, edit Markdown,
-run the write-free `log pyrun migrate-exclusivity --path <log> --dry-run`, then
-run the same migration without `--dry-run`; no policy-update command is needed.
-Do not edit `pyrun.json` by hand.
+For a later policy-only change, edit Markdown first, then use `log pyrun update
+--exclusive true|false`. Execution state must use `research-log-pyrun/v3`;
+earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader

@@ -59,7 +59,7 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
-| `pyrun` execution state | `research-log-pyrun/v3`; `research-log-pyrun/v2` is readable during the exclusivity migration; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v3`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -2965,13 +2965,9 @@ Mechanical validation reads it without execution or mutation and derives an
 output-keyed projection for the graph checks in this section. That internal
 projection is not another persisted execution-state file.
 
-Validation retains a bounded read-only decoder for strict
-`research-log-pyrun/v2` state after the Phase 19 cutover. It evaluates the existing recipe,
-automatic-policy, observation, confirmation, ownership, and graph contracts,
-but reports no invented exclusive value and performs no v3 policy-agreement
-claim. A log containing authored `--exclusive` commands with v2 state therefore
-fails Structure until the owning migration transaction publishes v3. Validation
-never writes or upgrades either schema.
+Validation accepts only strict `research-log-pyrun/v3` state. An earlier schema
+fails with `pyrun.state.schema.unsupported`; validation does not infer missing
+policy, write execution state, or provide a migration path.
 
 #### Legacy Output Records And Validation Projection
 

@@ -418,7 +418,7 @@ def _metadata_candidates(
     )
     executions = dict(state.executions)
     executions[execution_id] = candidate_execution
-    candidate_state = PyrunFile(state.path, state.entry_root, executions, state.schema)
+    candidate_state = PyrunFile(state.path, state.entry_root, executions)
     updates = {
         state.path: validated_pyrun_serialization(candidate_state, project_root=project)
     }

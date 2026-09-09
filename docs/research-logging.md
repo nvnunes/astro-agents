@@ -576,9 +576,9 @@ alone across all active reproduction runs in the project. Exclusivity is a
 scheduling policy, not part of the recipe identity, and it does not change
 ordinary direct execution or reserve unrelated host processes. For a later
 policy-only change, edit Markdown first and run `log pyrun update` with exactly
-one of `--auto-reproduce true|false` or `--exclusive true|false`. Convert strict
-legacy records with `log pyrun migrate-exclusivity --path <log> --dry-run`
-before running the mutating form; neither form executes research commands.
+one of `--auto-reproduce true|false` or `--exclusive true|false`. Current
+execution state must use `research-log-pyrun/v3`; earlier schemas are
+unsupported.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
@@ -971,9 +971,8 @@ shows the immutable cap, each execution's exclusive flag, and its normalized
 path claims without creating state. Status, stop, and resume use the accepted
 cap and do not accept an override.
 
-Legacy v2 execution records remain available only with `--jobs 1`, conservatively
-scheduled as exclusive; migrate them with `log pyrun migrate-exclusivity` before
-requesting a larger jobs value.
+Entry-local execution state must use `research-log-pyrun/v3`; earlier schemas
+are rejected before planning and are not assigned guessed scheduling policy.
 
 Executions recorded with `auto_reproduce: false` are excluded by default.
 Include them only when you explicitly intend the additional simulation or

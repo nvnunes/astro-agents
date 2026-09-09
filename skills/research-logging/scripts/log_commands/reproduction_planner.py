@@ -274,14 +274,6 @@ def plan_reproduction(
     _apply_cycle_and_dependency_failures(state)
     prior = _load_prior_results(log)
     ordered = _select_and_order(state, prior)
-    if jobs > 1 and any(
-        state.selected[key].entry.pyrun.schema == "research-log-pyrun/v2"
-        for key in ordered
-    ):
-        raise ActionError(
-            "reproduction.jobs.migration_required",
-            "--jobs greater than one requires pyrun exclusivity migration",
-        )
     plan = _project_plan(
         state,
         ordered,
@@ -1126,11 +1118,7 @@ def _project_plan(
                     output for output, _ in owner.execution.recipe.outputs
                 ),
                 "auto_reproduce": owner.execution.auto_reproduce,
-                "exclusive": (
-                    True
-                    if owner.entry.pyrun.schema == "research-log-pyrun/v2"
-                    else owner.execution.exclusive
-                ),
+                "exclusive": owner.execution.exclusive,
                 **_execution_claims(state, owner),
             }
         )
@@ -1142,7 +1130,7 @@ def _project_plan(
     execution_snapshot = [
         {
             "digest": canonical_execution_source_digest(
-                owner.execution.as_dict(schema=owner.entry.pyrun.schema)
+                owner.execution.as_dict()
             ),
             "entry": owner.entry.context.id,
             "execution_id": identity,
@@ -1476,7 +1464,7 @@ def _recheck_executions(
             )
         execution = loaded[entry_id].executions.get(identity)
         encoded = (
-            execution.as_dict(schema=loaded[entry_id].schema)
+            execution.as_dict()
             if execution is not None
             else None
         )

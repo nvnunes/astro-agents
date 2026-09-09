@@ -4,8 +4,8 @@
 
 Status: active implementation specification. The serial reproduction workflow
 and its maintained-log cutovers are complete. The Phase 19 version 3 parallel
-scheduling implementation is complete; maintained-corpus exclusivity metadata
-migration and integrated verification remain pending until their plan gates pass.
+scheduling implementation and maintained-corpus exclusivity metadata cutover
+are complete.
 
 This document is the normative implementation contract for mechanical
 research-log reproduction, the command-oriented `pyrun.json` record, durable
@@ -74,8 +74,6 @@ The initial implementation must use these versions:
 | Run status projection | `research-log-reproduction-status/3` |
 | Dry-run plan | `research-log-reproduction-plan/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Exclusivity migration result | `research-log-pyrun-exclusivity-migration-result/1` |
-| Exclusivity migration transaction | `research-log-pyrun-exclusivity-migration-transaction/1` |
 | Source snapshot | `research-log-reproduction-source-snapshot/3` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
@@ -139,8 +137,6 @@ the selected entry. Graph limits do not authorize broader scope.
 | Project scheduler record encoded bytes | 64 MiB |
 | Active project scheduling permits | 4,096 |
 | Waiting project exclusive tickets | 10,000 |
-| Exclusivity migration result encoded bytes | 64 MiB |
-| Exclusivity migration transaction encoded bytes | 64 MiB |
 | Checkpoints per run | 2,048 |
 | Outputs per checkpoint | 256 |
 | Structured diagnostic events per run | 1,000,000 |
@@ -589,74 +585,15 @@ operation otherwise uses the same concrete-expansion agreement, entry locking,
 identity preservation, and validation boundary as automatic-reproduction
 policy updates.
 
-### Exclusivity Metadata Migration
+### Execution-Metadata Schema
 
-The one-time schema conversion uses:
-
-```text
-log pyrun migrate-exclusivity --path LOG [--dry-run] [--format text|json]
-```
-
-The operation accepts current strict `research-log-pyrun/v2` records and
-already-converted `research-log-pyrun/v3` records. It parses every current
-Markdown command and bounded loop expansion, requires exact agreement with
-every stored recipe and existing automatic policy, and derives `exclusive`
-only from the authored `--exclusive` option. It accounts for every stored and
-authored execution; an orphan, ambiguity, unsupported command, or disagreement
-aborts the complete log migration. It never reads the Phase 19 audit as machine
-authority and never executes a recipe.
-
-`--dry-run` is write-free and emits the same deterministic accounting as the
-mutating form. JSON output uses
-`research-log-pyrun-exclusivity-migration-result/1` and has exactly `schema`,
-`summary`, `status`, `changed`, `totals`, `entries`, `executions`, and
-`diagnostics`. `status` is `ready`, `complete`, or `refused`; `changed` is a
-Boolean. `totals` has exactly `authored_invocations`, `expanded_executions`,
-`stored_executions`, `converted_v2`, `unchanged_v3`, `exclusive_true`,
-`exclusive_false`, and `unaccounted`, all nonnegative integers. Entry items have
-exactly `entry`, `authored_invocations`, `expanded_executions`,
-`stored_executions`, `exclusive_true`, and `exclusive_false`. Execution items
-have exactly `entry`, `execution_id`, `script`, `markdown_path`, `line`,
-`invocation_kind`, `expansion_index`, `prior_schema`, `prior_exclusive`,
-`target_exclusive`, and `action`. `invocation_kind` is `direct` or
-`loop_expansion`; `expansion_index` is null for direct commands and otherwise
-the zero-based stable expansion index. `line` is the one-based opening line of
-the containing shell command fence. `prior_exclusive` is null for v2 and a
-Boolean for v3; `action` is `convert` or `unchanged`. Arrays use canonical log,
-entry, Markdown-location, expansion, and execution-ID order. A ready or complete
-result requires `unaccounted: 0` and no diagnostics. Text is a complete human
-projection of the same object. Diagnostic items have exactly `code`, `message`,
-`entry`, `execution_id`, `markdown_path`, and `line`; inapplicable identity and
-location fields are null.
-
-The mutating form takes the exclusive log operation lock, first recovers or
-refuses recognized transaction residue, then repeats the complete
-reconciliation. It stages every affected entry record beneath
-`<log>/.cache/research-log-operations/pyrun-exclusivity-migration/`. The strict
-`transaction.json` uses
-`research-log-pyrun-exclusivity-migration-transaction/1` and has exactly
-`schema`, `transaction_id`, `state`, `created_at`, and `entries`. `state` is
-`prepared` or `committing`. Each stable-entry-order item has exactly `entry`,
-`target`, `original_digest`, `staged`, `staged_digest`, and `published`.
-
-After every staged v3 file and its directory are durable, the operation writes
-the `prepared` journal. Replacing it atomically with `state: committing` is the
-transaction commit point. Before that point, recovery removes intact staged
-files and changes no target. After that point, recovery rolls forward in stable
-entry order: a target matching `original_digest` receives its staged file, a
-target matching `staged_digest` is marked published, and any other state is a
-refusal that preserves the residue. Each successful replacement durably updates
-`published`; completion requires every target to match its staged digest before
-the residue is removed. Other operations that encounter recognized residue
-refuse with its transaction ID and direct the caller to this migration command;
-they never interpret an intermediate mixed schema. Mixed v2/v3 state without a
-valid journal is an unexplained refusal.
-
-The transaction preserves execution IDs, recipes, observations, confirmation,
-automatic policy, version fields, and `last_run_at`. An already-converted log
-must agree and is an idempotent no-op. An orphan, ambiguity, unsupported
-command, disagreement, or unaccounted identity refuses before staging; migration
-never repairs it.
+Entry-local execution state accepts only strict `research-log-pyrun/v3`.
+The one-time v2-to-v3 exclusivity cutover is complete, and its public converter
+has been removed. A v2 `pyrun.json` now fails at the shared decoder boundary
+with `pyrun.state.schema.unsupported`; direct execution, validation, policy
+updates, planning, and reproduction do not infer the missing `exclusive` value.
+Historical cutover evidence and a before/after migration fixture remain for
+auditability without retaining a production compatibility path.
 
 ### Retirement
 
@@ -1879,13 +1816,11 @@ still matches byte-for-byte under the v2 decoder. Exclusivity migration changes
 that snapshot and therefore makes such a resume stale; it refuses normally
 rather than projecting v3 state back into v2. Status, stop, recovery, report,
 and retained diagnostics remain readable after migration.
-Existing `research-log-pyrun/v2` execution records remain readable by ordinary
-non-exclusive `pyrun`, automatic-policy updates, validation, migration, and
-reproduction with `--jobs 1`. Such reproduction projects every selected v2
-execution as conservatively exclusive; `--jobs` greater than one is refused.
-These compatibility operations preserve v2 and never add or guess the missing
-field. Only `migrate-exclusivity` writes v3; direct or policy invocations that
-request exclusivity refuse v2 with a migration-required diagnostic.
+Entry-local `research-log-pyrun/v2` execution state is no longer readable. It
+fails precisely as unsupported schema before direct execution, validation,
+policy update, planning, or reproduction can interpret it. This does not alter
+the separately versioned compatibility path above for immutable historical
+reproduction-run records.
 
 ### Shared Publication
 
@@ -2050,12 +1985,12 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling introduces `research-log-pyrun/v3` and reproduction plan,
-run, and status version 3. Version 2 execution records and accepted runs use
-only the bounded compatibility paths defined above. No accepted run is upgraded
-in place, and no consumer may decode a v2 object with v3 defaults. The
-exclusivity migration is complete only after every maintained log has atomically
-converted and passed ordinary validation.
+Parallel scheduling uses `research-log-pyrun/v3` and reproduction plan, run,
+and status version 3. Version 2 execution records are unsupported; version 2
+accepted reproduction runs use only the bounded historical compatibility paths
+defined above. No accepted run is upgraded in place, and no consumer may decode
+a v2 object with v3 defaults. The maintained-corpus execution-state cutover is
+complete.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded
@@ -2082,14 +2017,14 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-The command-oriented version 2 execution state, migration, serial planning,
-safety, run-local execution, exact and evidence-scoped artifact comparison, durable comparison
-records, immediate confirmation, independent result publication, current
-projection, bounded read-only queries, durable job control, stop and same-path
-resume, publication retry, lost-supervisor reconciliation, ordinary
-post-reproduction validation, and whole-execution copy-based promotion are
-implemented. The version 3 parallel-scheduling contract is frozen; its
-implementation and maintained-corpus exclusivity migration remain pending.
+Command-oriented version 3 execution state, parallel planning and scheduling,
+safety, run-local execution, exact and evidence-scoped artifact comparison,
+durable comparison records, immediate confirmation, independent result
+publication, current projection, bounded read-only queries, durable job
+control, stop and same-path resume, publication retry, lost-supervisor
+reconciliation, ordinary post-reproduction validation, and whole-execution
+copy-based promotion are implemented. The maintained-corpus exclusivity
+cutover is complete, and version 2 execution state is rejected.
 Promotion retains its own approved targeted Evidence and
 Provenance refresh without running general validation; reproduction has no
 targeted-validation path. Maintained-corpus initialization and the bounded

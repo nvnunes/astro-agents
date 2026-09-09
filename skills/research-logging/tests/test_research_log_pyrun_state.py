@@ -11,6 +11,7 @@ from validation.pyrun_state import (
     PYRUN_EXECUTION_CONTRACT,
     PYRUN_FILENAME,
     PYRUN_RUNNER,
+    PYRUN_SCHEMA,
     ExecutionRecipe,
     ObservedExecution,
     PyrunExecution,
@@ -189,6 +190,37 @@ class PyrunStateContractTests(unittest.TestCase):
         changed = _recipe(environment=(("MODE", "alternate"),))
         self.assertNotEqual(execution_id(recipe), execution_id(changed))
 
+    def test_retained_migration_fixture_and_v2_rejection(self) -> None:
+        fixtures = Path(__file__).parent / "fixtures"
+        legacy_raw = (fixtures / "pyrun-exclusivity-migration-v2.json").read_text()
+        current_raw = (fixtures / "pyrun-exclusivity-migration-v3.json").read_text()
+        expected = json.loads(legacy_raw)
+        expected["schema"] = PYRUN_SCHEMA
+        for execution in expected["executions"].values():
+            execution["exclusive"] = True
+        self.assertEqual(
+            current_raw,
+            json.dumps(expected, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            path = entry / PYRUN_FILENAME
+            path.write_text(current_raw, encoding="utf-8")
+            loaded = load_pyrun_state(path, entry_root=entry, project_root=root)
+            self.assertEqual(loaded.schema, PYRUN_SCHEMA)
+            self.assertTrue(next(iter(loaded.executions.values())).exclusive)
+
+            path.write_text(legacy_raw, encoding="utf-8")
+            with self.assertRaises(PyrunStateError) as rejected:
+                load_pyrun_state(path, entry_root=entry, project_root=root)
+            self.assertEqual(rejected.exception.code, "pyrun.state.schema.unsupported")
+            self.assertEqual(
+                rejected.exception.observed,
+                {"schema": "research-log-pyrun/v2", "supported": PYRUN_SCHEMA},
+            )
+
     def test_strict_decoder_rejects_noncanonical_and_invalid_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -235,8 +267,8 @@ class PyrunStateContractTests(unittest.TestCase):
                         load_pyrun_state(path, entry_root=entry, project_root=root)
 
             path.write_text(
-                '{"executions":{},"schema":"research-log-pyrun/v2",'
-                '"schema":"research-log-pyrun/v2"}\n',
+                '{"executions":{},"schema":"research-log-pyrun/v3",'
+                '"schema":"research-log-pyrun/v3"}\n',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(PyrunStateError, "duplicate JSON key"):

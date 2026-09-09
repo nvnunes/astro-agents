@@ -1,0 +1,40 @@
+{
+  "executions": {
+    "pyrun-exec/v1:28fc293b9049bf9d1676d0cff7b454405432752f52ca814ebdfe29c9ae3af9af": {
+      "auto_reproduce": true,
+      "confirmed": false,
+      "environment_profile": "pyrun-standard/v1",
+      "exclusive": true,
+      "execution_contract": "research-log-pyrun-execution/2",
+      "last_run_at": null,
+      "observed": {
+        "code": {},
+        "inputs": {},
+        "outputs": {
+          "data/result.csv": {
+            "algorithm": "sha256",
+            "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "script": {
+          "algorithm": "sha256",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "recipe": {
+        "environment": {},
+        "inputs": [],
+        "outputs": {
+          "data/result.csv": "file"
+        },
+        "parameters": [
+          "--output-data",
+          "data/result.csv"
+        ],
+        "script": "scripts/build.py"
+      },
+      "runner": "research-log-pyrun-runner/1"
+    }
+  },
+  "schema": "research-log-pyrun/v3"
+}

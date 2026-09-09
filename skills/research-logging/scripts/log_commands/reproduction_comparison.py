@@ -416,7 +416,7 @@ def confirm_matching_execution_locked(
         return False
     executions = dict(state.executions)
     executions[result.execution_id] = replace(current, confirmed=True)
-    candidate = PyrunFile(state.path, state.entry_root, executions, state.schema)
+    candidate = PyrunFile(state.path, state.entry_root, executions)
     atomic_write_text(
         state.path,
         validated_pyrun_serialization(candidate, project_root=project_root),

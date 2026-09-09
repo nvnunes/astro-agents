@@ -393,7 +393,7 @@ def _apply_confirmations(
                 executions[identity] = replace(execution, confirmed=True)
                 changed = True
         if changed:
-            candidate_state = PyrunFile(path, entry.root, executions, state.schema)
+            candidate_state = PyrunFile(path, entry.root, executions)
             atomic_write_text(
                 path,
                 validated_pyrun_serialization(candidate_state, project_root=project),
@@ -458,7 +458,7 @@ def _runtime_plan(
         executions.append(
             {
                 "digest": canonical_execution_source_digest(
-                    execution.as_dict(schema=loaded[entry_id].schema)
+                    execution.as_dict()
                 ),
                 "entry": entry_id,
                 "execution_id": identity,

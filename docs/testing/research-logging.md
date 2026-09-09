@@ -26,8 +26,7 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   -s skills/research-logging/tests -p 'test_research_log_pyrun_outputs.py'
 ```
 
-During the execution-state migration, retain that legacy gate for the migration
-reader. When changing the current `pyrun.json` contract or lifecycle, also run:
+When changing the current `pyrun.json` contract or lifecycle, also run:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \

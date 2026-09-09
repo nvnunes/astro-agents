@@ -64,8 +64,8 @@ another entry or log.
 immutable per-run concurrency cap: dependency readiness, conflicting path
 claims, and project-wide exclusivity may keep actual concurrency lower. Inspect
 the dry-run's `jobs`, `exclusive`, and path-claim fields before a parallel
-launch. Existing pyrun v2 metadata supports only `--jobs 1` until the explicit
-exclusivity migration is complete.
+launch. Entry-local execution state must use `research-log-pyrun/v3`; earlier
+schemas are unsupported.
 
 The default selection is incremental: current results satisfy their artifact
 cases, while new, unconfirmed, failed, stale, and dependency-affected eligible

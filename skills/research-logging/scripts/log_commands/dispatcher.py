@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Mapping, NoReturn, Sequence, cast
+from typing import Mapping, NoReturn, Sequence
 
 from .context import resolve_entry, resolve_log, resolve_log_creation
 from .model import (
@@ -524,13 +524,6 @@ def _dispatch_pyrun(
     update = actions.add_parser(
         "update", help="Apply one Markdown-first execution policy change"
     )
-    migrate = actions.add_parser(
-        "migrate-exclusivity",
-        help="Convert one complete log from pyrun v2 to v3 exclusivity metadata",
-    )
-    migrate.add_argument("--path", required=True, type=Path)
-    migrate.add_argument("--dry-run", action="store_true")
-    migrate.add_argument("--format", choices=("text", "json"), default="text")
     _entry_arguments(update)
     update.add_argument("--execution-id", required=True)
     policy = update.add_mutually_exclusive_group(required=True)
@@ -545,28 +538,6 @@ def _dispatch_pyrun(
         help="exact managed-reproduction exclusivity policy",
     )
     args = parser.parse_args(arguments)
-    if args.action == "migrate-exclusivity":
-        from .pyrun_exclusivity_migration import (
-            format_migration_result,
-            migrate_exclusivity,
-        )
-
-        result = migrate_exclusivity(resolve_log(args.path), dry_run=args.dry_run)
-        if result["status"] == "refused":
-            output = (
-                json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
-                if args.format == "json"
-                else format_migration_result(result)
-            )
-            print(output, end="")
-            diagnostic = cast(Sequence[object], result["diagnostics"])[0]
-            assert isinstance(diagnostic, Mapping)
-            print(
-                f"log: {diagnostic['code']}: {diagnostic['message']}",
-                file=sys.stderr,
-            )
-            return 2
-        return result if args.format == "json" else format_migration_result(result)
     from . import pyrun_policy
 
     entry = resolve_entry(resolve_log(args.path), args.entry)

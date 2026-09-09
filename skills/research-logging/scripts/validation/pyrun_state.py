@@ -31,7 +31,6 @@ from .pyrun_outputs import (
 if TYPE_CHECKING:
     from .commands import Invocation
 
-LEGACY_PYRUN_SCHEMA = "research-log-pyrun/v2"
 PYRUN_SCHEMA = "research-log-pyrun/v3"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
@@ -115,22 +114,20 @@ class PyrunExecution:
     observed: ObservedExecution
     exclusive: bool = False
 
-    def as_dict(self, *, schema: str = PYRUN_SCHEMA) -> dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         """Return the exact persisted execution projection."""
 
-        value: dict[str, object] = {
+        return {
+            "auto_reproduce": self.auto_reproduce,
             "confirmed": self.confirmed,
             "environment_profile": self.environment_profile,
             "execution_contract": self.execution_contract,
+            "exclusive": self.exclusive,
             "last_run_at": self.last_run_at,
             "observed": self.observed.as_dict(),
             "recipe": self.recipe.as_dict(),
             "runner": self.runner,
-            "auto_reproduce": self.auto_reproduce,
         }
-        if schema == PYRUN_SCHEMA:
-            value["exclusive"] = self.exclusive
-        return value
 
 
 @dataclass(frozen=True)
@@ -145,9 +142,16 @@ class PyrunFile:
     def as_dict(self) -> dict[str, object]:
         """Return the exact canonical file projection."""
 
+        if self.schema != PYRUN_SCHEMA:
+            raise PyrunStateError(
+                "pyrun.state.schema.unsupported",
+                str(self.path),
+                {"schema": self.schema, "supported": PYRUN_SCHEMA},
+                "Pyrun Execution State",
+            )
         return {
             "executions": {
-                key: self.executions[key].as_dict(schema=self.schema)
+                key: self.executions[key].as_dict()
                 for key in sorted(self.executions)
             },
             "schema": self.schema,
@@ -446,9 +450,14 @@ def parse_pyrun_state_text(
     value = cast(Mapping[str, Any], value)
     raw_executions = value.get("executions")
     schema = value.get("schema")
-    if schema not in {LEGACY_PYRUN_SCHEMA, PYRUN_SCHEMA} or not isinstance(
-        raw_executions, Mapping
-    ):
+    if schema != PYRUN_SCHEMA:
+        raise PyrunStateError(
+            "pyrun.state.schema.unsupported",
+            str(subject),
+            {"schema": schema, "supported": PYRUN_SCHEMA},
+            "Pyrun Execution State",
+        )
+    if not isinstance(raw_executions, Mapping):
         _invalid(subject, {"schema": value.get("schema")})
     if not raw_executions or len(raw_executions) > MAX_EXECUTIONS:
         _invalid(
@@ -464,12 +473,11 @@ def parse_pyrun_state_text(
             f"{subject}:executions[{key!r}]",
             entry_root=root,
             project_root=project_root,
-            schema=cast(str, schema),
         )
         if execution_id(execution.recipe) != key:
             _invalid(subject, {"execution_id": key, "reason": "identity_mismatch"})
         executions[key] = execution
-    result = PyrunFile(expected, root, executions, cast(str, schema))
+    result = PyrunFile(expected, root, executions)
     _validate_ownership(result, project_root=project_root)
     if raw != result.serialized():
         _invalid(subject, {"reason": "noncanonical_serialization"})
@@ -508,9 +516,7 @@ def publish_execution_locked(
             )
         }
         executions[execution_id(execution.recipe)] = execution
-        if current.schema == LEGACY_PYRUN_SCHEMA and execution.exclusive:
-            _invalid(path, {"reason": "exclusivity_migration_required"})
-        result = PyrunFile(path, root, executions, current.schema)
+        result = PyrunFile(path, root, executions)
         serialized = _validated_serialization(result, project_root=project_root)
         if companion_updates:
             if publish_updates is None or path in companion_updates:
@@ -550,7 +556,7 @@ def update_auto_reproduce_locked(
     for key in selected:
         value = executions[key]
         executions[key] = replace(value, auto_reproduce=auto_reproduce)
-    result = PyrunFile(path, root, executions, current.schema)
+    result = PyrunFile(path, root, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
 
@@ -567,8 +573,6 @@ def update_exclusive_locked(
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
     current = load_pyrun_state(path, entry_root=root, project_root=project_root)
-    if current.schema != PYRUN_SCHEMA:
-        _invalid(path, {"reason": "exclusivity_migration_required"})
     selected = tuple(dict.fromkeys(execution_ids))
     if not selected or len(selected) != len(execution_ids):
         _invalid(path, {"reason": "execution_selection_invalid"})
@@ -578,33 +582,8 @@ def update_exclusive_locked(
     executions = dict(current.executions)
     for key in selected:
         executions[key] = replace(executions[key], exclusive=exclusive)
-    result = PyrunFile(path, root, executions, PYRUN_SCHEMA)
+    result = PyrunFile(path, root, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
-    return result
-
-
-def migrated_exclusivity_state(
-    state: PyrunFile,
-    exclusive_by_execution: Mapping[str, bool],
-    *,
-    project_root: Path | None = None,
-) -> PyrunFile:
-    """Build one validated v3 state without changing execution identity."""
-
-    if set(exclusive_by_execution) != set(state.executions):
-        _invalid(state.path, {"reason": "migration_accounting_incomplete"})
-    if not all(isinstance(value, bool) for value in exclusive_by_execution.values()):
-        _invalid(state.path, {"reason": "migration_policy_invalid"})
-    result = PyrunFile(
-        state.path,
-        state.entry_root,
-        {
-            key: replace(value, exclusive=exclusive_by_execution[key])
-            for key, value in state.executions.items()
-        },
-        PYRUN_SCHEMA,
-    )
-    _validated_serialization(result, project_root=project_root)
     return result
 
 
@@ -633,7 +612,6 @@ def without_executions(
             for key, value in current.executions.items()
             if key not in selected
         },
-        current.schema,
     )
     if result.executions:
         _validated_serialization(result, project_root=project_root)
@@ -656,7 +634,7 @@ def confirm_execution_locked(
         _invalid(path, {"execution_id": execution_id_value, "reason": "missing"})
     executions = dict(current.executions)
     executions[execution_id_value] = replace(value, confirmed=True)
-    result = PyrunFile(path, root, executions, current.schema)
+    result = PyrunFile(path, root, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
 
@@ -725,7 +703,6 @@ def _decode_execution(
     *,
     entry_root: Path,
     project_root: Path | None,
-    schema: str,
 ) -> PyrunExecution:
     fields = {
         "confirmed",
@@ -736,15 +713,14 @@ def _decode_execution(
         "recipe",
         "runner",
         "auto_reproduce",
+        "exclusive",
     }
-    if schema == PYRUN_SCHEMA:
-        fields.add("exclusive")
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
     confirmed = value.get("confirmed")
     auto_reproduce = value.get("auto_reproduce")
-    exclusive = value.get("exclusive", False)
+    exclusive = value.get("exclusive")
     timestamp = value.get("last_run_at")
     if (
         not isinstance(confirmed, bool)
@@ -949,11 +925,10 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
         if key != execution_id(execution.recipe):
             _invalid(value.path, {"execution_id": key, "reason": "identity_mismatch"})
         decoded = _decode_execution(
-            execution.as_dict(schema=value.schema),
+            execution.as_dict(),
             f"{value.path}:executions[{key!r}]",
             entry_root=value.entry_root,
             project_root=project_root,
-            schema=value.schema,
         )
         if decoded != execution:
             _invalid(

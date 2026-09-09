@@ -1,212 +1,101 @@
 # Repair Operation Instructions
 
-Repair corrects an explicitly requested research-log defect. It does not perform
-new research, choose new evidence, or revise scientific meaning. A failed
-command, Validate result, or Review finding does not itself authorize Repair.
-A valid advanced evidence presentation belongs to Record's definition mode.
+Correct the requested defects. Preserve presented evidence, scientific meaning,
+tolerances, stable evidence IDs, and unrelated work. Do not invent origins or
+execution confirmation. Follow `SKILL.md`'s operation and lock-conflict boundaries.
 
-## Execute One Target At A Time
+## Scope And Decisions
 
-Complete this loop for one authorized batch or named defect before investigating
-the next. In a campaign, choose one log and begin as soon as its batch listing
-identifies an authorized target. Do not first inventory all logs, diagnose all
-batches, or build a separate queue from queryable results.
+Work on a bounded correction in the requested log. It may span several batches;
+batches do not dictate editing, validation, or reporting checkpoints. Do not
+inventory the whole project or copy queryable results into a separate queue.
 
-### 1. Select
+For missing lineage, check that the producer exists, declares the exact material,
+is admitted by discovery, and precedes the consumer. Inspect the affected command
+and script interface for facts the CLI cannot establish. Missing confirmation
+alone does not explain missing lineage.
 
-For a validation finding, use the supplied result ID. If none is supplied:
+Fix what retained evidence establishes. Moving unchanged commands within a document
+and small path, declaration, or output-exposure edits are ordinary Repair when
+they preserve the computation and material identities. Use Reorganize for document
+or entry boundary changes and Replace for removing superseded work; neither is
+implicit in Repair.
 
-```text
-<skill>/scripts/log results show --path <log> --latest --kind full
-```
+Stop investigating once the correction or a blocking fact or choice is clear.
+Report blockers, continue independent authorized work, and ask the researcher
+when a decision is needed. Reuse a diagnosis only after checking that its cause
+and safety conditions apply; an inspection group alone establishes neither.
 
-`<log>` is the log directory, not its summary Markdown file. Pin the returned ID
-for subsequent queries. List batches with the request's applicable selectors,
-then select one whose findings are in scope:
+## Inspect With The CLI
 
-```text
-<skill>/scripts/log results show --path <log> --id <result-id> --view batches \
-  [--entry <entry>] [--code <code>]
-<skill>/scripts/log results batch --path <log> --id <result-id> --batch <batch-id>
-```
+Run `log` through `<skill>/scripts/log`; `<log>` is the log directory. Use the
+supplied result ID, or obtain the latest full result below. After validation,
+inspect its returned result ID. These queries do not run validation.
 
-Use CLI text views for validation-state inspection. Do not read, parse, or search
-`validation.md`, `validation/results.json`, `validation/batches.json`, or the
-inspection database, including through recursive filesystem searches. JSON
-output is for scripts that consume it; do not copy queryable payloads into files
-or parse JSON to rebuild reports.
-
-For an uncached current publication, use `findings list` or `findings show` with
-exact selectors. Do not run validation merely to populate the cache. No matching
-findings ends the target only when a completed evaluation covers its current
-state. Otherwise the target remains unresolved.
-
-### 2. Diagnose
-
-Start at the selected batch's stated blocker or inspection starting point. Read
-only enough to establish a correction or a concrete reason it cannot proceed.
-For a named defect without a batch, inspect that defect through its owning CLI.
-
-```text
-<skill>/scripts/log results finding --path <log> --id <result-id> --finding <check-id>
-```
-
-When command relationships are missing, inspect the batch's commands:
-
-```text
-<skill>/scripts/log results show --path <log> --id <result-id> \
-  --view commands --batch <batch-id>
-```
-
-Retrieve missing detail through `results command`, `artifact`, or the printed
-collection/value command. Follow a cursor only when more matching items are
-needed. Use `--view chains` only for needed provenance membership. Read affected
-source records only for needed information these views do not provide. Another
-batch's details are relevant only when they help resolve the active target.
-
-For `producer.missing` or `lineage.missing`, establish whether the apparent
-producer declares the reported material and is admitted by discovery. For
-lineage, also check that it precedes the consumer. Confirmation status alone
-does not explain these codes. Diagnose the actual failed condition before
-changing registrations or provenance structure.
-
-### 3. Correct Or Set Aside
-
-Apply the established correction through its owning CLI action when that action
-can safely express it. Read only the matching case in **Repair Methods** below.
-When no action can express the authorized correction, edit only the affected
-non-validation source records under that section's contracts.
-
-Ordinary Repair includes moving an unchanged command after its established
-producer within the same document to correct an ordering defect without changing
-scientific meaning. Changing document or entry boundaries requires explicit
-Reorganize authorization. Removing superseded experimental work requires Replace
-authorization.
-
-Preserve presented evidence, tolerances, scientific meaning, and all unrelated
-records and material. Keep stable evidence IDs unless the requested defect is
-the ID and its replacement is explicit. Never hand-edit generated validation.
-
-If retained evidence and the request do not establish the intended correction,
-or the correction requires a researcher decision or additional authority, set
-this target aside with the concrete reason. Do not invent a replacement source,
-ID, transformation, origin boundary, interpretation, or execution confirmation.
-In a campaign, continue independent authorized targets after recording the reason.
-Ask the researcher when further work depends on their decision.
-
-A failed correction command stops this target. Retry only after a revised,
-evidence-backed hypothesis; do not repeat the mutation or bypass its precondition.
-Use a printed diagnostic-inspection command for omitted failure details rather
-than rerunning the correction. A diagnostic snapshot is not a validation result.
-For `operation.lock.conflict`, report the supplied owner metadata once and stop
-the target; do not retry, poll, inspect processes, or work around the lock.
-
-### 4. Check The Correction
-
-After a correction to a published batch, check it once using the original
-published validation and requested batch IDs:
-
-```text
-<skill>/scripts/log validate-batch --path <log> --validation <validation-id> \
-  --batch <batch-id>
-```
-
-For a defect with no published batch, use the owning bounded decoder or command
-postcondition instead. Do not claim `complete_clear` without a batch result.
-
-| Result | Next Action |
+| Need | Command |
 |---|---|
-| `complete_clear` or `complete_findings` | Assess the reconciled current membership, remaining findings and overlaps. The result covers only that membership. |
-| `incomplete` with `coverage_incomplete` | Use an already-authorized full validation to assess the correction. Without that authority, leave it unverified and report the needed validation. Do not infer repair failure or check overlapping batches to resolve the same coverage limit. |
-| Other `incomplete` result | Resolve the reported evaluation failure before judging the correction. |
+| Evaluation scope and remaining work | `log results show --path <log> --latest --kind full` |
+| Matching batches | `log results show --path <log> --id <result-id> --view batches [--entry <entry>] [--code <code>]` |
+| Batch blocker and starting point | `log results batch --path <log> --id <result-id> --batch <batch-id>` |
+| Finding evidence | `log results finding --path <log> --id <result-id> --finding <check-id>` |
+| Commands and material relationships | `log results show --path <log> --id <result-id> --view commands --batch <batch-id>` |
+| Recover lost batch-check stdout | `log results list --path <log> --kind batch --validation <validation-id> --batch <batch-id>` |
 
-An incomplete check establishes neither success nor failure. Reuse completed
-results while their scope and state remain applicable; assess uncovered work
-separately. Repeat evaluation only after a correction, relevant state change,
-or resolution of the incomplete check's cause, never to display more fields.
+Request omitted detail through the printed command; follow cursors only as needed.
+Use `--view chains` for provenance membership. For uncached published findings,
+use `log findings list` or `show`, not another validation. Use `--help` for unfamiliar
+syntax. Match recovered results to the invocation's scope and time; an older result
+does not prove a failed or interrupted invocation completed.
 
-Full `log validate --path <log>` requires separate validation authorization.
-Outdated generated state needs that full validation to rebuild it. Repair alone
-does not authorize Validate, Review, or reproduction. Report unrelated remaining
-findings without correcting them.
+Inspect validation state through CLI text views. Do not read, parse, or search
+`validation.md`, `validation/results.json`, `validation/batches.json`, or the
+inspection database. JSON output is for programmatic consumers.
 
-### 5. Record Before Advancing
+## Correct The Source
 
-Retain the result ID, outcome and next action. In a campaign, append the outcome
-and its evidence to history, then update the current note's active target, next
-action and blockers before advancing. Keep completed detail in history; do not
-copy queryable result payloads into the note or a new queue. Cached detail can
-be removed by later evaluation or cache clearing, so record the significant
-outcome while it is available.
+Use the owning action when it expresses the correction; otherwise edit the affected
+source records or script. Preserve the original in version control or a backup.
 
-Use `$plan-execution` for planned continuation. For a standalone campaign, create
-`repair-<campaign>-current.md` in the project's temporary-work location at start
-and append-only `repair-<campaign>-history.md` with the first outcome. At completion,
-save remaining outcomes to history and delete the current note.
+| Defect | Owner |
+|---|---|
+| Input registration, target, or fingerprint | `log data` |
+| Evidence record or association | `log evidence` |
+| Disconnected-retention declaration | `log retention` |
+| Recorded execution policy | `log pyrun` |
+| Command material role | `references/file-entry-commands.md` |
+| Provenance shape | Matching card in `references/provenance-patterns.md` |
 
-If producer stdout was lost, use **Recover A Check Result** below. If no result
-was cached, record the operational error rather than inventing an outcome.
+`log data add-generated --pending-confirmation` admits a retained output with one
+structurally valid, unambiguous same-log producer. It cannot bypass a missing
+producer or replace ordinary pre-production declaration.
 
-### 6. Advance
+Derive reconstructed fields from retained evidence; keep reconstructed execution
+support `confirmed: false`. Never hand-edit generated validation. Only when malformed
+state prevents the owning action, consult the relevant code or field in
+`../../../docs/research-log-mechanical-validator-spec.md` and the needed file
+contract. Remove transaction residue only as identified by its owning contract.
 
-Select the next independent authorized target using the CLI batch listing and
-recorded dispositions. Uninspected work remains pending, including inspection
-groups. Mark a group blocked or skipped only when the established reason covers
-every member. A campaign is exhausted only when no authorized work remains pending.
+After a failed mutation, inspect its diagnostic. Retry only with a revised,
+evidence-backed correction, never to recover stdout or bypass a precondition.
 
-Reuse a diagnosis when recorded relationships establish the same cause and safety
-conditions. Check each new case against those conditions; investigate material
-differences. Inspection groups establish no common cause: correct and assess
-their members individually. Keep mutations and checks within the authorized
-batch's affected records, including multiple entries when required.
+## Check The Correction
 
-Record repeated cases as target, outcome and exception. Group user-facing updates
-at campaign milestones and preserve requested approval stops.
+| Coverage | Command |
+|---|---|
+| Published batch's current membership | `log validate-batch --path <log> --validation <validation-id> --batch <batch-id>`; use originating IDs. |
+| Full log and rebuilt report | `log validate --path <log>`; requires full-validation authorization. |
 
-## Repair Methods
+Use focused checks while editing, including an owning postcondition or decoder/test
+for defects without a published batch. Group corrections needing full-log coverage
+at one authorized full-validation checkpoint. Skip preliminary batch checks when
+full validation is already needed.
 
-Read only the case needed for the selected correction:
+Batch `complete_clear` and `complete_findings` cover only reconciled membership.
+`coverage_incomplete` proves neither success nor failure: defer assessment to the
+full-validation checkpoint. Do not try overlapping batches or repeat the batch/full
+cycle for each edit needing that coverage. Resolve other evaluation failures before
+judging the repair. Without full-validation authority, report the verification gap.
 
-- **Owning action:** input registrations and fingerprints use `log data`; evidence
-  records and associations use `log evidence`; retention uses `log retention`;
-  recorded execution policy uses `log pyrun`. If the action is unknown, read that
-  family's `--help`, then the selected action's help. Invoke it through
-  `<skill>/scripts/log`.
-- **Unresolved material role:** for `material.candidate.unresolved`, inspect the
-  argument selectors and read `references/file-entry-commands.md`'s material-role
-  guidance. Resource registration does not assign an input/output role.
-- **Provenance shape:** when choosing one, read `references/provenance-patterns.md`
-  and only the matching card. Otherwise, skip the catalog.
-- **Retained generated target:** when registry admission must precede reproduction,
-  `log data add-generated --pending-confirmation` requires one structurally valid,
-  unambiguous same-log producer. It is not ordinary pre-production declaration
-  or a way to bypass a missing or ambiguous producer.
-- **Direct source repair:** preserve the original state or backup and derive
-  reconstructed fields from retained state. Use the affected decoder, serializer,
-  locks and validation contracts when available; directly edit malformed state
-  only when those tools cannot load it. For malformed or legacy state that
-  prevents the owning CLI action, search
-  `../../../docs/research-log-mechanical-validator-spec.md` for the reported
-  code, field or contract and read only the applicable section. Load a detailed
-  bundled file contract only when that section or the affected material requires
-  it. Do not open the complete specification or every registry reference. This
-  focused lookup is Repair's sole repository-level instruction dependency; do
-  not load the specification during another operation. Keep reconstructed
-  execution-support records `confirmed: false`; only successful owning execution
-  may confirm them.
-- **Transaction residue:** follow the exact diagnostic and owning implementation
-  contract. Remove or reconcile only residue mechanically identified as belonging
-  to the interrupted research-owned transaction.
-
-## Recover A Check Result
-
-If stdout was lost, list candidate results without reevaluating:
-
-```text
-<skill>/scripts/log results list --path <log> --kind batch \
-  --validation <validation-id> --batch <batch-id>
-```
-
-Match scope and evaluation time to the invocation before using an ID: a failed
-run can leave an older result. If the match is uncertain, report the outcome as
-unknown. Query the matched ID for additional detail.
+Reuse applicable completed results; query details instead of rerunning checks.
+Claim clearance only when completed evaluation covers the corrected state.
+Structural repair does not establish execution confirmation.

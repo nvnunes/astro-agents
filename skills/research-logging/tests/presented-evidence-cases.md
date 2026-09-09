@@ -317,16 +317,29 @@ outside repair scope. It does not mutate the log to satisfy faulty validation.
 
 Given a published raw-output-path class with two independent command chains,
 Repair uses the supplied result ID, or selects the cached full-result ID when
-none was supplied, and lists the class once, retrieves
-only needed chain detail, applies its named-output correction, runs
-`validate-batch`, and records the scoped outcome and new result ID,
-and continues to the second chain. It does not run full validation during the
-campaign. After a separately requested full-validation refresh, reproduction
-admission consumes the new projection and admits only clean current batches.
+none was supplied, lists the class once, and retrieves only needed command
+detail. It may group the established named-output corrections at one checkpoint.
+When bounded coverage suffices, it uses `validate-batch`; when full-log coverage
+is needed and authorized, it runs full validation once at that checkpoint.
+Batch boundaries do not require separate editing or note-taking cycles.
+
+Given a batch check returns `coverage_incomplete` and further related edits
+need the same full-log coverage, Repair defers their assessment to the group's
+authorized full-validation checkpoint. It does not alternate batch and full
+validation for every edit or check overlapping batches to remedy that gap.
+Without full-validation authority, it reports the verification gap without
+claiming clearance. A completed evaluation must cover the corrected state.
+
+Given a recorded command generates an intermediate CSV but discards it, and
+retained evidence establishes that CSV as an existing downstream input, Repair
+may expose a retained-output option and correct its declaration while preserving
+the calculation and input/output identities. A script edit is not itself a
+reason to request a research decision. Missing execution support remains
+unconfirmed; Repair does not run the research command or choose a new origin.
 
 Given a class campaign contains one chain whose correction would change a
 presented value and one independent mechanically correctable chain, Repair
-skips the evidence-changing chain for researcher direction, records that
+skips the evidence-changing chain for researcher direction, reports that
 decision, and continues with the independent chain. If another chain has an
 unresolved projection or a lock owner conflict, it reports the precise blocker
 once and stops only that affected case without polling or broadening scope.
@@ -345,8 +358,9 @@ action needs those members. Scripts may explicitly request JSON; the agent
 uses the default text views.
 
 Given batch A is checked twice, only A's latest cached result remains; batch B
-is preserved. A new full validation clears previous batches. History retains
-the outcome and decision without requiring those old IDs to resolve.
+is preserved. A new full validation clears previous batches. Previously reported
+outcomes remain in the conversation; the agent does not assume old result IDs
+will still resolve or maintain a separate history merely to copy those results.
 
 ## Replace Boundary
 

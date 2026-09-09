@@ -95,6 +95,9 @@ PUBLICATION_RETRY = "publication"
 LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE = (
     "unsupported artifact reason: 'validation_blocked'"
 )
+LEGACY_RUN_INVALID_PUBLICATION_FAILURE = (
+    "unsupported artifact reason: 'reproduction.run.invalid'"
+)
 
 
 @dataclass(frozen=True)
@@ -369,7 +372,10 @@ def _is_publication_retry(record: Mapping[str, object]) -> bool:
         record.get("schema") == RUN_SCHEMA
         and operational.get("code") == "reproduction.job.failed"
         and operational.get("message")
-        == LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE
+        in {
+            LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
+            LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
+        }
         and operational.get("entry") is None
         and operational.get("execution_id") is None
     )

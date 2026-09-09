@@ -35,6 +35,7 @@ from .reproduction_results import (
     OUTCOMES,
     ArtifactResult,
     ComparisonRecord,
+    ReproductionResultError,
     ReproductionResults,
     RunFolder,
     RunResult,
@@ -75,7 +76,10 @@ def publish_completed_reproduction(
     """Publish one normally completed target without validation or confirmation."""
 
     project_root = resolve_project_root(log.root)
-    artifacts = _artifact_results(request)
+    try:
+        artifacts = _artifact_results(request)
+    except ReproductionResultError as error:
+        raise ActionError("reproduction.publication.failed", str(error)) from error
     run = _run_result(
         request.plan, artifacts, request, project_root
     )

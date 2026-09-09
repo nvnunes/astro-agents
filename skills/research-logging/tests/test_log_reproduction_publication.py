@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from log_commands.context import LogContext
+from log_commands.model import ActionError
+from log_commands.reproduction_comparison import ArtifactComparison, ExecutionComparison
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_publication import (
@@ -285,48 +287,119 @@ class ReproductionPublicationTests(unittest.TestCase):
             )
             self.assertFalse((log_root / "validation.md").exists())
 
-    def test_validation_blocked_case_is_a_planned_failure(self) -> None:
-        run_id = "reproduce-20300101t000000z-validation-blocked"
+    def test_generated_failure_reasons_are_publishable_artifact_failures(self) -> None:
         execution_id = "pyrun-exec/v1:" + "1" * 64
-        plan = ReproductionPlan(
-            "docs/study.md",
-            {"entry": None, "kind": "log"},
-            False,
-            {},
-            {},
-            (
-                {
-                    "artifact": "data/result.csv",
-                    "disposition": "failed",
-                    "entry": "e001",
-                    "execution_id": execution_id,
-                    "reason": "validation_blocked",
-                },
-            ),
-            (),
-            (),
-            (),
+        execution_reasons = (
+            "capture_failed",
+            "execution_exception",
+            "output_materialization_failed",
+            "reproduction.run.invalid",
         )
-
-        artifacts = _artifact_results(
-            CompletedPublication(
-                plan,
+        for reason in (*execution_reasons, "validation_blocked"):
+            planned_failure = reason == "validation_blocked"
+            plan = ReproductionPlan(
+                "docs/study.md",
+                {"entry": None, "kind": "log"},
+                False,
+                {},
+                {},
+                (
+                    {
+                        "artifact": "data/result.csv",
+                        "disposition": "failed" if planned_failure else "run",
+                        "entry": "e001",
+                        "execution_id": execution_id,
+                        "reason": reason if planned_failure else None,
+                    },
+                ),
                 (),
-                run_id,
-                "2030-01-01T00:00:00Z",
-                "2030-01-01T00:01:00Z",
-                Path("/tmp/reproduction-run"),
+                (),
+                (),
             )
-        )
+            artifacts = _artifact_results(
+                CompletedPublication(
+                    plan,
+                    (
+                        ()
+                        if planned_failure
+                        else (
+                            ExecutionComparison(
+                                "e001",
+                                execution_id,
+                                (
+                                    ArtifactComparison(
+                                        "data/result.csv",
+                                        "failed",
+                                        reason,
+                                        None,
+                                        None,
+                                        None,
+                                    ),
+                                ),
+                                None,
+                                False,
+                            ),
+                        )
+                    ),
+                    "reproduce-20300101t000000z-execution-failure",
+                    "2030-01-01T00:00:00Z",
+                    "2030-01-01T00:01:00Z",
+                    Path("/tmp/reproduction-run"),
+                )
+            )
 
-        self.assertEqual(
-            (
-                artifacts[0].execution_id,
-                artifacts[0].outcome,
-                artifacts[0].reason,
-            ),
-            (execution_id, "failed", "validation_blocked"),
-        )
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    (
+                        artifacts[0].execution_id,
+                        artifacts[0].outcome,
+                        artifacts[0].reason,
+                    ),
+                    (execution_id, "failed", reason),
+                )
+
+    def test_unknown_artifact_reason_is_a_retriable_publication_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            log_root = root / "docs" / "study"
+            log_root.mkdir(parents=True)
+            summary = root / "docs" / "study.md"
+            summary.write_text("# Study\n", encoding="utf-8")
+            plan = ReproductionPlan(
+                "docs/study.md",
+                {"entry": None, "kind": "log"},
+                False,
+                {},
+                {},
+                (
+                    {
+                        "artifact": "data/result.csv",
+                        "disposition": "failed",
+                        "entry": "e001",
+                        "execution_id": None,
+                        "reason": "unknown_reason",
+                    },
+                ),
+                (),
+                (),
+                (),
+            )
+
+            with self.assertRaises(ActionError) as caught:
+                publish_completed_reproduction(
+                    LogContext(summary, log_root),
+                    CompletedPublication(
+                        plan,
+                        (),
+                        "reproduce-20300101t000000z-unknown-reason",
+                        "2030-01-01T00:00:00Z",
+                        "2030-01-01T00:01:00Z",
+                        root / "tmp" / "reproduction-run",
+                    ),
+                )
+
+            self.assertEqual(caught.exception.code, "reproduction.publication.failed")
 
 
 if __name__ == "__main__":

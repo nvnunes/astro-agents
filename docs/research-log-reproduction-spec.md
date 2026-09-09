@@ -1234,11 +1234,12 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 `resume` is available for `stopped` runs and for a `failed` run whose sole
 operational failure is `reproduction.publication.failed`. It reacquires the
 original scope lock and reuses the same run-local output workspace and run
-paths and immutable `jobs` cap. One exact pre-fix v3 failure recorded as
+paths and immutable `jobs` cap. Two exact pre-fix v3 failures recorded as
 `reproduction.job.failed` with message `unsupported artifact reason:
-'validation_blocked'` is recognized as the corresponding publication failure
-only when its durable run state, workers, and checkpoints are terminal. A
-stopped run skips `succeeded` and `failed`
+'validation_blocked'` or `unsupported artifact reason:
+'reproduction.run.invalid'` are recognized as the corresponding publication
+failure only when their durable run state, workers, and checkpoints are
+terminal. A stopped run skips `succeeded` and `failed`
 execution checkpoints and reinvokes only `stopped` executions in their original run paths,
 preserving script-native checkpoint and resume behavior. It restores the stable
 ready queue from the accepted plan and durable checkpoints, but does not reuse
@@ -1512,12 +1513,14 @@ produced outside an entry target, that selected artifact is respectively
 `skipped` with reason `non_automatic` or `outside_entry`.
 
 The complete v1 reason vocabulary is `baseline_unavailable`,
-`boundary_changed`, `boundary_unavailable`, `comparator_error`,
-`content_changed`, `cross_log_generated_input`, `dependency_cycle`,
-`dependency_failed`, `evidence_comparison_failed`, `execution_failed`,
+`boundary_changed`, `boundary_unavailable`, `capture_failed`,
+`comparator_error`, `content_changed`, `cross_log_generated_input`,
+`dependency_cycle`, `dependency_failed`, `evidence_comparison_failed`,
+`execution_exception`, `execution_failed`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
-`multiple_producers`, `output_missing`,
-`outside_entry`, `resource_limit`, `safety_failure`, `non_automatic`, `stop_requested`,
+`multiple_producers`, `output_materialization_failed`, `output_missing`,
+`outside_entry`, `reproduction.run.invalid`, `resource_limit`, `safety_failure`,
+`non_automatic`, `stop_requested`,
 `unsupported_format`, `validation_blocked`, `worker_cleanup_incomplete`, and
 `worker_survived`.
 

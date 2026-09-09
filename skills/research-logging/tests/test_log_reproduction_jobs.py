@@ -19,6 +19,7 @@ from log_commands.reproduction_execution import (
     WorkerRecord,
 )
 from log_commands.reproduction_jobs import (
+    LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
     LEGACY_RUN_SCHEMA,
     LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
     PUBLICATION_RETRY,
@@ -54,7 +55,7 @@ from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
-    def test_exact_legacy_publication_failure_is_retry_only(self) -> None:
+    def test_exact_legacy_artifact_rejections_are_publication_retry_only(self) -> None:
         record = {
             "schema": RUN_SCHEMA,
             "state": {
@@ -73,16 +74,22 @@ class ReproductionJobTests(unittest.TestCase):
             "checkpoints": [{"state": "succeeded"}, {"state": "failed"}],
         }
 
-        self.assertTrue(_is_publication_retry(record))
-        self.assertEqual(
-            _resumable_execution_references(record, mode=PUBLICATION_RETRY),
-            frozenset(),
-        )
-
         unrelated = cast(dict[str, object], record["state"])[
             "operational_failure"
         ]
         assert isinstance(unrelated, dict)
+        for message in (
+            LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
+            LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
+        ):
+            with self.subTest(message=message):
+                unrelated["message"] = message
+                self.assertTrue(_is_publication_retry(record))
+                self.assertEqual(
+                    _resumable_execution_references(record, mode=PUBLICATION_RETRY),
+                    frozenset(),
+                )
+
         unrelated["message"] = "unrelated job failure"
         self.assertFalse(_is_publication_retry(record))
 

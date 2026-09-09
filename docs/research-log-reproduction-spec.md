@@ -813,9 +813,12 @@ entry-document IDs. Reproduction resolves each through the canonical entry
 document grammar to its owning physical stable entry before matching selected
 executions or recording batch admission. Split documents such as `e001a` and
 `e001b` therefore share the `e001` execution owner without changing their
-published chain identities. Missing, invalid, absent, or multiply matching
-scopes still fail closed, and batch admission records the physical stable entry
-ID. Existing same-ID documents retain the identical mapping.
+published chain identities. A chain matches an execution only when one of its
+authored commands directly produces the execution's complete output set;
+input-only, registry, and general artifact presence do not establish
+production. Missing, invalid, absent, or multiply matching scopes still fail
+closed, and batch admission records the physical stable entry ID. Existing
+same-ID documents retain the identical mapping.
 
 ### Graph Construction
 

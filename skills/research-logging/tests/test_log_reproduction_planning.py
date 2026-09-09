@@ -57,6 +57,22 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
+def _projected_command(
+    *, outputs: tuple[str, ...], inputs: tuple[str, ...] = ()
+) -> dict[str, object]:
+    return {
+        "collections": [],
+        "inputs": [
+            {"direction": "input", "path": value, "proof": "fixture"}
+            for value in inputs
+        ],
+        "outputs": [
+            {"direction": "output", "path": value, "proof": "fixture"}
+            for value in outputs
+        ],
+    }
+
+
 class _Fixture:
     def __init__(self, root: Path):
         subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
@@ -264,6 +280,13 @@ class ReproductionPlanningTests(unittest.TestCase):
                     {
                         "artifacts": [(entry.root / "data" / "blocked.csv").as_posix()],
                         "chain_id": "blocked-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (entry.root / "data" / "blocked.csv").as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e001",
                         "findings": [
                             {
@@ -279,6 +302,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                             (entry.root / "data" / "dependent.csv").as_posix()
                         ],
                         "chain_id": "dependent-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (
+                                        entry.root / "data" / "dependent.csv"
+                                    ).as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e001",
                         "findings": [],
                     },
@@ -287,6 +319,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                             (entry.root / "data" / "independent.csv").as_posix()
                         ],
                         "chain_id": "independent-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (
+                                        entry.root / "data" / "independent.csv"
+                                    ).as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e001",
                         "findings": [
                             {
@@ -351,6 +392,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                             (second.root / "data" / "independent.csv").as_posix()
                         ],
                         "chain_id": "independent-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (
+                                        second.root / "data" / "independent.csv"
+                                    ).as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e002",
                         "findings": [],
                     }
@@ -414,6 +464,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                             (entry.root / "data" / "admitted.csv").as_posix()
                         ],
                         "chain_id": "admitted-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (
+                                        entry.root / "data" / "admitted.csv"
+                                    ).as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e001a",
                         "findings": [],
                     },
@@ -422,6 +481,13 @@ class ReproductionPlanningTests(unittest.TestCase):
                             (entry.root / "data" / "blocked.csv").as_posix()
                         ],
                         "chain_id": "blocked-chain",
+                        "commands": [
+                            _projected_command(
+                                outputs=(
+                                    (entry.root / "data" / "blocked.csv").as_posix(),
+                                )
+                            )
+                        ],
                         "entry": "e001b",
                         "findings": [
                             {
@@ -449,7 +515,53 @@ class ReproductionPlanningTests(unittest.TestCase):
                 {("e001", "blocked-chain"): ("provenance:e001b:blocked",)},
             )
 
-    def test_subdocument_chain_matching_remains_fail_closed(self) -> None:
+    def test_subdocument_consumer_presence_does_not_create_a_chain_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            owner = mock.Mock()
+            owner.entry.context = entry
+            owner.execution_id = "selected"
+            owner.execution.recipe.outputs = (("data/result.csv", "file"),)
+            target = (entry.root / "data" / "result.csv").as_posix()
+            final = (entry.root / "data" / "final.csv").as_posix()
+            state = mock.Mock()
+            state.project_root = fixture.root
+            state.selected = {("e001", "selected"): owner}
+            state.blocked = set()
+            state.admitted_batches = set()
+            state.excluded_batches = {}
+            state.failures = {}
+            state.cases = {}
+            projection = {
+                "chains": [
+                    {
+                        "artifacts": [target],
+                        "chain_id": "producer-chain",
+                        "commands": [_projected_command(outputs=(target,))],
+                        "entry": "e001a",
+                        "findings": [],
+                    },
+                    {
+                        "artifacts": [target, final],
+                        "chain_id": "consumer-chain",
+                        "commands": [
+                            _projected_command(outputs=(final,), inputs=(target,))
+                        ],
+                        "entry": "e001b",
+                        "findings": [],
+                    },
+                ],
+                "unresolved": [],
+            }
+
+            from log_commands.reproduction_planner import _apply_validation_admission
+
+            _apply_validation_admission(state, projection)
+
+            self.assertEqual(state.admitted_batches, {("e001", "producer-chain")})
+
+    def test_subdocument_producer_matching_remains_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -468,6 +580,16 @@ class ReproductionPlanningTests(unittest.TestCase):
                                 (entry.root / "data" / "other.csv").as_posix()
                             ],
                             "chain_id": "other-chain",
+                            "commands": [
+                                _projected_command(
+                                    outputs=(
+                                        (
+                                            entry.root / "data" / "other.csv"
+                                        ).as_posix(),
+                                    ),
+                                    inputs=(target,),
+                                )
+                            ],
                             "entry": "e001a",
                             "findings": [],
                         }
@@ -480,12 +602,14 @@ class ReproductionPlanningTests(unittest.TestCase):
                         {
                             "artifacts": [target],
                             "chain_id": "first-chain",
+                            "commands": [_projected_command(outputs=(target,))],
                             "entry": "e001a",
                             "findings": [],
                         },
                         {
                             "artifacts": [target],
                             "chain_id": "second-chain",
+                            "commands": [_projected_command(outputs=(target,))],
                             "entry": "e001b",
                             "findings": [],
                         },

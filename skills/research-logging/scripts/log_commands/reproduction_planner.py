@@ -889,7 +889,10 @@ def _apply_execution_admission(
         group
         for group in chains
         if _projected_physical_entry(group.get("entry")) == owner.entry.context.id
-        and targets & {str(value) for value in _sequence_items(group.get("artifacts"))}
+        and any(
+            targets <= _projected_command_outputs(command)
+            for command in _mapping_items(group.get("commands"))
+        )
     ]
     if len(matches) != 1:
         raise ActionError(
@@ -932,6 +935,28 @@ def _projected_physical_entry(value: object) -> str:
             f"projected batch has invalid entry scope: {value}",
         )
     return identity.id
+
+
+def _projected_command_outputs(command: Mapping[str, object]) -> set[str]:
+    """Return only material directly produced by one projected command."""
+
+    outputs = {
+        str(relationship["path"])
+        for relationship in _mapping_items(command.get("outputs"))
+        if isinstance(relationship.get("path"), str)
+    }
+    for collection in _mapping_items(command.get("collections")):
+        if collection.get("direction") != "output":
+            continue
+        root = collection.get("root")
+        if isinstance(root, str):
+            outputs.add(root)
+        outputs.update(
+            str(member)
+            for member in _sequence_items(collection.get("members"))
+            if isinstance(member, str)
+        )
+    return outputs
 
 
 def _sequence_items(value: object) -> Sequence[object]:

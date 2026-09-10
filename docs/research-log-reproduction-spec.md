@@ -76,7 +76,7 @@ The initial implementation must use these versions:
 | Run status projection | `research-log-reproduction-status/4` |
 | Dry-run plan | `research-log-reproduction-plan/4` |
 | Command list | `research-log-reproduction-command-list/2` |
-| Command detail | `research-log-reproduction-command/2` |
+| Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
 | Source snapshot | `research-log-reproduction-source-snapshot/8` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
@@ -144,6 +144,7 @@ the selected entry. Graph limits do not authorize broader scope.
 | Checkpoints per run | 2,048 |
 | Checkpoint-directory entries per run | 4,096 |
 | Outputs per checkpoint | 256 |
+| Command-query excerpt per diagnostic stream | 16 KiB |
 | Structured diagnostic events per run | 1,000,000 |
 | Structured diagnostic bytes per run | 1 GiB |
 | Runner-owned temporary and staging bytes per run | 1 TiB |
@@ -2296,14 +2297,25 @@ returned, and omitted counts. Its public buckets are
 `blocked`; entry, bucket, and exact reason filters are combinable. `show`
 returns one exact entry-qualified execution, including its recorded recipe,
 working directory, automatic-reproduction policy, run selection, accounting
-reason, declared inputs and outputs, and any available planning detail.
+reason, declared inputs and outputs, and any available planning detail. The
+text list prints a shell-safe `commands show` invocation for every returned
+row, preserving the caller's executable and log-path spelling.
 
 These queries use the same seven-category accounting projection that produced
-the selected run's compact counts. They read only that run's
-immutable `command_records` and reconcile every projected row against its
-published totals before returning it. They never consult current `pyrun.json`,
-reinterpret historical policy, or require another reproduction because a
-command was changed, removed, or reclassified after publication.
+the selected run's compact counts. They read that run's immutable
+`command_records` and reconcile every projected row against its published
+totals before returning it. For a launched command, `show` also resolves the
+selected run's exact retained directory and newest terminal checkpoint for the
+compound entry and execution identity. Command detail schema
+`research-log-reproduction-command/3` includes the checkpoint failure,
+timing, and observed outputs plus retained stdout and stderr projections. Each
+stream projection records its project-relative path, availability, byte count,
+whether it was truncated, and at most the final 16 KiB with terminal control
+characters sanitized. A missing, removed, invalid, or unavailable run
+directory or stream is reported explicitly without hiding the immutable
+command record. The query never consults current `pyrun.json`, reinterprets
+historical policy, or requires another reproduction because a command was
+changed, removed, or reclassified after publication.
 
 The reproduction-result contract centrally decides whether a run has current
 command-query metadata. Command queries do not provide a partial compatibility
@@ -2315,8 +2327,9 @@ records, aggregate counts, or current command metadata. Malformed records in a
 current command-query projection are invalid rather than outdated.
 
 Both commands are bounded read-only queries. They never validate, reproduce,
-repair, publish, clean up, or write a file. Operational lifecycle diagnosis
-remains on `status --json`.
+repair, publish, clean up, or write a file. Run-level lifecycle diagnosis
+remains on `status --json`; per-command retained diagnostics belong to
+`commands show`.
 
 ### Agent Monitoring
 

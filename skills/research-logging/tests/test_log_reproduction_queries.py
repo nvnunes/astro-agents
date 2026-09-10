@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -17,6 +18,8 @@ from log_commands.reproduction_planner import (
     ReproductionStateProjection,
 )
 from log_commands.reproduction_queries import (
+    compose_reproduction_command,
+    compose_reproduction_command_list,
     compose_root_reproduction_summary,
     list_reproduction_artifacts,
     list_reproduction_commands,
@@ -422,7 +425,7 @@ class ReproductionQueryTests(unittest.TestCase):
             mock.patch(
                 "log_commands.reproduction_queries.compose_reproduction_command_list",
                 return_value="30 commands\n",
-            ),
+            ) as compose,
             redirect_stdout(output),
         ):
             status = main(
@@ -445,6 +448,11 @@ class ReproductionQueryTests(unittest.TestCase):
             entry=None,
             reason=None,
             run_id=None,
+        )
+        compose.assert_called_once_with(
+            mock.ANY,
+            path=Path("/project/log"),
+            program=mock.ANY,
         )
 
     def test_legacy_command_queries_require_reproduction_metadata_upgrade(self) -> None:
@@ -584,9 +592,22 @@ class ReproductionQueryTests(unittest.TestCase):
         results = ReproductionResults(
             "docs/research.md", "2030-01-01T00:05:00Z", (), (run,)
         )
-        with mock.patch(
-            "log_commands.reproduction_queries._published_results",
-            return_value=results,
+        with (
+            mock.patch(
+                "log_commands.reproduction_queries._published_results",
+                return_value=results,
+            ),
+            mock.patch(
+                "log_commands.reproduction_queries._command_diagnostics",
+                return_value={
+                    "attempt": None,
+                    "availability": "unavailable",
+                    "checkpoint": None,
+                    "reason": "fixture",
+                    "stderr": None,
+                    "stdout": None,
+                },
+            ),
         ):
             failed = list_reproduction_commands(
                 mock.sentinel.log,
@@ -614,6 +635,202 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(shown["command"]["bucket"], "failed")
         self.assertNotIn("details_unavailable", failed)
         self.assertNotIn("details_unavailable", shown)
+
+    def test_command_show_reads_bounded_retained_failure_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            summary = project / "docs" / "research.md"
+            summary.parent.mkdir()
+            summary.write_text("# Research\n", encoding="utf-8")
+            log = LogContext(summary.resolve(), summary.with_suffix("").resolve())
+            run_id = "reproduce-20300101t000000z-diagnostics"
+            execution_id = "pyrun-exec/v1:" + "1" * 64
+            relative_root = (
+                "tmp/reproduction/2030-01-01/"
+                "reproduce-research-reproduce-20300101t000000z-diagnostics"
+            )
+            run_root = project / relative_root
+            diagnostic_root = (
+                run_root / "diagnostics" / "e003" / execution_id.rsplit(":", 1)[1]
+            )
+            diagnostic_root.mkdir(parents=True)
+            (diagnostic_root / "stderr.log").write_bytes(
+                b"discarded prefix\n"
+                + b"x" * (20 * 1024)
+                + b"\n\x1b[31mValueError: broken\x1b[0m\n"
+            )
+            (diagnostic_root / "stdout.log").write_text(
+                "preparing fixture\n", encoding="utf-8"
+            )
+            command = {
+                "auto_reproduce": True,
+                "bucket": "failed",
+                "cwd": "docs/research/entries/2030-01-01-e003-fixture",
+                "details": [],
+                "entry": "e003",
+                "execution_id": execution_id,
+                "exclusive": False,
+                "prior_disposition": None,
+                "queued": True,
+                "reason": "failed",
+                "recipe": {
+                    "environment": {},
+                    "inputs": [],
+                    "outputs": {"data/result.txt": "file"},
+                    "parameters": [],
+                    "script": "scripts/build.py",
+                },
+                "requires_reproduction": True,
+                "run_selection": "run",
+                "source_digest": "a" * 64,
+                "terminal_disposition": "failed",
+            }
+            run = RunResult(
+                run_id,
+                {"entry": None, "kind": "log"},
+                False,
+                "complete",
+                "2030-01-01T00:00:00Z",
+                "2030-01-01T00:05:00Z",
+                {
+                    "changed": 0,
+                    "comparison_failed": 0,
+                    "failed": 1,
+                    "matched": 0,
+                    "skipped": 0,
+                },
+                RunFolder(relative_root, "available"),
+                (),
+                {
+                    "blocked": 0,
+                    "failed": 1,
+                    "not_automatic": 0,
+                    "reproduction_not_needed": 0,
+                    "unchanged_blocked": 0,
+                    "unchanged_failed": 0,
+                    "succeeded": 0,
+                    "total": 1,
+                },
+                (command,),
+            )
+            results = ReproductionResults(
+                "docs/research.md", "2030-01-01T00:05:00Z", (), (run,)
+            )
+            checkpoint = {
+                "completed_at": None,
+                "elapsed_seconds": 2.5,
+                "entry": "e003",
+                "execution_id": execution_id,
+                "failure": {
+                    "code": "execution_failed",
+                    "message": "execution exited with status 1",
+                    "recorded_at": "2030-01-01T00:00:04Z",
+                },
+                "finished_at": "2030-01-01T00:00:04Z",
+                "outputs": [],
+                "path": "checkpoints/e003-fixture.json",
+                "started_at": "2030-01-01T00:00:01Z",
+                "state": "failed",
+            }
+            record = {"attempt": 1, "attempts": [], "checkpoints": [checkpoint]}
+            with (
+                mock.patch(
+                    "log_commands.reproduction_queries._published_results",
+                    return_value=results,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._find_run",
+                    return_value=run_root.resolve(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._load_run",
+                    return_value=record,
+                ),
+            ):
+                shown = show_reproduction_command(
+                    log,
+                    entry="e003",
+                    execution_id=execution_id,
+                    run_id=run_id,
+                )
+
+            diagnostics = shown["diagnostics"]
+            self.assertEqual(shown["schema"], "research-log-reproduction-command/3")
+            self.assertEqual(diagnostics["availability"], "available")
+            self.assertEqual(diagnostics["attempt"], 1)
+            self.assertEqual(
+                diagnostics["checkpoint"]["failure"]["message"],
+                "execution exited with status 1",
+            )
+            self.assertIn("ValueError: broken", diagnostics["stderr"]["excerpt"])
+            self.assertNotIn("discarded prefix", diagnostics["stderr"]["excerpt"])
+            self.assertNotIn("\x1b", diagnostics["stderr"]["excerpt"])
+            self.assertTrue(diagnostics["stderr"]["truncated"])
+            self.assertTrue(
+                diagnostics["stderr"]["path"].endswith(
+                    "diagnostics/e003/" + "1" * 64 + "/stderr.log"
+                )
+            )
+            text = compose_reproduction_command(shown)
+            self.assertIn(
+                "Failure: execution_failed: execution exited with status 1", text
+            )
+            self.assertIn("Stderr:", text)
+            self.assertIn("ValueError: broken", text)
+
+            with mock.patch(
+                "log_commands.reproduction_queries._published_results",
+                return_value=results,
+            ):
+                listed = list_reproduction_commands(
+                    log,
+                    bucket="failed",
+                    entry=None,
+                    reason=None,
+                    run_id=run_id,
+                )
+            listing = compose_reproduction_command_list(
+                listed,
+                path=Path("/project/docs/research"),
+                program=Path("/skill/scripts/log"),
+            )
+            self.assertIn(
+                "/skill/scripts/log reproduce commands show "
+                "--path /project/docs/research --entry e003 "
+                f"--execution-id {execution_id} --run-id {run_id} --format text",
+                listing,
+            )
+
+            unavailable_results = replace(
+                results,
+                runs=(
+                    replace(
+                        run,
+                        folder=RunFolder(relative_root, "unknown"),
+                    ),
+                ),
+            )
+            with (
+                mock.patch(
+                    "log_commands.reproduction_queries._published_results",
+                    return_value=unavailable_results,
+                ),
+                mock.patch("log_commands.reproduction_jobs._find_run") as find_run,
+            ):
+                unavailable = show_reproduction_command(
+                    log,
+                    entry="e003",
+                    execution_id=execution_id,
+                    run_id=run_id,
+                )
+            self.assertEqual(
+                unavailable["diagnostics"]["availability"], "unavailable"
+            )
+            self.assertEqual(
+                unavailable["diagnostics"]["reason"], "run_directory_unavailable"
+            )
+            find_run.assert_not_called()
 
     def test_dispatcher_limits_recheck_to_launch_and_dry_run(self) -> None:
         log = mock.sentinel.log

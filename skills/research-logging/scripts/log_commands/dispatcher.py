@@ -981,7 +981,11 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
         output = (
             json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
             if args.format == "json"
-            else compose_reproduction_command_list(result)
+            else compose_reproduction_command_list(
+                result,
+                path=args.path,
+                program=Path(sys.argv[0]),
+            )
         )
     else:
         result = show_reproduction_command(

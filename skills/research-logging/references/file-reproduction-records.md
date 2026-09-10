@@ -86,6 +86,13 @@ results remain invalid rather than being treated as outdated. The accepted
 source snapshot records the result schema it may publish, so a run accepted
 before a schema cutover cannot perform that replacement.
 
+For a current published command record, command show may supplement immutable
+accounting with the matching retained run checkpoint and bounded stdout and
+stderr tails. Those diagnostics are availability-qualified run-local evidence,
+not fields reconstructed into the cumulative result. Removing the retained run
+directory therefore removes diagnostic access without changing the published
+command outcome.
+
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;
 it has no date argument, run index, or legacy lookup. A real acceptance creates

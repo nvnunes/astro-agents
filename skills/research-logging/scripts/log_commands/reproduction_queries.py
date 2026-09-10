@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping, cast
 
 from research_log_paths import REPRODUCTION_RESULTS
@@ -42,9 +42,10 @@ from .reproduction_results import (
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
 COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/2"
-COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/2"
+COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/3"
 SUMMARY_SCHEMA = "research-log-reproduction-summary/5"
 ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/5"
+MAX_COMMAND_DIAGNOSTIC_BYTES = 16 * 1024
 COMMAND_BUCKETS = (
     "reproduction-not-retried",
     "skipped-by-policy",
@@ -510,13 +511,25 @@ def show_reproduction_command(
         )
     return {
         "command": dict(selected[0]),
+        "diagnostics": _command_diagnostics(
+            log,
+            selected_run,
+            selected[0],
+            entry=entry,
+            execution_id=execution_id,
+        ),
         "run_id": selected_run.run_id,
         "schema": COMMAND_SHOW_SCHEMA,
         "summary": results.summary,
     }
 
 
-def compose_reproduction_command_list(value: Mapping[str, object]) -> str:
+def compose_reproduction_command_list(
+    value: Mapping[str, object],
+    *,
+    path: Path | str | None = None,
+    program: Path | str = "log",
+) -> str:
     """Render one bounded command list in a concise human form."""
 
     filters = cast(Mapping[str, object], value["filters"])
@@ -534,6 +547,13 @@ def compose_reproduction_command_list(value: Mapping[str, object]) -> str:
                 f"{record['entry']} {record['execution_id']}",
                 f"  {record['bucket']}: {record['reason']}",
                 f"  {record['cwd']}$ {record['command']}",
+                "  Inspect: "
+                + _command_show_invocation(
+                    value,
+                    record,
+                    path=path,
+                    program=program,
+                ),
             )
         )
     return "\n".join(lines) + "\n"
@@ -578,8 +598,263 @@ def compose_reproduction_command(value: Mapping[str, object]) -> str:
         )
     details = cast(Sequence[str], record["details"])
     if details:
-        lines.append("Details: " + "; ".join(details))
+        lines.append("Planning details: " + "; ".join(details))
+    diagnostics = cast(Mapping[str, object], value["diagnostics"])
+    availability = cast(str, diagnostics["availability"])
+    if availability == "available":
+        attempt = diagnostics["attempt"]
+        lines.append(f"Diagnostics: retained from attempt {attempt}")
+        checkpoint = cast(Mapping[str, object], diagnostics["checkpoint"])
+        failure = checkpoint.get("failure")
+        if isinstance(failure, Mapping):
+            lines.append(f"Failure: {failure['code']}: {failure['message']}")
+        lines.append(
+            "Timing: "
+            f"{checkpoint.get('started_at') or 'unavailable'} to "
+            f"{checkpoint.get('finished_at') or 'unavailable'}; "
+            + (
+                f"{checkpoint['elapsed_seconds']} seconds"
+                if checkpoint.get("elapsed_seconds") is not None
+                else "elapsed time unavailable"
+            )
+        )
+        outputs = cast(Sequence[Mapping[str, object]], checkpoint["outputs"])
+        if outputs:
+            lines.append(
+                "Observed outputs: "
+                + ", ".join(cast(str, item["artifact"]) for item in outputs)
+            )
+        for stream in ("stderr", "stdout"):
+            _append_diagnostic_stream(
+                lines,
+                stream,
+                cast(Mapping[str, object], diagnostics[stream]),
+            )
+    elif availability == "not_applicable":
+        lines.append("Diagnostics: not applicable; command was not launched")
+    else:
+        lines.append(
+            "Diagnostics: unavailable"
+            + (
+                f" ({diagnostics['reason']})"
+                if diagnostics.get("reason") is not None
+                else ""
+            )
+        )
     return "\n".join(lines) + "\n"
+
+
+def _command_show_invocation(
+    value: Mapping[str, object],
+    record: Mapping[str, object],
+    *,
+    path: Path | str | None,
+    program: Path | str,
+) -> str:
+    """Return one shell-safe drill-down command for a listed command."""
+
+    target = str(path) if path is not None else cast(str, value["summary"])
+    return shlex.join(
+        (
+            str(program),
+            "reproduce",
+            "commands",
+            "show",
+            "--path",
+            target,
+            "--entry",
+            cast(str, record["entry"]),
+            "--execution-id",
+            cast(str, record["execution_id"]),
+            "--run-id",
+            cast(str, value["run_id"]),
+            "--format",
+            "text",
+        )
+    )
+
+
+def _command_diagnostics(
+    log: LogContext,
+    run: RunResult,
+    command: Mapping[str, object],
+    *,
+    entry: str,
+    execution_id: str,
+) -> dict[str, object]:
+    """Project bounded retained diagnostics for one exact launched command."""
+
+    unavailable = (
+        "command_not_launched"
+        if command.get("run_selection") != "run"
+        else "run_directory_unavailable"
+        if run.folder.availability != "available"
+        else None
+    )
+    if unavailable is not None:
+        return _unavailable_command_diagnostics(unavailable)
+    from .reproduction_jobs import _find_run, _load_run
+
+    try:
+        run_root = _find_run(log, run.run_id)
+        expected = (resolve_project_root(log.root) / run.folder.path).resolve()
+        if run_root != expected:
+            raise ActionError(
+                "reproduction.run.directory_changed",
+                "published run directory identity changed",
+            )
+        record = _load_run(run_root / "run.json")
+    except (ActionError, OSError) as error:
+        reason = (
+            error.code
+            if isinstance(error, ActionError)
+            else "run_directory_unavailable"
+        )
+        return _unavailable_command_diagnostics(reason)
+    located = _locate_command_checkpoint(record, entry, execution_id)
+    if located is None:
+        return _unavailable_command_diagnostics("checkpoint_unavailable")
+    attempt, prefix, checkpoint = located
+    digest = execution_id.rsplit(":", 1)[-1]
+    diagnostic_root = prefix / "diagnostics" / entry / digest
+    return {
+        "attempt": attempt,
+        "availability": "available",
+        "checkpoint": dict(checkpoint),
+        "reason": None,
+        "stderr": _diagnostic_stream(
+            run_root,
+            diagnostic_root / "stderr.log",
+            published_root=run.folder.path,
+        ),
+        "stdout": _diagnostic_stream(
+            run_root,
+            diagnostic_root / "stdout.log",
+            published_root=run.folder.path,
+        ),
+    }
+
+
+def _locate_command_checkpoint(
+    record: Mapping[str, object], entry: str, execution_id: str
+) -> tuple[int, Path, Mapping[str, object]] | None:
+    """Find the newest retained checkpoint for one compound command identity."""
+
+    current = cast(int, record["attempt"])
+    candidates: list[tuple[int, Path, Mapping[str, object]]] = [
+        (current, Path(), record)
+    ]
+    candidates.extend(
+        (
+            cast(int, archived["attempt"]),
+            Path("attempts") / f"{cast(int, archived['attempt']):04d}",
+            archived,
+        )
+        for archived in reversed(
+            cast(Sequence[Mapping[str, object]], record["attempts"])
+        )
+    )
+    for attempt, prefix, candidate in candidates:
+        matches = [
+            item
+            for item in cast(Sequence[Mapping[str, object]], candidate["checkpoints"])
+            if item.get("entry") == entry
+            and item.get("execution_id") == execution_id
+            and item.get("state") != "active"
+        ]
+        if len(matches) == 1:
+            return attempt, prefix, matches[0]
+    return None
+
+
+def _diagnostic_stream(
+    run_root: Path, path: Path, *, published_root: str
+) -> dict[str, object]:
+    """Read one safe bounded tail from a retained diagnostic stream."""
+
+    relative = path.as_posix()
+    retained_path = PurePosixPath(relative)
+    reported = (PurePosixPath(published_root) / retained_path).as_posix()
+    target = run_root.joinpath(*retained_path.parts)
+    if retained_path.is_absolute() or ".." in retained_path.parts:
+        return _unavailable_diagnostic_stream(reported, "path_invalid")
+    current = run_root
+    for part in retained_path.parts:
+        current /= part
+        if current.is_symlink():
+            return _unavailable_diagnostic_stream(reported, "path_invalid")
+    if not target.is_file():
+        return _unavailable_diagnostic_stream(reported, "missing")
+    try:
+        size = target.stat().st_size
+        with target.open("rb") as stream:
+            if size > MAX_COMMAND_DIAGNOSTIC_BYTES:
+                stream.seek(size - MAX_COMMAND_DIAGNOSTIC_BYTES)
+            raw = stream.read(MAX_COMMAND_DIAGNOSTIC_BYTES + 1)
+    except OSError:
+        return _unavailable_diagnostic_stream(reported, "unreadable")
+    if len(raw) > MAX_COMMAND_DIAGNOSTIC_BYTES:
+        raw = raw[-MAX_COMMAND_DIAGNOSTIC_BYTES:]
+    return {
+        "available": True,
+        "bytes": size,
+        "excerpt": _safe_diagnostic_text(raw.decode("utf-8", errors="replace")),
+        "path": reported,
+        "reason": None,
+        "truncated": size > len(raw),
+    }
+
+
+def _safe_diagnostic_text(value: str) -> str:
+    """Remove terminal control characters from one untrusted diagnostic excerpt."""
+
+    return "".join(
+        character
+        if character in {"\n", "\t"} or ord(character) >= 32 and ord(character) != 127
+        else "�"
+        for character in value
+    )
+
+
+def _unavailable_diagnostic_stream(path: str, reason: str) -> dict[str, object]:
+    return {
+        "available": False,
+        "bytes": None,
+        "excerpt": None,
+        "path": path,
+        "reason": reason,
+        "truncated": False,
+    }
+
+
+def _unavailable_command_diagnostics(reason: str) -> dict[str, object]:
+    return {
+        "attempt": None,
+        "availability": (
+            "not_applicable" if reason == "command_not_launched" else "unavailable"
+        ),
+        "checkpoint": None,
+        "reason": reason,
+        "stderr": None,
+        "stdout": None,
+    }
+
+
+def _append_diagnostic_stream(
+    lines: list[str], name: str, stream: Mapping[str, object]
+) -> None:
+    """Append one retained stream path and bounded excerpt to command detail."""
+
+    title = name.capitalize()
+    if stream["available"] is not True:
+        lines.append(f"{title}: unavailable ({stream['reason']})")
+        return
+    size = cast(int, stream["bytes"])
+    suffix = "; tail shown" if stream["truncated"] is True else ""
+    lines.append(f"{title}: {stream['path']} ({size} bytes{suffix})")
+    excerpt = cast(str, stream["excerpt"])
+    if excerpt:
+        lines.extend((f"--- {name} ---", excerpt.rstrip("\n"), f"--- end {name} ---"))
 
 
 def _reproduction_command_records(

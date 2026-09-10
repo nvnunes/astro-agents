@@ -218,11 +218,15 @@ compact command count. The public list buckets are
 `blocked`. Omit `--run-id` for the latest completed run. Present text output
 unchanged unless a programmatic consumer needs JSON. Completed-run queries use
 the selected run's immutable historical records and never reinterpret them
-through current `pyrun.json`. Command queries do not partially support a run
-whose command-query schema is unsupported. If either route reports that state,
-run reproduction with `--recheck` to rebuild the generated result; do not
-reconstruct missing detail from its run directory, generated JSON, Markdown,
-terminal records, aggregate counts, or current command metadata.
+through current `pyrun.json`. Each text list row provides the exact
+`commands show` invocation for that command. Use it to retrieve the retained
+checkpoint failure, timing, observed outputs, diagnostic paths, and bounded
+stderr and stdout tails. Command queries do not partially support a run whose
+command-query schema is unsupported. If either route reports that state, run
+reproduction with `--recheck` to rebuild the generated result; do not
+reconstruct missing command identity or accounting from its run directory,
+generated JSON, Markdown, terminal records, aggregate counts, or current
+command metadata.
 
 Do not select a changed result for adoption. A research agent acting with
 researcher direction may inspect the retained complete execution output set

@@ -13,6 +13,7 @@ from unittest import mock
 
 from log_commands.context import EntryContext, LogContext
 from log_commands.model import ActionError
+from log_commands.reproduction_accounting import project_command_selection
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import (
     RECHECK_SELECTION,
@@ -1114,6 +1115,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             fixture.write_pyrun(entry, [upstream, current])
 
             plan = _plan(fixture, entry)
+            recheck = _plan(fixture, entry, recheck=True)
 
             self.assertEqual(
                 [value["execution_id"] for value in plan.executions], [upstream[0]]
@@ -1135,6 +1137,21 @@ class ReproductionPlanningTests(unittest.TestCase):
                 commands[current[0]]["selection"], "not_needed"
             )
             self.assertFalse(commands[current[0]]["queued"])
+            self.assertEqual(
+                [value["execution_id"] for value in recheck.executions],
+                [upstream[0]],
+            )
+            rechecked_commands = {
+                value["execution_id"]: value
+                for value in recheck.source_snapshot["commands"]
+            }
+            self.assertEqual(rechecked_commands[current[0]]["selection"], "policy")
+            self.assertIsNone(rechecked_commands[current[0]]["source_digest"])
+            self.assertFalse(rechecked_commands[current[0]]["queued"])
+            accounting = project_command_selection(recheck, None)
+            self.assertEqual(accounting.not_automatic, 1)
+            self.assertEqual(accounting.run_keys, {(entry.id, upstream[0])})
+            self.assertEqual(accounting.total, 2)
 
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1426,7 +1443,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                 projection.reachable,
             )
 
-    def test_v3_artifact_state_is_seeded_then_retains_terminal_failures(self) -> None:
+    def test_outdated_state_requires_recheck_then_retains_terminal_failures(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -1504,20 +1523,30 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "target": {"entry": entry.id, "kind": "entry"},
                     }
                 ],
-                "schema": "research-log-reproduction-result/3",
+                "schema": "research-log-reproduction-result/7",
                 "summary": "docs/study.md",
                 "updated_at": "2026-09-06T00:01:00Z",
             }
             _write_json(result_path, stored)
 
-            first = _plan(fixture, entry)
+            with self.assertRaises(ActionError) as caught:
+                _plan(fixture, entry)
+
+            self.assertEqual(
+                caught.exception.code, "reproduction.results.schema_unsupported"
+            )
+            self.assertIn(
+                "run whole-log reproduction with --recheck", str(caught.exception)
+            )
+            first = _plan(fixture, entry, recheck=True)
 
             self.assertEqual(
                 [value["execution_id"] for value in first.executions],
                 [execution[0]],
             )
             snapshot = first.source_snapshot["commands"][0]
-            stored["schema"] = "research-log-reproduction-result/6"
+            stored["schema"] = "research-log-reproduction-result/8"
+            stored["runs"][0]["command_records"] = None
             commands = [
                 {
                     "disposition": "succeeded",

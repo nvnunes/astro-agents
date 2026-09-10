@@ -180,9 +180,9 @@ For a cross-log overview, use the CLI-owned aggregation:
 
 Present its two tables and coverage line unchanged. A dash means the value is
 unavailable, not zero. Use `--format json` with either summary route only for a
-programmatic consumer. If an older result reports that command accounting is
-unavailable, run reproduction with `--recheck`; do not reconstruct historical
-counts.
+programmatic consumer. If the CLI reports an unsupported generated result
+schema, launch whole-log reproduction with `--recheck`; do not resume a partial
+publication or reconstruct historical counts.
 
 When the researcher asks for every artifact, retained run, or entry-specific
 detail, retrieve the complete report instead:

@@ -315,7 +315,11 @@ def plan_reproduction(
     if batch_projection is not None:
         _apply_validation_admission(state, batch_projection)
     _apply_cycle_and_dependency_failures(state)
-    retained_commands = dict(_load_prior_results(log))
+    retained_commands = dict(
+        _load_prior_results(
+            log, replace_outdated=selection.policy == RECHECK_SELECTION
+        )
+    )
     if selection.prior_commands is not None:
         retained_commands.update(selection.prior_commands)
     ordered = _select_and_order(state, retained_commands)
@@ -1360,16 +1364,25 @@ def _select_and_order(
     state: _PlanningState,
     prior: Mapping[ExecutionKey, Mapping[str, object]],
 ) -> tuple[ExecutionKey, ...]:
-    state.command_digests = {
-        key: _command_source_digest(state, key) for key in sorted(state.selected)
+    policy_skipped = {
+        key
+        for key, owner in state.selected.items()
+        if state.selection_policy == RECHECK_SELECTION
+        and not state.include_all
+        and not owner.execution.auto_reproduce
     }
-    runnable = set(state.selected) - state.blocked
+    state.command_digests = {
+        key: _command_source_digest(state, key)
+        for key in sorted(set(state.selected) - policy_skipped)
+    }
+    runnable = set(state.selected) - state.blocked - policy_skipped
     needs_run = _initial_work(state, prior, runnable)
     _propagate_required_work(state, runnable, needs_run)
     not_needed = {
         key
         for key in state.selected
-        if state.selection_policy != RECHECK_SELECTION
+        if key not in policy_skipped
+        and state.selection_policy != RECHECK_SELECTION
         and key not in needs_run
         and key not in state.blocked
         and (
@@ -1384,7 +1397,8 @@ def _select_and_order(
     unchanged = {
         key
         for key in state.selected
-        if key not in needs_run
+        if key not in policy_skipped
+        and key not in needs_run
         and key not in not_needed
         and _command_result_current(prior.get(key), state.command_digests[key])
         and (
@@ -1397,7 +1411,9 @@ def _select_and_order(
         key: cast(str, prior[key]["disposition"]) for key in unchanged
     }
     for key in state.selected:
-        if key in needs_run:
+        if key in policy_skipped:
+            selection = "policy"
+        elif key in needs_run:
             selection = "run"
         elif key in not_needed:
             selection = "not_needed"
@@ -1406,7 +1422,7 @@ def _select_and_order(
         else:
             selection = "blocked"
         state.command_selections[key] = selection
-    _project_current_cases(state, not_needed | unchanged)
+    _project_current_cases(state, not_needed | unchanged | policy_skipped)
     return _topological_order(state, needs_run)
 
 
@@ -1860,9 +1876,12 @@ def _admit_validation(
 
 def _load_prior_results(
     log: LogContext,
+    *,
+    replace_outdated: bool,
 ) -> dict[ExecutionKey, Mapping[str, object]]:
     from .reproduction_results import (
         ReproductionResultError,
+        ReproductionResultSchemaError,
         load_reproduction_results,
     )
 
@@ -1871,6 +1890,12 @@ def _load_prior_results(
         return {}
     try:
         value = load_reproduction_results(path)
+    except ReproductionResultSchemaError as error:
+        if replace_outdated:
+            return {}
+        raise ActionError(
+            "reproduction.results.schema_unsupported", str(error)
+        ) from error
     except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
     return {(item.entry, item.execution_id): item.as_dict() for item in value.commands}

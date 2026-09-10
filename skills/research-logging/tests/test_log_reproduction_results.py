@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from log_commands.model import ActionError
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_results import (
     ArtifactCurrentness,
@@ -15,6 +16,7 @@ from log_commands.reproduction_results import (
     ComparisonRecord,
     ReproductionResultError,
     ReproductionResults,
+    ReproductionResultSchemaError,
     RunFolder,
     RunResult,
     artifact_summary_counts,
@@ -22,6 +24,7 @@ from log_commands.reproduction_results import (
     compose_reproduction_report,
     compose_reproduction_summary,
     current_command_query_metadata,
+    load_results_or_empty,
     merge_reproduction_results,
     project_current_results,
     query_artifacts,
@@ -36,35 +39,19 @@ from validation.human_projection import (
 
 
 class ReproductionResultContractTests(unittest.TestCase):
-    def test_v3_result_is_readable_and_upgrades_without_inventing_commands(
-        self,
-    ) -> None:
-        value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/3"
-        del value["commands"]
-        for run in value["runs"]:
-            del run["command_records"]
+    def test_noncurrent_result_schema_is_unsupported(self) -> None:
+        for version in ("2", "3", "4", "5", "6", "7", "999"):
+            value = _complete_results().as_dict()
+            value["schema"] = f"research-log-reproduction-result/{version}"
 
-        decoded = ReproductionResults.from_json(_canonical(value))
+            with self.subTest(version=version), self.assertRaises(
+                ReproductionResultSchemaError
+            ) as caught:
+                ReproductionResults.from_json(_canonical(value))
 
-        self.assertEqual(decoded.commands, ())
-        self.assertIn(
-            '"schema": "research-log-reproduction-result/7"', decoded.serialized()
-        )
-
-    def test_v6_result_is_readable_without_inventing_command_records(self) -> None:
-        value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/6"
-        for run in value["runs"]:
-            del run["command_records"]
-
-        decoded = ReproductionResults.from_json(_canonical(value))
-
-        self.assertIsNone(decoded.runs[0].command_records)
-        self.assertIsNone(current_command_query_metadata(decoded.runs[0]))
-        self.assertIn(
-            '"schema": "research-log-reproduction-result/7"', decoded.serialized()
-        )
+            self.assertIn(
+                "run whole-log reproduction with --recheck", str(caught.exception)
+            )
 
     def test_current_result_exposes_current_command_query_records(self) -> None:
         results = _complete_results()
@@ -90,31 +77,61 @@ class ReproductionResultContractTests(unittest.TestCase):
         self.assertEqual(metadata.outcomes, run.command_outcomes)
         self.assertEqual(metadata.records, records)
 
-    def test_v2_result_is_not_retained_as_a_compatibility_format(self) -> None:
-        value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/2"
-        del value["commands"]
+    def test_outside_queue_reason_round_trips_in_current_results(self) -> None:
+        result = _complete_results()
+        artifact = ArtifactResult(
+            "e003",
+            "data/outside-queue.txt",
+            "pyrun-exec/v1:" + "6" * 64,
+            "skipped",
+            "outside_queue",
+            "2030-01-01T00:05:00Z",
+            "reproduce-20300101t000000z-fixture",
+            None,
+        )
+        current = replace(
+            result,
+            artifacts=tuple(
+                sorted((*result.artifacts, artifact), key=lambda item: item.artifact)
+            ),
+        )
 
-        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
-            ReproductionResults.from_json(_canonical(value))
+        decoded = ReproductionResults.from_json(current.serialized())
 
-    def test_v4_result_requires_the_one_time_field_migration(self) -> None:
-        value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/4"
-        for run in value["runs"]:
-            outcomes = run.get("command_outcomes")
-            if outcomes is not None:
-                outcomes["reused"] = outcomes.pop("reproduction_not_needed")
+        self.assertEqual(
+            next(
+                item
+                for item in decoded.artifacts
+                if item.artifact == "data/outside-queue.txt"
+            ).reason,
+            "outside_queue",
+        )
 
-        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
-            ReproductionResults.from_json(_canonical(value))
+    def test_outdated_result_is_replaceable_only_when_authorized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.json"
+            value = _complete_results().as_dict()
+            value["schema"] = "research-log-reproduction-result/7"
+            path.write_text(_canonical(value), encoding="utf-8")
 
-    def test_v5_result_is_not_retained_as_a_compatibility_format(self) -> None:
-        value = _complete_results().as_dict()
-        value["schema"] = "research-log-reproduction-result/5"
+            with self.assertRaises(ActionError) as caught:
+                load_results_or_empty(
+                    path,
+                    summary="docs/research.md",
+                    updated_at="2030-01-02T00:00:00Z",
+                )
 
-        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
-            ReproductionResults.from_json(_canonical(value))
+            self.assertEqual(
+                caught.exception.code, "reproduction.results.schema_unsupported"
+            )
+            rebuilt = load_results_or_empty(
+                path,
+                summary="docs/research.md",
+                updated_at="2030-01-02T00:00:00Z",
+                replace_outdated=True,
+            )
+            self.assertEqual(rebuilt.artifacts, ())
+            self.assertEqual(rebuilt.runs, ())
 
     def test_command_result_round_trips_and_merges_by_execution_identity(self) -> None:
         current = _complete_results()

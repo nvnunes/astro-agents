@@ -32,6 +32,7 @@ from log_commands.reproduction_execution import (
     completed_execution_attempts,
     execute_planned_recipe,
     execute_reproduction_plan,
+    populate_output_workspace,
     prepare_output_workspace,
 )
 from research_log_data import Fingerprint
@@ -174,6 +175,62 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_continuation_populates_workspace_beside_archived_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            archived = workspace.run_root / "attempts" / "0001"
+            archived.mkdir(parents=True)
+            for name in (
+                "workspace",
+                "runtime",
+                "diagnostics",
+                "executions",
+                "checkpoints",
+            ):
+                path = workspace.run_root / name
+                if path.exists():
+                    path.replace(archived / name)
+
+            continued = populate_output_workspace(
+                fixture.project, workspace.run_root, workspace.run_id
+            )
+
+            self.assertTrue((archived / "workspace").is_dir())
+            self.assertTrue(continued.work_project.is_dir())
+            self.assertTrue(continued.runtime_root.is_dir())
+            self.assertTrue(continued.diagnostics_root.is_dir())
+            self.assertEqual(
+                continued.staging_root, workspace.run_root / "executions"
+            )
+
+    def test_continuation_rejects_symlinked_attempt_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            workspace = fixture.workspace()
+            archive = workspace.run_root.parent / "archive"
+            archive.mkdir()
+            for name in (
+                "workspace",
+                "runtime",
+                "diagnostics",
+                "executions",
+                "checkpoints",
+            ):
+                path = workspace.run_root / name
+                if path.exists():
+                    path.replace(archive / name)
+            (workspace.run_root / "attempts").symlink_to(
+                archive, target_is_directory=True
+            )
+
+            with self.assertRaises(ActionError) as caught:
+                populate_output_workspace(
+                    fixture.project, workspace.run_root, workspace.run_id
+                )
+
+            self.assertEqual(caught.exception.code, "reproduction.run.path_invalid")
+
     def test_checkpoint_writer_uses_reserved_atomic_temporary_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

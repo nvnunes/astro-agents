@@ -35,7 +35,7 @@ from .reproduction_comparison import (
     ArtifactComparison,
     ExecutionComparison,
 )
-from .reproduction_contract import ReproductionPlan
+from .reproduction_contract import REPRODUCTION_RESULT_SCHEMA, ReproductionPlan
 from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
     ReproductionCommandInventory,
@@ -50,9 +50,11 @@ from .reproduction_results import (
     ComparisonRecord,
     ReproductionResultError,
     ReproductionResults,
+    ReproductionResultSchemaError,
     RunFolder,
     RunResult,
     compose_reproduction_report,
+    load_reproduction_results,
     load_results_or_empty,
     merge_reproduction_results,
     project_current_results,
@@ -82,6 +84,25 @@ class CompletedPublication:
     dependency_skips: tuple[Mapping[str, object], ...] = ()
 
 
+def verify_publication_retry_compatibility(
+    log: LogContext, plan: ReproductionPlan
+) -> None:
+    """Reject a partial publication retry against outdated generated results."""
+
+    path = log.root / REPRODUCTION_RESULTS
+    if not path.exists() and not path.is_symlink():
+        return
+    try:
+        load_reproduction_results(path)
+    except ReproductionResultSchemaError as error:
+        if not _replaces_outdated_results(plan):
+            raise ActionError(
+                "reproduction.results.schema_unsupported", str(error)
+            ) from error
+    except ReproductionResultError as error:
+        raise ActionError("reproduction.results.invalid", str(error)) from error
+
+
 def publish_completed_reproduction(
     log: LogContext,
     request: CompletedPublication,
@@ -107,7 +128,10 @@ def publish_completed_reproduction(
             result_path = log.root / REPRODUCTION_RESULTS
             summary = log.summary.resolve().relative_to(project_root).as_posix()
             current = load_results_or_empty(
-                result_path, summary=summary, updated_at=request.finished_at
+                result_path,
+                summary=summary,
+                updated_at=request.finished_at,
+                replace_outdated=_replaces_outdated_results(request.plan),
             )
             current = reconcile_run_folders(current, project_root=project_root)
             state_projection = project_reproduction_state(log)
@@ -155,6 +179,26 @@ def publish_completed_reproduction(
     except (OperationLockError, OSError, PublicationError) as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
     return PublishedReproduction(merged, report)
+
+
+def _replaces_outdated_results(plan: ReproductionPlan) -> bool:
+    """Return whether one whole-log plan can rebuild cumulative generated state."""
+
+    if plan.source_snapshot.get("result_schema") != REPRODUCTION_RESULT_SCHEMA:
+        return False
+    if plan.target != {"entry": None, "kind": "log"}:
+        return False
+    commands = plan.source_snapshot.get("commands")
+    if not isinstance(commands, Sequence) or isinstance(commands, (str, bytes)):
+        return False
+    try:
+        snapshots = command_snapshot_index(plan)
+    except CommandAccountingError:
+        return False
+    return len(snapshots) == len(commands) and all(
+        item["selection"] not in {"not_needed", "unchanged"}
+        for item in snapshots.values()
+    )
 
 
 def _artifact_results(
@@ -225,7 +269,7 @@ def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]
     results: list[CommandResult] = []
     for key, snapshot in sorted(snapshots.items()):
         selection = snapshot["selection"]
-        if selection in {"not_needed", "unchanged"}:
+        if selection in {"not_needed", "policy", "unchanged"}:
             continue
         if selection == "blocked" or key in skipped:
             disposition = "blocked"

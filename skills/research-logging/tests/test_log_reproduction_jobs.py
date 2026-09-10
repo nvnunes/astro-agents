@@ -1588,10 +1588,15 @@ class ReproductionJobTests(unittest.TestCase):
                     "log_commands.reproduction_jobs."
                     "verify_reproduction_runtime_snapshot"
                 ),
+                mock.patch(
+                    "log_commands.reproduction_jobs."
+                    "verify_publication_retry_compatibility"
+                ) as verify_compatibility,
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
                 self.assertEqual(resume_reproduction(log, run_id), run_id)
 
+            verify_compatibility.assert_called_once_with(log, mock.ANY)
             spawn.assert_called_once_with(
                 log,
                 run_root.resolve(),

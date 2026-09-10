@@ -13,7 +13,8 @@ LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 PREQUERY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/7"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/8"
+REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/8"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
 
@@ -148,6 +149,7 @@ def source_snapshot(
         "commands": commands,
         "executions": executions,
         "materials": materials,
+        "result_schema": REPRODUCTION_RESULT_SCHEMA,
         "schema": SOURCE_SNAPSHOT_SCHEMA,
     }
 

@@ -48,7 +48,7 @@ with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/7`. Every newly
+The current result schema is `research-log-reproduction-result/8`. Every newly
 published run counts every command in its log or entry target exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
@@ -75,16 +75,16 @@ and adds only affected downstream commands already in that queue. It never
 infers this decision from artifact outcomes. `--recheck` is an initial-launch
 override and does not apply to resume.
 
-The reader accepts canonical v3 and v6 results only as read-only migration
-inputs. Because v3 has no command source closures, the next successful
-reproduction runs the applicable commands and publishes v7. Command list and
-show ask the central result contract whether a retained run has current
-command-query metadata; they do not branch on a concrete result version. When
-the contract reports unsupported metadata, they instruct the caller to run
-reproduction with `--recheck` and query the newly published run. They never
-reconstruct command rows from a retained run directory, published aggregates,
-or current metadata. Versions 4 and 5 are unsupported; no other older result
-schema is supported.
+The reader accepts only the current result schema. Any older generated result
+is outdated and is not decoded, migrated, or used by incremental planning or a
+partial publication retry. The CLI instructs the caller to launch whole-log
+reproduction with `--recheck`; that complete plan may atomically replace the
+outdated machine result and Markdown report. Command list and show do not
+branch on concrete retired versions or reconstruct command rows from a retained
+run directory, published aggregates, or current metadata. Malformed current
+results remain invalid rather than being treated as outdated. The accepted
+source snapshot records the result schema it may publish, so a run accepted
+before a schema cutover cannot perform that replacement.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;

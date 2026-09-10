@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_comparison import ArtifactComparison, ExecutionComparison
-from log_commands.reproduction_contract import ReproductionPlan
+from log_commands.reproduction_contract import (
+    REPRODUCTION_RESULT_SCHEMA,
+    ReproductionPlan,
+)
 from log_commands.reproduction_planner import (
     ReproductionCommandInventory,
     ReproductionStateProjection,
@@ -18,7 +23,9 @@ from log_commands.reproduction_publication import (
     _artifact_results,
     _command_outcomes,
     _command_results,
+    _replaces_outdated_results,
     publish_completed_reproduction,
+    verify_publication_retry_compatibility,
 )
 from log_commands.reproduction_results import ReproductionResults
 from validation.engine import RULES_VERSION
@@ -42,6 +49,90 @@ def _case(
 
 
 class ReproductionPublicationTests(unittest.TestCase):
+    def test_policy_skipped_command_needs_no_terminal_result(self) -> None:
+        identity = "pyrun-exec/v1:" + "1" * 64
+        plan = ReproductionPlan(
+            "docs/study.md",
+            {"entry": None, "kind": "log"},
+            False,
+            {},
+            {
+                "commands": [
+                    {
+                        "auto_reproduce": False,
+                        "cwd": ".",
+                        "details": ["not_automatic"],
+                        "entry": "e002",
+                        "execution_id": identity,
+                        "exclusive": False,
+                        "prior_disposition": None,
+                        "queued": False,
+                        "recipe": {},
+                        "requires_reproduction": True,
+                        "selection": "policy",
+                        "source_digest": None,
+                    }
+                ],
+                "result_schema": REPRODUCTION_RESULT_SCHEMA,
+            },
+            (),
+            (),
+            (),
+            (),
+        )
+        request = CompletedPublication(
+            plan,
+            (),
+            "reproduce-20300101t000000z-policy",
+            "2030-01-01T00:00:00Z",
+            "2030-01-01T00:01:00Z",
+            Path("/tmp/reproduction-run"),
+        )
+
+        self.assertEqual(_command_results(request), ())
+        self.assertTrue(_replaces_outdated_results(plan))
+        pre_cutover = replace(
+            plan,
+            source_snapshot={"commands": plan.source_snapshot["commands"]},
+        )
+        self.assertFalse(_replaces_outdated_results(pre_cutover))
+        command = dict(plan.source_snapshot["commands"][0])
+        command["selection"] = "not_needed"
+        partial = replace(plan, source_snapshot={"commands": [command]})
+        self.assertFalse(_replaces_outdated_results(partial))
+        self.assertFalse(
+            _replaces_outdated_results(
+                replace(plan, target={"entry": "e002", "kind": "entry"})
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "docs" / "study.md"
+            summary.parent.mkdir()
+            summary.write_text("# Study\n", encoding="utf-8")
+            log = LogContext(summary, summary.with_suffix(""))
+            result_path = log.root / ".cache" / "reproduction" / "results.json"
+            result_path.parent.mkdir(parents=True)
+            outdated = ReproductionResults(
+                "docs/study.md", "2030-01-01T00:00:00Z", (), ()
+            ).as_dict()
+            outdated["schema"] = "research-log-reproduction-result/7"
+            result_path.write_text(
+                json.dumps(outdated, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ActionError) as caught:
+                verify_publication_retry_compatibility(log, partial)
+
+            self.assertEqual(
+                caught.exception.code, "reproduction.results.schema_unsupported"
+            )
+            with self.assertRaises(ActionError):
+                verify_publication_retry_compatibility(log, pre_cutover)
+            verify_publication_retry_compatibility(log, plan)
+
     def test_command_outcomes_are_exhaustive_and_not_artifact_counts(self) -> None:
         identities = {
             name: "pyrun-exec/v1:" + digit * 64
@@ -473,8 +564,8 @@ class ReproductionPublicationTests(unittest.TestCase):
             "reproduction.input.unavailable",
             "reproduction.run.invalid",
         )
-        for reason in (*execution_reasons, "validation_blocked"):
-            planned_failure = reason == "validation_blocked"
+        for reason in (*execution_reasons, "outside_queue", "validation_blocked"):
+            planned_failure = reason in {"outside_queue", "validation_blocked"}
             plan = ReproductionPlan(
                 "docs/study.md",
                 {"entry": None, "kind": "log"},

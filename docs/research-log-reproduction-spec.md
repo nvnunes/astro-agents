@@ -69,7 +69,7 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/7` |
+| Reproduction result | `research-log-reproduction-result/8` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
 | Durable run state | `research-log-reproduction-run/4` |
@@ -78,7 +78,7 @@ The initial implementation must use these versions:
 | Command list | `research-log-reproduction-command-list/2` |
 | Command detail | `research-log-reproduction-command/2` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/7` |
+| Source snapshot | `research-log-reproduction-source-snapshot/8` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -970,7 +970,9 @@ identity may legitimately occur in more than one entry; `execution_id` itself
 remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
-`origin`, `cross_entry`, or `non_automatic`. Fields inapplicable to a boundary kind are
+`origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
+used only by continuation planning when an input producer is outside the
+immutable initial execution queue. Fields inapplicable to a boundary kind are
 null rather than omitted. Failures are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
@@ -984,8 +986,11 @@ file digests cover the exact completed result and batch projection;
 projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/7` and has exactly `schema`,
-`authority_files`, `commands`, `executions`, and `materials`. `authority_files` records the
+`research-log-reproduction-source-snapshot/8` and has exactly `schema`,
+`authority_files`, `commands`, `executions`, `materials`, and `result_schema`.
+`result_schema` binds the accepted plan to the exact cumulative-result schema it
+may publish, so an accepted run cannot cross a later result-schema cutover.
+`authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
 for the plan. `commands` records every command in the target. Each record has
 the entry, execution ID, recorded recipe and working directory, automatic and
@@ -1595,8 +1600,7 @@ artifact outcome. When the selected evidence root itself is non-automatic or is
 produced outside an entry target, that selected artifact is respectively
 `skipped` with reason `non_automatic` or `outside_entry`.
 
-The complete v2 reason vocabulary adds preflight-locality reasons to the prior
-set. It is `baseline_changed`, `baseline_unavailable`,
+The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
 `boundary_changed`, `boundary_unavailable`, `capture_failed`,
 `comparator_error`, `content_changed`, `cross_log_generated_input`,
 `dependency_cycle`, `dependency_failed`, `direct_input_changed`,
@@ -1604,7 +1608,7 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 `execution_exception`, `execution_failed`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
 `multiple_producers`, `output_materialization_failed`, `output_missing`,
-`outside_entry`, `participating_code_changed`,
+`outside_entry`, `outside_queue`, `participating_code_changed`,
 `participating_code_unavailable`, `reproduction.run.invalid`, `resource_limit`,
 `safety_failure`, `script_changed`, `script_unavailable`, `non_automatic`, `stop_requested`,
 `unsupported_format`, `validation_blocked`, `worker_cleanup_incomplete`, and
@@ -1614,11 +1618,11 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/7`. It has exactly this shape:
+`research-log-reproduction-result/8`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/7",
+  "schema": "research-log-reproduction-result/8",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -2295,7 +2299,7 @@ working directory, automatic-reproduction policy, run selection, accounting
 reason, declared inputs and outputs, and any available planning detail.
 
 These queries use the same seven-category accounting projection that produced
-the selected run's compact counts. For result v7 they read only that run's
+the selected run's compact counts. They read only that run's
 immutable `command_records` and reconcile every projected row against its
 published totals before returning it. They never consult current `pyrun.json`,
 reinterpret historical policy, or require another reproduction because a
@@ -2335,15 +2339,16 @@ compatibility paths. No accepted run is upgraded in place, and no consumer may
 decode an older object with current-schema defaults. The maintained-corpus
 execution-state cutover is complete.
 
-The result reader accepts canonical `research-log-reproduction-result/3` and
-`research-log-reproduction-result/6` as read-only migration inputs. It does not
-infer command records from artifact outcomes or current metadata. The next
-successful publication writes `research-log-reproduction-result/7`. Bounded
-command queries reject a retained run when the central result contract marks
-its command-query metadata as unsupported and instruct the caller to run
-reproduction with `--recheck`. Query code does not branch on a concrete result
-version. After current metadata is published, the new run is queryable.
-Versions 4 and 5 are unsupported. Earlier result schemas are unsupported.
+The result reader accepts only the current reproduction-result schema. An
+older generated result is outdated rather than a migration input; reports,
+queries, incremental planning, and partial publication refuse it and instruct
+the caller to run whole-log reproduction with `--recheck`. That complete plan
+does not decode prior generated results and may atomically replace them with
+`research-log-reproduction-result/8`. Malformed current results remain invalid
+and are never treated as outdated. This is the standard generated-state
+cutover for every later reproduction-result schema change; consumers do not
+branch on particular retired versions, and only a whole-log recheck accepted
+with the current result schema may perform the replacement.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded

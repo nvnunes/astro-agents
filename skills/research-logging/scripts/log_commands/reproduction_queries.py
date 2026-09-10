@@ -24,6 +24,7 @@ from .reproduction_results import (
     ArtifactCurrentness,
     ReproductionResultError,
     ReproductionResults,
+    ReproductionResultSchemaError,
     RunResult,
     artifact_summary_counts,
     command_summary_counts,
@@ -687,6 +688,10 @@ def _current(
             raise ReproductionResultError("result summary identity changed")
         state = project_reproduction_state(log)
         return project_current_results(results, state)
+    except ReproductionResultSchemaError as error:
+        raise ActionError(
+            "reproduction.results.schema_unsupported", str(error)
+        ) from error
     except (OSError, UnicodeError, ValueError) as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
 
@@ -707,5 +712,9 @@ def _published_results(log: LogContext) -> ReproductionResults:
         if expected.resolve() != log.summary.resolve():
             raise ReproductionResultError("result summary identity changed")
         return results
+    except ReproductionResultSchemaError as error:
+        raise ActionError(
+            "reproduction.results.schema_unsupported", str(error)
+        ) from error
     except (OSError, UnicodeError, ValueError) as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error

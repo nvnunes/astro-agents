@@ -407,7 +407,7 @@ def prepare_output_workspace(
 def populate_output_workspace(
     project_root: Path, run_root: Path, run_id: str
 ) -> ReproductionWorkspace:
-    """Populate an accepted run directory containing only durable job state."""
+    """Populate an accepted run directory with no current-attempt workspace."""
 
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
@@ -418,8 +418,13 @@ def populate_output_workspace(
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is invalid"
         ) from error
-    allowed = {"run.json", "supervisor.json", "supervisor.log"}
-    if any(path.name not in allowed for path in root.iterdir()):
+    allowed = {"attempts", "run.json", "supervisor.json", "supervisor.log"}
+    entries = tuple(root.iterdir())
+    attempts = root / "attempts"
+    invalid_attempts = attempts.is_symlink() or (
+        attempts.exists() and not attempts.is_dir()
+    )
+    if any(path.name not in allowed for path in entries) or invalid_attempts:
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is not pristine"
         )

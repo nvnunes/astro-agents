@@ -17,6 +17,7 @@ from validation.pyrun_state import PYRUN_EXECUTION_RE
 
 from .context import ENTRY_ID_RE
 from .model import ActionError
+from .reproduction_contract import REPRODUCTION_RESULT_SCHEMA
 from .reproduction_paths import (
     REPRODUCTION_ROOT_NAME,
     is_canonical_run_path,
@@ -24,9 +25,7 @@ from .reproduction_paths import (
 )
 from .reproduction_planner import ReproductionStateProjection
 
-LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/3"
-PREQUERY_RESULT_SCHEMA = "research-log-reproduction-result/6"
-RESULT_SCHEMA = "research-log-reproduction-result/7"
+RESULT_SCHEMA = REPRODUCTION_RESULT_SCHEMA
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
@@ -102,11 +101,16 @@ REASONS = {
     "validation_blocked",
     "worker_cleanup_incomplete",
     "worker_survived",
+    "outside_queue",
 }
 
 
 class ReproductionResultError(ValueError):
     """One exact cumulative-result contract failure."""
+
+
+class ReproductionResultSchemaError(ReproductionResultError):
+    """One outdated or otherwise unsupported generated result schema."""
 
 
 @dataclass(frozen=True)
@@ -368,15 +372,19 @@ class ReproductionResults:
             ) from error
         item = _mapping(value, "result")
         schema = item.get("schema")
-        if schema not in {
-            LEGACY_RESULT_SCHEMA,
-            PREQUERY_RESULT_SCHEMA,
-            RESULT_SCHEMA,
-        }:
-            raise ReproductionResultError("result schema is unsupported")
-        fields = {"artifacts", "runs", "schema", "summary", "updated_at"}
-        if schema in {PREQUERY_RESULT_SCHEMA, RESULT_SCHEMA}:
-            fields.add("commands")
+        if schema != RESULT_SCHEMA:
+            raise ReproductionResultSchemaError(
+                "published reproduction result schema is unsupported; run "
+                "whole-log reproduction with --recheck to rebuild it"
+            )
+        fields = {
+            "artifacts",
+            "commands",
+            "runs",
+            "schema",
+            "summary",
+            "updated_at",
+        }
         if set(item) != fields:
             raise ReproductionResultError("result has incorrect fields")
         artifacts = tuple(
@@ -384,16 +392,12 @@ class ReproductionResults:
             for index, value in enumerate(_sequence(item["artifacts"], "artifacts"))
         )
         runs = tuple(
-            _decode_run(value, index, current=schema == RESULT_SCHEMA)
+            _decode_run(value, index, current=True)
             for index, value in enumerate(_sequence(item["runs"], "runs"))
         )
-        commands = (
-            ()
-            if schema == LEGACY_RESULT_SCHEMA
-            else tuple(
-                _decode_command(value, index)
-                for index, value in enumerate(_sequence(item["commands"], "commands"))
-            )
+        commands = tuple(
+            _decode_command(value, index)
+            for index, value in enumerate(_sequence(item["commands"], "commands"))
         )
         result = cls(
             _string(item["summary"], "summary"),
@@ -402,8 +406,7 @@ class ReproductionResults:
             runs,
             commands,
         )
-        expected = _serialized_for_schema(result, cast(str, schema))
-        if text != expected:
+        if text != result.serialized():
             raise ReproductionResultError("result serialization is not canonical")
         return result
 
@@ -1687,42 +1690,25 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
     )
 
 
-def _legacy_serialized(results: ReproductionResults) -> str:
-    """Serialize the exact read-only v3 shape for canonicality checking."""
-
-    value = results.as_dict()
-    value["schema"] = LEGACY_RESULT_SCHEMA
-    value.pop("commands")
-    for run in cast(list[dict[str, object]], value["runs"]):
-        run.pop("command_records")
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-
-
-def _serialized_for_schema(results: ReproductionResults, schema: str) -> str:
-    if schema == RESULT_SCHEMA:
-        return results.serialized()
-    if schema == LEGACY_RESULT_SCHEMA:
-        return _legacy_serialized(results)
-    value = results.as_dict()
-    value["schema"] = PREQUERY_RESULT_SCHEMA
-    for run in cast(list[dict[str, object]], value["runs"]):
-        run.pop("command_records")
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-
-
 def _escape_code(value: str) -> str:
     return value.replace("`", "\\`").replace("|", "\\|")
 
 
 def load_results_or_empty(
-    path: Path, *, summary: str, updated_at: str
+    path: Path, *, summary: str, updated_at: str, replace_outdated: bool = False
 ) -> ReproductionResults:
-    """Load existing results or create an in-memory empty authority."""
+    """Load current results or replace outdated generated state when authorized."""
 
     if not path.exists() and not path.is_symlink():
         return empty_reproduction_results(summary, updated_at=updated_at)
     try:
         result = load_reproduction_results(path)
+    except ReproductionResultSchemaError as error:
+        if replace_outdated:
+            return empty_reproduction_results(summary, updated_at=updated_at)
+        raise ActionError(
+            "reproduction.results.schema_unsupported", str(error)
+        ) from error
     except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
     if result.summary != summary:

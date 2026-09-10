@@ -73,6 +73,7 @@ from .reproduction_planner import (
 from .reproduction_publication import (
     CompletedPublication,
     publish_completed_reproduction,
+    verify_publication_retry_compatibility,
 )
 from .reproduction_results import OUTCOMES
 from .storage import atomic_write_text
@@ -361,6 +362,8 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
     _verify_checkpoint_inventory(root, record)
     context = _resume_context(root, record)
     plan = _resume_plan(log, context)
+    if context.publication_retry:
+        verify_publication_retry_compatibility(log, plan)
     if context.continuing and not plan.executions:
         from .reproduction_queries import reproduction_reconciliation_text
 

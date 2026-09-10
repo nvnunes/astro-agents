@@ -1,12 +1,14 @@
 # Maintain Or Revise Your Plan
 
-Create or maintain a top-level `## Execution Record` in your plan:
+Locate or create one `## Execution Record` in your plan. Its position in the
+document does not affect maintenance.
 
-- Use top-level entries for Phases and nest their Parts and Tasks beneath them.
-  For a plan without those levels, use its highest-level work units.
-- Identify each recorded unit by its plan identifier and title. Use only these
-  states: `not started`, `in progress`, `completed`, `blocked`, or
-  `failed`.
+- Use an expandable list, not a table. Identify each recorded unit by its plan
+  identifier and title, with one indented `State:` point. Use top-level entries
+  for Phases and nest their Parts and Tasks beneath them. For a plan without
+  those levels, use its highest-level work units.
+- Use only these states: `not started`, `in progress`, `completed`, `blocked`,
+  or `failed`.
 - Keep one current entry for each recorded unit and update it in place as work
   advances.
 - Set a unit to `in progress` before beginning its work. On resumption, recover
@@ -14,10 +16,10 @@ Create or maintain a top-level `## Execution Record` in your plan:
   before starting it again.
 - For delegated work, keep the active subagent's runtime handle in the
   `in progress` entry until its final handoff is recorded or recovery concludes.
-- Record the material outcome, prescribed checks and reviews, and any created
-  commits or durable artifacts. For blocked work, record the smallest action or
-  decision needed next. Link to detail rather than copying it, and do not add
-  chronological progress narration.
+- Add concise, freeform points only for material outcomes, prescribed checks and
+  reviews, created commits or durable artifacts, and the smallest action or
+  decision needed for blocked work. Do not force labels, add empty placeholders,
+  copy linked detail, or add chronological progress narration.
 
 Record decisions and constraints that affect remaining work beside that work
 in your plan. Do not read or edit other plan documents, including sharded

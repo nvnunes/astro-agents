@@ -1,9 +1,21 @@
 # Execution Policy
 
-Put checks and reviews in the plan file for the work they verify. Each child
-plan contains or directly references every check and review, along with the
-selected commit policy. The parent plan contains only checks for its own work or
-the integrated result.
+Place checks immediately after the work they verify. Each child plan contains
+or directly references its assigned checks and selected commit policy.
+
+For checks of delegated work, assign integration checks to the final
+implementation subagent when it naturally assembles or depends on the earlier
+work. When no implementation subagent is a natural owner, assign the checks to
+a separate validation subagent. The main agent names the owner and coordinates
+the result; it runs project checks only for work it performs directly. Resolve
+check ownership during planning. Ask the user only when the choice materially
+changes scope, cost, or authority, or requires approval for additional
+sharding.
+
+In the main agent plan, place each agentic review immediately after the work it
+reviews. The main agent follows that plan, which may direct it to perform the
+review or assign it to a fresh subagent. Executing subagents do not receive or
+coordinate agentic review instructions.
 
 Distinguish iteration checks from completion gates. Reference project gates
 instead of repeating them. Keep component checks with their work and reserve
@@ -18,9 +30,9 @@ invalidate them. Avoid generic review-after-every-step requirements.
 When expensive work depends on a consequential assumption, put a cheap
 representative check before it.
 
-## Agent Reviews
+## Agentic Reviews
 
-If an agent-review policy has not been chosen, present only applicable options
+If an agentic review policy has not been chosen, present only applicable options
 in plain language:
 
 1. **Agent-surface review (`$agent-surface-review`):** agent instructions,
@@ -35,24 +47,32 @@ whether they run once or repeat after in-scope corrections until no findings
 remain. Propose a narrow scope and milestone from the plan. Keep project checks
 separate.
 
-Record the selected review skills, their scopes, milestone, and whether they run
-once or repeat. Never add a review merely because the work matches a review
-skill or changes a particular file type. If a finding requires work outside the
-plan or a new decision, stop the review loop and ask for direction.
+At each review point, state whether the main agent performs or delegates the
+review, the selected review skills and scope, whether correction rechecks
+repeat, and the transition after success. Leave agent and session management,
+finding routing, and recovery to `$plan-execution`. Never add a review merely
+because the work matches a review skill or changes a particular file type. If a
+finding requires work outside the plan or a new decision, stop the review loop
+and ask for direction.
 
-Choose the agent-review policy separately from the commit policy.
+Choose the agentic review policy separately from the commit policy.
 
 ## Commit Policy
 
 Ask for one commit policy before implementation:
 
 - Do not commit.
-- Request human review, then commit after approval.
+- Request review and approval, then commit.
 - Commit automatically after required checks and reviews.
 
-Record the choice in the plan. If it has already been provided, do not ask
-again. Do not infer commit authority from authorization to write or implement
-the plan. Human checkpoints do not add technical reviews.
+Record a policy that applies unchanged throughout once in the orientation;
+otherwise place each choice beside the work it governs. In either case, place
+each commit action at the transition it controls. Express review-and-approval
+checkpoints consistently: identify what is being approved and what that
+approval authorizes, and make deliberate differences between checkpoints
+explicit. If the policy has already been provided, do not ask again. Do not
+infer commit authority from authorization to write or implement the plan. User
+checkpoints do not add technical reviews.
 
 Send authorized implementation to `$plan-execution`. A completed plan does not
 authorize implementation.

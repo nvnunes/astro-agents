@@ -47,9 +47,30 @@ request for human input through the normal agent channel, present it without
 redoing the subagent's work. Return the human's response to the same subagent
 session so it can continue owning the assigned work.
 
+## Coordinate Agentic Review
+
+When your plan requires agentic review of delegated implementation:
+
+1. Keep the implementation unit `in progress` and retain the implementer's
+   handle after its implementation handoff.
+2. Follow your plan, which may direct you to perform the assigned review
+   yourself or start a fresh subagent with the assigned review skill and scope.
+   When delegating, identify the workspace and files or diff to inspect. Do not
+   pass conversation context, an execution plan, or `$plan-execution`.
+3. Return in-scope findings to the same implementer session. Do not address the
+   findings yourself.
+4. If the review policy requires a repeat, review the corrected work again. Use
+   the same reviewer session when the review was delegated.
+5. When the review passes, tell the implementer to follow the human-review and
+   commit policy.
+
+If the review blocks, fails, or requires work outside the plan, follow any
+specific continuation route in your plan. If none exists, stop.
+
 ## Finish Or Stop
 
-- Trust a successful subagent handoff. Do not inspect its full diff, replay its
+- Trust a successful subagent handoff except when performing its assigned
+  agentic review yourself. Do not otherwise inspect its full diff, replay its
   investigation, or rerun its checks.
 - Update the corresponding Phase, Part, or Task in your plan's execution record
   from the final handoff.

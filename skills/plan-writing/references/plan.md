@@ -19,21 +19,41 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
 - Subdivide a large, coherent part into named, numbered tasks when individual scope, outputs, or tracking help: `Phase 2 > Part 2.C > Task 2.C.1`. Tasks may be sequential or independent. Keep this third level optional.
 - Use bullets for discrete requirements, outputs, and checks, numbered lists for ordered actions, and paragraphs for explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
-- State each requirement once. Place evidence collection, validation, and documentation at the steps that produce or need them.
+- State each requirement once. After orientation, present work in execution
+  order. Make each directly executed unit's owner, prerequisites, result,
+  gates, and next transition clear without imposing a fixed template. In a
+  main agent plan, treat a delegated child plan as one execution unit whose
+  visible result is its handoff.
+- Treat dispatch, evidence collection, documentation, checks, reviews,
+  approvals, commits, stopping conditions, and continuation decisions as
+  ordered actions. Place them at the steps they govern.
+- Represent substantive completion work as an ordered work unit; state
+  completion only as the resulting condition.
 - Put each consequential decision in every plan file whose agent needs it, or
   link directly to its durable source. Do not build a separate dependency
   registry.
 - Mark unresolved choices beside the work they affect. Distinguish choices that
   block progress from details that can be resolved during implementation.
-- Give every main agent plan a top-level `## Execution Record`. Organize its
-  top-level entries by Phase and nest Parts and Tasks beneath them. Use the
-  plan's highest-level work units when those levels do not apply. Initialize
-  one `not started` entry for each Phase or highest-level work unit, identified
-  by its plan identifier and title. Add nested Part and Task entries only when
-  they are executed separately or need distinct state.
+- Give every main agent plan one `## Execution Record`. Its position does not
+  affect maintenance; usually place it after brief orientation and before the
+  detailed work.
+- Format the record as an expandable list, not a table. Identify each entry by
+  its plan identifier and title, and initialize it with only an indented
+  `State:` point set to `not started`. Organize top-level entries by Phase and
+  nest Parts and Tasks beneath them only when separately executed or needing
+  distinct state. Use the plan's highest-level work units when those levels do
+  not apply. Do not add empty placeholders for possible later information.
 
 ## Execution Detail
-- Use concrete action verbs and identify the affected artifacts or behavior.
+- Use concrete action verbs and identify the owner and affected artifacts or
+  behavior. In a main agent plan, an unqualified imperative assigns work to the
+  main agent; name the responsible subagent or linked plan whenever work is
+  delegated.
+- When the main agent is intended to orchestrate delegated work, limit its
+  actions to coordination and any review or commit the plan assigns to it
+  directly.
+- In plan prose, prefer `review and approval`. Use `user` when the actor must be
+  distinguished from an agentic reviewer; do not use `human` as a role label.
 - Preserve technical details needed to implement and verify the change, including relevant inputs, dependencies, and acceptance criteria.
 - Distinguish agreed work, provisional choices, and decisions still needed. Do not invent missing decisions.
 - For implementation plans, identify changes and verification; for investigations or reviews, identify questions, comparisons, evidence, and decision points.
@@ -46,7 +66,9 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
 
 When a plan contains consequential design choices that require a decision, suggest developing it progressively:
 
-- Capture known scope as lightweight phase, part, or task stubs. Mark unresolved choices without inventing detail.
+- Capture known scope as lightweight phase, part, or task stubs. Mark unresolved
+  choices without inventing detail, and stop the executable flow before any
+  unit whose ownership, scope, dependencies, or policy remains unresolved.
 - Ask for one consequential decision at a time. Resolve routine implementation details using available evidence and judgment.
 - Apply each answer to the plan before asking the next question.
 - If decisions belong in a design document, include that documentation work at the appropriate plan level. Keep the agreed details there until transferred, then link to the document.
@@ -71,8 +93,17 @@ considering extraction.
 Before delivering:
 
 - Remove tasks that fail the scope test above.
-- Remove hypothetical safeguards, unnecessary generalization, and repeated process instructions already supplied by applicable project guidance.
-- Check that the remaining plan still contains the technical detail needed to execute, verify, and resume the requested work. Scope discipline is not a word limit.
+- Remove hypothetical safeguards, unnecessary generalization, and generic
+  execution mechanics already supplied by selected skills. Retain only
+  task-specific choices and exceptions.
+- Read the plan from the first authorized action to its final stopping point.
+  For every imperative, confirm its owner; for every gate, confirm what follows
+  success and failure; and for every transition, confirm the next work is
+  defined and authorized. Remove displaced flow instructions, ambiguous owners,
+  and substantive work hidden in completion prose.
+- Check that the remaining plan still contains the technical detail needed to
+  execute, verify, and resume the requested work. Scope discipline is not a
+  word limit.
 
 ## Output
 - Return the plan or edited artifact directly unless explanation is requested.

@@ -78,6 +78,7 @@ REASONS = {
     "direct_input_unavailable",
     "execution_exception",
     "execution_failed",
+    "execution_timeout",
     "evidence_comparison_failed",
     "generation_failed",
     "graph_limit",

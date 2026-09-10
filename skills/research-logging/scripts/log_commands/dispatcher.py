@@ -783,6 +783,11 @@ def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
 
 
 def _dispatch_reproduce(arguments: Sequence[str]) -> int:
+    from .reproduction_contract import (
+        DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        ReproductionRuntime,
+    )
+
     if arguments and arguments[0] == "report":
         return _dispatch_reproduction_report(arguments[1:])
     if arguments and arguments[0] == "artifacts":
@@ -812,6 +817,13 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument(
+        "--execution-timeout-seconds",
+        type=int,
+        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help="maximum runtime for each command (default: 300 seconds)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--summary",
@@ -829,7 +841,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             log,
             entry=args.entry,
             include_all=args.include_all,
-            jobs=args.jobs,
+            runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
             recheck=args.recheck,
         )
         if args.summary:
@@ -846,7 +858,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             log,
             entry=args.entry,
             include_all=args.include_all,
-            jobs=args.jobs,
+            runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
             recheck=args.recheck,
         )
         print(launch.render(), end="")

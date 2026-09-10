@@ -52,7 +52,11 @@ from validation.pyrun_state import (
 
 from .context import EntryContext, LogContext, resolve_entry
 from .model import ActionError
-from .reproduction_contract import ReproductionPlan, successful_checkpoint_state
+from .reproduction_contract import (
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    ReproductionPlan,
+    successful_checkpoint_state,
+)
 from .reproduction_paths import canonical_run_root, checkpoint_temporary_path
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
@@ -192,6 +196,7 @@ class ExecutionControl:
     """Runtime controls shared by one recipe or complete plan execution."""
 
     resume: bool = False
+    execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
     stop_requested: Callable[[], bool] = lambda: False
     confinement: ConfinementBackend | None = None
     generated_paths: Mapping[Path, tuple[Path, str]] | None = None
@@ -312,6 +317,7 @@ class _LaunchedProcess:
 @dataclass(frozen=True)
 class _RunCallbacks:
     stop_requested: Callable[[], bool]
+    execution_timeout_seconds: int
     on_launch: Callable[[str], None]
     on_workers: Callable[[tuple[WorkerRecord, ...]], None]
 
@@ -556,6 +562,7 @@ def execute_planned_recipe(
         workspace,
         _RunCallbacks(
             control.stop_requested,
+            control.execution_timeout_seconds,
             launched,
             lambda workers: _control_plane_call(
                 control.worker_progress,
@@ -771,6 +778,9 @@ def _run_prepared(
             launched = _launch_process(prepared, command, stack)
             started_at = _utc_now()
             started_monotonic = time.monotonic()
+            deadline = (
+                started_monotonic + callbacks.execution_timeout_seconds
+            )
             _control_plane_call(callbacks.on_launch, started_at)
             _control_plane_call(registry.register_root, launched.process.pid)
             _control_plane_call(
@@ -779,8 +789,8 @@ def _run_prepared(
             outcome = _monitor_process(
                 launched.process,
                 registry,
-                callbacks.stop_requested,
-                callbacks.on_workers,
+                callbacks,
+                deadline,
             )
             failure_code, failure_message = _finish_streams(
                 launched, outcome.failure_code, outcome.failure_message
@@ -906,21 +916,35 @@ def _start_stream_pumps(
 def _monitor_process(
     process: subprocess.Popen[bytes],
     registry: _WorkerRegistry,
-    stop_requested: Callable[[], bool],
-    on_workers: Callable[[tuple[WorkerRecord, ...]], None],
+    callbacks: _RunCallbacks,
+    deadline: float,
 ) -> _ProcessOutcome:
     stopped = False
     failure_code: str | None = None
     failure_message: str | None = None
     while process.poll() is None:
         _control_plane_call(registry.refresh)
-        _control_plane_call(on_workers, _control_plane_call(registry.records))
-        if stop_requested():
+        _control_plane_call(
+            callbacks.on_workers, _control_plane_call(registry.records)
+        )
+        if callbacks.stop_requested():
             stopped = True
             survivors = _control_plane_call(registry.stop_all)
             if survivors:
                 failure_code = "worker_cleanup_incomplete"
                 failure_message = _survivor_message(survivors)
+            break
+        if time.monotonic() >= deadline:
+            survivors = _control_plane_call(registry.stop_all)
+            if survivors:
+                failure_code = "worker_cleanup_incomplete"
+                failure_message = _survivor_message(survivors)
+            else:
+                failure_code = "execution_timeout"
+                failure_message = (
+                    "command exceeded the runtime limit of "
+                    f"{callbacks.execution_timeout_seconds} seconds"
+                )
             break
         time.sleep(POLL_SECONDS)
     returncode = process.poll()
@@ -930,7 +954,7 @@ def _monitor_process(
         except subprocess.TimeoutExpired:
             returncode = None
     _control_plane_call(registry.refresh)
-    _control_plane_call(on_workers, _control_plane_call(registry.records))
+    _control_plane_call(callbacks.on_workers, _control_plane_call(registry.records))
     if not stopped:
         survivors = _control_plane_call(
             registry.wait_for_descendants, WORKER_SETTLE_SECONDS
@@ -1144,6 +1168,7 @@ def _execute_scheduled_recipe(
             workspace,
             ExecutionControl(
                 resume=control.resume and checkpoint is not None,
+                execution_timeout_seconds=control.execution_timeout_seconds,
                 stop_requested=control.stop_requested,
                 confinement=context.backend,
                 generated_paths=context.generated,

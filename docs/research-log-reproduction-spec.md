@@ -69,12 +69,12 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/8` |
+| Reproduction result | `research-log-reproduction-result/9` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run state | `research-log-reproduction-run/4` |
-| Run status projection | `research-log-reproduction-status/4` |
-| Dry-run plan | `research-log-reproduction-plan/4` |
+| Durable run state | `research-log-reproduction-run/5` |
+| Run status projection | `research-log-reproduction-status/5` |
+| Dry-run plan | `research-log-reproduction-plan/5` |
 | Command list | `research-log-reproduction-command-list/2` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
@@ -150,6 +150,8 @@ the selected entry. Graph limits do not authorize broader scope.
 | Runner-owned temporary and staging bytes per run | 1 TiB |
 | Graceful stop interval | 30 seconds |
 | Forced-stop verification interval | 10 seconds |
+| Default command runtime | 300 seconds |
+| Maximum configurable command runtime | 604,800 seconds |
 
 The storage ceiling supplements, and does not replace, a preflight check for
 adequate available project-local space. A stop interval bounds one cleanup
@@ -717,7 +719,7 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--dry-run [--summary]]
+log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
@@ -729,6 +731,12 @@ number of concurrently active executions in this run, not a promise that the
 cap can be reached. Graph readiness, path conflicts, project-wide exclusive
 coordination, and available work may reduce concurrency. The accepted value is
 immutable; status, stop, resume, recovery, and publication cannot override it.
+
+`--execution-timeout-seconds` accepts an integer from 1 through 604,800 and
+defaults to 300. The accepted value is an immutable per-command wall-clock
+runtime limit measured from child launch. Queue and scheduling wait time do not
+consume it. Status and resume retain the accepted limit and do not accept an
+override.
 
 Evidence records inside the selected target define initial artifact cases.
 Only artifacts reachable from those current evidence roots participate in
@@ -938,15 +946,17 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/4` projection with exactly
-`schema`, `summary`, `target`, `include_all`, `jobs`, `validation_snapshot`,
+deterministic `research-log-reproduction-plan/5` projection with exactly
+`schema`, `summary`, `target`, `include_all`, `jobs`,
+`execution_timeout_seconds`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
 
 `--summary` is valid only with `--dry-run` and replaces the complete JSON
 projection on standard output with a bounded human projection. It reports the
 target, admission state, incremental-or-recheck and automatic-or-all selection,
-concurrency cap, artifact-case count, runnable ordinary and exclusive execution
-counts, localized planning-failure count, boundary count, scheduling-path-claim
+concurrency cap, per-command runtime limit, artifact-case count, runnable
+ordinary and exclusive execution counts, localized planning-failure count,
+boundary count, scheduling-path-claim
 completeness, and per-entry runnable and exclusive counts. The entry table is
 limited to the first 20 stable entry IDs and reports the number omitted. The
 summary is presentation only; it applies the same complete planning and final
@@ -1052,8 +1062,8 @@ CLI. It is immutable and names the durable state, output workspace, diagnostics,
 and staging paths for the life of the run. It is not derived from Markdown or
 an execution recipe.
 
-The accepted target, entry-or-log kind, all-execution inclusion policy, and
-`jobs` value are immutable.
+The accepted target, entry-or-log kind, all-execution inclusion policy, `jobs`
+value, and per-command runtime limit are immutable.
 Management commands use only the recorded scope:
 
 ```text
@@ -1062,16 +1072,17 @@ log reproduce stop --path LOG --run-id RUN_ID
 log reproduce resume --path LOG --run-id RUN_ID
 ```
 
-They must reject `--entry`, `--include-all`, and `--jobs`.
+They must reject `--entry`, `--include-all`, `--jobs`, and
+`--execution-timeout-seconds`.
 
 ### Durable State
 
 Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/4`. Its top-level object has exactly:
+`research-log-reproduction-run/5`. Its top-level object has exactly:
 
 ```json
 {
-  "schema": "research-log-reproduction-run/4",
+  "schema": "research-log-reproduction-run/5",
   "run_id": "reproduce-...",
   "attempt": 2,
   "attempts": [
@@ -1091,6 +1102,7 @@ Each run directory contains one canonical `run.json` using
   "target": {"kind": "entry", "entry": "e003"},
   "include_all": false,
   "jobs": 2,
+  "execution_timeout_seconds": 300,
   "queue": [],
   "source_snapshot": {},
   "validation_snapshot": {},
@@ -1148,7 +1160,8 @@ Each run directory contains one canonical `run.json` using
 
 `target` has exactly `kind` and `entry`. `kind` is `entry` or `log`; `entry`
 is the stable entry ID for an entry target and null for a log target.
-The top-level `jobs` value must equal the immutable value in `plan`.
+The top-level `jobs` and `execution_timeout_seconds` values must equal their
+immutable values in `plan`.
 `queue` is the immutable, canonically sorted initial command projection from
 the first source snapshot. It fixes the logical scope and records which target
 commands the launch policy queued. Resume may narrow work within that queue but
@@ -1159,7 +1172,7 @@ snapshots, state, progress, timestamps, workers, and checkpoints. Attempt-local
 files are retained beneath `attempts/NNNN/` when a continuation begins.
 `source_snapshot` and `validation_snapshot` are byte-for-byte the projections
 defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/4` object without its outer `schema`; it is
+`research-log-reproduction-plan/5` object without its outer `schema`; it is
 immutable within the current attempt and replaced only by a fresh accepted
 continuation plan.
 
@@ -1242,8 +1255,9 @@ immutable run ID rather than reading unlocked mutable state to rediscover it.
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/4` object containing exactly `schema`,
-`run_id`, `summary`, `target`, `include_all`, `jobs`, `status`, `phase`,
+`research-log-reproduction-status/5` object containing exactly `schema`,
+`run_id`, `summary`, `target`, `include_all`, `jobs`,
+`execution_timeout_seconds`, `status`, `phase`,
 `active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
 `operational_failure`, `surviving_workers`, `attempt`, `attempts`, `resolved`,
@@ -1313,11 +1327,12 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 
 ### Resume
 
-For a v4 logical reproduction, `resume` is available after a terminal
+For a v5 logical reproduction, `resume` is available after a terminal
 `complete`, `failed`, or `stopped` attempt while the initial command queue is
 unresolved. It reacquires the original scope lock, preserves the run ID,
-target, include-all authorization, queue, and `jobs` cap, then creates a fresh
-attempt plan and source snapshot. It preserves successful commands, selects
+target, include-all authorization, queue, `jobs` cap, and per-command runtime
+limit, then creates a fresh attempt plan and source snapshot. It preserves
+successful commands, selects
 commands with no durable outcome, reruns a failed command only when its source
 closure changed, and reconsiders every blocked command. Newly selected work
 also selects downstream commands that it may affect. An unchanged failure is
@@ -1447,6 +1462,13 @@ reproduction supervisor until it exits. Detached processes are allowed only
 when the supervisor can retain ownership and stop them. Successful execution
 requires the complete worker tree to finish and all declared outputs to become
 stable before comparison.
+
+If the root command remains active after its accepted runtime limit, the
+supervisor terminates the complete worker tree through the same bounded cleanup
+path used by stop. It writes a failed checkpoint with reason
+`execution_timeout` and a message naming the exceeded limit. The timeout is an
+execution outcome: dependants are skipped with `dependency_failed`, independent
+commands continue, and retained stdout and stderr remain queryable.
 
 The preflight and runtime must reject unresolved absolute outputs, path escape,
 unsafe symlink traversal, unsupported detached ownership, unavailable
@@ -1606,7 +1628,7 @@ The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
 `comparator_error`, `content_changed`, `cross_log_generated_input`,
 `dependency_cycle`, `dependency_failed`, `direct_input_changed`,
 `direct_input_unavailable`, `evidence_comparison_failed`,
-`execution_exception`, `execution_failed`,
+`execution_exception`, `execution_failed`, `execution_timeout`,
 `generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
 `multiple_producers`, `output_materialization_failed`, `output_missing`,
 `outside_entry`, `outside_queue`, `participating_code_changed`,
@@ -1619,11 +1641,11 @@ The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/8`. It has exactly this shape:
+`research-log-reproduction-result/9`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/8",
+  "schema": "research-log-reproduction-result/9",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -2346,18 +2368,23 @@ and Reproduce require `pyrun.json`; neither executes legacy
 legacy validation Reproduction section is not a current report surface.
 
 Parallel scheduling uses `research-log-pyrun/v4` and reproduction plan, run,
-and status version 4. Version 2 execution records are unsupported; version 2
-and 3 accepted reproduction runs use only their bounded historical
+and status version 5. Version 2 execution records are unsupported; version 2,
+3, and 4 accepted reproduction runs use only their bounded historical
 compatibility paths. No accepted run is upgraded in place, and no consumer may
 decode an older object with current-schema defaults. The maintained-corpus
 execution-state cutover is complete.
+
+Because version 4 accepted runs predate the persisted runtime-limit field,
+their historical execution path applies the code-owned 300-second safety limit;
+they cannot supply or retain an override. Version 5 is required for a
+researcher-selected runtime limit.
 
 The result reader accepts only the current reproduction-result schema. An
 older generated result is outdated rather than a migration input; reports,
 queries, incremental planning, and partial publication refuse it and instruct
 the caller to run whole-log reproduction with `--recheck`. That complete plan
 does not decode prior generated results and may atomically replace them with
-`research-log-reproduction-result/8`. Malformed current results remain invalid
+`research-log-reproduction-result/9`. Malformed current results remain invalid
 and are never treated as outdated. This is the standard generated-state
 cutover for every later reproduction-result schema change; consumers do not
 branch on particular retired versions, and only a whole-log recheck accepted

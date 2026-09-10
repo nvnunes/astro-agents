@@ -12,7 +12,11 @@ from unittest import mock
 
 from log_commands.context import LogContext
 from log_commands.model import ActionError
-from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
+from log_commands.reproduction_contract import (
+    ReproductionPlan,
+    ReproductionRuntime,
+    source_snapshot,
+)
 from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionBatch,
@@ -748,7 +752,7 @@ class ReproductionJobTests(unittest.TestCase):
                     log,
                     entry=mock.ANY,
                     include_all=include_all,
-                    jobs=1,
+                    runtime=ReproductionRuntime(),
                     selection=ReproductionSelection("recheck"),
                 )
                 safety.assert_called_once_with()
@@ -769,7 +773,7 @@ class ReproductionJobTests(unittest.TestCase):
             (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
-            plan = _plan()
+            plan = replace(_plan(), execution_timeout_seconds=17)
             run_id = "reproduce-20300101t000000z-fixture"
             run_root = (
                 project
@@ -792,6 +796,7 @@ class ReproductionJobTests(unittest.TestCase):
                 )
 
             expected = _status_fixture("accepted")
+            expected["execution_timeout_seconds"] = 17
             self.assertEqual(_status_projection(record), expected)
 
     def test_frozen_status_fixtures_cover_active_and_terminal_lifecycle(self) -> None:
@@ -980,8 +985,10 @@ class ReproductionJobTests(unittest.TestCase):
             record.pop("attempt")
             record.pop("attempts")
             record.pop("queue")
+            record.pop("execution_timeout_seconds")
             record.pop("jobs")
             plan = cast(dict[str, object], record["plan"])
+            plan.pop("execution_timeout_seconds")
             plan.pop("jobs")
             execution = cast(list[dict[str, object]], plan["executions"])[0]
             for field in (
@@ -1061,7 +1068,7 @@ class ReproductionJobTests(unittest.TestCase):
                 log,
                 entry=mock.ANY,
                 include_all=False,
-                jobs=1,
+                runtime=ReproductionRuntime(),
                 selection=ReproductionSelection("recheck"),
             )
             spawn.assert_called_once()
@@ -1672,6 +1679,8 @@ def _as_precontinuation(record: dict[str, object]) -> None:
     record.pop("attempt")
     record.pop("attempts")
     record.pop("queue")
+    record.pop("execution_timeout_seconds")
+    cast(dict[str, object], record["plan"]).pop("execution_timeout_seconds")
 
 
 def _write_accepted_run(
@@ -1859,7 +1868,8 @@ def _status_fixture(name: str) -> dict[str, object]:
         "operational_failure": None,
         "phase": name,
         "run_id": "reproduce-20300101t000000z-fixture",
-        "schema": "research-log-reproduction-status/4",
+        "schema": "research-log-reproduction-status/5",
+        "execution_timeout_seconds": 300,
         "status": None,
         "summary": "docs/research.md",
         "surviving_workers": [],

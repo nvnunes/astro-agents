@@ -48,7 +48,7 @@ with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/8`. Every newly
+The current result schema is `research-log-reproduction-result/9`. Every newly
 published run counts every command in its log or entry target exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or

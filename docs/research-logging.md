@@ -957,7 +957,8 @@ Preview one exact scope without writing anything:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry-id>] \
-  [--recheck] [--jobs <positive-integer>] --dry-run
+  [--recheck] [--jobs <positive-integer>] \
+  [--execution-timeout-seconds <seconds>] --dry-run
 ```
 
 Launch it by omitting `--dry-run`. The command prints a durable run ID and
@@ -977,6 +978,12 @@ and project-wide exclusive commands can reduce actual concurrency. The dry run
 shows the immutable cap, each execution's exclusive flag, and its normalized
 path claims without creating state. Status, stop, and resume use the accepted
 cap and do not accept an override.
+
+Each command has a 300-second wall-clock runtime limit by default. Override it
+for a launch or dry run with `--execution-timeout-seconds`; the accepted value
+applies independently to each command and is retained across resume. A command
+that exceeds it fails with `execution_timeout`, its process tree is terminated,
+and independent commands continue.
 
 Entry-local execution state must use `research-log-pyrun/v4`; earlier schemas
 are rejected before planning and are not assigned guessed scheduling policy.

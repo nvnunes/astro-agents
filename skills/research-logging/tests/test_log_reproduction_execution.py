@@ -1183,6 +1183,52 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertGreaterEqual(len(attempt.workers), 2)
             self.assertTrue(all(worker.state == "exited" for worker in attempt.workers))
 
+    def test_runtime_limit_fails_command_and_terminates_detached_descendant(
+        self,
+    ) -> None:
+        script = (
+            "import argparse, subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; "
+            "time.sleep(60)'], start_new_session=True)\n"
+            "Path(a.output).write_text(str(child.pid))\n"
+            "time.sleep(60)\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), script)
+            workspace = fixture.workspace()
+
+            attempt = execute_planned_recipe(
+                fixture.log,
+                fixture.plan,
+                fixture.planned,
+                workspace,
+                ExecutionControl(
+                    execution_timeout_seconds=1,
+                    confinement=_FixtureConfinement(),
+                ),
+            )
+
+            self.assertFalse(attempt.stopped)
+            self.assertEqual(attempt.failure_code, "execution_timeout")
+            self.assertEqual(
+                attempt.failure_message,
+                "command exceeded the runtime limit of 1 seconds",
+            )
+            self.assertEqual(attempt.checkpoint.state, "failed")
+            self.assertEqual(
+                attempt.checkpoint.failure,
+                {
+                    "code": "execution_timeout",
+                    "message": "command exceeded the runtime limit of 1 seconds",
+                    "recorded_at": attempt.checkpoint.finished_at,
+                },
+            )
+            self.assertGreaterEqual(len(attempt.workers), 2)
+            self.assertTrue(all(worker.state == "exited" for worker in attempt.workers))
+
     def test_plan_continues_independent_work_and_skips_failed_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")

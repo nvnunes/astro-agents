@@ -11,7 +11,11 @@ from unittest import mock
 from log_commands.context import LogContext
 from log_commands.dispatcher import main
 from log_commands.model import ActionError
-from log_commands.reproduction_contract import ReproductionPlan, source_snapshot
+from log_commands.reproduction_contract import (
+    ReproductionPlan,
+    ReproductionRuntime,
+    source_snapshot,
+)
 from log_commands.reproduction_jobs import ReproductionLaunch
 from log_commands.reproduction_planner import (
     ReproductionCommandInventory,
@@ -181,6 +185,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertIn("- Admission: Ready with localized failures", output.getvalue())
         self.assertIn("- Selection: Incremental; automatic only", output.getvalue())
         self.assertIn("- Concurrency cap: 4", output.getvalue())
+        self.assertIn("- Per-command runtime limit: 300 seconds", output.getvalue())
         self.assertIn("- Artifact cases: 25", output.getvalue())
         self.assertIn(
             "- Runnable executions: 21 (20 ordinary, 1 exclusive)",
@@ -192,7 +197,11 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertNotIn("| `e021` |", output.getvalue())
         self.assertIn("1 additional entry omitted.", output.getvalue())
         dry_run.assert_called_once_with(
-            log, entry=None, include_all=False, jobs=4, recheck=False
+            log,
+            entry=None,
+            include_all=False,
+            runtime=ReproductionRuntime(4, 300),
+            recheck=False,
         )
 
     def test_dispatcher_rejects_summary_for_a_real_launch(self) -> None:
@@ -854,13 +863,19 @@ class ReproductionQueryTests(unittest.TestCase):
                     "e003",
                     "--recheck",
                     "--dry-run",
+                    "--execution-timeout-seconds",
+                    "17",
                 ]
             )
 
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), '{"schema":"fixture"}\n')
         dry_run.assert_called_once_with(
-            log, entry="e003", include_all=False, jobs=1, recheck=True
+            log,
+            entry="e003",
+            include_all=False,
+            runtime=ReproductionRuntime(1, 17),
+            recheck=True,
         )
 
         output = StringIO()
@@ -877,7 +892,11 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output.getvalue(), "reproduce-fixture\n")
         launch.assert_called_once_with(
-            log, entry=None, include_all=False, jobs=1, recheck=True
+            log,
+            entry=None,
+            include_all=False,
+            runtime=ReproductionRuntime(),
+            recheck=True,
         )
 
         output = StringIO()

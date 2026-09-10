@@ -47,7 +47,8 @@ checkpoint, result, report, or other state:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-all] [--recheck] [--jobs <positive-integer>] --dry-run --summary
+  [--include-all] [--recheck] [--jobs <positive-integer>] \
+  [--execution-timeout-seconds <seconds>] --dry-run --summary
 ```
 
 Use `--summary` for the bounded CLI-owned human projection. Present it
@@ -58,7 +59,8 @@ Launch the same scope by omitting `--dry-run`:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry>] \
-  [--include-all] [--recheck] [--jobs <positive-integer>]
+  [--include-all] [--recheck] [--jobs <positive-integer>] \
+  [--execution-timeout-seconds <seconds>]
 ```
 
 Without `--entry`, the target is exactly the named log. With `--entry`, the
@@ -72,6 +74,12 @@ claims, and project-wide exclusivity may keep actual concurrency lower. Before
 a parallel launch, use the dry-run summary to verify the cap, runnable and
 exclusive counts, and complete path claims. Entry-local execution state must
 use `research-log-pyrun/v4`; earlier schemas are unsupported.
+
+Each command defaults to a 300-second wall-clock runtime limit. Use
+`--execution-timeout-seconds` on launch or dry run to accept a different limit;
+resume retains it and does not accept an override. Exceeding the limit records
+an `execution_timeout` failure, terminates the supervised process tree, and
+does not prevent independent commands from running.
 
 The default selection is incremental. A current execution with
 `requires_reproduction: false` does not need execution and does not require

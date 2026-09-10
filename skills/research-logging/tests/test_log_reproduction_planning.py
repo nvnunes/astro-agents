@@ -14,7 +14,7 @@ from unittest import mock
 from log_commands.context import EntryContext, LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_accounting import project_command_selection
-from log_commands.reproduction_contract import ReproductionPlan
+from log_commands.reproduction_contract import ReproductionPlan, ReproductionRuntime
 from log_commands.reproduction_planner import (
     RECHECK_SELECTION,
     RESUME_SELECTION,
@@ -353,6 +353,18 @@ def _write_projection(
 
 
 class ReproductionPlanningTests(unittest.TestCase):
+    def test_execution_timeout_must_be_within_the_fixed_bound(self) -> None:
+        for value in (0, 604_801, True):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ActionError, "--execution-timeout-seconds must be between 1 and 604800"
+            ):
+                plan_reproduction(
+                    mock.sentinel.log,
+                    entry=None,
+                    include_all=False,
+                    runtime=ReproductionRuntime(execution_timeout_seconds=value),
+                )
+
     def test_incremental_run_uses_current_pyrun_without_saved_command_state(
         self,
     ) -> None:
@@ -1523,7 +1535,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "target": {"entry": entry.id, "kind": "entry"},
                     }
                 ],
-                "schema": "research-log-reproduction-result/7",
+                "schema": "research-log-reproduction-result/8",
                 "summary": "docs/study.md",
                 "updated_at": "2026-09-06T00:01:00Z",
             }
@@ -1545,7 +1557,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [execution[0]],
             )
             snapshot = first.source_snapshot["commands"][0]
-            stored["schema"] = "research-log-reproduction-result/8"
+            stored["schema"] = "research-log-reproduction-result/9"
             stored["runs"][0]["command_records"] = None
             commands = [
                 {
@@ -1604,6 +1616,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     "boundaries",
                     "cases",
                     "executions",
+                    "execution_timeout_seconds",
                     "failures",
                     "include_all",
                     "jobs",

@@ -53,11 +53,13 @@ from .context import (
 from .model import ActionError
 from .reproduction_contract import (
     LEGACY_SOURCE_SNAPSHOT_SCHEMA,
+    MAX_EXECUTION_TIMEOUT_SECONDS,
     PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
     PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
     PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
     SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
+    ReproductionRuntime,
     canonical_execution_source_digest,
     canonical_record_digest,
     source_snapshot,
@@ -146,6 +148,7 @@ class _PlanningState:
     entry_target: bool
     include_all: bool
     jobs: int
+    execution_timeout_seconds: int
     selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
     owners: Mapping[str, tuple[_Owner, ...]]
@@ -275,14 +278,30 @@ def plan_reproduction(
     *,
     entry: EntryContext | None,
     include_all: bool,
-    jobs: int = 1,
+    runtime: ReproductionRuntime = ReproductionRuntime(),
     selection: ReproductionSelection = ReproductionSelection(),
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
 
     _require_selection_policy(selection.policy)
-    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs <= 0:
+    if (
+        isinstance(runtime.jobs, bool)
+        or not isinstance(runtime.jobs, int)
+        or runtime.jobs <= 0
+    ):
         raise ActionError("reproduction.jobs.invalid", "--jobs must be positive")
+    if (
+        isinstance(runtime.execution_timeout_seconds, bool)
+        or not isinstance(runtime.execution_timeout_seconds, int)
+        or not 1
+        <= runtime.execution_timeout_seconds
+        <= MAX_EXECUTION_TIMEOUT_SECONDS
+    ):
+        raise ActionError(
+            "reproduction.execution_timeout.invalid",
+            "--execution-timeout-seconds must be between 1 and "
+            f"{MAX_EXECUTION_TIMEOUT_SECONDS}",
+        )
     _require_existing_locks_available(log, entry)
     admitted = _admit_validation(log)
     validation_snapshot, validation_state = admitted[:2]
@@ -303,7 +322,8 @@ def plan_reproduction(
         selected_ids,
         entry is not None,
         include_all,
-        jobs,
+        runtime.jobs,
+        runtime.execution_timeout_seconds,
         selection.policy,
         entries,
         _owner_index(entries, project_root),
@@ -1702,6 +1722,7 @@ def _project_plan(
         boundaries,
         failures,
         state.jobs,
+        state.execution_timeout_seconds,
     )
 
 

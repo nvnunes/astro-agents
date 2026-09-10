@@ -8,21 +8,32 @@ from typing import Any, Mapping, Sequence
 
 LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
 PRECONTINUATION_PLAN_SCHEMA = "research-log-reproduction-plan/3"
-PLAN_SCHEMA = "research-log-reproduction-plan/4"
+PRETIMEOUT_PLAN_SCHEMA = "research-log-reproduction-plan/4"
+PLAN_SCHEMA = "research-log-reproduction-plan/5"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 PREQUERY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
 SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/8"
-REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/8"
+REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = 5 * 60
+MAX_EXECUTION_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
 
 
 def successful_checkpoint_state(state: object) -> bool:
     """Return whether a checkpoint is successful in either supported schema."""
 
     return state in {"complete", "succeeded"}
+
+
+@dataclass(frozen=True)
+class ReproductionRuntime:
+    """Immutable concurrency and per-command runtime controls for one run."""
+
+    jobs: int = 1
+    execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,7 @@ class ReproductionPlan:
     boundaries: tuple[Mapping[str, object], ...]
     failures: tuple[Mapping[str, object], ...]
     jobs: int = 1
+    execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
     def as_dict(self) -> dict[str, object]:
         """Return the exact public v1 field set."""
@@ -47,6 +59,7 @@ class ReproductionPlan:
             "boundaries": [dict(value) for value in self.boundaries],
             "cases": [dict(value) for value in self.cases],
             "executions": [dict(value) for value in self.executions],
+            "execution_timeout_seconds": self.execution_timeout_seconds,
             "failures": [dict(value) for value in self.failures],
             "include_all": self.include_all,
             "jobs": self.jobs,
@@ -102,6 +115,7 @@ def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -
         f"- Admission: {admission}",
         f"- Selection: {selection}; {eligibility}",
         f"- Concurrency cap: {plan.jobs}",
+        f"- Per-command runtime limit: {plan.execution_timeout_seconds} seconds",
         f"- Artifact cases: {len(plan.cases)}",
         (
             f"- Runnable executions: {execution_count} "

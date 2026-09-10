@@ -12,9 +12,9 @@ from log_commands.reproduction_comparison import (
     STAGING_SCHEMA,
     ArtifactComparison,
     ExecutionComparison,
+    clear_execution_reproduction_requirement_locked,
     compare_artifacts,
     compare_execution_outputs,
-    confirm_matching_execution_locked,
     load_recorded_comparisons,
 )
 from log_commands.reproduction_execution import ExecutionAttempt, ExecutionCheckpoint
@@ -416,17 +416,17 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertEqual(first_work.read_text(), "retained\n")
             self.assertEqual(second_work.read_text(), "second changed\n")
 
-    def test_confirmation_changes_only_confirmed_bit(self) -> None:
+    def test_execution_clears_only_reproduction_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             before = (fixture.entry_root / "pyrun.json").read_text()
             artifact = ArtifactComparison(
                 "data/result.txt",
-                "matched",
-                None,
+                "changed",
+                "content_changed",
                 "text",
                 Fingerprint("sha256", digest="a" * 64).as_dict(),
-                Fingerprint("sha256", digest="a" * 64).as_dict(),
+                Fingerprint("sha256", digest="b" * 64).as_dict(),
             )
             result = ExecutionComparison(
                 "e001", fixture.identity, (artifact,), None, True
@@ -441,13 +441,13 @@ class ExecutionComparisonTests(unittest.TestCase):
                 ),
             )
 
-            changed = confirm_matching_execution_locked(
+            changed = clear_execution_reproduction_requirement_locked(
                 fixture.log,
                 plan,
                 result,
                 project_root=fixture.project,
             )
-            changed_again = confirm_matching_execution_locked(
+            changed_again = clear_execution_reproduction_requirement_locked(
                 fixture.log,
                 plan,
                 result,
@@ -461,13 +461,21 @@ class ExecutionComparisonTests(unittest.TestCase):
             )
             execution = candidate["executions"][fixture.identity]
             original = json.loads(before)["executions"][fixture.identity]
-            self.assertTrue(execution["confirmed"])
+            self.assertFalse(execution["requires_reproduction"])
             self.assertEqual(
-                {key: value for key, value in execution.items() if key != "confirmed"},
-                {key: value for key, value in original.items() if key != "confirmed"},
+                {
+                    key: value
+                    for key, value in execution.items()
+                    if key != "requires_reproduction"
+                },
+                {
+                    key: value
+                    for key, value in original.items()
+                    if key != "requires_reproduction"
+                },
             )
 
-    def test_matching_comparison_confirms_immediately(self) -> None:
+    def test_completed_comparison_clears_requirement_immediately(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             artifact = ArtifactComparison(
@@ -491,7 +499,7 @@ class ExecutionComparisonTests(unittest.TestCase):
                 ),
             )
 
-            changed = confirm_matching_execution_locked(
+            changed = clear_execution_reproduction_requirement_locked(
                 fixture.log,
                 plan,
                 result,
@@ -504,7 +512,42 @@ class ExecutionComparisonTests(unittest.TestCase):
                 entry_root=fixture.entry_root,
                 project_root=fixture.project,
             )
-            self.assertTrue(state.executions[fixture.identity].confirmed)
+            self.assertFalse(
+                state.executions[fixture.identity].requires_reproduction
+            )
+
+    def test_incomplete_comparison_keeps_reproduction_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            result = ExecutionComparison(
+                "e001", fixture.identity, (), None, False
+            )
+            plan = replace(
+                fixture.plan,
+                executions=(
+                    {
+                        "entry": "e001",
+                        "execution_id": fixture.identity,
+                    },
+                ),
+            )
+
+            changed = clear_execution_reproduction_requirement_locked(
+                fixture.log,
+                plan,
+                result,
+                project_root=fixture.project,
+            )
+
+            self.assertFalse(changed)
+            state = load_pyrun_state(
+                fixture.entry_root / "pyrun.json",
+                entry_root=fixture.entry_root,
+                project_root=fixture.project,
+            )
+            self.assertTrue(
+                state.executions[fixture.identity].requires_reproduction
+            )
 
 
 def _fingerprint(path: Path) -> Fingerprint:

@@ -73,7 +73,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
             {
                 "Structure": "1 chain + 1 structural + 1 inspection",
                 "Evidence": "Clear",
-                "Confirmation": "Clear",
+                "Reproduction": "Clear",
             },
         )
         # Related-chain and multi-entry links must not add primary work.
@@ -156,7 +156,9 @@ class StructuralRepairBatchTests(unittest.TestCase):
                     failure("entry:e002:a", "producer.missing", "/shared"),
                     failure("entry:e001:b", "producer.missing", "unanchored"),
                     failure(
-                        "entry:e001:c", "provenance.output.unconfirmed", "/confirmed"
+                        "entry:e001:c",
+                        "provenance.output.reproduction_required",
+                        "/requires_reproduction",
                     ),
                 ]
             )

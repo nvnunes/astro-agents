@@ -5,7 +5,8 @@ maintained research log or one entry. Reproduce is a mechanical CLI workflow,
 separate from Record, Review, and Validate. It starts from evidence declared in
 `evidence.json`, plans and executes only from JSON authority, retains all
 regenerated outputs in a project-local run folder, compares them with retained
-artifacts, confirms complete matching executions immediately, and publishes
+artifacts, clears the reproduction requirement for every completed execution,
+and publishes
 generated reproduction state. After successful reproduction publication, the
 CLI invokes ordinary log validation as a separate operation.
 It reads verified scripts, code, inputs, and comparison baselines in place;
@@ -19,8 +20,9 @@ run.
 - Treat the maintained summary, entries, commands, scripts, retained artifacts,
   `data.json`, `evidence.json`, `retention.json`, and authored prose as
   read-only. Reproduce writes its generated job, result, and report paths and
-  may change only `confirmed: false` to `confirmed: true` for a fully matching
-  execution in `pyrun.json`. The separate post-run validation owns its own
+  may change only `requires_reproduction: true` to `requires_reproduction:
+  false` for a completed execution in `pyrun.json`. The separate post-run
+  validation owns its own
   generated files.
 - Do not interpret Markdown as execution authority, select commands, repair a
   recipe, judge scientific meaning, or decide whether a changed artifact should
@@ -69,16 +71,19 @@ immutable per-run concurrency cap: dependency readiness, conflicting path
 claims, and project-wide exclusivity may keep actual concurrency lower. Before
 a parallel launch, use the dry-run summary to verify the cap, runnable and
 exclusive counts, and complete path claims. Entry-local execution state must
-use `research-log-pyrun/v3`; earlier schemas are unsupported.
+use `research-log-pyrun/v4`; earlier schemas are unsupported.
 
-The default selection is incremental. An unchanged saved per-command source
-closure reuses its terminal disposition—success, failure, or block—without
-running the command again. A new or changed command is selected together with
-only the downstream commands its work may affect. Artifact matches are not
-used to infer command reuse. A canonical v3 result contains no reusable command
-closures, so the first later reproduction seeds them; an unchanged second run
-then selects zero executions. When the researcher explicitly asks to recheck,
-check again, or rerun reusable commands, add `--recheck`. Recheck selects every
+The default selection is incremental. A current execution with
+`requires_reproduction: false` does not need execution and does not require
+saved reproduction state. An unchanged saved per-command source closure may
+also preserve a terminal failure or block without repeating work that cannot
+produce a different result. Machine state retains that prior failure or block;
+the compact report includes the command in its single reproduction-not-retried
+total. A command that still requires reproduction is
+selected together with only the downstream commands its work may affect. Artifact matches are not
+used to decide whether reproduction is needed. When the researcher explicitly
+asks to recheck, check again, or rerun commands for which reproduction is not
+needed, add `--recheck`. Recheck selects every
 currently runnable eligible command but does not bypass a planning blocker.
 State whether the preview or launch uses incremental or recheck selection.
 
@@ -90,7 +95,10 @@ published admission effect similarly decides whether a finding affects no
 execution, one chain, one physical entry, or the complete log. Do not repair or
 reinterpret any of these findings during reproduction.
 
-The default run excludes executions with `auto_reproduce: false`.
+The default run first classifies a current execution with
+`requires_reproduction: false` as reproduction not needed, even when
+`auto_reproduce` is false. Its retained outputs bound traversal. The default
+run then excludes remaining executions with `auto_reproduce: false`.
 `--include-all` includes them and requires separate explicit researcher
 authorization. A request to recheck does not authorize non-automatic
 execution. When commands are selected for execution, a real launch prints a
@@ -143,7 +151,8 @@ human projection:
 ```
 
 Present the returned compact report unchanged. Its command tree relates total
-commands to policy-skipped, saved-state, and selected commands, then relates
+commands to commands whose reproduction was not retried, policy-skipped
+commands, and selected commands, then relates
 selected commands to succeeded, failed, and blocked outcomes.
 Its artifact tree relates current reachable artifacts to matched, not-matched, and
 not-compared outcomes, including separate failed, blocked, comparison-failed,

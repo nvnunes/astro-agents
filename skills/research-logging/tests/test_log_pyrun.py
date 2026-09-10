@@ -54,7 +54,7 @@ def _execution(
     recipe: ExecutionRecipe, *, auto_reproduce: bool, exclusive: bool = False
 ) -> PyrunExecution:
     return PyrunExecution(
-        False,
+        True,
         auto_reproduce,
         None,
         PYRUN_RUNNER,
@@ -176,7 +176,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             state = json.loads((entry / "pyrun.json").read_text())
             self.assertTrue(state["executions"][identity]["exclusive"])
-            self.assertEqual(state["schema"], "research-log-pyrun/v3")
+            self.assertEqual(state["schema"], "research-log-pyrun/v4")
 
     def test_static_loop_update_changes_every_distinct_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

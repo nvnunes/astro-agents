@@ -21,7 +21,7 @@ from validation.pyrun_state import load_pyrun_state
 
 
 class ReproductionRecoveryTests(unittest.TestCase):
-    def test_normalized_pyrun_accepts_only_the_confirmed_repair(self) -> None:
+    def test_normalized_pyrun_accepts_only_the_requirement_clear(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
             path = fixture.entry_root / "pyrun.json"
@@ -32,10 +32,12 @@ class ReproductionRecoveryTests(unittest.TestCase):
             )
             execution = state.executions[fixture.identity]
             pre_repair = _digest(execution.as_dict())
-            confirmed = _digest(replace(execution, confirmed=True).as_dict())
+            cleared = _digest(
+                replace(execution, requires_reproduction=False).as_dict()
+            )
             file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
             candidate = {
-                "confirmed_record_digest": confirmed,
+                "confirmed_record_digest": cleared,
                 "current_confirmed": False,
                 "execution_id": fixture.identity,
                 "pre_repair_record_digest": pre_repair,
@@ -43,7 +45,7 @@ class ReproductionRecoveryTests(unittest.TestCase):
 
             _verify_normalized_pyrun(fixture.project, path, [candidate], file_digest)
             value = json.loads(path.read_text(encoding="utf-8"))
-            value["executions"][fixture.identity]["confirmed"] = True
+            value["executions"][fixture.identity]["requires_reproduction"] = False
             path.write_text(
                 json.dumps(value, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",

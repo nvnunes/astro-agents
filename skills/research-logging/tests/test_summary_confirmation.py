@@ -44,7 +44,7 @@ class SummaryConfirmationTests(unittest.TestCase):
             checks = {c.identity: c for c in evaluated.result.checks}
             self.assertEqual(
                 [c.failure.code for c in checks.values() if c.failure],
-                ["provenance.output.unconfirmed"],
+                ["provenance.output.reproduction_required"],
             )
             dependent = checks["provenance:summary:5"]
             self.assertEqual(dependent.status, CheckStatus.NOT_APPLICABLE)

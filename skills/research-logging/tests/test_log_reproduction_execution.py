@@ -123,7 +123,7 @@ class _Fixture:
         )
         self.identity = execution_id(recipe)
         execution = PyrunExecution(
-            False,
+            True,
             True,
             None,
             "research-log-pyrun-runner/1",
@@ -784,7 +784,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             identity = execution_id(recipe)
             execution = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 "research-log-pyrun-runner/1",
@@ -839,7 +839,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             identity = execution_id(recipe)
             execution = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 "research-log-pyrun-runner/1",
@@ -937,7 +937,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             consumer_id = execution_id(consumer_recipe)
             consumer_execution = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 "research-log-pyrun-runner/1",

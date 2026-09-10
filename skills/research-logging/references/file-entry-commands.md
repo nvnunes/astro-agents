@@ -128,7 +128,8 @@ command semantics.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
-relationship after its confirmed output support is validated. An explicitly
+relationship after its current output support is validated and found not to
+require reproduction. An explicitly
 registered origin terminates lineage. A generated input traces to its unique
 earlier producer regardless of storage location.
 
@@ -248,7 +249,7 @@ the option does not alter the execution ID or reserve unrelated host work.
 ```
 
 For a later policy-only change, edit Markdown first, then use `log pyrun update
---exclusive true|false`. Execution state must use `research-log-pyrun/v3`;
+--exclusive true|false`. Execution state must use `research-log-pyrun/v4`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the

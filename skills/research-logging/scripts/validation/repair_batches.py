@@ -27,7 +27,7 @@ _CONFLICT_CODES = {
 _MATERIAL_CODES = {
     "producer.missing",
     "lineage.missing",
-    "provenance.output.unconfirmed",
+    "provenance.output.reproduction_required",
     "provenance.output.missing",
 }
 

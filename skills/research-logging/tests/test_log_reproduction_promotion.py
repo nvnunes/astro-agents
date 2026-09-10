@@ -46,7 +46,7 @@ class ReproductionPromotionTests(unittest.TestCase):
                 project_root=fixture.project,
             )
             execution = state.executions[fixture.identity]
-            self.assertTrue(execution.confirmed)
+            self.assertFalse(execution.requires_reproduction)
             self.assertEqual(
                 dict(execution.observed.outputs)["data/result.txt"],
                 _fingerprint_bytes(b"changed\n"),

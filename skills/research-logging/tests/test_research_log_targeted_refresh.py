@@ -126,7 +126,9 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 for check in prior.checks
                 if check.identity == "provenance:e001a:success-rate"
             )
-            self.assertEqual(direct.failure.code, "provenance.output.unconfirmed")
+            self.assertEqual(
+                direct.failure.code, "provenance.output.reproduction_required"
+            )
 
             entry_root = entry.parent
             data = load_data_file(entry_root / "data.json", entry_root=entry_root)
@@ -149,7 +151,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             )
             identity = execution_id(recipe)
             execution = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 PYRUN_RUNNER,
@@ -188,7 +190,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 state.entry_root,
                 {
                     identity: PyrunExecution(
-                        True,
+                        False,
                         execution.auto_reproduce,
                         execution.last_run_at,
                         execution.runner,
@@ -231,7 +233,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 json.dumps(data_payload, indent=2) + "\n", encoding="utf-8"
             )
             promoted_execution = PyrunExecution(
-                True,
+                False,
                 execution.auto_reproduce,
                 execution.last_run_at,
                 execution.runner,
@@ -277,7 +279,7 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 json.dumps(data_payload, indent=2) + "\n", encoding="utf-8"
             )
             changed_execution = PyrunExecution(
-                True,
+                False,
                 promoted_execution.auto_reproduce,
                 promoted_execution.last_run_at,
                 promoted_execution.runner,

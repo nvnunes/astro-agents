@@ -36,8 +36,8 @@ from .reproduction_results import (
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
-SUMMARY_SCHEMA = "research-log-reproduction-summary/2"
-ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/2"
+SUMMARY_SCHEMA = "research-log-reproduction-summary/4"
+ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/4"
 
 
 def reproduction_report(log: LogContext, *, entry: str | None) -> str:
@@ -60,7 +60,7 @@ def reproduction_summary(log: LogContext) -> dict[str, object]:
     latest = next((run for run in results.runs if run.status == "complete"), None)
     return {
         "artifacts": (
-            dict(artifact_summary_counts(results.artifacts))
+            dict(artifact_summary_counts(results.artifacts, results.commands))
             if latest is not None
             else None
         ),
@@ -139,7 +139,9 @@ def _no_work_command_outcomes(
         "blocked": selection.blocked,
         "failed": 0,
         "not_automatic": selection.not_automatic,
-        "reused": selection.reused,
+        "reproduction_not_needed": selection.reproduction_not_needed,
+        "unchanged_failed": selection.unchanged_failed,
+        "unchanged_blocked": selection.unchanged_blocked,
         "succeeded": 0,
         "total": selection.total,
     }
@@ -209,8 +211,8 @@ def root_reproduction_summary(root: Path) -> dict[str, object]:
             "commands": _sum_counts(
                 command_rows,
                 (
+                    "reproduction_not_retried",
                     "not_automatic",
-                    "reused",
                     "succeeded",
                     "failed",
                     "blocked",
@@ -241,7 +243,8 @@ def compose_root_reproduction_summary(summary: Mapping[str, object]) -> str:
         "",
         "## Commands — Latest Completed Run",
         "",
-        "| Log | Not automatic | Reused | Succeeded | Failed | Blocked | Total |",
+        "| Log | Reproduction not retried | Skipped by policy | Succeeded | "
+        "Failed | Blocked | Total |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
@@ -296,8 +299,8 @@ def _root_command_row(row: Mapping[str, object]) -> str:
         + " | ".join(
             str(commands[name])
             for name in (
+                "reproduction_not_retried",
                 "not_automatic",
-                "reused",
                 "succeeded",
                 "failed",
                 "blocked",
@@ -327,7 +330,9 @@ def _flat_commands(summary: Mapping[str, object]) -> dict[str, int]:
     selected = cast(Mapping[str, int], summary["selected"])
     return {
         "not_automatic": cast(int, summary["skipped_by_policy"]),
-        "reused": cast(int, summary["reused"]),
+        "reproduction_not_retried": cast(
+            int, summary["reproduction_not_retried"]
+        ),
         "succeeded": selected["succeeded"],
         "failed": selected["failed"],
         "blocked": selected["blocked"],
@@ -421,7 +426,8 @@ def _current(
     if path.is_symlink() or not path.is_file():
         raise ActionError(
             "reproduction.results.missing",
-            f"no cached reproduction result; rerun reproduction: {path}",
+            "no cached reproduction result; run reproduction with --recheck to "
+            f"rebuild it: {path}",
         )
     try:
         results = load_reproduction_results(path)

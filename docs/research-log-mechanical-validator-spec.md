@@ -59,7 +59,7 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
-| `pyrun` execution state | `research-log-pyrun/v3`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v4`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -67,7 +67,7 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/parallel-reproduction-policy-4` |
+| Mechanical rules | `research-log-mechanical/reproduction-requirement-5` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
@@ -88,7 +88,8 @@ research-agent work does not load this implementation specification.
 
 Provenance lineage and execution-support validation is rooted in evidence
 records. Commands outside that closure do not require
-confirmed output support or recursive lineage validation. Separately,
+current output support that does not require reproduction or recursive lineage
+validation. Separately,
 complete-graph output reconciliation reports every graph-declared output whose
 artifact is absent as a Provenance failure and every output record absent from
 the current graph as a Hygiene finding. Recorded `pyrun` command surfaces,
@@ -2350,7 +2351,7 @@ not the supporting sentence, heading, interpretation, or semantic claim.
 Whether surrounding summary prose faithfully
 synthesizes the entry belongs to the Summary Fidelity review lens.
 
-When the referenced provenance check is `provenance.output.unconfirmed`, the
+When the referenced provenance check is `provenance.output.reproduction_required`, the
 summary provenance check is `not_applicable` with a dependency on that check.
 It adds no `summary.reference.target_invalid` failure and does not claim a pass.
 Other failed or unavailable provenance targets retain their summary failures.
@@ -2789,7 +2790,8 @@ An item with `origin: true` is a terminal identified input. Validation does not
 claim how that artifact or commit snapshot came into existence. An item with
 `origin: false` must trace to one unique earlier producer and then through that
 producer's direct inputs. More than one earlier producer is ambiguous. An
-origin boundary that hides a confirmed `pyrun` producer is invalid. An origin
+origin boundary that hides a current `pyrun` producer not requiring
+reproduction is invalid. An origin
 does not connect an otherwise unreached artifact or suppress a Hygiene finding.
 
 ### Command Tokens And Roles
@@ -2962,12 +2964,13 @@ owned descendant directories retain ordinary material behavior.
 Current execution state is entry-root `pyrun.json`, with one record per exact
 recipe and its complete output set. The
 [reproduction specification](research-log-reproduction-spec.md#pyrunjson)
-owns its schema, execution identity, confirmation, and publication lifecycle.
+owns its schema, execution identity, reproduction requirement, and publication
+lifecycle.
 Mechanical validation reads it without execution or mutation and derives an
 output-keyed projection for the graph checks in this section. That internal
 projection is not another persisted execution-state file.
 
-Validation accepts only strict `research-log-pyrun/v3` state. An earlier schema
+Validation accepts only strict `research-log-pyrun/v4` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
@@ -2981,7 +2984,9 @@ not use it to execute research commands.
 
 The legacy file is a mapping keyed by exact output path. Each output has a
 copy of its invocation support. The following shape also describes validation's
-internal projection of current execution state, not the `pyrun.json` schema:
+legacy internal projection of current execution state, where
+`requires_reproduction: false` projects as `confirmed: true`; it is not the
+`pyrun.json` schema:
 
 ```json
 {
@@ -3057,7 +3062,8 @@ eligible helper.
 
 Validation resolves every logical code path to an
 existing regular file and rejects two keys that resolve to the same file. A
-reached, confirmed output compares every current code fingerprint with the
+reached output that does not require reproduction compares every current code
+fingerprint with the
 recorded mapping. A missing or non-file target, or a duplicate resolved
 identity, is `provenance.output.code_invalid`; a fingerprint difference is a
 `code` field in `provenance.output.signature_mismatch`. Code observations use
@@ -3067,12 +3073,12 @@ re-observe the same files before validation completes.
 
 A projected output record associates with a reconstructed invocation only when its
 output identity, script path, ordered parameters, and direct input names
-match. Confirmation and output, script, input, and code fingerprints are
+match. The reproduction requirement and output, script, input, and code fingerprints are
 currentness rather than association fields. Associated records for one
 invocation must agree on their complete `code` mappings. Structurally valid
 associated support adds one `code` input edge from each recorded file to the
 invocation when that invocation enters the evidence-rooted graph. Thus an
-associated unconfirmed record or a record with stale fingerprints still
+associated record requiring reproduction or a record with stale fingerprints still
 connects its helpers for Hygiene while Provenance fails independently.
 Malformed, unavailable, inconsistent, or unmatched support adds no code edge
 and suppresses no helper orphan.
@@ -3120,7 +3126,7 @@ execution, stable inputs and code, and complete output observations are required
 before publication. Replacement applies to whole executions and their complete
 output sets, as defined by
 [Atomic Publication And Replacement](research-log-reproduction-spec.md#atomic-publication-and-replacement).
-Failed execution, capture, observation, or publication confirms no record.
+Failed execution, capture, observation, or publication writes no record.
 
 Ordinary output parameters use the existing mechanical input/output role
 rules. Retained process streams use one of these forms:
@@ -3147,13 +3153,13 @@ does not change parsing. Captured bytes are mirrored to the corresponding
 terminal stream. Raw shell redirection and `tee` are outside the
 recorded-command grammar.
 
-An existing record may contain `confirmed: false`. Such a record preserves the
-temporary distinction between retained fingerprints and a directly observed
-execution, but does not validate Provenance. The next successful matching
-`pyrun` execution replaces it with confirmed current observations. Historical
-workflows with no record participate in structural graph and Hygiene
-evaluation, but a reached generated output cannot pass Provenance until a
-confirmed record exists.
+An existing record may contain `requires_reproduction: true`. Such a record
+preserves the distinction between migrated retained fingerprints and a
+successfully completed execution, but does not validate Provenance. The next
+successful `pyrun` execution replaces it with current observations and
+`requires_reproduction: false`. Historical workflows with no record participate
+in structural graph and Hygiene evaluation, but a reached generated output
+cannot pass Provenance while its record still requires reproduction.
 
 ### Producer And Lineage Semantics
 
@@ -3179,7 +3185,7 @@ the already constructed command/material graph; it does not build a second
 lineage model from output records. For each reached generated artifact:
 
 - exactly one earlier command producer is required;
-- its exact output-keyed `pyrun` record must exist and be confirmed;
+- its exact output-keyed `pyrun` record must exist without requiring reproduction;
 - the current output fingerprint must equal the record;
 - the current script path and fingerprint must equal the record;
 - the exact ordered parameters found by static command expansion must equal the
@@ -3192,7 +3198,7 @@ lineage model from output records. For each reached generated artifact:
 No earlier producer requires `origin: true`; one earlier producer requires
 `origin: false`; several earlier producers fail as ambiguous; and a later
 producer never supplies an earlier consumer. A selected producer with no
-material inputs terminates successfully at its confirmed artifact-producer
+material inputs terminates successfully at its current artifact-producer
 relationship. There is no command-level root, command type, filename-derived
 root, or `provenance.root.missing` check.
 
@@ -3204,8 +3210,9 @@ entry-level command and output-support surface.
 
 The resulting claim is bounded: the retained evidence artifact is connected to
 declared origin artifacts by the mechanically visible command graph, and every
-reached generated output matches one confirmed execution observation for the
-current script bytes, declared input fingerprints, exact parameters, and output
+reached generated output matches one execution observation that does not
+require reproduction, for the current script bytes, declared input
+fingerprints, exact parameters, and output
 bytes. It does not establish causation, complete dependency capture,
 scientific validity, reproducibility, or the truth of undeclared runtime state.
 Reproduction is a separate workflow and is not performed or evaluated here.
@@ -3226,8 +3233,9 @@ A local directory is either a byte-complete bounded collection with a
   member connects to the aggregate for fingerprint and origin-boundary
   evaluation; siblings receive no command-input or evidence-source edge.
 - Both forms count as use of the data item.
-- An origin directory is valid only when no confirmed `pyrun` record identifies
-  its root or any member as generated. Its boundary reaches a consumed member
+- An origin directory is valid only when no current `pyrun` record that does
+  not require reproduction identifies its root or any member as generated. Its
+  boundary reaches a consumed member
   through the explicit membership edge, not a path-prefix rule.
 - A consumed generated directory must have one exclusive earlier
   `output-directory` at its root or an enclosing root, with every consumed
@@ -3235,8 +3243,8 @@ A local directory is either a byte-complete bounded collection with a
   producers fail exclusivity.
 - One exclusive `pyrun` output-directory and its projected directory-level
   output-support record with the same script, parameters, and material input
-  identities form one atomic artifact. The record may remain unconfirmed,
-  and its output fingerprint may be stale; confirmation and current bytes are
+  identities form one atomic artifact. The record may still require reproduction,
+  and its output fingerprint may be stale; the reproduction requirement and current bytes are
   separate Provenance checks when the artifact is reached. Every regular-file
   descendant observed by the record belongs to the artifact and its recursive
   fingerprint. Reaching the root or one exact member connects the complete
@@ -3381,9 +3389,9 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Missing item or raw input | any | any | any | Fail undeclared or missing-token validation before lineage. |
 | Declared and used | 0 | yes | n/a | Terminal origin after current fingerprint validation. |
 | Declared and used | 0 | no | n/a | Fail `lineage.missing`. |
-| Declared and used | 1 | no | missing, unconfirmed, or unequal | Fail Provenance and continue through the unique producer's declared inputs. |
-| Declared and used | 1 | no | exact confirmed match | Trace to the unique producer's inputs. |
-| Declared and used | 1 | yes | confirmed producer | Fail `data.origin.invalid`. |
+| Declared and used | 1 | no | missing, requires reproduction, or unequal | Fail Provenance and continue through the unique producer's declared inputs. |
+| Declared and used | 1 | no | exact current match with reproduction not required | Trace to the unique producer's inputs. |
+| Declared and used | 1 | yes | current producer with reproduction not required | Fail `data.origin.invalid`. |
 | Declared and used | more than 1 | either | n/a | Fail `lineage.ambiguous`. |
 | Declared but unused | any | either | n/a | Report `orphan.input.unused`; create no graph edge. |
 | Reached producer | n/a | n/a | any support state, no inputs | Record any support failure and terminate at the artifact-producer relationship. |
@@ -3401,7 +3409,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Workflow outside evidence closure | exact exclusive `output-directory` with matching directory support | absent | Declare the output-only directory in `data.json`, use its named token, and treat it as one atomic artifact. |
 | Any directory | competing directory or member producers | either | Fail `directory.producer.conflict`; a sole enclosing owner is not competition. |
 | Generated directory | no covering earlier directory producer or missing owned member | absent | Fail `directory.producer.conflict` for a consumed directory; do not infer ownership from filesystem containment alone. |
-| Origin directory | confirmed root/member producer | present | Fail `directory.origin.conflict`. |
+| Origin directory | current root/member producer not requiring reproduction | present | Fail `directory.origin.conflict`. |
 | Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
 | Workflow outside evidence closure | atomic output directory | absent | Report one root-level orphan unless the complete bundle is retained. |
 | Workflow outside evidence closure | other directory | any | Members remain orphan-eligible unless retained. |
@@ -3436,20 +3444,20 @@ failure preserves the original error without dumping the complete payload;
 | `data.git.projection_missing` | conformance | A repository-consuming command omits its locator or commit projection. |
 | `material.candidate.unresolved` | conformance | A path-like or dynamic material candidate has no proven role. |
 | `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
-| `data.origin.invalid` | provenance | An origin boundary hides a confirmed `pyrun` producer. |
+| `data.origin.invalid` | provenance | An origin boundary hides a current `pyrun` producer that does not require reproduction. |
 | `data.target.missing` | provenance | A local input or selected member is absent. |
 | `data.fingerprint.unobserved` | provenance | Generated material has not yet received a fingerprint observation from successful production. |
 | `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
 | `directory.producer.conflict` | provenance | A generated directory lacks one exclusive earlier producer covering its root and consumed members. |
-| `directory.origin.conflict` | provenance | An origin directory root or member has a confirmed `pyrun` producer. |
+| `directory.origin.conflict` | provenance | An origin directory root or member has a current `pyrun` producer that does not require reproduction. |
 | `pyrun.outputs.invalid` | provenance | A legacy `pyrun-outputs.json` file or record violates its closed schema. |
 | `pyrun.outputs.unavailable` | provenance | Current output-support state cannot be read or safely updated. |
 | `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
 | `pyrun.output.binding_invalid` | conformance | One decoded execution has a missing, ambiguous, noncanonical, or otherwise invalid output binding. |
 | `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
-| `provenance.output.unconfirmed` | provenance | A reached generated output has only an unconfirmed baseline. |
-| `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, direct inputs, or recorded code differ from the confirmed record. |
+| `provenance.output.reproduction_required` | provenance | A reached generated output still requires reproduction. |
+| `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, direct inputs, or recorded code differ from the current record. |
 | `provenance.output.code_invalid` | provenance | A recorded code path is unavailable, is not a regular file, or duplicates another resolved code identity. |
 | `provenance.output.signature_unsupported` | provenance | A reached producer input cannot be represented in the exact record signature. |
 | `provenance.output.missing` | provenance | The current graph declares an output whose artifact is absent. |
@@ -3511,7 +3519,7 @@ Standard validation evaluates one target maintained log in this order:
 4. evaluate locators, expectations, transformations, and presentation
    comparison;
 5. establish producers for evidence starting points, match each reached output
-   to confirmed current execution support, then follow mechanically proven
+   to current execution support that does not require reproduction, then follow mechanically proven
    upstream inputs, explicit origins, and required directory membership within
    that closure;
 6. re-observe execution-linked script, input, output, and output-support bytes;
@@ -3536,7 +3544,7 @@ This prerequisite rule does not suppress independently established graph
 findings. One evidence-rooted artifact may therefore have several Provenance
 checks: one primary conclusion and additional findings for distinct reachable
 support, lineage, origin, cycle, or directory conditions. An actual failure is
-primary over `provenance.output.unconfirmed`; deterministic human artifact
+primary over `provenance.output.reproduction_required`; deterministic human artifact
 counts still count the affected artifact once at its worst status.
 
 When an invocation has unresolved material candidates, a reached candidate
@@ -3552,7 +3560,7 @@ Unrelated commands and entry material remain independently evaluable.
 | --- | --- | --- |
 | Malformed JSON, Markdown, path, supported source structure, or recorded command surface | Conformance | Fails conformance; dependent evidence or provenance is not applicable. |
 | Missing or conflicting evidence declaration or exact presentation mismatch | Evidence | Fails evidence. |
-| Missing, ambiguous, conflicting, stale, unconfirmed, or incomplete producer, lineage, execution-support, input, origin, or directory relationship | Provenance | Fails Provenance without changing the evidence-value result. |
+| Missing, ambiguous, conflicting, stale, reproduction-required, or incomplete producer, lineage, execution-support, input, origin, or directory relationship | Provenance | Fails Provenance without changing the evidence-value result. |
 | Temporary access failure or material changing during observation | Owning check as unavailable | Makes the aggregate incomplete. |
 | Residual orphaned material, unused input declaration, or unmatched output record | Hygiene (machine scope `orphan`) | Reports findings without changing evidence or Provenance status. |
 | Scientific validity, interpretation, claim support, or summary meaning | Semantic Review | No mechanical result. |
@@ -3585,7 +3593,7 @@ One evidence-rooted generated-material provenance outcome depends on:
 6. competing producer identities for the same material;
 7. exact upstream input-output identity matches;
 8. input declaration, fingerprint, and origin-boundary projections;
-9. exact output-support confirmation, output fingerprint, script path and
+9. exact output reproduction requirement, output fingerprint, script path and
    fingerprint, ordered parameters, direct input fingerprint mapping, and
    observed code mapping when present; and
 10. required directory mechanism, membership, and associated code-edge
@@ -3707,7 +3715,7 @@ The input-registry operations are:
   [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
   [--kind file|directory] [--identity SELECTOR]...
-  [--pending-confirmation] [--dry-run]
+  [--requires-reproduction] [--dry-run]
 <skill>/scripts/log data use --path LOG --entry ENTRY --from-entry ENTRY NAME
   [--dry-run]
 <skill>/scripts/log data update --path LOG --entry ENTRY NAME
@@ -3716,22 +3724,23 @@ The input-registry operations are:
 <skill>/scripts/log data rename --path LOG --entry ENTRY OLD-NAME NEW-NAME
   [--dry-run]
 <skill>/scripts/log data refresh --path LOG --entry ENTRY NAME
-  [--pending-confirmation] [--dry-run]
+  [--requires-reproduction] [--dry-run]
 <skill>/scripts/log data remove --path LOG --entry ENTRY NAME [--dry-run]
 <skill>/scripts/log data list --path LOG --entry ENTRY
 ```
 
 These actions normalize canonical location and use the production fingerprint
-and data-file contracts. `add-origin` rejects a confirmed producer
+and data-file contracts. `add-origin` rejects a current producer that does not
+require reproduction
 in the same log. Its mutually exclusive `--commit` form requires a full
 lowercase commit hash and makes `TARGET` a Git repository locator.
 `add-generated` declares a named file or directory before production. It
 infers kind from an existing target or requires `--kind` when the target is
 absent. Selected identity files or final-component patterns are available only
 for directories; the declaration omits its digest until successful production
-observes it. For an existing retained output, `--pending-confirmation` is an
+observes it. For an existing retained output, `--requires-reproduction` is an
 explicit Repair and migration form requiring one structurally valid,
-unambiguous current producer; it permits absent or unconfirmed output support
+unambiguous current producer; it permits absent or reproduction-required output support
 but does not relax missing or ambiguous producer checks. `data use` creates one same-log reference to a direct generated
 declaration in the named source entry. It rejects missing, origin, chained,
 cyclic, or locally conflicting references and does not copy the target. `update` applies
@@ -3740,9 +3749,9 @@ repository target preserves and verifies its commit unless `--commit` replaces
 it. Git repository inputs cannot become generated or use directory identity
 options. Managed identity is available for origin and generated directories. `refresh`
 preserves the target,
-classification, and identity mode. Its `--pending-confirmation` form records
+classification, and identity mode. Its `--requires-reproduction` form records
 restored generated bytes under the same producer checks as pending registration,
-including rejection of stale confirmed support. It rejects origin declarations
+including rejection of stale support that does not require reproduction. It rejects origin declarations
 and references, supports dry-run and unchanged results, and never modifies
 execution records. `remove` requires prior removal of command
 and evidence use and every cross-entry reference, and removes an empty registry.
@@ -4009,7 +4018,7 @@ one validated date, a compact Area and Result table, and bounded findings
 grouped by entry and human issue type. Reproduction has no section in this
 document; its independent human projection is `<log>/reproduction.md`. The
 area vocabulary is `Clear`, `N issues`, `N artifact issues`, `N await
-confirmation`, `Incomplete`, and an em dash for unevaluated areas.
+reproduction`, `Incomplete`, and an em dash for unevaluated areas.
 Structure projects machine scope `conformance`, and Hygiene projects machine
 scope `orphan`; neither display label changes the machine schema. Provenance
 counts unique starting artifacts by their worst human result. Internal codes,
@@ -4028,14 +4037,14 @@ an emitted code without a catalog entry is an implementation error rather than
 a fallback that exposes machine syntax. A clear report says `No mechanical
 findings.`
 
-Reproduction does not request or publish a confirmation-only validation
-refresh. After reproduction publishes its own result and reaches `complete`, it
+Reproduction does not request or publish a reproduction-requirement-only
+validation refresh. After reproduction publishes its own result and reaches `complete`, it
 releases its scope lock and invokes the ordinary log-validation lifecycle as a
 separate operation. That evaluation reads the current `pyrun.json`
-confirmations and publishes the complete validation result and report through
+reproduction requirements and publishes the complete validation result and report through
 the same contract as a researcher-requested validation run. Validation findings
 or an operational validation failure do not alter the already completed
-reproduction result or roll back confirmation state. Concurrent entry
+reproduction result or restore cleared reproduction requirements. Concurrent entry
 reproductions rely on the existing exclusive log-operation lock so that only
 one ordinary validation runs after the overlapping reproduction work ends.
 
@@ -4051,25 +4060,25 @@ that artifact's Provenance check dependent on it; an operational inconsistency
 that prevents coherent targeted evaluation aborts publication.
 
 In the per-log human Provenance artifact count, a
-`provenance.output.unconfirmed` check projects as unavailable rather than as a
+`provenance.output.reproduction_required` check projects as unavailable rather than as a
 failed artifact. A
 downstream artifact whose `not_applicable` check depends transitively on an
 actual failed Provenance prerequisite projects as a failed artifact, while its
 authoritative machine check remains `not_applicable`. A failed Provenance
-artifact takes precedence over an unconfirmed status for both an individual
+artifact takes precedence over a reproduction-required status for both an individual
 artifact and the human row's aggregate status. Other `not_applicable` checks
 remain only in machine-readable results and are omitted from human reports;
 they are not abbreviated as N/A.
 The batch CLI keeps those detailed four-area per-log reports but composes a
 three-column cross-log summary from the published validation. `Structure` counts
 primary repair batches containing failed Conformance, failed Provenance other
-than awaiting confirmation, or Hygiene findings. Show nonzero components in the order `C chains + S structural + I inspection`,
+than awaiting reproduction, or Hygiene findings. Show nonzero components in the order `C chains + S structural + I inspection`,
 omitting zero components and using singular labels for one. `structural` counts
 established relationships; `inspection` counts fallback groups. A batch counts
 once within its log, regardless of related chain links or affected entry count.
 Chains with no primary Structure findings do not add pending repair work.
 `Evidence` retains its existing distinct Evidence finding-group count.
-`Confirmation` retains its distinct producing-command count, deduplicated across
+`Reproduction` retains its distinct producing-command count, deduplicated across
 outputs; repair ownership does not alter either counting contract. Their nonzero
 counts remain bare integers. Zero is
 `Clear` only for a completed applicable area evaluation. `—` denotes an
@@ -4167,7 +4176,7 @@ Representative contract cases:
 
 | Recorded Condition | Expected Grouping And Verification |
 | --- | --- |
-| One rejected builder reports four unresolved argument roles, and findings explicitly reference its declared outputs. | One rejected-command batch owns the discovery finding and linked symptoms. After a synthetic role correction, match the admitted command and evaluated outputs; remaining confirmation findings remain findings. Admission alone does not clear the batch. |
+| One rejected builder reports four unresolved argument roles, and findings explicitly reference its declared outputs. | One rejected-command batch owns the discovery finding and linked symptoms. After a synthetic role correction, match the admitted command and evaluated outputs; remaining reproduction-requirement findings remain findings. Admission alone does not clear the batch. |
 | Several findings identify the same defective scoped material registration. | One exact-material batch when the relationship proves a shared defect. A same-named registration in another entry remains distinct. Clearance requires the corrected registration and affected checks to be evaluated. |
 | A declared directory owner and a second producer of its member conflict. | One competing-ownership batch includes the explicit conflict and linked symptoms, including affected entries. A path without a declared ownership relationship is not membership evidence. Corrected unique ownership must be evaluated across the required producer context. |
 | A consumer is affected by two independent defective producers. | Separate defects; an ambiguously shared symptom stays in an inspection group with both candidate links. No inferred merged cause. |
@@ -4414,7 +4423,7 @@ conservative reuse after evaluation-cache failure. An ID identifies a saved
 observation, not present source validity.
 
 The same rule applies to writable full validation invoked after reproduction;
-it does not alter reproduction's independent confirmation/promotion outcome.
+it does not alter reproduction's independent requirement update or promotion outcome.
 `validate --root` retains one result per evaluated log and preserves per-log
 failure isolation. A compact root report lists each log's ID or precise
 failure; it creates no separate campaign result.
@@ -4699,14 +4708,14 @@ Mechanical validation resolves the local script without executing or
 inspecting its internals. The role-bearing options establish the command graph.
 It resolves `<development-set>` through the entry-root `data.json`, verifies
 its fingerprint and `origin: true`, and does not traverse beyond that origin.
-The entry-root `pyrun.json` must contain a confirmed execution owning
+The entry-root `pyrun.json` must contain a current execution owning
 `data/results.csv`, whose output bytes, script path and bytes, exact parameters,
 and direct input fingerprints match this current command and filesystem state. The evidence check compares `67.6%`; the Provenance check
 verifies the complete bounded chain. Neither decides whether success rate is
 scientifically appropriate.
 
 A runner declaration makes a non-natural relationship visible to both `pyrun`
-and static validation. A retained `pyrun` output that needs confirmed support
+and static validation. A retained `pyrun` output that needs current execution support
 therefore uses a natural output-bearing option, `--other-outputs`, or an
 explicit capture option. Renaming only the Markdown command while leaving the
 executable interface unchanged is not a valid repair.
@@ -4722,20 +4731,20 @@ executable interface unchanged is not a valid repair.
   exactly one producing invocation unless it reaches an explicit origin.
 - A marked output block may select a retained command log. Declare the generated
   log and use `./pyrun --capture-stdout-stderr "<run-log>" -- ...` so it has
-  both a graph relationship and confirmed output support; raw redirection or
+  both a graph relationship and current execution support; raw redirection or
   `tee` does not provide that support. The marked fence payload must still
   match the selected retained text exactly.
 - A whole-artifact evidence presentation resolves its one source token and
   compares that canonical path with the normalized Markdown target before
   applying ordinary fingerprint and Provenance checks. A generated artifact
-  still requires one mechanically proven command output and exact confirmed
+  still requires one mechanically proven command output and exact current
   output support; an explicit origin stops the chain.
 - A cross-log source is observed as a locally declared origin of the consuming log.
   Validation does not import the source log's command graph or validation
   result.
 - Retained material with no mechanically discoverable producer fails
   `producer.missing`. Generated material with a discoverable
-  producer but no confirmed output record fails `provenance.output.unrecorded`.
+  producer but no current output record fails `provenance.output.unrecorded`.
   There is no limitation declaration that converts either gap into a pass.
 
 ### Directory And Named-Input Case

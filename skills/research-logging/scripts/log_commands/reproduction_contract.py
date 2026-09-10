@@ -11,7 +11,7 @@ PLAN_SCHEMA = "research-log-reproduction-plan/3"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/5"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
 
@@ -162,10 +162,10 @@ def canonical_record_digest(value: Mapping[str, Any]) -> str:
 
 
 def canonical_execution_source_digest(value: Mapping[str, Any]) -> str:
-    """Hash execution source while excluding mutable confirmation state."""
+    """Hash execution source without its mutable reproduction requirement."""
 
     selected = dict(value)
-    if set(selected) <= {"confirmed"}:
+    if set(selected) <= {"requires_reproduction"}:
         raise ValueError("execution source record is incomplete")
-    selected.pop("confirmed", None)
+    selected.pop("requires_reproduction", None)
     return canonical_record_digest(selected)

@@ -36,7 +36,9 @@ from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
-    def test_no_work_reconciliation_counts_current_reuse(self) -> None:
+    def test_no_work_reconciliation_counts_commands_not_needing_reproduction(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".git").mkdir()
@@ -54,7 +56,8 @@ class ReproductionQueryTests(unittest.TestCase):
                     "auto_reproduce": True,
                     "entry": "e003",
                     "execution_id": "pyrun-exec/v1:" + str(number) * 64,
-                    "selection": "reuse",
+                    "prior_disposition": None,
+                    "selection": "not_needed",
                     "source_digest": str(number) * 64,
                 }
                 for number in (1,)
@@ -100,8 +103,8 @@ class ReproductionQueryTests(unittest.TestCase):
 
         self.assertIn(
             "3 total\n"
+            "├─ 2 reproduction not retried\n"
             "├─ 1 skipped by policy (not automatic)\n"
-            "├─ 2 reused from saved state\n"
             "└─ 0 selected for execution",
             text,
         )
@@ -116,7 +119,9 @@ class ReproductionQueryTests(unittest.TestCase):
             summary.write_text("# Research\n", encoding="utf-8")
             legacy.write_text(_results().serialized(), encoding="utf-8")
 
-            with self.assertRaisesRegex(ActionError, "no cached reproduction"):
+            with self.assertRaisesRegex(
+                ActionError, "no cached reproduction.*--recheck"
+            ):
                 reproduction_report(
                     LogContext(summary.resolve(), log_root.resolve()), entry=None
                 )
@@ -239,7 +244,7 @@ class ReproductionQueryTests(unittest.TestCase):
             self.assertEqual(
                 summary_result["commands"],
                 {
-                    "reused": 0,
+                    "reproduction_not_retried": 0,
                     "selected": {
                         "blocked": 0,
                         "failed": 0,
@@ -281,7 +286,7 @@ class ReproductionQueryTests(unittest.TestCase):
                 "total": 6,
             },
             "commands": {
-                "reused": 2,
+                "reproduction_not_retried": 4,
                 "selected": {
                     "blocked": 1,
                     "failed": 1,
@@ -289,11 +294,11 @@ class ReproductionQueryTests(unittest.TestCase):
                     "total": 4,
                 },
                 "skipped_by_policy": 1,
-                "total": 7,
+                "total": 9,
             },
             "generated_at": "2030-01-01T00:00:00Z",
             "run_id": "reproduce-20300101t000000z-fixture",
-            "schema": "research-log-reproduction-summary/2",
+            "schema": "research-log-reproduction-summary/4",
             "status": "complete",
             "summary": "docs/one.md",
         }
@@ -322,10 +327,10 @@ class ReproductionQueryTests(unittest.TestCase):
             result["coverage"],
             {"complete": 1, "not_run": 1, "total": 2, "unavailable": 0},
         )
-        self.assertEqual(result["totals"]["commands"]["total"], 7)
+        self.assertEqual(result["totals"]["commands"]["total"], 9)
         self.assertEqual(result["totals"]["artifacts"]["total"], 6)
         report = compose_root_reproduction_summary(result)
-        self.assertIn("| `docs/one` | 1 | 2 | 2 | 1 | 1 | 7 |", report)
+        self.assertIn("| `docs/one` | 4 | 1 | 2 | 1 | 1 | 9 |", report)
         self.assertIn(
             "| `docs/two` — not yet reproduced | — | — | — | — | — | — |",
             report,
@@ -353,7 +358,7 @@ class ReproductionQueryTests(unittest.TestCase):
             mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
             mock.patch(
                 "log_commands.reproduction_queries.reproduction_summary",
-                return_value={"schema": "research-log-reproduction-summary/2"},
+                return_value={"schema": "research-log-reproduction-summary/4"},
             ),
             redirect_stdout(output),
         ):
@@ -372,7 +377,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(
             output.getvalue(),
-            '{"schema": "research-log-reproduction-summary/2"}\n',
+            '{"schema": "research-log-reproduction-summary/4"}\n',
         )
 
         output = StringIO()
@@ -522,7 +527,9 @@ def _results() -> ReproductionResults:
             "blocked": 0,
             "failed": 0,
             "not_automatic": 0,
-            "reused": 0,
+            "reproduction_not_needed": 0,
+            "unchanged_blocked": 0,
+            "unchanged_failed": 0,
             "succeeded": 1,
             "total": 1,
         },

@@ -320,8 +320,8 @@ class RecordSurfaceTests(unittest.TestCase):
         cases = CASES.read_text(encoding="utf-8")
         self.assertIn("Declare the artifact before", data)
         self.assertIn("ordinary pre-production state", cases)
-        self.assertNotIn("--pending-confirmation", data)
-        self.assertIn("--pending-confirmation", repair)
+        self.assertNotIn("--requires-reproduction", data)
+        self.assertIn("--requires-reproduction", repair)
 
     def test_repair_routing_cases_cover_intent_and_operation_boundaries(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")

@@ -1009,10 +1009,10 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v3")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v4")
             record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["exclusive"], False)
-            self.assertIs(record["confirmed"], True)
+            self.assertIs(record["requires_reproduction"], False)
             self.assertEqual(record["recipe"]["script"], "scripts/build.py")
             self.assertEqual(record["recipe"]["parameters"], command[3:])
             self.assertEqual(set(record["observed"]["inputs"]), {"input_csv"})
@@ -1558,7 +1558,7 @@ target.mkdir()
 
             self.assertEqual(result.returncode, 0, result.stderr)
             record = execution_for_output(entry, "data/trials")
-            self.assertIs(record["confirmed"], True)
+            self.assertIs(record["requires_reproduction"], False)
             self.assertEqual(
                 record["observed"]["outputs"]["data/trials"]["algorithm"],
                 "directory-sha256-v1",

@@ -405,7 +405,7 @@ def _metadata_candidates(
     execution = state.executions[execution_id]
     fingerprints = {item.artifact: item.fingerprint for item in outputs}
     candidate_execution = PyrunExecution(
-        True,
+        False,
         execution.auto_reproduce,
         execution.last_run_at,
         execution.runner,

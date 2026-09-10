@@ -513,9 +513,9 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The output record uses a signature form no longer accepted by the validator.",
         "path",
     ),
-    "provenance.output.unconfirmed": FindingPresentation(
-        "Output Awaits Confirmation",
-        "The recorded output has not yet been confirmed by reproduction.",
+    "provenance.output.reproduction_required": FindingPresentation(
+        "Output Requires Reproduction",
+        "The recorded output still requires reproduction.",
         "path",
     ),
     "provenance.output.unrecorded": FindingPresentation(
@@ -613,6 +613,11 @@ CATALOG: Mapping[str, FindingPresentation] = {
     "pyrun.state.quarantined": FindingPresentation(
         "Execution State Quarantined",
         "Invalid execution state was moved aside and requires Repair review.",
+        "path",
+    ),
+    "pyrun.state.schema.unsupported": FindingPresentation(
+        "Unsupported Execution-State Schema",
+        "The execution-state registry uses a schema that is no longer supported.",
         "path",
     ),
     "pyrun.state.unavailable": FindingPresentation(
@@ -1039,7 +1044,7 @@ def provenance_artifact_counts(
             status = check.status
             if (
                 check.failure is not None
-                and check.failure.code == "provenance.output.unconfirmed"
+                and check.failure.code == "provenance.output.reproduction_required"
             ):
                 status = CheckStatus.UNAVAILABLE
             elif (
@@ -1090,11 +1095,11 @@ def _provenance_area(
     counts = provenance_artifact_counts(record)
     values = []
     failed = counts[CheckStatus.FAIL.value]
-    unconfirmed = counts[CheckStatus.UNAVAILABLE.value]
+    reproduction_required = counts[CheckStatus.UNAVAILABLE.value]
     if failed:
         values.append(f"{failed} artifact {_plural(failed, 'issue')}")
-    if unconfirmed:
-        values.append(f"{unconfirmed} await confirmation")
+    if reproduction_required:
+        values.append(f"{reproduction_required} await reproduction")
     if values:
         return " · ".join(values)
     checks = [check for check in record.checks if check.scope is CheckScope.PROVENANCE]
@@ -1170,7 +1175,7 @@ def _failure_affected_provenance_checks(
         and check.status is CheckStatus.FAIL
         and (
             check.failure is None
-            or check.failure.code != "provenance.output.unconfirmed"
+            or check.failure.code != "provenance.output.reproduction_required"
         )
     }
     pending = [

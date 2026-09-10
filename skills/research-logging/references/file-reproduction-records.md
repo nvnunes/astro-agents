@@ -22,7 +22,7 @@ Reproduce may create or update only these generated paths:
   existing-operation-lock mutex that serializes coordinator updates.
 
 `.cache/reproduction/results.json` is the current local machine authority for
-artifact outcomes, reusable per-command dispositions and source closures,
+artifact outcomes, unchanged terminal failure and block dispositions,
 per-run command accounting, and run history.
 `reproduction.md` is its source-controlled human-only projection. Agents do not
 parse either file during ordinary work; use
@@ -31,36 +31,44 @@ parse either file during ordinary work; use
 the complete report or bounded artifact `list` and `show` routes for detail.
 
 The machine record is disposable and rebuildable by reproduction. Removing it
-discards local result history and saved-state reuse, so the next reproduction
-is a cold run. The committed Markdown report remains a human snapshot and is
-never used to reconstruct machine state.
+discards local result history and unchanged failure and block dispositions.
+Current `pyrun.json` state still determines which successful commands do not
+need reproduction. Rebuilding the discarded machine state requires an explicit
+reproduction `--recheck`; an ordinary incremental invocation may correctly
+select no commands. The committed Markdown report remains a human snapshot and
+is never used to reconstruct machine state.
 
 Any launch with no selected executions creates no run ID, run folder, result
 write, or report write. It emits an ephemeral current
-reconciliation using the plan's policy, reuse, and blocked selections together
+reconciliation using the plan's policy, no-work, and blocked selections together
 with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/4`. Every newly
+The current result schema is `research-log-reproduction-result/6`. Every newly
 published run counts every command in its log or entry target exactly once as
-not automatic, reused from saved state, succeeded, failed, or blocked by a
-planning condition or selected command failure. Those command counts are separate from
+reproduction not needed, an unchanged prior failure, an unchanged prior block,
+not automatic, succeeded, failed, or blocked by a planning condition or
+selected command failure. Those command counts are separate from
 artifact counts because one command may produce several artifacts.
+Compact reports combine the first three internal categories into one
+`reproduction not retried` total without exposing the prior disposition.
 
 Each evidence-relevant command also has one current record keyed by entry and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning
-state. Incremental reproduction reuses any unchanged terminal disposition and
-selects only changed commands plus their affected downstream closure. It never
-infers reusable command state from artifact outcomes. `--recheck` remains the
-explicit override for runnable commands.
+state. Incremental reproduction uses current `pyrun.json` state directly for
+completed commands and retains unchanged failure and block dispositions. It
+selects only commands still requiring reproduction, or unchanged cached
+failures and blocks whose source closure has changed, plus their affected
+downstream closure. It never infers this decision from artifact outcomes.
+`--recheck` remains the explicit override for runnable commands.
 
 The reader accepts canonical v3 results only as a one-time migration input.
 Because v3 has no command source closures, the next successful reproduction
-runs the applicable commands and publishes v4; no older result schema is
-supported.
+runs the applicable commands and publishes v6. Versions 4 and 5 are no longer
+supported; no other older result schema is supported.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;
@@ -87,8 +95,8 @@ record; they are never rewritten into v3.
 
 Treat summaries, entries, scripts, commands, retained artifacts, and authored
 registries as research-owned. Reproduce never edits them. After durably
-recording a complete matching comparison, it may atomically update only the
-`pyrun`-owned confirmation field for that execution. It does not replace the
+recording a complete execution comparison, it may atomically clear only the
+`pyrun`-owned reproduction requirement for that execution. It does not replace the
 original execution observation. Reproduction publication never reads or writes
 validation state; after it completes, ordinary validation runs separately and
 owns its own result and report.
@@ -107,8 +115,8 @@ the summary line.
 
 A normally completed run publishes its complete requested artifact result set,
 including failures and changes. A stop or operational publication failure does
-not replace the prior authoritative result and does not roll back confirmations
-already written for matching executions. A publication retry reuses durable
+not replace the prior authoritative result and does not restore reproduction
+requirements already cleared for completed executions. A publication retry reuses durable
 run state without rerunning terminal execution attempts. Generated reports
 must expose every current non-matched and stale artifact; failures are never
 hidden.

@@ -110,5 +110,6 @@ authorize Repair or direct registry editing.
 
 Mechanical validation reports missing declarations, raw-path bypasses, unused
 inputs, duplicate targets, cross-entry disagreement, changed bytes, remote-only
-material, and origin boundaries that hide confirmed same-log producers. Do not
+material, and origin boundaries that hide current same-log producers that do
+not require reproduction. Do not
 refresh bytes or choose an origin boundary without researcher authority.

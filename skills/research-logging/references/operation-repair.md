@@ -2,7 +2,8 @@
 
 Correct the requested defects. Preserve presented evidence, scientific meaning,
 tolerances, stable evidence IDs, and unrelated work. Do not invent origins or
-execution confirmation. Follow `SKILL.md`'s operation and lock-conflict boundaries.
+clear an execution's reproduction requirement. Follow `SKILL.md`'s operation
+and lock-conflict boundaries.
 
 ## Scope And Decisions
 
@@ -12,8 +13,8 @@ inventory the whole project or copy queryable results into a separate queue.
 
 For missing lineage, check that the producer exists, declares the exact material,
 is admitted by discovery, and precedes the consumer. Inspect the affected command
-and script interface for facts the CLI cannot establish. Missing confirmation
-alone does not explain missing lineage.
+and script interface for facts the CLI cannot establish. A reproduction
+requirement alone does not explain missing lineage.
 
 Fix what retained evidence establishes. Moving unchanged commands within a document
 and small path, declaration, or output-exposure edits are ordinary Repair when
@@ -66,15 +67,15 @@ source records or script. Preserve the original in version control or a backup.
 | Command material role | `references/file-entry-commands.md` |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
-`log data add-generated --pending-confirmation` admits a retained output with one
+`log data add-generated --requires-reproduction` admits a retained output with one
 structurally valid, unambiguous same-log producer. It cannot bypass a missing
 producer or replace ordinary pre-production declaration.
 For an existing declaration whose files were restored, use
-`log data refresh --pending-confirmation` to record their current fingerprint
-under the same producer checks. This does not confirm execution.
+`log data refresh --requires-reproduction` to record their current fingerprint
+under the same producer checks. This does not clear the reproduction requirement.
 
 Derive reconstructed fields from retained evidence; keep reconstructed execution
-support `confirmed: false`. Never hand-edit generated validation. Only when malformed
+support at `requires_reproduction: true`. Never hand-edit generated validation. Only when malformed
 state prevents the owning action, consult the relevant code or field in
 `../../../docs/research-log-mechanical-validator-spec.md` and the needed file
 contract. Remove transaction residue only as identified by its owning contract.
@@ -102,4 +103,4 @@ judging the repair. Without full-validation authority, report the verification g
 
 Reuse applicable completed results; query details instead of rerunning checks.
 Claim clearance only when completed evaluation covers the corrected state.
-Structural repair does not establish execution confirmation.
+Structural repair does not clear an execution's reproduction requirement.

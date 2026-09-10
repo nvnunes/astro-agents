@@ -352,9 +352,9 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     _mutation_argument(refresh)
     refresh.add_argument("name")
     refresh.add_argument(
-        "--pending-confirmation",
+        "--requires-reproduction",
         action="store_true",
-        help="fingerprint restored generated material before reproduction confirms it",
+        help="fingerprint restored generated material that still requires reproduction",
     )
     remove = actions.add_parser(
         "remove", help="Remove an input after command and evidence use"
@@ -389,7 +389,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                     else None
                 ),
                 commit=getattr(args, "commit", None),
-                pending_confirmation=getattr(args, "pending_confirmation", False),
+                requires_reproduction=getattr(args, "requires_reproduction", False),
                 dry_run=args.dry_run,
             ),
         )
@@ -417,7 +417,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
             entry,
             args.name,
             dry_run=args.dry_run,
-            pending_confirmation=args.pending_confirmation,
+            requires_reproduction=args.requires_reproduction,
         )
     elif args.action == "remove":
         result = data.remove(entry, args.name, dry_run=args.dry_run)
@@ -466,11 +466,11 @@ def _add_data_input_parsers(
                 help="authoritative generated-directory file or pattern",
             )
             action.add_argument(
-                "--pending-confirmation",
+                "--requires-reproduction",
                 action="store_true",
                 help=(
                     "register one uniquely declared existing output before "
-                    "reproduction confirms it"
+                    "its required reproduction"
                 ),
             )
 
@@ -492,7 +492,7 @@ def _add_data_update_parser(
     classification.add_argument(
         "--generated",
         action="store_true",
-        help="require current confirmed same-log production",
+        help="require current same-log production that needs no reproduction",
     )
     identity = update.add_mutually_exclusive_group()
     identity.add_argument(

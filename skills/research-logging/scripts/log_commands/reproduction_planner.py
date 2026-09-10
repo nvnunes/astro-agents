@@ -77,10 +77,10 @@ RECHECK_SELECTION: SelectionPolicy = "recheck"
 
 @dataclass(frozen=True)
 class ReproductionCommandInventory:
-    """All command execution units and policy exclusions in one target."""
+    """All command execution units and remaining policy exclusions in one target."""
 
     total: int
-    not_automatic: int
+    policy_skipped: int
 
 
 @dataclass(frozen=True)
@@ -162,6 +162,7 @@ class _PlanningState:
     )
     command_digests: dict[ExecutionKey, str] = field(default_factory=dict)
     command_selections: dict[ExecutionKey, str] = field(default_factory=dict)
+    prior_command_dispositions: dict[ExecutionKey, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -410,7 +411,7 @@ def project_reproduction_command_inventory(
         )
 
     total = 0
-    not_automatic = 0
+    policy_skipped = 0
     for context in contexts:
         path = context.root / "pyrun.json"
         try:
@@ -429,10 +430,11 @@ def project_reproduction_command_inventory(
                 str(error),
             ) from error
         total += len(state.executions)
-        not_automatic += sum(
-            not execution.auto_reproduce for execution in state.executions.values()
+        policy_skipped += sum(
+            execution.requires_reproduction and not execution.auto_reproduce
+            for execution in state.executions.values()
         )
-    return ReproductionCommandInventory(total, not_automatic)
+    return ReproductionCommandInventory(total, policy_skipped)
 
 
 def _load_entries(
@@ -605,28 +607,53 @@ def _trace_resource(
         )
         return
     producer = in_scope[0]
-    if not producer.execution.auto_reproduce and not state.include_all:
-        _verified_boundary(
-            state,
-            _BoundaryRequest(
-                "non_automatic", owner_entry, resource, artifact, consumer
-            ),
-        )
-        if consumer is None:
-            state.cases[(owner_entry.context.id, artifact)] = _case(
-                owner_entry.context.id,
-                artifact,
-                producer.execution_id,
-                "skipped",
-                "non_automatic",
-            )
+    if _stop_at_nonautomatic_policy(
+        producer,
+        _BoundaryRequest(
+            "non_automatic", owner_entry, resource, artifact, consumer
+        ),
+        state,
+        depth=depth,
+    ):
         return
     if consumer is not None:
         state.dependencies[consumer.key].add(producer.key)
     _trace_execution(producer, state, depth=depth)
 
 
-def _trace_execution(owner: _Owner, state: _PlanningState, *, depth: int) -> None:
+def _stop_at_nonautomatic_policy(
+    producer: _Owner,
+    boundary: _BoundaryRequest,
+    state: _PlanningState,
+    *,
+    depth: int,
+) -> bool:
+    """Bound traversal at one current or policy-skipped nonautomatic command."""
+
+    if producer.execution.auto_reproduce or state.include_all:
+        return False
+    if not producer.execution.requires_reproduction:
+        _trace_execution(producer, state, depth=depth, trace_inputs=False)
+        return True
+    _verified_boundary(state, boundary)
+    if boundary.consumer is None:
+        state.cases[(boundary.entry.context.id, boundary.artifact)] = _case(
+            boundary.entry.context.id,
+            boundary.artifact,
+            producer.execution_id,
+            "skipped",
+            "non_automatic",
+        )
+    return True
+
+
+def _trace_execution(
+    owner: _Owner,
+    state: _PlanningState,
+    *,
+    depth: int,
+    trace_inputs: bool = True,
+) -> None:
     key = owner.key
     identity = owner.execution_id
     state.selected.setdefault(key, owner)
@@ -636,6 +663,10 @@ def _trace_execution(owner: _Owner, state: _PlanningState, *, depth: int) -> Non
             (owner.entry.context.id, output),
             _case(owner.entry.context.id, output, identity, "run", None),
         )
+    if not trace_inputs:
+        state.visited.add(key)
+        _check_graph_bounds(state)
+        return
     if key in state.visiting:
         index = state.visiting.index(key)
         state.cycle_members.update(state.visiting[index:])
@@ -1197,21 +1228,42 @@ def _select_and_order(
     runnable = set(state.selected) - state.blocked
     needs_run = _initial_work(state, prior, runnable)
     _propagate_required_work(state, runnable, needs_run)
-    reused = (
+    not_needed = (
         {
             key
             for key in state.selected
             if key not in needs_run
+            and key not in state.blocked
+            and not state.selected[key].execution.requires_reproduction
+        }
+        if state.selection_policy == INCREMENTAL_SELECTION
+        else set()
+    )
+    unchanged = (
+        {
+            key
+            for key in state.selected
+            if key not in needs_run
+            and key not in not_needed
             and _command_result_current(prior.get(key), state.command_digests[key])
         }
         if state.selection_policy == INCREMENTAL_SELECTION
         else set()
     )
-    state.command_selections = {
-        key: ("run" if key in needs_run else "reuse" if key in reused else "blocked")
-        for key in state.selected
+    state.prior_command_dispositions = {
+        key: cast(str, prior[key]["disposition"]) for key in unchanged
     }
-    _project_current_cases(state, reused)
+    for key in state.selected:
+        if key in needs_run:
+            selection = "run"
+        elif key in not_needed:
+            selection = "not_needed"
+        elif key in unchanged:
+            selection = "unchanged"
+        else:
+            selection = "blocked"
+        state.command_selections[key] = selection
+    _project_current_cases(state, not_needed | unchanged)
     return _topological_order(state, needs_run)
 
 
@@ -1228,7 +1280,8 @@ def _initial_work(
     return {
         key
         for key in runnable
-        if not _command_result_current(prior.get(key), state.command_digests[key])
+        if state.selected[key].execution.requires_reproduction
+        and not _command_result_current(prior.get(key), state.command_digests[key])
     }
 
 
@@ -1298,7 +1351,7 @@ def _command_result_current(
 
     return (
         result is not None
-        and result.get("disposition") in {"succeeded", "failed", "blocked"}
+        and result.get("disposition") in {"failed", "blocked"}
         and result.get("source_digest") == source_digest
     )
 
@@ -1415,6 +1468,7 @@ def _project_plan(
                 "auto_reproduce": state.selected[key].execution.auto_reproduce,
                 "entry": key[0],
                 "execution_id": key[1],
+                "prior_disposition": state.prior_command_dispositions.get(key),
                 "selection": state.command_selections[key],
                 "source_digest": state.command_digests[key],
             }
@@ -1661,7 +1715,7 @@ def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> Non
 def verify_reproduction_runtime_snapshot(
     log: LogContext, plan: ReproductionPlan
 ) -> None:
-    """Verify immutable run sources while allowing owned confirmation writes."""
+    """Verify immutable run sources while allowing requirement-clearing writes."""
 
     if plan.source_snapshot.get("schema") in {
         LEGACY_SOURCE_SNAPSHOT_SCHEMA,

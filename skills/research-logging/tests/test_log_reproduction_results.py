@@ -17,6 +17,7 @@ from log_commands.reproduction_results import (
     ReproductionResults,
     RunFolder,
     RunResult,
+    artifact_summary_counts,
     compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
     compose_reproduction_summary,
@@ -45,13 +46,31 @@ class ReproductionResultContractTests(unittest.TestCase):
 
         self.assertEqual(decoded.commands, ())
         self.assertIn(
-            '"schema": "research-log-reproduction-result/4"', decoded.serialized()
+            '"schema": "research-log-reproduction-result/6"', decoded.serialized()
         )
 
     def test_v2_result_is_not_retained_as_a_compatibility_format(self) -> None:
         value = _complete_results().as_dict()
         value["schema"] = "research-log-reproduction-result/2"
         del value["commands"]
+
+        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
+            ReproductionResults.from_json(_canonical(value))
+
+    def test_v4_result_requires_the_one_time_field_migration(self) -> None:
+        value = _complete_results().as_dict()
+        value["schema"] = "research-log-reproduction-result/4"
+        for run in value["runs"]:
+            outcomes = run.get("command_outcomes")
+            if outcomes is not None:
+                outcomes["reused"] = outcomes.pop("reproduction_not_needed")
+
+        with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
+            ReproductionResults.from_json(_canonical(value))
+
+    def test_v5_result_is_not_retained_as_a_compatibility_format(self) -> None:
+        value = _complete_results().as_dict()
+        value["schema"] = "research-log-reproduction-result/5"
 
         with self.assertRaisesRegex(ReproductionResultError, "schema is unsupported"):
             ReproductionResults.from_json(_canonical(value))
@@ -316,7 +335,9 @@ class ReproductionReportTests(unittest.TestCase):
                 "blocked": 0,
                 "failed": 0,
                 "not_automatic": 61,
-                "reused": 189,
+                "reproduction_not_needed": 189,
+                "unchanged_blocked": 0,
+                "unchanged_failed": 0,
                 "succeeded": 0,
                 "total": 250,
             },
@@ -330,8 +351,8 @@ class ReproductionReportTests(unittest.TestCase):
         self.assertIn("Latest completed run remains:", summary)
         self.assertIn(
             "250 total\n"
+            "├─ 189 reproduction not retried\n"
             "├─ 61 skipped by policy (not automatic)\n"
-            "├─ 189 reused from saved state\n"
             "└─ 0 selected for execution\n"
             "   ├─ 0 succeeded\n"
             "   ├─ 0 failed\n"
@@ -340,7 +361,7 @@ class ReproductionReportTests(unittest.TestCase):
         )
         self.assertIn("5 total\n├─ 1 matched\n├─ 1 not matched", summary)
 
-    def test_unchanged_incremental_run_reports_all_commands_reused(self) -> None:
+    def test_current_commands_report_reproduction_not_retried(self) -> None:
         result = _complete_results()
         run = replace(
             result.runs[0],
@@ -348,7 +369,9 @@ class ReproductionReportTests(unittest.TestCase):
                 "blocked": 0,
                 "failed": 0,
                 "not_automatic": 2,
-                "reused": 10,
+                "reproduction_not_needed": 10,
+                "unchanged_blocked": 0,
+                "unchanged_failed": 0,
                 "succeeded": 0,
                 "total": 12,
             },
@@ -358,12 +381,38 @@ class ReproductionReportTests(unittest.TestCase):
 
         self.assertIn(
             "12 total\n"
+            "├─ 10 reproduction not retried\n"
             "├─ 2 skipped by policy (not automatic)\n"
-            "├─ 10 reused from saved state\n"
             "└─ 0 selected for execution\n"
             "   ├─ 0 succeeded\n"
             "   ├─ 0 failed\n"
             "   └─ 0 blocked",
+            summary,
+        )
+
+    def test_not_retried_combines_every_unchanged_terminal_state(self) -> None:
+        result = _complete_results()
+        run = replace(
+            result.runs[0],
+            command_outcomes={
+                "blocked": 0,
+                "failed": 0,
+                "not_automatic": 2,
+                "reproduction_not_needed": 7,
+                "succeeded": 0,
+                "total": 12,
+                "unchanged_blocked": 1,
+                "unchanged_failed": 2,
+            },
+        )
+
+        summary = compose_reproduction_summary(replace(result, runs=(run,)))
+
+        self.assertIn(
+            "12 total\n"
+            "├─ 10 reproduction not retried\n"
+            "├─ 2 skipped by policy (not automatic)\n"
+            "└─ 0 selected for execution",
             summary,
         )
 
@@ -375,8 +424,8 @@ class ReproductionReportTests(unittest.TestCase):
 
         self.assertIn(
             "12 total\n"
+            "├─ 3 reproduction not retried\n"
             "├─ 2 skipped by policy (not automatic)\n"
-            "├─ 3 reused from saved state\n"
             "└─ 7 selected for execution\n"
             "   ├─ 4 succeeded\n"
             "   ├─ 1 failed\n"
@@ -422,6 +471,41 @@ class ReproductionReportTests(unittest.TestCase):
         )
         positions = tuple(summary.index(reason) for reason in reasons)
         self.assertEqual(positions, tuple(sorted(positions)))
+
+    def test_planning_block_is_not_reported_as_command_failure(self) -> None:
+        run_id = "reproduce-20300101t000000z-planning-block"
+        execution_id = "pyrun-exec/v1:" + "7" * 64
+        artifact = ArtifactResult(
+            "e003",
+            "data/blocked.txt",
+            execution_id,
+            "failed",
+            "validation_blocked",
+            "2030-01-01T00:05:00Z",
+            run_id,
+            None,
+        )
+        command = CommandResult(
+            "e003",
+            execution_id,
+            "blocked",
+            "a" * 64,
+            "2030-01-01T00:05:00Z",
+            run_id,
+        )
+
+        counts = artifact_summary_counts((artifact,), (command,))
+
+        self.assertEqual(
+            counts["not_compared"],
+            {
+                "command_blocked": 1,
+                "command_failed": 0,
+                "command_skipped": 0,
+                "comparison_failed": 0,
+                "total": 1,
+            },
+        )
 
     def test_split_documents_project_as_one_stable_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -599,7 +683,9 @@ def _complete_results() -> ReproductionResults:
             "blocked": 2,
             "failed": 1,
             "not_automatic": 2,
-            "reused": 3,
+            "reproduction_not_needed": 3,
+            "unchanged_blocked": 0,
+            "unchanged_failed": 0,
             "succeeded": 4,
             "total": 12,
         },

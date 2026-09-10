@@ -254,16 +254,16 @@ registration mode: a missing digest represents ordinary pre-production state,
 and successful `pyrun` production supplies the observation.
 
 Given an existing retained generated target that must enter the registry
-before reproduction can confirm it, Repair may use `log data add-generated
---pending-confirmation` only when one current same-log `pyrun` producer is
+before reproduction, Repair may use `log data add-generated
+--requires-reproduction` only when one current same-log `pyrun` producer is
 structurally valid and unambiguous. It does not use this migration form for
 ordinary pre-production declaration or to bypass a missing producer.
 
 Given recognized residue from an interrupted research-owned transaction,
 Repair follows its exact diagnostic and owning implementation contract. It
 does not treat unknown files as residue or edit generated validation state.
-Reconstructed execution-support records remain `confirmed: false`; only
-successful owning execution may confirm them. A bounded owning postcondition
+Reconstructed execution-support records remain `requires_reproduction: true`;
+only successful owning execution may clear the requirement. A bounded owning postcondition
 checks unprojected residue without claiming full validation.
 
 ## Repair Routing Cases
@@ -334,8 +334,8 @@ Given a recorded command generates an intermediate CSV but discards it, and
 retained evidence establishes that CSV as an existing downstream input, Repair
 may expose a retained-output option and correct its declaration while preserving
 the calculation and input/output identities. A script edit is not itself a
-reason to request a research decision. Missing execution support remains
-unconfirmed; Repair does not run the research command or choose a new origin.
+reason to request a research decision. Missing execution support continues to
+require reproduction; Repair does not run the research command or choose a new origin.
 
 Given a class campaign contains one chain whose correction would change a
 presented value and one independent mechanically correctable chain, Repair

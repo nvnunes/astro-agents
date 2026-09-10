@@ -149,7 +149,7 @@ from .transformation import (
 )
 from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
 
-RULES_VERSION = "research-log-mechanical/parallel-reproduction-policy-4"
+RULES_VERSION = "research-log-mechanical/reproduction-requirement-5"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -2025,7 +2025,7 @@ def _provenance_finding_priority(
 ) -> int:
     if finding.code in {"producer.missing", "lineage.missing"} and blockers:
         return 2
-    if finding.code == "provenance.output.unconfirmed":
+    if finding.code == "provenance.output.reproduction_required":
         return 1
     return 0
 
@@ -2857,7 +2857,7 @@ def _summary_provenance(
     if (
         target_check.status is CheckStatus.FAIL
         and target_check.failure is not None
-        and target_check.failure.code == "provenance.output.unconfirmed"
+        and target_check.failure.code == "provenance.output.reproduction_required"
     ):
         return _dependent_check(
             check_identity,

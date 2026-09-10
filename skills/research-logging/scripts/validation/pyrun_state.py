@@ -31,7 +31,7 @@ from .pyrun_outputs import (
 if TYPE_CHECKING:
     from .commands import Invocation
 
-PYRUN_SCHEMA = "research-log-pyrun/v3"
+PYRUN_SCHEMA = "research-log-pyrun/v4"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
@@ -104,7 +104,7 @@ class ObservedExecution:
 class PyrunExecution:
     """One complete current execution recipe and its observed state."""
 
-    confirmed: bool
+    requires_reproduction: bool
     auto_reproduce: bool
     last_run_at: str | None
     runner: str
@@ -119,13 +119,13 @@ class PyrunExecution:
 
         return {
             "auto_reproduce": self.auto_reproduce,
-            "confirmed": self.confirmed,
             "environment_profile": self.environment_profile,
             "execution_contract": self.execution_contract,
             "exclusive": self.exclusive,
             "last_run_at": self.last_run_at,
             "observed": self.observed.as_dict(),
             "recipe": self.recipe.as_dict(),
+            "requires_reproduction": self.requires_reproduction,
             "runner": self.runner,
         }
 
@@ -258,7 +258,7 @@ def ordinary_execution(
     """Build the versioned state established by a successful ordinary run."""
 
     return PyrunExecution(
-        confirmed=True,
+        requires_reproduction=False,
         auto_reproduce=auto_reproduce,
         last_run_at=last_run_at,
         runner=PYRUN_RUNNER,
@@ -399,7 +399,7 @@ def legacy_output_projection(
         observed_outputs = dict(execution.observed.outputs)
         for output, _ in execution.recipe.outputs:
             outputs[output] = OutputSupport(
-                execution.confirmed,
+                not execution.requires_reproduction,
                 observed_outputs[output],
                 ScriptSupport(execution.recipe.script, execution.observed.script),
                 parameters,
@@ -618,13 +618,13 @@ def without_executions(
     return result
 
 
-def confirm_execution_locked(
+def clear_reproduction_requirement_locked(
     entry_root: Path,
     execution_id_value: str,
     *,
     project_root: Path | None = None,
 ) -> PyrunFile:
-    """Atomically confirm one execution without changing any other field."""
+    """Atomically clear one execution's reproduction requirement."""
 
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
@@ -633,7 +633,7 @@ def confirm_execution_locked(
     if value is None:
         _invalid(path, {"execution_id": execution_id_value, "reason": "missing"})
     executions = dict(current.executions)
-    executions[execution_id_value] = replace(value, confirmed=True)
+    executions[execution_id_value] = replace(value, requires_reproduction=False)
     result = PyrunFile(path, root, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
@@ -705,7 +705,6 @@ def _decode_execution(
     project_root: Path | None,
 ) -> PyrunExecution:
     fields = {
-        "confirmed",
         "environment_profile",
         "execution_contract",
         "last_run_at",
@@ -714,22 +713,26 @@ def _decode_execution(
         "runner",
         "auto_reproduce",
         "exclusive",
+        "requires_reproduction",
     }
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
-    confirmed = value.get("confirmed")
+    requires_reproduction = value.get("requires_reproduction")
     auto_reproduce = value.get("auto_reproduce")
     exclusive = value.get("exclusive")
     timestamp = value.get("last_run_at")
     if (
-        not isinstance(confirmed, bool)
+        not isinstance(requires_reproduction, bool)
         or not isinstance(auto_reproduce, bool)
         or not isinstance(exclusive, bool)
     ):
         _invalid(
             subject,
-            {"auto_reproduce": auto_reproduce, "confirmed": confirmed},
+            {
+                "auto_reproduce": auto_reproduce,
+                "requires_reproduction": requires_reproduction,
+            },
         )
     if timestamp is not None and not _valid_timestamp(timestamp):
         _invalid(subject, {"last_run_at": timestamp})
@@ -749,7 +752,7 @@ def _decode_execution(
         value.get("observed"), recipe, subject, entry_root=entry_root
     )
     return PyrunExecution(
-        confirmed,
+        requires_reproduction,
         auto_reproduce,
         cast(str, timestamp) if timestamp is not None else None,
         PYRUN_RUNNER,

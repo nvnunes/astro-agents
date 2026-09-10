@@ -16,7 +16,7 @@ from .human_projection import (
 from .mechanical_results import CheckScope, CheckStatus, MechanicalGeneratedRecord
 
 AREA_NAMES = ("Structure", "Evidence", "Provenance", "Hygiene")
-BATCH_AREA_NAMES = ("Structure", "Evidence", "Confirmation")
+BATCH_AREA_NAMES = ("Structure", "Evidence", "Reproduction")
 MAX_TARGETS_PER_GROUP = 10
 
 
@@ -114,7 +114,7 @@ def compose_validation_batch_report(
     """Render one complete ready-to-present report for discovered logs."""
 
     lines = [
-        "| Research log | Structure | Evidence | Confirmation | Report |",
+        "| Research log | Structure | Evidence | Reproduction | Report |",
         "| --- | --- | --- | --- | --- |",
     ]
     for row in rows:
@@ -150,7 +150,7 @@ def batch_area_results(
     record: MechanicalGeneratedRecord,
     projection: Mapping[str, object],
 ) -> Mapping[str, str]:
-    """Count primary repair work, evidence targets, and confirmation commands."""
+    """Count primary repair work, evidence targets, and reproduction commands."""
 
     chains = _batch_groups(projection, "chains")
     unresolved = _batch_groups(projection, "unresolved")
@@ -161,11 +161,11 @@ def batch_area_results(
         _group_has_structure(group, status=CheckStatus.UNAVAILABLE.value)
         for group in unresolved
     )
-    confirmation_commands = {
+    reproduction_commands = {
         producer
         for group in (*chains, *unresolved)
         for finding in _batch_findings(group)
-        if (producer := _confirmation_producer(finding)) is not None
+        if (producer := _reproduction_producer(finding)) is not None
     }
 
     evidence_groups = [
@@ -182,7 +182,7 @@ def batch_area_results(
             "—" if structure_incomplete else _repair_structure_count(projection)
         ),
         "Evidence": "—" if evidence_incomplete else _batch_count(evidence_count),
-        "Confirmation": _batch_count(len(confirmation_commands)),
+        "Reproduction": _batch_count(len(reproduction_commands)),
     }
 
 
@@ -235,12 +235,12 @@ def structure_finding(finding: Mapping[str, object]) -> bool:
         return True
     return (
         scope == CheckScope.PROVENANCE.value
-        and finding.get("code") != "provenance.output.unconfirmed"
+        and finding.get("code") != "provenance.output.reproduction_required"
     )
 
 
-def _confirmation_producer(finding: Mapping[str, object]) -> str | None:
-    if finding.get("code") != "provenance.output.unconfirmed":
+def _reproduction_producer(finding: Mapping[str, object]) -> str | None:
+    if finding.get("code") != "provenance.output.reproduction_required":
         return None
     observed = finding.get("observed")
     if isinstance(observed, Mapping):

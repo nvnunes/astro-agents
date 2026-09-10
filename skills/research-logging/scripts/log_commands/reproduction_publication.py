@@ -86,7 +86,7 @@ def publish_completed_reproduction(
     log: LogContext,
     request: CompletedPublication,
 ) -> PublishedReproduction:
-    """Publish one normally completed target without validation or confirmation."""
+    """Publish one normally completed target without validation or state mutation."""
 
     project_root = resolve_project_root(log.root)
     try:
@@ -201,7 +201,7 @@ def _dependency_skip_index(
 
 
 def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]:
-    """Project new terminal command results without replacing reused results."""
+    """Project new terminal results without replacing unselected prior results."""
 
     try:
         snapshots = command_snapshot_index(request.plan)
@@ -216,7 +216,7 @@ def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]
     results: list[CommandResult] = []
     for key, snapshot in sorted(snapshots.items()):
         selection = snapshot["selection"]
-        if selection == "reuse":
+        if selection in {"not_needed", "unchanged"}:
             continue
         if selection == "blocked" or key in skipped:
             disposition = "blocked"
@@ -380,7 +380,9 @@ def _command_outcomes(
     blocked = len(dependency_skips) + selection.blocked
     return {
         "not_automatic": selection.not_automatic,
-        "reused": selection.reused,
+        "reproduction_not_needed": selection.reproduction_not_needed,
+        "unchanged_failed": selection.unchanged_failed,
+        "unchanged_blocked": selection.unchanged_blocked,
         "succeeded": succeeded,
         "failed": failed,
         "blocked": blocked,

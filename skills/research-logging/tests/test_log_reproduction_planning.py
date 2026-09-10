@@ -44,6 +44,7 @@ from validation.pyrun_state import (
     PyrunExecution,
     PyrunFile,
     execution_id,
+    load_pyrun_state,
 )
 from validation.repair_batches import build_repair_batches
 from validation.source_projection import research_source_projection
@@ -137,7 +138,7 @@ class _Fixture:
         outputs: dict[str, Path],
         *,
         auto_reproduce: bool = True,
-        confirmed: bool = False,
+        requires_reproduction: bool = True,
         last_run_at: str | None = None,
     ) -> tuple[str, PyrunExecution]:
         script = entry.root / "scripts" / f"{name}.py"
@@ -161,7 +162,7 @@ class _Fixture:
             ),
         )
         execution = PyrunExecution(
-            confirmed,
+            requires_reproduction,
             auto_reproduce,
             last_run_at,
             "research-log-pyrun-runner/1",
@@ -247,18 +248,45 @@ def _seed_command_results(
         ).serialized(),
         encoding="utf-8",
     )
+    if disposition == "succeeded":
+        selected = {
+            (cast(str, item["entry"]), cast(str, item["execution_id"]))
+            for item in plan.executions
+        }
+        for state_path in sorted((fixture.log_root / "entries").glob("*/pyrun.json")):
+            entry_root = state_path.parent
+            entry_id = entry_root.name.split("-")[3]
+            state = load_pyrun_state(
+                state_path,
+                entry_root=entry_root,
+                project_root=fixture.root,
+            )
+            executions = {
+                identity: (
+                    replace(execution, requires_reproduction=False)
+                    if (entry_id, identity) in selected
+                    else execution
+                )
+                for identity, execution in state.executions.items()
+            }
+            state_path.write_text(
+                PyrunFile(state_path, entry_root, executions).serialized(),
+                encoding="utf-8",
+            )
 
 
 class ReproductionCommandInventoryTests(unittest.TestCase):
-    def test_inventory_counts_all_target_commands_and_policy_exclusions(self) -> None:
+    def test_inventory_counts_only_remaining_policy_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             first = fixture.entry(1)
             fixture.entry(2)
             automatic_output = first.root / "data" / "automatic.txt"
             manual_output = first.root / "data" / "manual.txt"
+            current_manual_output = first.root / "data" / "current-manual.txt"
             automatic_output.write_text("automatic", encoding="utf-8")
             manual_output.write_text("manual", encoding="utf-8")
+            current_manual_output.write_text("current manual", encoding="utf-8")
             automatic = fixture.execution(
                 first, "automatic", {}, {"automatic": automatic_output}
             )
@@ -269,7 +297,15 @@ class ReproductionCommandInventoryTests(unittest.TestCase):
                 {"manual": manual_output},
                 auto_reproduce=False,
             )
-            fixture.write_pyrun(first, [automatic, manual])
+            current_manual = fixture.execution(
+                first,
+                "current-manual",
+                {},
+                {"current-manual": current_manual_output},
+                auto_reproduce=False,
+                requires_reproduction=False,
+            )
+            fixture.write_pyrun(first, [automatic, manual, current_manual])
 
             whole_log = project_reproduction_command_inventory(
                 fixture.log, {"entry": None, "kind": "log"}
@@ -278,7 +314,7 @@ class ReproductionCommandInventoryTests(unittest.TestCase):
                 fixture.log, {"entry": first.id, "kind": "entry"}
             )
 
-            self.assertEqual((whole_log.total, whole_log.not_automatic), (2, 1))
+            self.assertEqual((whole_log.total, whole_log.policy_skipped), (3, 1))
             self.assertEqual(one_entry, whole_log)
 
 
@@ -312,7 +348,7 @@ def _write_projection(
 
 
 class ReproductionPlanningTests(unittest.TestCase):
-    def test_incremental_run_selects_a_command_without_saved_command_state(
+    def test_incremental_run_uses_current_pyrun_without_saved_command_state(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -335,7 +371,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "produce",
                 {"raw": raw},
                 {"final": final},
-                confirmed=True,
+                requires_reproduction=False,
             )
             fixture.write_pyrun(entry, [(identity, execution)])
 
@@ -345,8 +381,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             ):
                 plan = _plan(fixture, entry)
 
+            self.assertEqual(plan.executions, ())
             self.assertEqual(
-                [item["execution_id"] for item in plan.executions], [identity]
+                plan.source_snapshot["commands"][0]["selection"], "not_needed"
             )
 
     def test_batch_admission_keeps_independent_work_and_blocks_dependents(self) -> None:
@@ -851,7 +888,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             producer = (
                 execution_id(producer_recipe),
                 PyrunExecution(
-                    False,
+                    True,
                     True,
                     None,
                     "research-log-pyrun-runner/1",
@@ -1036,6 +1073,50 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(
                 [(value["disposition"], value["reason"]) for value in plan.cases],
                 [("skipped", "non_automatic")],
+            )
+
+    def test_reproduction_not_needed_precedes_nonautomatic_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            result = entry.root / "data" / "result.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            result.write_text("result\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=False),
+                    fixture.item(entry, "result", result, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "result")
+            upstream = fixture.execution(
+                entry,
+                "produce-raw",
+                {},
+                {"raw": raw},
+            )
+            current = fixture.execution(
+                entry,
+                "simulate",
+                {"raw": raw},
+                {"result": result},
+                auto_reproduce=False,
+                requires_reproduction=False,
+            )
+            fixture.write_pyrun(entry, [upstream, current])
+
+            plan = _plan(fixture, entry)
+
+            self.assertEqual(plan.executions, ())
+            self.assertEqual(plan.boundaries, ())
+            self.assertEqual(plan.cases[0]["disposition"], "current")
+            self.assertEqual(
+                plan.source_snapshot["commands"][0]["execution_id"], current[0]
+            )
+            self.assertEqual(
+                plan.source_snapshot["commands"][0]["selection"], "not_needed"
             )
 
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
@@ -1294,7 +1375,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 (("<project>/shared/result.txt", "file"),),
             )
             external = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 execution[1].runner,
@@ -1328,7 +1409,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 projection.reachable,
             )
 
-    def test_v3_artifact_state_is_seeded_then_reused_per_command(self) -> None:
+    def test_v3_artifact_state_is_seeded_then_retains_terminal_failures(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -1349,7 +1430,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 "analyze",
                 {"raw": raw},
                 {"final": final},
-                confirmed=True,
+                requires_reproduction=True,
                 last_run_at="2026-09-06T00:00:00Z",
             )
             fixture.write_pyrun(entry, [execution])
@@ -1395,7 +1476,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                             "blocked": 0,
                             "failed": 0,
                             "not_automatic": 0,
-                            "reused": 0,
+                            "reproduction_not_needed": 0,
+                            "unchanged_blocked": 0,
+                            "unchanged_failed": 0,
                             "succeeded": 1,
                             "total": 1,
                         },
@@ -1417,7 +1500,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [execution[0]],
             )
             snapshot = first.source_snapshot["commands"][0]
-            stored["schema"] = "research-log-reproduction-result/4"
+            stored["schema"] = "research-log-reproduction-result/6"
             commands = [
                 {
                     "disposition": "succeeded",
@@ -1430,8 +1513,6 @@ class ReproductionPlanningTests(unittest.TestCase):
             ]
             stored["commands"] = commands
             for artifact_outcome, artifact_reason, disposition in (
-                ("matched", None, "succeeded"),
-                ("changed", "content_changed", "succeeded"),
                 ("failed", "execution_failed", "failed"),
                 ("skipped", "dependency_failed", "blocked"),
             ):
@@ -1458,7 +1539,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                     self.assertEqual(second.cases[0]["disposition"], "current")
                     self.assertEqual(
                         second.source_snapshot["commands"][0]["selection"],
-                        "reuse",
+                        "unchanged",
+                    )
+                    self.assertEqual(
+                        second.source_snapshot["commands"][0]["prior_disposition"],
+                        disposition,
                     )
 
             recheck = _plan(fixture, entry, recheck=True)
@@ -1552,6 +1637,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             fixture.write_pyrun(entry, [first, second])
             _seed_command_results(fixture, _plan(fixture, entry))
+            second = (second[0], replace(second[1], requires_reproduction=False))
 
             unchanged = _plan(fixture, entry)
             self.assertEqual(unchanged.executions, ())
@@ -1673,10 +1759,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 side_effect=changed_comparison_identity,
             ):
                 comparison_changed = _plan(fixture, entry)
-            self.assertEqual(
-                [value["execution_id"] for value in comparison_changed.executions],
-                [first[0]],
-            )
+            self.assertEqual(comparison_changed.executions, ())
 
     def test_changed_dependency_output_invalidates_only_affected_closure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1725,6 +1808,10 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             fixture.write_pyrun(entry, [upstream, downstream, independent])
             _seed_command_results(fixture, _plan(fixture, entry))
+            independent = (
+                independent[0],
+                replace(independent[1], requires_reproduction=False),
+            )
 
             paths["middle"].write_text("middle changed", encoding="utf-8")
             write_data()
@@ -1760,7 +1847,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 value["execution_id"]: value["selection"]
                 for value in plan.source_snapshot["commands"]
             }
-            self.assertEqual(selections[independent[0]], "reuse")
+            self.assertEqual(selections[independent[0]], "not_needed")
 
     def test_recheck_reprojects_an_unchanged_planning_block(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1792,7 +1879,11 @@ class ReproductionPlanningTests(unittest.TestCase):
             recheck = _plan(fixture, entry, recheck=True)
 
             self.assertEqual(
-                incremental.source_snapshot["commands"][0]["selection"], "reuse"
+                incremental.source_snapshot["commands"][0]["selection"], "unchanged"
+            )
+            self.assertEqual(
+                incremental.source_snapshot["commands"][0]["prior_disposition"],
+                "blocked",
             )
             self.assertEqual(
                 recheck.source_snapshot["commands"][0]["selection"], "blocked"
@@ -1857,7 +1948,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             fixture.write_pyrun(entry, [(identity, execution)])
             plan = _plan(fixture, entry)
 
-            fixture.write_pyrun(entry, [(identity, replace(execution, confirmed=True))])
+            fixture.write_pyrun(
+                entry, [(identity, replace(execution, requires_reproduction=False))]
+            )
             verify_reproduction_runtime_snapshot(fixture.log, plan)
 
             fixture.write_pyrun(
@@ -1865,7 +1958,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [
                     (
                         identity,
-                        replace(execution, confirmed=True, auto_reproduce=False),
+                        replace(
+                            execution,
+                            requires_reproduction=False,
+                            auto_reproduce=False,
+                        ),
                     )
                 ],
             )
@@ -1912,7 +2009,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 (("<project>/shared/upstream.txt", "file"),),
             )
             upstream_execution = PyrunExecution(
-                False,
+                True,
                 True,
                 None,
                 upstream[1].runner,
@@ -1965,7 +2062,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 CheckStatus.FAIL,
                 "/result.csv",
                 failure=FailurePayload(
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                     "/result.csv",
                     {"output": "data/result.csv", "producer": "fixture"},
                     "Pyrun Output Support Records",
@@ -2006,7 +2103,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                                 "admission_effect": "none",
                                 "affected_chains": [],
                                 "affected_entries": [],
-                                "code": "provenance.output.unconfirmed",
+                                "code": "provenance.output.reproduction_required",
                                 "dependencies": [],
                                 "identity": unconfirmed.identity,
                                 "observed": dict(unconfirmed.failure.observed),
@@ -2071,7 +2168,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     artifact,
                     ({"artifacts": [artifact]},),
                     FailurePayload(
-                        "provenance.output.unconfirmed",
+                        "provenance.output.reproduction_required",
                         artifact,
                         {"output": "data/result.csv", "producer": "fixture"},
                         "Pyrun Output Support Records",

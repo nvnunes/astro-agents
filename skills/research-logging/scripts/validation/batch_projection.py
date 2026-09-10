@@ -472,7 +472,7 @@ def _blocks_reproduction(check: MechanicalCheck) -> bool:
     return (
         check.scope.value == "provenance"
         and check.failure is not None
-        and check.failure.code != "provenance.output.unconfirmed"
+        and check.failure.code != "provenance.output.reproduction_required"
     )
 
 

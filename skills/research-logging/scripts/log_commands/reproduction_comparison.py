@@ -380,16 +380,16 @@ def _compare_evidence_change(
     )
 
 
-def confirm_matching_execution_locked(
+def clear_execution_reproduction_requirement_locked(
     log: LogContext,
     plan: ReproductionPlan,
     result: ExecutionComparison,
     *,
     project_root: Path,
 ) -> bool:
-    """Persist one matched execution confirmation under its scope lock."""
+    """Record that one execution no longer requires reproduction."""
 
-    if not result.matched:
+    if not result.complete:
         return False
     planned = {
         (str(item.get("entry")), str(item.get("execution_id")))
@@ -397,7 +397,7 @@ def confirm_matching_execution_locked(
     }
     if (result.entry, result.execution_id) not in planned:
         raise ActionError(
-            "reproduction.confirmation.execution_unplanned",
+            "reproduction.requirement.execution_unplanned",
             f"execution is outside the accepted plan: "
             f"{result.entry}:{result.execution_id}",
         )
@@ -410,12 +410,12 @@ def confirm_matching_execution_locked(
     current = state.executions.get(result.execution_id)
     if current is None:
         raise ActionError(
-            "reproduction.confirmation.execution_missing", result.execution_id
+            "reproduction.requirement.execution_missing", result.execution_id
         )
-    if current.confirmed:
+    if not current.requires_reproduction:
         return False
     executions = dict(state.executions)
-    executions[result.execution_id] = replace(current, confirmed=True)
+    executions[result.execution_id] = replace(current, requires_reproduction=False)
     candidate = PyrunFile(state.path, state.entry_root, executions)
     atomic_write_text(
         state.path,
@@ -1066,7 +1066,7 @@ def _directory_members(root: Path) -> tuple[tuple[str, str, Path], ...]:
 
 
 def _record_execution(request: _StagingRequest) -> str:
-    """Persist one complete comparison before confirmation or publication."""
+    """Persist one complete comparison before state update or publication."""
 
     workspace = request.workspace
     attempt = request.attempt

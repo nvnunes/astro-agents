@@ -46,14 +46,23 @@ class ReproductionPublicationTests(unittest.TestCase):
         identities = {
             name: "pyrun-exec/v1:" + digit * 64
             for name, digit in zip(
-                ("manual", "reused", "success", "failure", "dependency", "blocked"),
-                "123456",
+                (
+                    "manual",
+                    "current",
+                    "success",
+                    "failure",
+                    "dependency",
+                    "blocked",
+                    "unchanged_failure",
+                    "unchanged_block",
+                ),
+                "12345678",
                 strict=True,
             )
         }
         cases = (
             _case(identities["manual"], "skipped", "non_automatic"),
-            _case(identities["reused"], "current", None),
+            _case(identities["current"], "current", None),
             _case(identities["success"], "run", None, artifact="data/one.csv"),
             _case(identities["success"], "run", None, artifact="data/two.csv"),
             _case(identities["failure"], "run", None),
@@ -79,15 +88,18 @@ class ReproductionPublicationTests(unittest.TestCase):
                         "auto_reproduce": True,
                         "entry": "e001",
                         "execution_id": identities[name],
+                        "prior_disposition": prior_disposition,
                         "selection": selection,
                         "source_digest": digit * 64,
                     }
-                    for name, selection, digit in (
-                        ("reused", "reuse", "2"),
-                        ("success", "run", "3"),
-                        ("failure", "run", "4"),
-                        ("dependency", "run", "5"),
-                        ("blocked", "blocked", "6"),
+                    for name, selection, digit, prior_disposition in (
+                        ("current", "not_needed", "2", None),
+                        ("success", "run", "3", None),
+                        ("failure", "run", "4", None),
+                        ("dependency", "run", "5", None),
+                        ("blocked", "blocked", "6", None),
+                        ("unchanged_failure", "unchanged", "7", "failed"),
+                        ("unchanged_block", "unchanged", "8", "blocked"),
                     )
                 ]
             },
@@ -146,14 +158,16 @@ class ReproductionPublicationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _command_outcomes(plan, request, ReproductionCommandInventory(8, 2)),
+            _command_outcomes(plan, request, ReproductionCommandInventory(10, 2)),
             {
                 "blocked": 2,
                 "failed": 1,
                 "not_automatic": 2,
-                "reused": 2,
+                "reproduction_not_needed": 2,
+                "unchanged_blocked": 1,
+                "unchanged_failed": 1,
                 "succeeded": 1,
-                "total": 8,
+                "total": 10,
             },
         )
         self.assertEqual(
@@ -456,6 +470,7 @@ class ReproductionPublicationTests(unittest.TestCase):
             "capture_failed",
             "execution_exception",
             "output_materialization_failed",
+            "reproduction.input.unavailable",
             "reproduction.run.invalid",
         )
         for reason in (*execution_reasons, "validation_blocked"):

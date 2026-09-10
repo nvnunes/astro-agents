@@ -117,7 +117,7 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class LogDataTests(unittest.TestCase):
-    def test_refresh_restored_generated_material_keeps_confirmation_pending(
+    def test_refresh_restored_generated_material_keeps_reproduction_required(
         self,
     ) -> None:
         for kind in ("file", "directory"):
@@ -163,7 +163,7 @@ class LogDataTests(unittest.TestCase):
                     "refresh",
                     *common,
                     "restored",
-                    "--pending-confirmation",
+                    "--requires-reproduction",
                     "--dry-run",
                 )
                 self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -174,11 +174,11 @@ class LogDataTests(unittest.TestCase):
                     "refresh",
                     *common,
                     "restored",
-                    "--pending-confirmation",
+                    "--requires-reproduction",
                 )
                 self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
                 self.assertEqual(
-                    result(refreshed)["records"][0]["confirmation"], "pending"
+                    result(refreshed)["records"][0]["reproduction"], "required"
                 )
                 after_item = data_inputs(entry)[0]
                 self.assertIn("digest", after_item.pop("fingerprint"))
@@ -192,7 +192,7 @@ class LogDataTests(unittest.TestCase):
                     "refresh",
                     *common,
                     "restored",
-                    "--pending-confirmation",
+                    "--requires-reproduction",
                 )
                 self.assertEqual(result(repeated)["status"], "unchanged")
 
@@ -212,7 +212,7 @@ class LogDataTests(unittest.TestCase):
                         "refresh",
                         *common,
                         "restored",
-                        "--pending-confirmation",
+                        "--requires-reproduction",
                     )
                     self.assertEqual(result(blocked)["code"], code)
                     self.assertEqual((entry / "data.json").read_bytes(), registered)
@@ -230,8 +230,8 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("--commit", action.stdout)
         self.assertIn("producerless material input", action.stdout)
         self.assertIn("logical log base", action.stdout)
-        self.assertNotIn("--pending-confirmation", action.stdout)
-        self.assertIn("--pending-confirmation", generated.stdout)
+        self.assertNotIn("--requires-reproduction", action.stdout)
+        self.assertIn("--requires-reproduction", generated.stdout)
 
     def test_add_origin_infers_kind_normalizes_and_lists_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -673,7 +673,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "generated",
                 "data/generated.csv",
             )
@@ -820,7 +820,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "--dry-run",
                 "generated",
                 "data/generated.csv",
@@ -831,7 +831,7 @@ class LogDataTests(unittest.TestCase):
                 result(checked)["records"],
                 [
                     {
-                        "confirmation": "pending",
+                        "reproduction": "required",
                         "document": "entries/2026-09-04-e001-trial/e001.md",
                         "fence": 1,
                         "ordinal": 1,
@@ -844,7 +844,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "generated",
                 "data/generated.csv",
             )
@@ -881,7 +881,7 @@ class LogDataTests(unittest.TestCase):
             generated.write_text("value\nchanged\n", encoding="utf-8")
             stale_refresh = run(
                 entry, "data", "refresh", *common, "generated",
-                "--pending-confirmation",
+                "--requires-reproduction",
             )
             self.assertEqual(
                 result(stale_refresh)["code"], "provenance.output.signature_mismatch"
@@ -891,7 +891,7 @@ class LogDataTests(unittest.TestCase):
 
             origin_refresh = run(
                 entry, "data", "refresh", *common, "source",
-                "--pending-confirmation",
+                "--requires-reproduction",
             )
             self.assertEqual(result(origin_refresh)["code"], "data.pending.invalid")
             self.assertEqual((entry / "data.json").read_bytes(), registry_before)
@@ -1123,7 +1123,7 @@ class LogDataTests(unittest.TestCase):
                 result(selected)["code"], "provenance.output.signature_mismatch"
             )
 
-    def test_pending_generated_defers_unconfirmed_recursive_lineage(self) -> None:
+    def test_pending_generated_defers_reproduction_required_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
             source = entry / "data" / "source.csv"
@@ -1167,7 +1167,7 @@ class LogDataTests(unittest.TestCase):
                     "data",
                     "add-generated",
                     *common,
-                    "--pending-confirmation",
+                    "--requires-reproduction",
                     "intermediate",
                     "data/intermediate.csv",
                 ).returncode,
@@ -1198,7 +1198,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "--dry-run",
                 "final",
                 "data/final.csv",
@@ -1425,7 +1425,7 @@ class LogDataTests(unittest.TestCase):
             support_path = entry / "pyrun.json"
             support = json.loads(support_path.read_text(encoding="utf-8"))
             execution_id = next(iter(support["executions"]))
-            support["executions"][execution_id]["confirmed"] = False
+            support["executions"][execution_id]["requires_reproduction"] = True
             support_path.write_text(
                 json.dumps(
                     support, ensure_ascii=False, indent=2, sort_keys=True
@@ -1442,21 +1442,21 @@ class LogDataTests(unittest.TestCase):
                 "data/generated.csv",
             )
             self.assertEqual(
-                result(unconfirmed)["code"], "provenance.output.unconfirmed"
+                result(unconfirmed)["code"], "provenance.output.reproduction_required"
             )
             pending = run(
                 entry,
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "--dry-run",
                 "generated",
                 "data/generated.csv",
             )
             self.assertEqual(pending.returncode, 0, pending.stderr)
             self.assertEqual(len(data_inputs(entry)), 1)
-            support["executions"][execution_id]["confirmed"] = True
+            support["executions"][execution_id]["requires_reproduction"] = False
             support_path.write_text(
                 json.dumps(
                     support, ensure_ascii=False, indent=2, sort_keys=True
@@ -1483,7 +1483,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "generated",
                 "data/generated.csv",
             )
@@ -1522,7 +1522,7 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--pending-confirmation",
+                "--requires-reproduction",
                 "generated",
                 "data/generated.csv",
             )

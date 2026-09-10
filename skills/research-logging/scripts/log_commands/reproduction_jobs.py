@@ -32,8 +32,8 @@ from .context import LogContext, resolve_entry, resolve_log, resolve_project_roo
 from .model import ActionError
 from .reproduction_comparison import (
     ExecutionComparison,
+    clear_execution_reproduction_requirement_locked,
     compare_execution_outputs,
-    confirm_matching_execution_locked,
     load_recorded_comparisons,
 )
 from .reproduction_contract import LEGACY_PLAN_SCHEMA, PLAN_SCHEMA, ReproductionPlan
@@ -463,7 +463,7 @@ def supervise_reproduction(
             for item in load_recorded_comparisons(plan, workspace)
         }
         for comparison in comparisons.values():
-            confirm_matching_execution_locked(
+            clear_execution_reproduction_requirement_locked(
                 log,
                 plan,
                 comparison,
@@ -565,7 +565,7 @@ def _compare_and_confirm(
     attempt: ExecutionAttempt,
 ) -> ExecutionComparison:
     comparison = compare_execution_outputs(log, plan, workspace, attempt)
-    confirm_matching_execution_locked(
+    clear_execution_reproduction_requirement_locked(
         log,
         plan,
         comparison,

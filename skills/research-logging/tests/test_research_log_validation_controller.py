@@ -177,7 +177,7 @@ class MechanicalControllerTests(unittest.TestCase):
                 unconfirmed_artifact,
                 ({"artifacts": [unconfirmed_artifact]},),
                 RESULTS.FailurePayload(
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                     unconfirmed_artifact,
                     {},
                     "Provenance",
@@ -243,7 +243,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     "chain_id": "confirmation",
                     "findings": [
                         {
-                            "code": "provenance.output.unconfirmed",
+                            "code": "provenance.output.reproduction_required",
                             "observed": {"producer": "execution-1"},
                             "scope": "provenance",
                             "status": "fail",
@@ -312,7 +312,7 @@ class MechanicalControllerTests(unittest.TestCase):
         }
         self.assertEqual(
             REPORT.batch_area_results(record, projection),
-            {"Structure": "1 inspection", "Evidence": "Clear", "Confirmation": "Clear"},
+            {"Structure": "1 inspection", "Evidence": "Clear", "Reproduction": "Clear"},
         )
 
     def test_batch_report_preserves_chain_and_inspection_counts(self) -> None:
@@ -347,7 +347,7 @@ class MechanicalControllerTests(unittest.TestCase):
             {
                 "Structure": "1 chain + 2 inspection",
                 "Evidence": "Clear",
-                "Confirmation": "Clear",
+                "Reproduction": "Clear",
             },
         )
 
@@ -372,7 +372,7 @@ class MechanicalControllerTests(unittest.TestCase):
         }
         self.assertEqual(
             REPORT.batch_area_results(record, projection),
-            {"Structure": "—", "Evidence": "Clear", "Confirmation": "Clear"},
+            {"Structure": "—", "Evidence": "Clear", "Reproduction": "Clear"},
         )
 
     def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:
@@ -389,7 +389,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     artifact,
                     ({"artifacts": [artifact]},),
                     RESULTS.FailurePayload(
-                        "provenance.output.unconfirmed",
+                        "provenance.output.reproduction_required",
                         artifact,
                         {"output": "data/migrated.csv"},
                         "Mechanical Validation Evaluation And Outcomes",
@@ -400,7 +400,7 @@ class MechanicalControllerTests(unittest.TestCase):
 
         report = REPORT.compose_validation_report(record)
 
-        self.assertIn("| Provenance | 1 await confirmation |", report)
+        self.assertIn("| Provenance | 1 await reproduction |", report)
 
     def test_report_prefers_actual_failure_over_unconfirmed_output(self) -> None:
         artifact = "/project/data/migrated.csv"
@@ -416,7 +416,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     artifact,
                     ({"artifacts": [artifact]},),
                     RESULTS.FailurePayload(
-                        "provenance.output.unconfirmed",
+                        "provenance.output.reproduction_required",
                         artifact,
                         {"output": "data/migrated.csv"},
                         "Mechanical Validation Evaluation And Outcomes",
@@ -472,7 +472,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     unconfirmed,
                     ({"artifacts": [unconfirmed]},),
                     RESULTS.FailurePayload(
-                        "provenance.output.unconfirmed",
+                        "provenance.output.reproduction_required",
                         unconfirmed,
                         {"output": "data/unconfirmed.csv"},
                         "Mechanical Validation Evaluation And Outcomes",
@@ -484,7 +484,7 @@ class MechanicalControllerTests(unittest.TestCase):
         report = REPORT.compose_validation_report(record)
 
         self.assertIn(
-            "| Provenance | 1 artifact issue · 1 await confirmation |", report
+            "| Provenance | 1 artifact issue · 1 await reproduction |", report
         )
 
     def test_report_counts_artifact_blocked_by_provenance_failure_as_failed(

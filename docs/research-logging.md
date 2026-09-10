@@ -579,12 +579,12 @@ scheduling policy, not part of the recipe identity, and it does not change
 ordinary direct execution or reserve unrelated host processes. For a later
 policy-only change, edit Markdown first and run `log pyrun update` with exactly
 one of `--auto-reproduce true|false` or `--exclusive true|false`. Current
-execution state must use `research-log-pyrun/v3`; earlier schemas are
+execution state must use `research-log-pyrun/v4`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
 `--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
-confirmed output record. Output available only in an agent's temporary context
+current output record. Output available only in an agent's temporary context
 is not evidence. This is original research execution, not validation or
 reproduction; do not rerun an unchanged command solely to test reproducibility
 or Provenance.
@@ -736,7 +736,8 @@ advanced definition; the agent preflights that temporary definition under `/priv
 and still delegates the registry mutation to the CLI.
 
 Every presented generated result must trace through the recorded workflow until
-it reaches an explicit origin or an inputless confirmed producer. Every reached
+it reaches an explicit origin or an inputless producer that does not require
+reproduction. Every reached
 generated output must match `pyrun`'s current output and script fingerprints,
 exact ordered parameters, and direct-input fingerprints. This bounded
 Provenance result does not claim causation, complete dependency capture,
@@ -961,11 +962,12 @@ Preview one exact scope without writing anything:
 
 Launch it by omitting `--dry-run`. The command prints a durable run ID and
 returns immediately while the CLI-owned background job continues. By default,
-selection is incremental: a command whose complete source closure and saved
-terminal disposition are unchanged is reused without execution. This applies
-to prior successes, failures, and blocks, so two unchanged incremental runs in
-a row select zero commands on the second run. A changed command selects only
-its affected downstream closure. Add `--recheck` when you deliberately want
+selection is incremental. A current execution with
+`requires_reproduction: false` needs no execution and does not depend on the
+reproduction cache. An unchanged cached failure or block also prevents a
+pointless retry. Two unchanged incremental runs in a row therefore select zero
+commands on the second run. A changed command selects only its affected
+downstream closure. Add `--recheck` when you deliberately want
 every currently runnable eligible execution in the selected evidence-relevant
 scope to run again. Recheck does not bypass a planning blocker.
 
@@ -976,7 +978,7 @@ shows the immutable cap, each execution's exclusive flag, and its normalized
 path claims without creating state. Status, stop, and resume use the accepted
 cap and do not accept an override.
 
-Entry-local execution state must use `research-log-pyrun/v3`; earlier schemas
+Entry-local execution state must use `research-log-pyrun/v4`; earlier schemas
 are rejected before planning and are not assigned guessed scheduling policy.
 
 Executions recorded with `auto_reproduce: false` are excluded by default.
@@ -1017,8 +1019,9 @@ report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
 
 Each execution is attempted at most once in one run. Its complete comparison is
-recorded before a fully matching execution is confirmed in `pyrun.json`.
-Confirmations remain valid if later work or result publication fails. A guarded
+recorded before a completed command clears `requires_reproduction` in
+`pyrun.json`; artifact matching remains a separate result. A cleared
+requirement remains valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.
 
@@ -1028,7 +1031,7 @@ from the latest completed run separate from current artifact state and explains
 why their totals need not match. Its two trees show command selection and
 execution as one hierarchy, then artifact comparison and non-comparison reasons
 as a second hierarchy. An unchanged incremental invocation instead returns the
-same summary shape directly, with its current reused count and zero selected
+same summary shape directly, with its current reproduction-not-retried count and zero selected
 commands; present it immediately because no new run exists. Use
 `log reproduce report --root <project> --summary` for a compact two-table
 comparison across every discovered log.
@@ -1047,7 +1050,7 @@ details for diagnosis without requiring an agent to parse the generated files.
 After reproduction publication completes, the CLI runs ordinary validation for
 the affected log as a separate operation. Validation findings or an operational
 validation failure remain visible in validation's own report but do not change
-the completed reproduction result or roll back confirmations.
+the completed reproduction result or restore cleared reproduction requirements.
 
 Regenerated files remain together in the dated project `tmp/reproduction` run
 folder. They do not replace retained research automatically. If you decide to
@@ -1067,8 +1070,9 @@ At a high level, validation checks four things:
 - the research log and its supporting metadata are structurally consistent,
   including input declarations, origin boundaries, and intentional retention;
 - presented computational results match their declared retained sources;
-- generated evidence can be traced through confirmed current output and script
-  fingerprints, exact ordered parameters, and direct-input fingerprints to
+- generated evidence can be traced through current output and script support
+  that does not require reproduction, with exact fingerprints, ordered
+  parameters, and direct-input fingerprints to
   explicit origins; and
 - retained files and output records are connected to the recorded work,
   intentionally kept, or reported as Hygiene findings.

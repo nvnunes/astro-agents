@@ -78,7 +78,7 @@ def _invocation(
 
 def _unconfirmed_support(invocation: Any, material: str) -> Any:
     raise PROVENANCE.ProvenanceV2Error(
-        "provenance.output.unconfirmed",
+        "provenance.output.reproduction_required",
         material,
         {"producer": invocation.identity},
         "Pyrun Output Support Records",
@@ -394,7 +394,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 {
                     "lineage.ambiguous",
                     "lineage.missing",
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                 },
             )
 
@@ -439,7 +439,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 {
                     "lineage.cycle",
                     "lineage.missing",
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                 },
             )
 
@@ -489,7 +489,7 @@ class ProvenanceLineageTests(unittest.TestCase):
                 {finding.code for finding in result.findings},
                 {
                     "directory.producer.conflict",
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                 },
             )
 

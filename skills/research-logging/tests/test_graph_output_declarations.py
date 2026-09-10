@@ -74,7 +74,10 @@ class DirectoryOwnershipTests(unittest.TestCase):
                 seen.append((invocation.identity, resolved.path))
                 if invocation.identity == owner.identity:
                     raise ProvenanceV2Error(
-                        "provenance.output.unconfirmed", material, {}, "support"
+                        "provenance.output.reproduction_required",
+                        material,
+                        {},
+                        "support",
                     )
                 return {}
 
@@ -85,7 +88,7 @@ class DirectoryOwnershipTests(unittest.TestCase):
             )
             self.assertEqual(
                 {f.code for f in unconfirmed.findings},
-                {"provenance.output.unconfirmed"},
+                {"provenance.output.reproduction_required"},
             )
             self.assertIn((owner.identity, entry / "data/models"), seen)
 

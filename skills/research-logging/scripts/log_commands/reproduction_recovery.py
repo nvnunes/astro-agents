@@ -347,7 +347,7 @@ def _verify_normalized_pyrun(
         }
         if current_digest not in allowed:
             raise ActionError("reproduction.recovery.source_changed", identity)
-        current["confirmed"] = candidate.get("current_confirmed")
+        current["requires_reproduction"] = not candidate.get("current_confirmed")
     normalized = _pretty_json(raw).encode("utf-8")
     if hashlib.sha256(normalized).hexdigest() != expected_digest:
         raise ActionError("reproduction.recovery.source_changed", str(path))
@@ -385,13 +385,15 @@ def _apply_confirmations(
             execution = executions[identity]
             expected = (
                 candidate["confirmed_record_digest"]
-                if execution.confirmed
+                if not execution.requires_reproduction
                 else candidate["pre_repair_record_digest"]
             )
             if canonical_record_digest(execution.as_dict()) != expected:
                 raise ActionError("reproduction.recovery.source_changed", identity)
-            if not execution.confirmed:
-                executions[identity] = replace(execution, confirmed=True)
+            if execution.requires_reproduction:
+                executions[identity] = replace(
+                    execution, requires_reproduction=False
+                )
                 changed = True
         if changed:
             candidate_state = PyrunFile(path, entry.root, executions)

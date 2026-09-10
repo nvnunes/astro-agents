@@ -216,7 +216,7 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
         ),
     )
     execution = PYRUN_STATE.PyrunExecution(
-        True,
+        False,
         True,
         "2030-01-01T00:00:00Z",
         PYRUN_STATE.PYRUN_RUNNER,
@@ -604,7 +604,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for check in unconfirmed.checks
                 if check.identity == "provenance:e001:success-rate"
             )
-            self.assertEqual(provenance.failure.code, "provenance.output.unconfirmed")
+            self.assertEqual(
+                provenance.failure.code, "provenance.output.reproduction_required"
+            )
             self.assertFalse(
                 any(
                     check.failure is not None
@@ -844,7 +846,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.identity == "provenance:e001:success-rate"
             )
             self.assertEqual(
-                provenance.failure.code, "provenance.output.unconfirmed"
+                provenance.failure.code, "provenance.output.reproduction_required"
             )
             self.assertEqual(provenance.failure.subject, bundle.resolve().as_posix())
             self.assertFalse(
@@ -1121,7 +1123,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluate.call_count, 1)
 
             failure = ENGINE.EngineV2Error(
-                "provenance.output.unconfirmed",
+                "provenance.output.reproduction_required",
                 "failed",
                 {"producer": invocation.identity},
                 "Pyrun Output Support Records",
@@ -1150,7 +1152,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "lineage.missing", subject, {"consumer": "two"}, "Lineage"
                 ),
                 PROVENANCE.ProvenanceFinding(
-                    "provenance.output.unconfirmed",
+                    "provenance.output.reproduction_required",
                     subject,
                     {"producer": "one"},
                     "Output Support",
@@ -1175,7 +1177,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(blocker_index.call_count, 1)
             self.assertEqual(
                 [item.finding.code for item in prepared],
-                ["provenance.output.unconfirmed", "lineage.missing"],
+                ["provenance.output.reproduction_required", "lineage.missing"],
             )
             with mock.patch.object(
                 ENGINE,
@@ -1333,7 +1335,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ]
             self.assertEqual(
                 {check.failure.code for check in provenance if check.failure},
-                {"lineage.missing", "provenance.output.unconfirmed"},
+                {"lineage.missing", "provenance.output.reproduction_required"},
             )
             primary = next(
                 check
@@ -1400,7 +1402,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 for item in unconfirmed.checks
                 if item.identity == "provenance:e001:success-rate"
             )
-            self.assertEqual(check.failure.code, "provenance.output.unconfirmed")
+            self.assertEqual(
+                check.failure.code, "provenance.output.reproduction_required"
+            )
 
             output_path.unlink()
             unrecorded = _evaluate(summary).result
@@ -1761,7 +1765,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ),
             )
             execution = PYRUN_STATE.PyrunExecution(
-                True,
+                False,
                 True,
                 "2030-01-01T00:00:00Z",
                 PYRUN_STATE.PYRUN_RUNNER,

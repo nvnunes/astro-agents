@@ -20,7 +20,9 @@ class CommandSelectionAccounting:
 
     run_keys: frozenset[tuple[str, str]]
     not_automatic: int
-    reused: int
+    reproduction_not_needed: int
+    unchanged_failed: int
+    unchanged_blocked: int
     blocked: int
     total: int
 
@@ -29,7 +31,7 @@ def project_command_selection(
     plan: ReproductionPlan,
     inventory: ReproductionCommandInventory,
 ) -> CommandSelectionAccounting:
-    """Reconcile one plan's run, reuse, block, and policy selections."""
+    """Reconcile one plan's run, no-work, block, and policy selections."""
 
     planned: dict[tuple[str, str], bool] = {}
     for item in plan.executions:
@@ -56,24 +58,41 @@ def project_command_selection(
                 "command selection does not match the accepted plan"
             )
         blocked = sum(value["selection"] == "blocked" for value in snapshots.values())
-        included_not_automatic = sum(
-            value["auto_reproduce"] is False for value in snapshots.values()
+        unchanged_failed = sum(
+            value["selection"] == "unchanged"
+            and value["prior_disposition"] == "failed"
+            for value in snapshots.values()
+        )
+        unchanged_blocked = sum(
+            value["selection"] == "unchanged"
+            and value["prior_disposition"] == "blocked"
+            for value in snapshots.values()
         )
     else:
         run_keys = frozenset(planned)
         blocked = 0
-        included_not_automatic = sum(not automatic for automatic in planned.values())
+        unchanged_failed = 0
+        unchanged_blocked = 0
 
-    not_automatic = inventory.not_automatic - included_not_automatic
-    reused = inventory.total - not_automatic - len(run_keys) - blocked
-    if not_automatic < 0 or reused < 0:
+    not_automatic = 0 if plan.include_all else inventory.policy_skipped
+    reproduction_not_needed = (
+        inventory.total
+        - not_automatic
+        - len(run_keys)
+        - blocked
+        - unchanged_failed
+        - unchanged_blocked
+    )
+    if not_automatic < 0 or reproduction_not_needed < 0:
         raise CommandAccountingError(
             "command inventory does not reconcile with the accepted plan"
         )
     return CommandSelectionAccounting(
         run_keys,
         not_automatic,
-        reused,
+        reproduction_not_needed,
+        unchanged_failed,
+        unchanged_blocked,
         blocked,
         inventory.total,
     )
@@ -94,6 +113,7 @@ def command_snapshot_index(
         "auto_reproduce",
         "entry",
         "execution_id",
+        "prior_disposition",
         "selection",
         "source_digest",
     }
@@ -107,10 +127,17 @@ def command_snapshot_index(
             not isinstance(entry, str)
             or not isinstance(execution_id, str)
             or not isinstance(value.get("auto_reproduce"), bool)
-            or value.get("selection") not in {"blocked", "reuse", "run"}
+            or value.get("selection")
+            not in {"blocked", "not_needed", "run", "unchanged"}
             or not isinstance(source_digest, str)
             or re.fullmatch(r"[0-9a-f]{64}", source_digest) is None
         ):
+            raise CommandAccountingError("command snapshot is invalid")
+        selection = value["selection"]
+        prior_disposition = value.get("prior_disposition")
+        if (selection == "unchanged") != (
+            prior_disposition in {"failed", "blocked"}
+        ) or (selection != "unchanged" and prior_disposition is not None):
             raise CommandAccountingError("command snapshot is invalid")
         key = (entry, execution_id)
         if key in snapshots:

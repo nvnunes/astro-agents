@@ -25,7 +25,7 @@ from .reproduction_paths import (
 from .reproduction_planner import ReproductionStateProjection
 
 LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/3"
-RESULT_SCHEMA = "research-log-reproduction-result/4"
+RESULT_SCHEMA = "research-log-reproduction-result/6"
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
@@ -37,7 +37,9 @@ RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 OUTCOMES = ("matched", "changed", "failed", "comparison_failed", "skipped")
 COMMAND_OUTCOMES = (
     "not_automatic",
-    "reused",
+    "reproduction_not_needed",
+    "unchanged_failed",
+    "unchanged_blocked",
     "succeeded",
     "failed",
     "blocked",
@@ -87,6 +89,7 @@ REASONS = {
     "outside_entry",
     "participating_code_changed",
     "participating_code_unavailable",
+    "reproduction.input.unavailable",
     "reproduction.run.invalid",
     "resource_limit",
     "safety_failure",
@@ -612,7 +615,7 @@ def compose_reproduction_report(
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
         results.updated_at,
-        artifact_summary_counts(artifacts),
+        artifact_summary_counts(artifacts, results.commands),
         latest.command_outcomes if latest is not None else None,
         _SummaryPresentation(
             "# Reproduction",
@@ -668,7 +671,7 @@ def compose_reproduction_summary(
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
         results.updated_at,
-        artifact_summary_counts(results.artifacts),
+        artifact_summary_counts(results.artifacts, results.commands),
         latest.command_outcomes if latest is not None else None,
         _SummaryPresentation(
             "# Reproduction Summary",
@@ -690,7 +693,7 @@ def compose_reproduction_reconciliation_summary(
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
         generated_at,
-        artifact_summary_counts(results.artifacts),
+        artifact_summary_counts(results.artifacts, results.commands),
         command_outcomes,
         _SummaryPresentation(
             "# Reproduction Summary",
@@ -707,9 +710,13 @@ def compose_reproduction_reconciliation_summary(
 
 def artifact_summary_counts(
     artifacts: Sequence[ArtifactResult],
+    commands: Sequence[CommandResult] = (),
 ) -> Mapping[str, object]:
     """Project mutually exclusive recorded artifact outcomes for reporting."""
 
+    command_dispositions = {
+        (item.entry, item.execution_id): item.disposition for item in commands
+    }
     matched = 0
     not_matched = 0
     total = 0
@@ -720,7 +727,17 @@ def artifact_summary_counts(
         elif item.outcome == "changed":
             not_matched += 1
         elif item.outcome == "failed":
-            not_compared["command_failed"] += 1
+            disposition = (
+                None
+                if item.execution_id is None
+                else command_dispositions.get((item.entry, item.execution_id))
+            )
+            reason = (
+                "command_blocked"
+                if item.execution_id is None or disposition == "blocked"
+                else "command_failed"
+            )
+            not_compared[reason] += 1
         elif item.outcome == "skipped":
             reason = (
                 "command_blocked"
@@ -745,10 +762,15 @@ def command_summary_counts(commands: Mapping[str, int]) -> Mapping[str, object]:
 
     checked = _command_counts(commands)
     selected = checked["succeeded"] + checked["failed"] + checked["blocked"]
+    not_retried = (
+        checked["reproduction_not_needed"]
+        + checked["unchanged_failed"]
+        + checked["unchanged_blocked"]
+    )
     return {
         "total": checked["total"],
         "skipped_by_policy": checked["not_automatic"],
-        "reused": checked["reused"],
+        "reproduction_not_retried": not_retried,
         "selected": {
             "total": selected,
             "succeeded": checked["succeeded"],
@@ -790,8 +812,8 @@ def _summary_lines(
             (
                 "```text",
                 f"{commands['total']} total",
+                f"├─ {commands['reproduction_not_retried']} reproduction not retried",
                 f"├─ {commands['skipped_by_policy']} skipped by policy (not automatic)",
-                f"├─ {commands['reused']} reused from saved state",
                 f"└─ {selected['total']} selected for execution",
                 f"   ├─ {selected['succeeded']} succeeded",
                 f"   ├─ {selected['failed']} failed",

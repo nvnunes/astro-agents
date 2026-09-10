@@ -93,7 +93,7 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
     )
     fingerprint = Fingerprint("sha256", digest="a" * 64)
     execution = PyrunExecution(
-        True,
+        False,
         True,
         "2030-01-01T00:00:00Z",
         PYRUN_RUNNER,

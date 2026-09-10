@@ -60,7 +60,7 @@ class DataAddArguments:
     kind: str | None
     identity: tuple[str, ...] | None
     commit: str | None
-    pending_confirmation: bool
+    requires_reproduction: bool
     dry_run: bool
 
 

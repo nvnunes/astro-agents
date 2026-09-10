@@ -142,7 +142,7 @@ def require_current_output_support(
         )
     if not record.confirmed:
         _fail(
-            "provenance.output.unconfirmed",
+            "provenance.output.reproduction_required",
             material,
             {"output": key, "producer": invocation.identity},
         )

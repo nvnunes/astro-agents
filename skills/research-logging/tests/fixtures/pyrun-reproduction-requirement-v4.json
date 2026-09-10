@@ -2,7 +2,6 @@
   "executions": {
     "pyrun-exec/v1:28fc293b9049bf9d1676d0cff7b454405432752f52ca814ebdfe29c9ae3af9af": {
       "auto_reproduce": true,
-      "confirmed": false,
       "environment_profile": "pyrun-standard/v1",
       "exclusive": true,
       "execution_contract": "research-log-pyrun-execution/2",
@@ -33,8 +32,9 @@
         ],
         "script": "scripts/build.py"
       },
+      "requires_reproduction": true,
       "runner": "research-log-pyrun-runner/1"
     }
   },
-  "schema": "research-log-pyrun/v3"
+  "schema": "research-log-pyrun/v4"
 }

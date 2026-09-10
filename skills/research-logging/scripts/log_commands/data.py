@@ -141,10 +141,10 @@ def add(
 ) -> ActionResult:
     """Add one inferred local input after checking its asserted boundary."""
 
-    if arguments.pending_confirmation and not generated:
+    if arguments.requires_reproduction and not generated:
         raise ActionError(
             "data.pending.invalid",
-            "pending confirmation applies only to generated inputs",
+            "a reproduction requirement applies only to generated inputs",
         )
     with entry_lock(entry):
         current = _load(entry)
@@ -167,7 +167,7 @@ def add(
                     entry,
                     current,
                     candidate,
-                    pending_confirmation=arguments.pending_confirmation,
+                    requires_reproduction=arguments.requires_reproduction,
                 )
                 return _result(
                     "add-generated" if generated else "add-origin",
@@ -181,7 +181,7 @@ def add(
             entry,
             built,
             candidate,
-            pending_confirmation=arguments.pending_confirmation,
+            requires_reproduction=arguments.requires_reproduction,
         )
         if not arguments.dry_run:
             remove_or_write(built.path, built.canonical_json())
@@ -252,13 +252,13 @@ def refresh(
     name: str,
     *,
     dry_run: bool,
-    pending_confirmation: bool = False,
+    requires_reproduction: bool = False,
 ) -> ActionResult:
-    """Observe current bytes, optionally admitting unconfirmed generated support.
+    """Observe current bytes while optionally retaining a reproduction requirement.
 
-    Pending confirmation requires the same unambiguous producer as pending
-    registration. Neither mode changes the declaration's semantics or execution
-    records.
+    The reproduction requirement needs the same unambiguous producer as
+    pre-production registration. Neither mode changes the declaration's
+    semantics or execution records.
     """
 
     with entry_lock(entry):
@@ -268,16 +268,16 @@ def refresh(
             raise ActionError(
                 "data.reference.read_only", "refresh the producer declaration"
             )
-        if pending_confirmation and existing.origin:
+        if requires_reproduction and existing.origin:
             raise ActionError(
                 "data.pending.invalid",
-                "pending confirmation applies only to generated inputs",
+                "a reproduction requirement applies only to generated inputs",
             )
         observed = observe_fingerprint(existing)
         candidate = replace(existing, fingerprint=observed.fingerprint)
         built = _build(entry, _replace(current, name, candidate))
         producer = _require_boundary(
-            entry, built, candidate, pending_confirmation=pending_confirmation
+            entry, built, candidate, requires_reproduction=requires_reproduction
         )
         if candidate == existing:
             return _result("refresh", "unchanged", False, producer)
@@ -525,7 +525,7 @@ def _require_boundary(
     data: DataFile,
     candidate: InputResource,
     *,
-    pending_confirmation: bool = False,
+    requires_reproduction: bool = False,
 ) -> dict[str, object] | None:
     if candidate.kind == "git-repository":
         return None
@@ -543,15 +543,15 @@ def _require_boundary(
     if candidate.fingerprint.digest is None:
         producer = materials.require_pending_generated(candidate)
         return {
-            "confirmation": "not_yet_produced",
+            "reproduction": "not_yet_produced",
             "document": producer.document,
             "fence": producer.fence,
             "ordinal": producer.ordinal,
         }
-    if pending_confirmation:
+    if requires_reproduction:
         producer = materials.require_pending_generated(candidate)
         return {
-            "confirmation": "pending",
+            "reproduction": "required",
             "document": producer.document,
             "fence": producer.fence,
             "ordinal": producer.ordinal,

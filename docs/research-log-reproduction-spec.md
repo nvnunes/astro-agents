@@ -65,18 +65,18 @@ The initial implementation must use these versions:
 
 | Surface | Version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v3` |
+| Execution-state file | `research-log-pyrun/v4` |
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/4` |
-| Per-log summary | `research-log-reproduction-summary/2` |
-| Cross-log summary | `research-log-reproduction-root-summary/2` |
+| Reproduction result | `research-log-reproduction-result/6` |
+| Per-log summary | `research-log-reproduction-summary/4` |
+| Cross-log summary | `research-log-reproduction-root-summary/4` |
 | Durable run state | `research-log-reproduction-run/3` |
 | Run status projection | `research-log-reproduction-status/3` |
 | Dry-run plan | `research-log-reproduction-plan/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/5` |
+| Source snapshot | `research-log-reproduction-source-snapshot/6` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -255,8 +255,8 @@ The CLI owns discovery, planning, ordering, execution, comparison, durable
 state, and publication. An agent must not select cases, infer dependencies,
 judge equivalence, orchestrate child processes, or edit the machine records.
 
-Reproduction may change only its generated state and a confirmation-only field
-in `pyrun.json`. After a completed run, it invokes ordinary validation as a
+Reproduction may change only its generated state and the reproduction-
+requirement field in `pyrun.json`. After a completed run, it invokes ordinary validation as a
 separate operation; validation alone owns its generated state. Reproduction
 must not edit research prose, Markdown commands, evidence presentation,
 `data.json` declarations, retained artifacts, or other human-authored log
@@ -291,13 +291,13 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v3",
+  "schema": "research-log-pyrun/v4",
   "executions": {
     "pyrun-exec/v1:0123456789abcdef...": {
-      "confirmed": true,
       "auto_reproduce": true,
       "exclusive": false,
       "last_run_at": "2030-01-01T00:00:00Z",
+      "requires_reproduction": false,
       "runner": "research-log-pyrun-runner/1",
       "environment_profile": "pyrun-standard/v1",
       "execution_contract": "research-log-pyrun-execution/2",
@@ -351,10 +351,13 @@ exactly:
 
 Top-level keys are exactly `schema` and `executions`. Execution-map keys are
 unique execution IDs. Every execution value has exactly `auto_reproduce`,
-`exclusive`, `confirmed`, `last_run_at`, `runner`, `environment_profile`,
+`exclusive`, `requires_reproduction`, `last_run_at`, `runner`, `environment_profile`,
 `execution_contract`, `recipe`, and `observed`.
 
-`auto_reproduce`, `exclusive`, and `confirmed` are required Booleans.
+`auto_reproduce`, `exclusive`, and `requires_reproduction` are required Booleans.
+`requires_reproduction` records whether migrated execution state still needs a
+successful reproduction before ordinary incremental planning may use it
+without reproduction-owned cache state.
 `exclusive` states that reproduction must run the execution alone among all
 managed reproduction executions in the current Git project. It is scheduling
 policy, not a CPU, GPU, device, affinity, or external-process declaration.
@@ -453,7 +456,7 @@ output map keys are sorted by canonical JSON serialization.
 The projection includes the normalized script, ordered replay parameters,
 explicit environment variables, direct input names, and complete output paths
 and kinds. The replay parameters make each runner-owned stream capture and its
-output identity explicit. It excludes observations, confirmation,
+output identity explicit. It excludes observations, the reproduction requirement,
 automatic-reproduction and exclusivity policy,
 timestamps, Markdown location, standard-environment profile, schema version,
 runner version, and execution-contract version.
@@ -526,18 +529,20 @@ no `pyrun.json` state.
 `last_run_at` records the completion time of the latest successful atomic
 ordinary `pyrun` publication. It is `null` for a metadata-rebuilt migration
 record until a later ordinary publication establishes such a time. Failed
-attempts, reproduction execution, and confirmation-only or policy-only mutations
+attempts, reproduction execution, and reproduction-requirement or policy-only mutations
 must not change it. Ordinary `pyrun` reads and writes only its entry-local
 state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
-An ordinary successful publication is confirmed. A complete unconfirmed
-recipe remains runnable. Reproduction changes `confirmed` to true immediately
-after every output in that execution has the `matched` outcome in one completed
-attempt and the complete comparison has been durably recorded. That
-confirmation-only mutation preserves the recipe, observations, policy,
-versions, and `last_run_at`. It is not rolled back by a later execution,
-reproduction-publication, or validation failure. Any changed, failed,
-comparison-failed, or skipped output leaves it unconfirmed.
+An ordinary successful publication records `requires_reproduction: false`.
+Migrated state that has not completed a successful execution records
+`requires_reproduction: true` and remains runnable. Reproduction changes the
+field to false immediately after the command reaches its complete mechanical
+endpoint and its complete comparison is durably recorded. Artifact matching is
+separate: a completed command clears the requirement even when an artifact is
+changed or its comparison fails. The mutation preserves the recipe,
+observations, policy, versions, and `last_run_at`; later work, result
+publication, and validation do not restore the requirement. A failed, blocked,
+or stopped command leaves it true.
 
 ### Automatic-Reproduction Policy
 
@@ -591,7 +596,7 @@ policy updates.
 
 ### Execution-Metadata Schema
 
-Entry-local execution state accepts only strict `research-log-pyrun/v3`.
+Entry-local execution state accepts only strict `research-log-pyrun/v4`.
 The one-time v2-to-v3 exclusivity cutover is complete, and its public converter
 has been removed. A v2 `pyrun.json` now fails at the shared decoder boundary
 with `pyrun.state.schema.unsupported`; direct execution, validation, policy
@@ -644,10 +649,11 @@ not prove a directory-root observation; migration observes the existing root
 with the normal directory algorithm. This records current retained state, not
 successful execution history.
 
-The migrated record is confirmed only when matching legacy records exactly
-cover the current output set in the same representation and every one states
-that it is confirmed. Otherwise the rebuilt execution is unconfirmed and uses
-`last_run_at: null`. Migration must never promote confirmation or invent an
+The migrated record uses `requires_reproduction: false` only when matching
+legacy records exactly cover the current output set in the same representation
+and every one states that it is confirmed. Otherwise the rebuilt execution
+uses `requires_reproduction: true` and `last_run_at: null`. Migration must never
+erase a reproduction requirement or invent an
 ordinary run timestamp. An unmatched legacy signature is not preserved as an
 orphaned recipe, and conditional or optional output membership is not converted
 into an atomic execution.
@@ -687,8 +693,9 @@ declared artifacts. It reuses agreeing legacy observations where available and
 observes missing current outputs directly without executing the research
 command. A legacy member-by-member directory representation is never folded
 into a directory-root digest; migration observes the existing directory root
-with the normal directory fingerprint algorithm. A rebuilt execution remains
-unconfirmed unless complete agreeing legacy evidence proves confirmation.
+with the normal directory fingerprint algorithm. A rebuilt execution retains
+`requires_reproduction: true` unless complete agreeing legacy evidence proves
+that reproduction is not required.
 
 A missing declared artifact, wrong artifact kind, conditional output set,
 unresolvable input, missing script or participating code path, or ambiguous
@@ -735,9 +742,9 @@ exclude only their affected batches. Independent batches remain eligible, and
 ordinary dependency propagation prevents admitted downstream work from running
 when it depends on an excluded upstream batch.
 
-Unconfirmed Provenance and Hygiene findings do not block reproduction.
-Unconfirmed runnable recipes are deliberately eligible so reproduction can
-establish confirmation.
+Provenance and Hygiene findings caused only by a pending reproduction
+requirement do not block reproduction. Runnable recipes with that requirement
+are deliberately eligible so reproduction can clear it.
 
 The validation subsystem's persisted batch projection determines finding
 membership and admission through validation-owned `none`, `chain`, `entry`,
@@ -748,7 +755,7 @@ chain; `entry` excludes runnable work in one physical entry; and `log` refuses
 the complete plan. A selected execution output must map to exactly one
 projected chain; an absent or ambiguous execution-to-chain mapping remains a
 whole-run integrity failure. Summary provenance that depends on
-`provenance.output.unconfirmed` remains a non-failing dependent check and
+`provenance.output.reproduction_required` remains a non-failing dependent check and
 does not create an additional admission blocker. A summary-only unresolved
 reference with no association to evidence, registered data, execution state,
 or runnable material has effect `none`; its reporting does not block unrelated
@@ -801,10 +808,13 @@ authoring contract requires.
 
 ### Non-Automatic Boundary
 
-By default, planning stops before every required `auto_reproduce: false` execution. Its
-retained output may serve as a boundary only when its current fingerprint and
-required provenance state are valid. This boundary is planning metadata, not
-an artifact outcome.
+By default, a valid `auto_reproduce: false` execution with
+`requires_reproduction: false` is classified as reproduction not needed before
+policy is considered; its retained outputs bound traversal, so upstream work
+is not selected solely for that current command. Planning stops before every
+remaining non-automatic execution. Its retained output may serve as a boundary
+only when its current fingerprint and required provenance state are valid.
+This boundary is planning metadata, not an artifact outcome.
 
 `--include-all` includes automatic and non-automatic executions within the same
 selected entry or log boundary and traverses their upstream closure. It does
@@ -813,16 +823,21 @@ acceptance. The CLI must not prompt to widen it.
 
 ### Selection Policy
 
-Incremental selection is the default. Every evidence-relevant command has a
-source-closure digest. An unchanged prior terminal command result satisfies the
-command without new execution work whether its disposition was `succeeded`,
-`failed`, or `blocked`. A command is selected when it has no saved command
-result, its source closure changed, or selected upstream work can change an
-input it consumes. Selection propagates through only that command's reachable
-downstream closure; unrelated commands remain reusable.
+Incremental selection is the default. A current execution with
+`requires_reproduction: false` needs no execution and does not require a saved
+reproduction result. Of the commands that still require reproduction,
+non-automatic commands are skipped by policy unless `--include-all` is present.
+Every evidence-relevant command also has a source-closure digest. An unchanged
+prior terminal failure or block prevents an eligible command from being
+retried, but remains visible as that prior failure or block rather than being
+classified as reproduction not needed. A remaining command is
+selected when it has no applicable terminal state, its source closure changed,
+or selected upstream work can change an input it consumes. Selection propagates
+through only that command's reachable downstream closure; unrelated commands
+do not need reproduction.
 
 The source closure covers the canonical execution record after omitting only
-`confirmed`, including the recipe and environment; current script,
+`requires_reproduction`, including the recipe and environment; current script,
 participating-code, direct-input, dependency-output, retained-boundary, and
 comparison-baseline fingerprints; dependency identities; per-output comparison
 definition identities; and localized planning disposition, reason, and failure
@@ -831,7 +846,7 @@ saved terminal disposition remains applicable.
 
 `--recheck` selects every runnable execution in the current evidence-relevant
 closure under the chosen entry-or-log target and automatic-reproduction policy, including
-executions whose command results are already reusable. Commands that remain
+executions for which reproduction is not otherwise needed. Commands that remain
 locally blocked are projected as blocked rather than executed. Recheck preserves execution
 grouping, dependency order, target boundaries, retained boundaries, and
 artifact-level result identity. It does not bypass validation admission,
@@ -843,8 +858,10 @@ alone stops at verified retained non-automatic boundaries. `--recheck
 other.
 
 Recheck is a launch-time planning input. The emitted plan records each
-command's exact source digest and `run`, `reuse`, or `blocked` selection and is
-the durable authority for execution and resume. It requires no persistent
+command's exact source digest; `run`, `not_needed`, `unchanged`, or `blocked`
+selection; and the prior `failed` or `blocked` disposition only for an
+`unchanged` selection. Selection and prior disposition remain separate facts.
+The plan is the durable authority for execution and resume. It requires no persistent
 selection-policy field. Commands that consume an accepted run or only query
 published state do not accept `--recheck`.
 
@@ -891,11 +908,11 @@ An input beneath a declared directory output depends on that directory's
 producer just as an exact file output does. If that producer fails, the
 consumer is skipped with `dependency_failed`; the missing regenerated member
 must not abort independent work in the run.
-Its default incremental policy selects only commands without a matching saved
-source closure and the reachable downstream commands that those selections may
-affect. It must not infer command reuse from prior artifact matches, and it must
-not reuse downstream command state when selected upstream work can invalidate
-it.
+Its default incremental policy selects commands that still require
+reproduction, except for unchanged cached failures and blocks, plus the
+reachable downstream commands that those selections may affect. It must not
+infer command selection from prior artifact matches, and it must not preserve
+downstream terminal state when selected upstream work can invalidate it.
 
 Graph node, edge, depth, execution, and projection limits are fixed and
 code-owned in [Fixed Resource Bounds](#fixed-resource-bounds). Exceeding a
@@ -965,14 +982,16 @@ file digests cover the exact completed result and batch projection;
 projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/5` and has exactly `schema`,
+`research-log-reproduction-source-snapshot/6` and has exactly `schema`,
 `authority_files`, `commands`, `executions`, and `materials`. `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
 for the plan. `commands` records every evidence-relevant command's entry,
-execution ID, automatic policy, `run`, `reuse`, or `blocked` selection, and
-source-closure digest. `executions` records each runnable execution ID and the SHA-256
+execution ID, automatic policy, `run`, `not_needed`, `unchanged`, or `blocked`
+selection, nullable prior disposition, and source-closure digest. The prior
+disposition is `failed` or `blocked` exactly when selection is `unchanged` and
+is null otherwise. `executions` records each runnable execution ID and the SHA-256
 digest of its canonical execution record after omitting only the mutable
-`confirmed` field. `materials` records every current script, participating code
+`requires_reproduction` field. `materials` records every current script, participating code
 file, direct input, retained boundary, and comparison baseline required by
 runnable work or an accepted retained boundary, by canonical
 identity, role, kind, and closed fingerprint. All arrays are unique and
@@ -981,8 +1000,9 @@ canonically sorted.
 At acceptance, the CLI verifies the validation result, batch projection, and
 complete source snapshot. At execution, resume, and final reproduction-
 publication boundaries it rechecks the accepted validation files and source
-snapshot; comparison and confirmation remain inside the same accepted scope
-lock. This permits the run's own confirmation writes while still rejecting any
+snapshot; comparison and reproduction-requirement updates remain inside the
+same accepted scope lock. This permits the run's own requirement-clearing
+writes while still rejecting any
 change to a recipe, observation, policy, input, script, code path, data
 declaration, evidence root, comparison baseline, or admitted batch decision.
 
@@ -1004,8 +1024,8 @@ of the invoking terminal and agent turn. There is no foreground mode.
 A non-dry launch with no selected executions is a successful no-op
 reconciliation. It creates no run ID, lock, run folder, worker, result write,
 or report write. Standard output is the standard per-log summary using the
-current plan's command partition: policy exclusions, reusable saved
-dispositions, and any blocked commands. Succeeded and failed
+current plan's command partition: commands for which reproduction is not
+needed, policy exclusions, and any blocked commands. Succeeded and failed
 are zero because no command ran. Current artifact state remains a separate
 tree. The latest completed run may be identified as historical context, but
 its command counts must not replace the current reconciliation. This terminal
@@ -1548,11 +1568,11 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/4`. It has exactly this shape:
+`research-log-reproduction-result/6`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/4",
+  "schema": "research-log-reproduction-result/6",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1592,7 +1612,9 @@ strict canonical UTF-8 JSON using
       "finished_at": "2030-01-01T00:05:00Z",
       "command_outcomes": {
         "not_automatic": 0,
-        "reused": 2,
+        "reproduction_not_needed": 2,
+        "unchanged_failed": 0,
+        "unchanged_blocked": 0,
         "succeeded": 1,
         "failed": 0,
         "blocked": 0,
@@ -1659,13 +1681,17 @@ the result identifies the same resource as `data.json`; noncanonical absolute
 forms remain invalid.
 
 Every run item has exactly the fields shown. `command_outcomes` reconciles
-every command execution unit in the selected log or entry target into five
+every command execution unit in the selected log or entry target into seven
 mutually exclusive categories:
 
-- `not_automatic` is a command omitted by the default automatic
+- `reproduction_not_needed` is a command whose current `pyrun.json` state says
+  it needs no reproduction;
+- `unchanged_failed` is a command that still requires reproduction but was not
+  retried because its unchanged source closure retains a prior failure;
+- `unchanged_blocked` is a command that still requires reproduction but was not
+  retried because its unchanged source closure retains a prior block;
+- `not_automatic` is a remaining command omitted by the default automatic
   policy;
-- `reused` is an otherwise eligible command not selected because its saved state
-  satisfied the incremental run;
 - `succeeded` is an attempted command that reached its complete mechanical
   endpoint, regardless of whether its artifacts matched;
 - `failed` is an attempted command that did not reach that endpoint; and
@@ -1673,17 +1699,17 @@ mutually exclusive categories:
   attempted because of a localized planning blocker or another selected
   command's failure.
 
-`total` is exactly the sum of those five values. Each target command is
+`total` is exactly the sum of those seven values. Each target command is
 counted once even when it produces several artifacts. New publications always
 record the complete mapping. A row decoded from the read-only v3 result format
-may already contain command accounting but has no reusable command records. The
-next successful reproduction seeds those records and publishes v4.
+may already contain command accounting but has no reusable failure or block
+records. A later reproduction publishes v6.
 
 The `executions` array records one explicit timing projection for each launched
 attempt in accepted execution order. Planned work that never launched has no
 timing item. Timing is
 diagnostic only: it does not affect identity, currentness, selection,
-comparison, or confirmation. Its target follows the run-state
+comparison, or reproduction-requirement update. Its target follows the run-state
 target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is
 read through status and is added to the published index only when a lifecycle
 event safely publishes it. `finished_at` is null for a resumable stopped run.
@@ -1711,7 +1737,7 @@ Entry-level publication replaces only selected current cases and actually
 regenerated supporting outputs for that entry. It preserves unrelated entry
 and log cases and never claims log-level completion. Log-level publication
 reconciles the complete selected log closure. The same publication replaces
-newly terminal command records, preserves reused command records, and prunes
+newly terminal command records, preserves unchanged command records, and prunes
 records no longer reachable from current execution state.
 
 A stopped run or an operational failure before final reproduction publication
@@ -1789,7 +1815,7 @@ Each execution record contains exactly `bytes`, `complete`, `diagnostics`,
 output records its artifact identity, declared kind, availability, exact
 workspace-relative path, outcome and reason, selected comparison profile, and
 retained and regenerated fingerprints. The full record is written atomically
-before any matching confirmation.
+before any reproduction-requirement update.
 
 Reproduction must never overwrite or delete a retained run directory or staged
 bundle. There is no discard, cleanup, or supersede command. A researcher may
@@ -1910,7 +1936,7 @@ unrelated host processes or coordinates projects that do not share the current
 Git root.
 
 The lock order is scope lock, scheduler mutex, run-state lock, entry-local
-confirmation lock, log publication mutex. No code may acquire an earlier lock
+reproduction-requirement lock, log publication mutex. No code may acquire an earlier lock
 while holding a later one. The scheduler mutex is never held while waiting for
 capacity, running or stopping workers, comparing artifacts, publishing results,
 or invoking validation. A transition that touches coordinator and run state
@@ -1942,9 +1968,10 @@ still matches byte-for-byte under the v2 decoder. Exclusivity migration changes
 that snapshot and therefore makes such a resume stale; it refuses normally
 rather than projecting v3 state back into v2. Status, stop, recovery, report,
 and retained diagnostics remain readable after migration.
-Entry-local `research-log-pyrun/v2` execution state is no longer readable. It
-fails precisely as unsupported schema before direct execution, validation,
-policy update, planning, or reproduction can interpret it. This does not alter
+Entry-local `research-log-pyrun/v3` and earlier execution state is no longer
+readable after the one-time field migration. It fails precisely as unsupported
+schema before direct execution, validation, policy update, planning, or
+reproduction can interpret it. This does not alter
 the separately versioned compatibility path above for immutable historical
 reproduction-run records.
 
@@ -1954,7 +1981,7 @@ Concurrent distinct-entry runs share `.cache/reproduction/results.json`,
 `reproduction.md`, and active-run indexing. Their shared writes must use one
 brief log-local publication mutex built on the existing lock infrastructure.
 It is not a reproduction scope lock and is not held during planning, execution,
-comparison, or per-execution confirmation.
+comparison, or per-execution reproduction-requirement update.
 
 Under the mutex, publication must reload current shared state, revalidate the
 runtime source-snapshot boundary, merge only the completed target or lifecycle
@@ -1963,22 +1990,24 @@ two reproduction-owned files atomically. It must detect conflicting concurrent
 or manual edits and preserve the prior complete reproduction bundle on failure.
 It never reads or writes validation state.
 
-### Confirmation And Post-Reproduction Validation
+### Reproduction Requirement And Post-Reproduction Validation
 
-When every declared output of an unconfirmed execution matches, reproduction
-atomically changes only that execution's `confirmed` field in its entry-local
-`pyrun.json`. The run already holds the owning entry or log scope lock. Each
-confirmation is independent and durable; no later execution or publication
-outcome rolls it back.
+When a command reaches its complete mechanical endpoint, reproduction
+atomically changes only that execution's `requires_reproduction` field to false
+in its entry-local `pyrun.json`. This is independent of artifact comparison:
+matched, changed, and comparison-failed outputs all belong to a completed
+command. The run already holds the owning entry or log scope lock. Each update
+is independent and durable; no later execution or publication outcome restores
+the requirement.
 
 After reproduction-result publication succeeds and the run becomes complete,
 the supervisor releases its reproduction scope lock and invokes ordinary
 mechanical validation for that log as a separate operation. Validation owns
 and publishes `.cache/validation/results.json`, `.cache/validation/batches.json`, and
 `validation.md`; reproduction never
-performs a targeted confirmation refresh. Validation findings or an
+performs a targeted reproduction-requirement refresh. Validation findings or an
 operational validation failure do not change the complete reproduction status,
-confirmations, or reproduction results.
+reproduction requirements, or reproduction results.
 
 Distinct overlapping entry runs share the log lock and may finish close
 together. Ordinary validation uses the existing exclusive log-operation lock:
@@ -2027,8 +2056,10 @@ Reproduction: [latest report](<log>/reproduction.md)
 ```
 
 Cutover creates an empty local result and a report stating that no reproduction
-has yet completed. Removing the local result makes the next reproduction a cold
-run; it must not infer historical machine state from the report.
+has yet completed. Removing the local result discards its history; it must not
+infer historical machine state from the report. Because current successful
+commands remain cache-independent, rebuilding the machine result requires an
+explicit `--recheck` reproduction.
 
 ### Human Report
 
@@ -2060,9 +2091,12 @@ current compact reconciliation, which the agent presents immediately without
 substituting the historical `report --summary` projection.
 
 The compact per-log projection has two visibly separate trees. The command tree
-starts with every command in the target, separates commands skipped by policy,
-commands reused from saved state, and commands selected for execution, then
-nests `Succeeded`, `Failed`, and `Blocked` below the selected count. The artifact
+starts with every command in the target, separates commands whose reproduction
+was not retried, commands skipped by policy, and commands selected for
+execution. The reproduction-not-retried count combines commands that need no
+reproduction with unchanged prior failures and blocks retained without another
+attempt; it does not expose those prior dispositions. The tree nests
+`Succeeded`, `Failed`, and `Blocked` below the selected count. The artifact
 tree starts with every current reachable artifact, separates `Matched`, `Not
 matched`, and `Not compared`, then nests the reasons for non-comparison. A current
 `matched` result contributes to `Matched`, a current `changed` result contributes
@@ -2074,12 +2108,10 @@ Non-comparison reasons are listed as `comparison failed`, `command failed`,
 `command blocked`, and `command skipped`. Zero-count reasons are omitted, and
 `command skipped` is always the last visible reason.
 An artifact skipped because a dependency failed is blocked; policy- or
-scope-skipped artifacts remain skipped.
-
-Compact summary counts describe recorded reproduction outcomes. They do not
-reclassify an earlier outcome when later project activity makes its detailed
-currentness diagnostic stale. Incremental planning owns the decision to rerun
-affected commands and successful publication replaces their artifact results.
+scope-skipped artifacts remain skipped. A pre-execution planning failure is
+also reported as command blocked, using the command's terminal disposition;
+it is not reported as command failed merely because the artifact outcome is
+`failed`.
 
 The projection explicitly states that command and artifact totals are different
 units and need not match because one command may produce several artifacts.
@@ -2167,7 +2199,7 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling uses `research-log-pyrun/v3` and reproduction plan, run,
+Parallel scheduling uses `research-log-pyrun/v4` and reproduction plan, run,
 and status version 3. Version 2 execution records are unsupported; version 2
 accepted reproduction runs use only the bounded historical compatibility paths
 defined above. No accepted run is upgraded in place, and no consumer may decode
@@ -2178,8 +2210,8 @@ The result reader accepts canonical `research-log-reproduction-result/3` only
 as a read-only migration input. It does not infer command records from artifact
 outcomes or run counts. The next successful reproduction reruns the applicable
 commands, seeds their exact source closures and terminal dispositions, and
-publishes `research-log-reproduction-result/4`. Earlier result schemas are
-unsupported.
+publishes `research-log-reproduction-result/6`. Versions 4 and 5 are no longer
+supported. Earlier result schemas are unsupported.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded
@@ -2208,7 +2240,7 @@ implicit extension.
 
 Command-oriented version 3 execution state, parallel planning and scheduling,
 safety, run-local execution, exact and evidence-scoped artifact comparison,
-durable comparison records, immediate confirmation, independent result
+durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
 control, stop and same-path resume, publication retry, lost-supervisor
 reconciliation, ordinary post-reproduction validation, and whole-execution

@@ -69,12 +69,12 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/9` |
+| Reproduction result | `research-log-reproduction-result/10` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run state | `research-log-reproduction-run/5` |
-| Run status projection | `research-log-reproduction-status/5` |
-| Dry-run plan | `research-log-reproduction-plan/5` |
+| Durable run state | `research-log-reproduction-run/6` |
+| Run status projection | `research-log-reproduction-status/6` |
+| Dry-run plan | `research-log-reproduction-plan/6` |
 | Command list | `research-log-reproduction-command-list/2` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
@@ -83,6 +83,11 @@ The initial implementation must use these versions:
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
+
+Execution-selector compatibility retains readers for run/5 and plan/5 with
+entry/log targets and result/9 cumulative records. New writes use run/6,
+plan/6, status/6, and result/10. Older supported run readers retain their
+existing behavior; legacy target records cannot claim execution scope.
 
 Execution IDs version only their identity algorithm and canonicalization.
 Schema, runner, standard-environment, execution-contract, and comparison
@@ -719,11 +724,12 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
+log reproduce --path LOG [--entry ENTRY [--execution-id ID]] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
-selects exactly that stable entry. There is no multi-log, all-log, or
+selects exactly that stable entry. Adding `--execution-id` selects exactly one
+command in that entry and all its declared outputs. There is no multi-log, all-log, or
 project-wide reproduction operation.
 
 `--jobs` accepts a positive decimal integer and defaults to 1. It is the maximum
@@ -738,9 +744,34 @@ runtime limit measured from child launch. Queue and scheduling wait time do not
 consume it. Status and resume retain the accepted limit and do not accept an
 override.
 
-Evidence records inside the selected target define initial artifact cases.
-Only artifacts reachable from those current evidence roots participate in
-current coverage or execution planning.
+Log and entry targets retain their existing evidence and command selection.
+An execution target seeds only the requested command, including a command with
+no evidence references; it does not seed unrelated entry evidence.
+
+### Individual-Execution Scope
+
+`--execution-id` requires `--entry` and the complete lowercase
+`pyrun-exec/v1:<64 hexadecimal digits>` identity present in that entry's
+`pyrun.json`. Malformed, unknown, and wrong-entry identities fail before launch;
+script names, filename aliases, and ID prefixes are not selectors.
+
+The selector fixes `command_scope` to the single entry/ID key and seeds that
+key in `command_queue`. Every other producer is a retained boundary, including
+same-entry prerequisites. Verify retained input fingerprints before admitting
+the target. Missing or changed prerequisites block its complete output group;
+failure dependencies identify known producers by entry-qualified execution ID.
+Never schedule prerequisites, siblings, or downstream commands implicitly.
+
+Selection retains `run`, `not_needed`, `unchanged`, `blocked`, and policy
+exclusion. `--recheck` retries an eligible target without bypassing validation,
+missing or invalid prerequisites, or automatic-execution policy. A
+non-automatic target requires `--include-all`, including with `--recheck`.
+Normal execution, supervision, comparisons, missing-comparison outcomes,
+checkpoints, promotion, and publication remain the same mechanisms. Resume
+retains the exact target and immutable one-command scope. Targeted publication
+replaces only covered command/artifact results and retains unrelated results
+and identities. Published execution targets remain visible in artifact queries
+and promotion even when they have no evidence references.
 
 ### Admission Gate
 
@@ -828,7 +859,8 @@ only when its current fingerprint and required provenance state are valid.
 This boundary is planning metadata, not an artifact outcome.
 
 `--include-all` includes automatic and non-automatic executions within the same
-selected entry or log boundary and traverses their upstream closure. It does
+selected entry or log boundary and traverses their upstream closure. An
+individual-execution target retains its one-command scope. It does
 not widen the target or bypass validation. Scope is immutable after run
 acceptance. The CLI must not prompt to widen it.
 
@@ -856,7 +888,7 @@ dependencies. It therefore represents the complete current reason that the
 saved terminal disposition remains applicable.
 
 `--recheck` selects every runnable execution in the current evidence-relevant
-closure under the chosen entry-or-log target and automatic-reproduction policy, including
+closure under the chosen log, entry, or execution target and automatic-reproduction policy, including
 executions for which reproduction is not otherwise needed. Commands that remain
 locally blocked are projected as blocked rather than executed. Recheck preserves execution
 grouping, dependency order, target boundaries, retained boundaries, and
@@ -946,7 +978,7 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/5` projection with exactly
+deterministic `research-log-reproduction-plan/6` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
@@ -959,7 +991,10 @@ ordinary and exclusive execution counts, localized planning-failure count,
 boundary count, scheduling-path-claim
 completeness, and per-entry runnable and exclusive counts. The entry table is
 limited to the first 20 stable entry IDs and reports the number omitted. The
-summary is presentation only; it applies the same complete planning and final
+execution-target summary additionally names the full ID, script, selection
+reason, complete outputs, every verified retained prerequisite and known
+producer, and every blocker. It explains zero-execution plans. Complete JSON
+remains available without `--summary`. The summary is presentation only; it applies the same complete planning and final
 source recheck and does not alter the deterministic plan contract.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
@@ -982,8 +1017,10 @@ remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 `origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
-used only by continuation planning when an input producer is outside the
-immutable initial execution queue. Fields inapplicable to a boundary kind are
+used by continuation and individual-execution planning when an input producer
+is outside the immutable command queue. Execution-target boundaries also have
+`producers`, a sorted list of known entry-qualified producer IDs (empty for
+origins or unknown producers). Fields inapplicable to a boundary kind are
 null rather than omitted. Failures are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
@@ -1000,7 +1037,8 @@ The source snapshot uses
 `research-log-reproduction-source-snapshot/8` and has exactly `schema`,
 `authority_files`, `commands`, `executions`, `materials`, and `result_schema`.
 `result_schema` binds the accepted plan to the exact cumulative-result schema it
-may publish, so an accepted run cannot cross a later result-schema cutover.
+may publish. The compatible result/9 reader retains old entry/log runs while
+new writes use result/10; other schema cutovers require the documented rebuild.
 `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
 for the plan. `commands` records every command in the target. Each record has
@@ -1062,7 +1100,7 @@ CLI. It is immutable and names the durable state, output workspace, diagnostics,
 and staging paths for the life of the run. It is not derived from Markdown or
 an execution recipe.
 
-The accepted target, entry-or-log kind, all-execution inclusion policy, `jobs`
+The accepted target, execution/entry/log kind, all-execution inclusion policy, `jobs`
 value, and per-command runtime limit are immutable.
 Management commands use only the recorded scope:
 
@@ -1078,11 +1116,11 @@ They must reject `--entry`, `--include-all`, `--jobs`, and
 ### Durable State
 
 Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/5`. Its top-level object has exactly:
+`research-log-reproduction-run/6`. Its top-level object has exactly:
 
 ```json
 {
-  "schema": "research-log-reproduction-run/5",
+  "schema": "research-log-reproduction-run/6",
   "run_id": "reproduce-...",
   "attempt": 2,
   "attempts": [
@@ -1158,8 +1196,11 @@ Each run directory contains one canonical `run.json` using
 }
 ```
 
-`target` has exactly `kind` and `entry`. `kind` is `entry` or `log`; `entry`
-is the stable entry ID for an entry target and null for a log target.
+`target` is exactly one of `{kind: "log", entry: null}`,
+`{kind: "entry", entry: ENTRY}`, or
+`{kind: "execution", entry: ENTRY, execution_id: ID}`. Entry IDs use the
+stable entry grammar; execution IDs use the full `pyrun-exec/v1` grammar.
+An execution target must have exactly its single key in the immutable queue.
 The top-level `jobs` and `execution_timeout_seconds` values must equal their
 immutable values in `plan`.
 `queue` is the immutable, canonically sorted initial command projection from
@@ -1172,7 +1213,7 @@ snapshots, state, progress, timestamps, workers, and checkpoints. Attempt-local
 files are retained beneath `attempts/NNNN/` when a continuation begins.
 `source_snapshot` and `validation_snapshot` are byte-for-byte the projections
 defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/5` object without its outer `schema`; it is
+`research-log-reproduction-plan/6` object without its outer `schema`; it is
 immutable within the current attempt and replaced only by a fresh accepted
 continuation plan.
 
@@ -1218,7 +1259,7 @@ to `elapsed_seconds`.
 
 The run record therefore durably retains:
 
-- run ID, log, target kind, target entry when applicable, include-all policy,
+- run ID, log, target kind, target entry and execution ID when applicable, include-all policy,
   and jobs cap;
 - accepted source and validation snapshots;
 - immutable logical command queue, current deterministic attempt plan, and
@@ -1255,7 +1296,7 @@ immutable run ID rather than reading unlocked mutable state to rediscover it.
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/5` object containing exactly `schema`,
+`research-log-reproduction-status/6` object containing exactly `schema`,
 `run_id`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `status`, `phase`,
 `active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
@@ -1683,11 +1724,11 @@ The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/9`. It has exactly this shape:
+`research-log-reproduction-result/10`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/9",
+  "schema": "research-log-reproduction-result/10",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1821,7 +1862,7 @@ the result identifies the same resource as `data.json`; noncanonical absolute
 forms remain invalid.
 
 Every run item has exactly the fields shown. `command_outcomes` reconciles
-every command execution unit in the selected log or entry target into seven
+every command execution unit in the selected log, entry, or execution target into seven
 mutually exclusive categories:
 
 - `reproduction_not_needed` is a command whose current `pyrun.json` state says
@@ -1916,8 +1957,8 @@ Currentness is derived when planning, querying, or rendering. Ordinary
 `pyrun` never reads reproduction results. Neither file is rewritten merely to
 mark a result stale, and v1 has no currentness cache.
 
-Results no longer reachable from current `evidence.json` are ignored
-immediately and contribute to no entry or log coverage. A later reproduction
+Results no longer reachable from current `evidence.json` or a published
+execution target whose recipe still exists are ignored immediately and contribute to no entry or log coverage. A later reproduction
 publication may prune them. Ordinary `pyrun` and read-only reporting do not
 rewrite results merely to remove them.
 
@@ -2414,28 +2455,34 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling uses `research-log-pyrun/v4` and reproduction plan, run,
-and status version 5. Version 2 execution records are unsupported; version 2,
-3, and 4 accepted reproduction runs use only their bounded historical
-compatibility paths. No accepted run is upgraded in place, and no consumer may
-decode an older object with current-schema defaults. The maintained-corpus
+Parallel scheduling uses `research-log-pyrun/v4`; current reproduction plan,
+run, and status writes use version 6. Version 2 execution records are
+unsupported. Accepted reproduction runs at versions 2 through 5 retain their
+bounded historical compatibility paths; version 5 retains entry/log targets,
+and version 6 adds execution targets. No accepted run is upgraded in place,
+and no consumer may decode an older object with current-schema defaults. The maintained-corpus
 execution-state cutover is complete.
 
 Because version 4 accepted runs predate the persisted runtime-limit field,
 their historical execution path applies the code-owned 300-second safety limit;
-they cannot supply or retain an override. Version 5 is required for a
+they cannot supply or retain an override. Versions 5 and 6 retain an accepted
 researcher-selected runtime limit.
 
-The result reader accepts only the current reproduction-result schema. An
-older generated result is outdated rather than a migration input; reports,
-queries, incremental planning, and partial publication refuse it and instruct
-the caller to run whole-log reproduction with `--recheck`. That complete plan
-does not decode prior generated results and may atomically replace them with
-`research-log-reproduction-result/9`. Malformed current results remain invalid
-and are never treated as outdated. This is the standard generated-state
-cutover for every later reproduction-result schema change; consumers do not
-branch on particular retired versions, and only a whole-log recheck accepted
-with the current result schema may perform the replacement.
+The result reader accepts `research-log-reproduction-result/10` and the
+compatible `research-log-reproduction-result/9` shape. Result/9 contains only
+entry/log run targets. Reports, queries, incremental planning, and partial
+publication can read it; subsequent publication writes result/10 while
+preserving results outside the published scope. Read-only operations do not
+rewrite it.
+
+Other result schemas are unsupported generated state. Reports, queries,
+incremental planning, and partial publication refuse them. Whole-log
+reproduction with `--recheck` can rebuild that state: the complete plan does
+not decode unsupported prior results and may atomically replace them with
+result/10. Malformed records in either supported schema remain invalid and
+are never treated as outdated. Later schema changes require an explicit
+compatibility decision; unsupported-state replacement is limited to a
+whole-log recheck accepted with the current result schema.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded

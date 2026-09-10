@@ -17,7 +17,11 @@ from validation.pyrun_state import PYRUN_EXECUTION_RE
 
 from .context import ENTRY_ID_RE
 from .model import ActionError
-from .reproduction_contract import REPRODUCTION_RESULT_SCHEMA
+from .reproduction_contract import (
+    PREEXECUTION_RESULT_SCHEMA,
+    REPRODUCTION_RESULT_SCHEMA,
+    valid_reproduction_target,
+)
 from .reproduction_paths import (
     REPRODUCTION_ROOT_NAME,
     is_canonical_run_path,
@@ -373,7 +377,7 @@ class ReproductionResults:
             ) from error
         item = _mapping(value, "result")
         schema = item.get("schema")
-        if schema != RESULT_SCHEMA:
+        if schema not in {PREEXECUTION_RESULT_SCHEMA, RESULT_SCHEMA}:
             raise ReproductionResultSchemaError(
                 "published reproduction result schema is unsupported; run "
                 "whole-log reproduction with --recheck to rebuild it"
@@ -396,6 +400,10 @@ class ReproductionResults:
             _decode_run(value, index, current=True)
             for index, value in enumerate(_sequence(item["runs"], "runs"))
         )
+        if schema == PREEXECUTION_RESULT_SCHEMA and any(
+            run.target["kind"] == "execution" for run in runs
+        ):
+            raise ReproductionResultError("legacy results cannot target an execution")
         commands = tuple(
             _decode_command(value, index)
             for index, value in enumerate(_sequence(item["commands"], "commands"))
@@ -407,7 +415,18 @@ class ReproductionResults:
             runs,
             commands,
         )
-        if text != result.serialized():
+        serialized = result.serialized()
+        if schema == PREEXECUTION_RESULT_SCHEMA:
+            serialized = (
+                json.dumps(
+                    {**result.as_dict(), "schema": PREEXECUTION_RESULT_SCHEMA},
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        if text != serialized:
             raise ReproductionResultError("result serialization is not canonical")
         return result
 
@@ -753,7 +772,14 @@ def compose_reproduction_report(
     lines.append("| --- | --- | --- | --- | --- |")
     for run in results.runs:
         target = (
-            f"entry {run.target['entry']}" if run.target["kind"] == "entry" else "log"
+            f"{run.target['kind']} {run.target['entry']}"
+            + (
+                f" {run.target['execution_id']}"
+                if run.target["kind"] == "execution"
+                else ""
+            )
+            if run.target["kind"] != "log"
+            else "log"
         )
         folder = _folder_label(run.folder, folder_links_from)
         lines.append(
@@ -1502,14 +1528,9 @@ def _folder(value: object) -> RunFolder:
 
 def _target(value: object) -> Mapping[str, object]:
     item = _mapping(value, "target")
-    if set(item) != {"entry", "kind"} or item["kind"] not in {"entry", "log"}:
+    if not valid_reproduction_target(item):
         raise ReproductionResultError("run target is invalid")
-    entry = item["entry"]
-    if item["kind"] == "entry":
-        entry = _entry(entry, "target.entry")
-    elif entry is not None:
-        raise ReproductionResultError("log target entry must be null")
-    return {"entry": entry, "kind": item["kind"]}
+    return dict(item)
 
 
 def _fingerprint_or_none(value: object, subject: str) -> Fingerprint | None:

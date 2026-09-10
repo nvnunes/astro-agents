@@ -4,22 +4,49 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
 PRECONTINUATION_PLAN_SCHEMA = "research-log-reproduction-plan/3"
 PRETIMEOUT_PLAN_SCHEMA = "research-log-reproduction-plan/4"
-PLAN_SCHEMA = "research-log-reproduction-plan/5"
+PREEXECUTION_PLAN_SCHEMA = "research-log-reproduction-plan/5"
+PLAN_SCHEMA = "research-log-reproduction-plan/6"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 PREQUERY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
 SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/8"
-REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
+PREEXECUTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
+REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 5 * 60
 MAX_EXECUTION_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
+
+
+def valid_reproduction_target(value: object) -> bool:
+    """Validate the exact log, entry, or full execution target shape."""
+
+    from validation.pyrun_state import PYRUN_EXECUTION_RE
+
+    from .context import ENTRY_ID_RE
+
+    if not isinstance(value, Mapping):
+        return False
+    if value == {"kind": "log", "entry": None}:
+        return True
+    entry = value.get("entry")
+    if not isinstance(entry, str) or ENTRY_ID_RE.fullmatch(entry) is None:
+        return False
+    if value.get("kind") == "entry":
+        return set(value) == {"kind", "entry"}
+    identity = value.get("execution_id")
+    return (
+        set(value) == {"kind", "entry", "execution_id"}
+        and value.get("kind") == "execution"
+        and isinstance(identity, str)
+        and PYRUN_EXECUTION_RE.fullmatch(identity) is not None
+    )
 
 
 def successful_checkpoint_state(state: object) -> bool:
@@ -146,7 +173,53 @@ def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -
     if omitted:
         noun = "entry" if omitted == 1 else "entries"
         lines.extend(["", f"{omitted} additional {noun} omitted."])
+    if target_kind == "execution":
+        lines.extend(_execution_plan_summary(plan))
     return "\n".join(lines) + "\n"
+
+
+def _execution_plan_summary(plan: ReproductionPlan) -> list[str]:
+    """Explain the complete single-command scope, including zero-work plans."""
+
+    commands = cast(
+        Sequence[Mapping[str, Any]], plan.source_snapshot.get("commands", ())
+    )
+    lines = ["", f"- Execution ID: `{plan.target['execution_id']}`"]
+    for command in commands:
+        recipe = command["recipe"]
+        lines.extend(
+            [
+                f"- Script: `{recipe['script']}`",
+                f"- Selection reason: {command['selection']}",
+                "- Complete outputs:",
+            ]
+        )
+        lines.extend(f"  - `{output}`" for output in recipe["outputs"])
+        if command["selection"] == "policy":
+            lines.append("- Policy excludes this command; --include-all is required.")
+    lines.append("- Retained prerequisites:")
+    if not plan.boundaries:
+        lines.append("  - None verified.")
+    for boundary in plan.boundaries:
+        producers = (
+            ", ".join(cast(Sequence[str], boundary.get("producers", ())))
+            or "external/origin"
+        )
+        lines.append(f"  - `{boundary['name']}` ({boundary['kind']}): {producers}")
+    lines.append("- Blockers:")
+    if not plan.failures:
+        lines.append("  - None.")
+    for failure in plan.failures:
+        lines.append(f"  - `{failure['artifact']}`: {failure['reason']}")
+        lines.extend(
+            f"    - {detail}" for detail in cast(Sequence[str], failure["dependencies"])
+        )
+    if not plan.executions:
+        lines.append(
+            "- Zero executions: the selection reason and blockers above "
+            "explain why no command will launch."
+        )
+    return lines
 
 
 def source_snapshot(

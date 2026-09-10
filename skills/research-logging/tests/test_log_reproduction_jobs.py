@@ -808,7 +808,7 @@ class ReproductionJobTests(unittest.TestCase):
                         log,
                         entry="e003",
                         include_all=include_all,
-                        recheck=True,
+                        selection=ReproductionSelection("recheck"),
                     )
 
                 self.assertEqual(observed, plan)
@@ -1108,7 +1108,10 @@ class ReproductionJobTests(unittest.TestCase):
                 mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
                 launch = launch_reproduction(
-                    log, entry="e003", include_all=False, recheck=True
+                    log,
+                    entry="e003",
+                    include_all=False,
+                    selection=ReproductionSelection("recheck"),
                 )
 
             run_id = cast(str, launch.run_id)
@@ -1932,7 +1935,7 @@ def _status_fixture(name: str) -> dict[str, object]:
         "operational_failure": None,
         "phase": name,
         "run_id": "reproduce-20300101t000000z-fixture",
-        "schema": "research-log-reproduction-status/5",
+        "schema": "research-log-reproduction-status/6",
         "execution_timeout_seconds": 300,
         "status": None,
         "summary": "docs/research.md",

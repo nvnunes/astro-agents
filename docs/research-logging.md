@@ -956,7 +956,7 @@ date.
 Preview one exact scope without writing anything:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id> [--execution-id <full-id>]] \
   [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>] --dry-run
 ```
@@ -971,6 +971,18 @@ commands on the second run. A changed command selects only its affected
 downstream closure. Add `--recheck` when you deliberately want
 every currently runnable eligible execution in the selected evidence-relevant
 scope to run again. Recheck does not bypass a planning blocker.
+
+Use `--entry <entry-id> --execution-id <full-pyrun-exec/v1-id>` for one
+command and its complete declared outputs, including commands without evidence
+references. The exact ID must exist in that entry's `pyrun.json`; filenames and
+prefixes are rejected. Add `--dry-run --summary` to inspect the ID, script,
+selection reason, outputs, retained prerequisites, and every blocker. Remove
+both flags to launch. `--recheck` retries an eligible target; non-automatic
+commands still require authorized `--include-all`. Invalid retained
+prerequisites block the target, including same-entry prerequisites. This scope
+never expands to producers, siblings, or downstream commands. Resume preserves
+it, and publication retains unrelated results. Command success and artifact
+comparison outcomes remain separate.
 
 `--jobs` defaults to `1`. A larger accepted value bounds concurrent executions
 within the run; graph dependencies, overlapping read/write/run/runtime claims,

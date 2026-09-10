@@ -43,10 +43,12 @@ from .reproduction_contract import (
     MAX_EXECUTION_TIMEOUT_SECONDS,
     PLAN_SCHEMA,
     PRECONTINUATION_PLAN_SCHEMA,
+    PREEXECUTION_PLAN_SCHEMA,
     PRETIMEOUT_PLAN_SCHEMA,
     ReproductionPlan,
     ReproductionRuntime,
     successful_checkpoint_state,
+    valid_reproduction_target,
 )
 from .reproduction_execution import (
     ExecutionAttempt,
@@ -67,8 +69,6 @@ from .reproduction_paths import (
     run_leaf,
 )
 from .reproduction_planner import (
-    INCREMENTAL_SELECTION,
-    RECHECK_SELECTION,
     RESUME_SELECTION,
     ReproductionSelection,
     plan_reproduction,
@@ -86,11 +86,13 @@ from .storage import atomic_write_text
 LEGACY_RUN_SCHEMA = "research-log-reproduction-run/2"
 PRECONTINUATION_RUN_SCHEMA = "research-log-reproduction-run/3"
 PRETIMEOUT_RUN_SCHEMA = "research-log-reproduction-run/4"
-RUN_SCHEMA = "research-log-reproduction-run/5"
+PREEXECUTION_RUN_SCHEMA = "research-log-reproduction-run/5"
+RUN_SCHEMA = "research-log-reproduction-run/6"
 LEGACY_STATUS_SCHEMA = "research-log-reproduction-status/2"
 PRECONTINUATION_STATUS_SCHEMA = "research-log-reproduction-status/3"
 PRETIMEOUT_STATUS_SCHEMA = "research-log-reproduction-status/4"
-STATUS_SCHEMA = "research-log-reproduction-status/5"
+PREEXECUTION_STATUS_SCHEMA = "research-log-reproduction-status/5"
+STATUS_SCHEMA = "research-log-reproduction-status/6"
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -127,12 +129,17 @@ def _parallel_run(record: Mapping[str, object]) -> bool:
     return record.get("schema") in {
         PRECONTINUATION_RUN_SCHEMA,
         PRETIMEOUT_RUN_SCHEMA,
+        PREEXECUTION_RUN_SCHEMA,
         RUN_SCHEMA,
     }
 
 
 def _continuation_run(record: Mapping[str, object]) -> bool:
-    return record.get("schema") in {PRETIMEOUT_RUN_SCHEMA, RUN_SCHEMA}
+    return record.get("schema") in {
+        PRETIMEOUT_RUN_SCHEMA,
+        PREEXECUTION_RUN_SCHEMA,
+        RUN_SCHEMA,
+    }
 
 
 @dataclass(frozen=True)
@@ -194,7 +201,7 @@ def launch_reproduction(
     entry: str | None,
     include_all: bool,
     runtime: ReproductionRuntime = ReproductionRuntime(),
-    recheck: bool = False,
+    selection: ReproductionSelection = ReproductionSelection(),
 ) -> ReproductionLaunch:
     """Return a no-work summary or hand an accepted plan to a supervisor."""
 
@@ -204,9 +211,7 @@ def launch_reproduction(
         entry=selected,
         include_all=include_all,
         runtime=runtime,
-        selection=ReproductionSelection(
-            RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION
-        ),
+        selection=selection,
     )
     if not plan.executions:
         from .reproduction_queries import reproduction_reconciliation_text
@@ -251,7 +256,7 @@ def dry_run_reproduction(
     entry: str | None,
     include_all: bool,
     runtime: ReproductionRuntime = ReproductionRuntime(),
-    recheck: bool = False,
+    selection: ReproductionSelection = ReproductionSelection(),
 ) -> ReproductionPlan:
     """Return one stable, write-free plan after the runtime safety preflight."""
 
@@ -261,9 +266,7 @@ def dry_run_reproduction(
         entry=selected,
         include_all=include_all,
         runtime=runtime,
-        selection=ReproductionSelection(
-            RECHECK_SELECTION if recheck else INCREMENTAL_SELECTION
-        ),
+        selection=selection,
     )
     preflight_execution_safety()
     verify_reproduction_snapshot(log, plan)
@@ -290,8 +293,7 @@ def format_reproduction_status(status: Mapping[str, object]) -> str:
     lines = [f"Run {status['run_id']}: {state} ({progress} executions)"]
     if "execution_timeout_seconds" in status:
         lines.append(
-            "Per-command runtime limit: "
-            f"{status['execution_timeout_seconds']} seconds"
+            f"Per-command runtime limit: {status['execution_timeout_seconds']} seconds"
         )
     if "attempt" in status:
         lines.append(
@@ -468,6 +470,9 @@ def _resume_plan(log: LogContext, context: _ResumeContext) -> ReproductionPlan:
         ),
         selection=ReproductionSelection(
             RESUME_SELECTION,
+            execution_id=cast(Mapping[str, str], context.record["target"]).get(
+                "execution_id"
+            ),
             command_queue=queued,
             command_scope=scope,
             prior_commands=_continuation_prior_commands(context.record),
@@ -1784,6 +1789,8 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         if record.get("schema") == PRECONTINUATION_RUN_SCHEMA
         else PRETIMEOUT_PLAN_SCHEMA
         if record.get("schema") == PRETIMEOUT_RUN_SCHEMA
+        else PREEXECUTION_PLAN_SCHEMA
+        if record.get("schema") == PREEXECUTION_RUN_SCHEMA
         else PLAN_SCHEMA
     )
     value = {"schema": schema, **cast(Mapping[str, object], record["plan"])}
@@ -1799,7 +1806,11 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         "failures",
         "include_all",
         *(() if legacy else ("jobs",)),
-        *(("execution_timeout_seconds",) if schema == PLAN_SCHEMA else ()),
+        *(
+            ("execution_timeout_seconds",)
+            if schema in {PREEXECUTION_PLAN_SCHEMA, PLAN_SCHEMA}
+            else ()
+        ),
         "schema",
         "source_snapshot",
         "summary",
@@ -1827,11 +1838,14 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
             value.get("execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS),
         ),
     )
-    if record.get("schema") == RUN_SCHEMA and plan.as_dict() != value:
+    if {**plan.as_dict(), "schema": schema} != value and record.get("schema") in {
+        PREEXECUTION_RUN_SCHEMA,
+        RUN_SCHEMA,
+    }:
         raise ActionError("reproduction.run.invalid", "stored plan is not canonical")
     if _parallel_run(record) and record.get("jobs") != plan.jobs:
         raise ActionError("reproduction.run.invalid", "accepted jobs value changed")
-    if record.get("schema") == RUN_SCHEMA and (
+    if record.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA} and (
         record.get("execution_timeout_seconds") != plan.execution_timeout_seconds
     ):
         raise ActionError(
@@ -1879,12 +1893,8 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
         ],
         "completed_executions": progress["completed_executions"],
         **(
-            {
-                "execution_timeout_seconds": record[
-                    "execution_timeout_seconds"
-                ]
-            }
-            if record.get("schema") == RUN_SCHEMA
+            {"execution_timeout_seconds": record["execution_timeout_seconds"]}
+            if record.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
             else {}
         ),
         "execution_timings": _execution_timings(checkpoints),
@@ -1897,6 +1907,8 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
         "schema": (
             STATUS_SCHEMA
             if record.get("schema") == RUN_SCHEMA
+            else PREEXECUTION_STATUS_SCHEMA
+            if record.get("schema") == PREEXECUTION_RUN_SCHEMA
             else PRETIMEOUT_STATUS_SCHEMA
             if record.get("schema") == PRETIMEOUT_RUN_SCHEMA
             else PRECONTINUATION_STATUS_SCHEMA
@@ -2030,6 +2042,7 @@ def _load_run(path: Path) -> dict[str, object]:
     parallel = schema in {
         PRECONTINUATION_RUN_SCHEMA,
         PRETIMEOUT_RUN_SCHEMA,
+        PREEXECUTION_RUN_SCHEMA,
         RUN_SCHEMA,
     }
     fields = (
@@ -2037,10 +2050,14 @@ def _load_run(path: Path) -> dict[str, object]:
         | ({"jobs"} if parallel else set())
         | (
             {"attempt", "attempts", "queue"}
-            if schema in {PRETIMEOUT_RUN_SCHEMA, RUN_SCHEMA}
+            if schema in {PRETIMEOUT_RUN_SCHEMA, PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
             else set()
         )
-        | ({"execution_timeout_seconds"} if schema == RUN_SCHEMA else set())
+        | (
+            {"execution_timeout_seconds"}
+            if schema in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
+            else set()
+        )
     )
     if (
         not isinstance(value, dict)
@@ -2050,6 +2067,7 @@ def _load_run(path: Path) -> dict[str, object]:
             LEGACY_RUN_SCHEMA,
             PRECONTINUATION_RUN_SCHEMA,
             PRETIMEOUT_RUN_SCHEMA,
+            PREEXECUTION_RUN_SCHEMA,
             RUN_SCHEMA,
         }
     ):
@@ -2134,6 +2152,42 @@ def _validate_run_members(value: Mapping[str, object]) -> None:
     _validate_checkpoints(value.get("checkpoints"), legacy=legacy)
     if _continuation_run(value):
         _validate_continuation_state(value)
+    _validate_execution_target_scope(value)
+
+
+def _validate_execution_target_scope(value: Mapping[str, object]) -> None:
+    """Reject widened persisted command plans before execution or resume."""
+
+    target = cast(Mapping[str, object], value["target"])
+    if target.get("kind") != "execution":
+        return
+    if value.get("schema") != RUN_SCHEMA:
+        raise ActionError(
+            "reproduction.run.invalid", "legacy run cannot target an execution"
+        )
+    key = (target["entry"], target["execution_id"])
+    queue = cast(Sequence[Mapping[str, object]], value["queue"])
+    plan = value.get("plan")
+    if not isinstance(plan, Mapping) or plan.get("target") != target:
+        raise ActionError("reproduction.run.invalid", "execution plan target changed")
+    if [(item["entry"], item["execution_id"]) for item in queue] != [key]:
+        raise ActionError("reproduction.run.invalid", "execution target queue changed")
+    source = cast(Mapping[str, object], value["source_snapshot"])
+    collections = [
+        source.get("commands"),
+        source.get("executions"),
+        plan.get("executions"),
+        plan.get("cases"),
+    ]
+    for collection in collections:
+        if not isinstance(collection, list) or any(
+            not isinstance(item, Mapping)
+            or (item.get("entry"), item.get("execution_id")) != key
+            for item in collection
+        ):
+            raise ActionError(
+                "reproduction.run.invalid", "execution target scope changed"
+            )
 
 
 def _validate_continuation_state(value: Mapping[str, object]) -> None:
@@ -2184,13 +2238,8 @@ def _validate_continuation_state(value: Mapping[str, object]) -> None:
 
 def _validate_run_target(value: Mapping[str, object]) -> None:
     target = value.get("target")
-    if not isinstance(target, Mapping) or set(target) != {"entry", "kind"}:
+    if not valid_reproduction_target(target):
         raise ActionError("reproduction.run.invalid", "run target is invalid")
-    if target.get("kind") == "entry":
-        if not isinstance(target.get("entry"), str):
-            raise ActionError("reproduction.run.invalid", "entry target is invalid")
-    elif target != {"entry": None, "kind": "log"}:
-        raise ActionError("reproduction.run.invalid", "log target is invalid")
     if not isinstance(value.get("include_all"), bool):
         raise ActionError("reproduction.run.invalid", "selection policy is invalid")
     if _parallel_run(value) and (
@@ -2200,14 +2249,12 @@ def _validate_run_target(value: Mapping[str, object]) -> None:
     ):
         raise ActionError("reproduction.run.invalid", "jobs value is invalid")
     timeout = value.get("execution_timeout_seconds")
-    if value.get("schema") == RUN_SCHEMA and (
+    if value.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA} and (
         not isinstance(timeout, int)
         or isinstance(timeout, bool)
         or not 1 <= timeout <= MAX_EXECUTION_TIMEOUT_SECONDS
     ):
-        raise ActionError(
-            "reproduction.run.invalid", "execution timeout is invalid"
-        )
+        raise ActionError("reproduction.run.invalid", "execution timeout is invalid")
 
 
 def _validate_active_state(

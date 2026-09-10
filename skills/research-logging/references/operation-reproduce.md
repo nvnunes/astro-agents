@@ -1,9 +1,8 @@
 # Reproduce Operation Instructions
 
 Use this operation only when the researcher explicitly asks to reproduce a
-maintained research log or one entry. Reproduce is a mechanical CLI workflow,
-separate from Record, Review, and Validate. It starts from evidence declared in
-`evidence.json`, plans and executes only from JSON authority, retains all
+maintained research log, one entry, or one recorded execution. Reproduce is a mechanical CLI workflow,
+separate from Record, Review, and Validate. It selects the requested scope from JSON authority, plans and executes only from JSON authority, retains all
 regenerated outputs in a project-local run folder, compares them with retained
 artifacts, clears the reproduction requirement for every completed execution,
 and publishes
@@ -40,13 +39,13 @@ run.
 ## Preview Or Launch
 
 Resolve the extensionless `scripts/log` entrypoint from this skill package.
-Choose exactly one log or one entry; multiple logs require separate commands.
+Choose exactly one log, entry, or entry-qualified execution; multiple logs require separate commands.
 
 Preview a deterministic plan without creating a run ID, lock, directory,
 checkpoint, result, report, or other state:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry> [--execution-id <full-id>]] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>] --dry-run --summary
 ```
@@ -55,10 +54,10 @@ Use `--summary` for the bounded CLI-owned human projection. Present it
 unchanged; do not request or parse the complete JSON plan. Programmatic
 consumers that need the complete deterministic plan may omit `--summary`.
 
-Launch the same scope by omitting `--dry-run`:
+Launch the same scope by omitting both `--dry-run` and `--summary`:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry> [--execution-id <full-id>]] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>]
 ```
@@ -67,6 +66,19 @@ Without `--entry`, the target is exactly the named log. With `--entry`, the
 target is exactly that entry. Evidence dependencies outside the selected scope
 remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
+
+For a requested individual rerun, add `--execution-id` with the full current
+`pyrun-exec/v1:...` key from that entry's `pyrun.json`. Use completed-run command
+queries for saved diagnostics; they do not inventory newly added recipes.
+Inspect the preview's ID, script, complete output group, selection reason, and
+all retained prerequisites and blockers. The command may have no evidence
+references. Other producers, including same-entry prerequisites, remain verified
+retained boundaries; do not widen scope when one is invalid. Use `--recheck`
+for an authorized deliberate retry. It bypasses neither validation nor retained
+prerequisite failures, and non-automatic execution still needs authorized
+`--include-all`. A zero-execution preview does not verify execution. Resume
+preserves the accepted single-command scope, and publication retains unrelated
+results. Inspect command success and each artifact comparison separately.
 
 `--jobs` defaults to `1`, preserving serial execution. A larger value is an
 immutable per-run concurrency cap: dependency readiness, conflicting path

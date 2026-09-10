@@ -134,14 +134,15 @@ def publish_completed_reproduction(
                 replace_outdated=_replaces_outdated_results(request.plan),
             )
             current = reconcile_run_folders(current, project_root=project_root)
-            state_projection = project_reproduction_state(log)
+            state_projection = project_reproduction_state(
+                log,
+                targets=(*[run.target for run in current.runs], request.plan.target),
+            )
             snapshots = command_snapshot_index(request.plan)
             state_projection = replace(
                 state_projection,
                 reachable_commands=frozenset(
-                    key
-                    for key, item in snapshots.items()
-                    if item.get("queued") is True
+                    key for key, item in snapshots.items() if item.get("queued") is True
                 ),
             )
             if request.plan.target.get("kind") == "log":
@@ -160,7 +161,11 @@ def publish_completed_reproduction(
                 artifacts,
                 run,
                 commands=commands,
-                state=state_projection,
+                state=(
+                    None
+                    if request.plan.target.get("kind") == "execution"
+                    else state_projection
+                ),
             )
             projected, currentness = project_current_results(merged, state_projection)
             context = load_report_context(log.summary)
@@ -412,9 +417,7 @@ def _command_records(
         raise ActionError("reproduction.publication.invalid", str(error)) from error
     if not snapshots or any("recipe" not in item for item in snapshots.values()):
         return None
-    compared = {
-        (item.entry, item.execution_id): item for item in request.comparisons
-    }
+    compared = {(item.entry, item.execution_id): item for item in request.comparisons}
     skipped = _dependency_skip_index(request.dependency_skips)
     records: list[Mapping[str, object]] = []
     for key, snapshot in sorted(snapshots.items()):

@@ -107,6 +107,7 @@ For reproduction planning, comparison, and staging development, run:
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_log_reproduction_planning.py \
+  skills/research-logging/tests/test_log_reproduction_execution_selection.py \
   skills/research-logging/tests/test_log_reproduction_comparison.py \
   skills/research-logging/tests/test_log_reproduction_results.py \
   skills/research-logging/tests/test_log_reproduction_jobs.py \

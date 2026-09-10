@@ -127,7 +127,7 @@ class LogInitTests(unittest.TestCase):
             self.assertEqual(results["artifacts"], [])
             self.assertEqual(results["commands"], [])
             self.assertEqual(results["runs"], [])
-            self.assertEqual(results["schema"], "research-log-reproduction-result/9")
+            self.assertEqual(results["schema"], "research-log-reproduction-result/10")
             report = (logical / "reproduction.md").read_text(encoding="utf-8")
             self.assertIn("Latest completed run: none", report)
             self.assertIn("| — | — | not yet reproduced | — | — |", report)

@@ -63,6 +63,7 @@ from .reproduction_contract import (
     canonical_execution_source_digest,
     canonical_record_digest,
     source_snapshot,
+    valid_reproduction_target,
 )
 
 MAX_REACHABLE_EXECUTIONS = 2_048
@@ -82,12 +83,13 @@ RESUME_SELECTION: SelectionPolicy = "resume"
 
 @dataclass(frozen=True)
 class ReproductionSelection:
-    """Work-selection policy and optional immutable continuation bounds."""
+    """Selection policy, optional execution selector, and continuation bounds."""
 
     policy: SelectionPolicy = INCREMENTAL_SELECTION
     command_queue: frozenset[ExecutionKey] | None = None
     command_scope: frozenset[ExecutionKey] | None = None
     prior_commands: Mapping[ExecutionKey, Mapping[str, object]] | None = None
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,7 @@ class _PlanningState:
     prior_command_dispositions: dict[ExecutionKey, str] = field(default_factory=dict)
     command_queue: frozenset[ExecutionKey] | None = None
     command_scope: frozenset[ExecutionKey] | None = None
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,7 +215,7 @@ class _ReachabilityProjector:
     )
     visited: set[ExecutionKey] = field(default_factory=set)
 
-    def execution(self, owner: _Owner) -> None:
+    def execution(self, owner: _Owner, *, trace_inputs: bool = True) -> None:
         key = owner.key
         if key in self.visited:
             return
@@ -225,7 +228,7 @@ class _ReachabilityProjector:
                 owner, output, self.project_root
             )
         self.last_runs[key] = owner.execution.last_run_at
-        if owner.entry.data is None:
+        if owner.entry.data is None or not trace_inputs:
             return
         for name in owner.execution.recipe.inputs:
             resource = owner.entry.data.by_name.get(name)
@@ -283,6 +286,8 @@ def plan_reproduction(
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
 
+    execution_id = selection.execution_id
+    _require_execution_selector(entry, execution_id)
     _require_selection_policy(selection.policy)
     if (
         isinstance(runtime.jobs, bool)
@@ -293,9 +298,7 @@ def plan_reproduction(
     if (
         isinstance(runtime.execution_timeout_seconds, bool)
         or not isinstance(runtime.execution_timeout_seconds, int)
-        or not 1
-        <= runtime.execution_timeout_seconds
-        <= MAX_EXECUTION_TIMEOUT_SECONDS
+        or not 1 <= runtime.execution_timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS
     ):
         raise ActionError(
             "reproduction.execution_timeout.invalid",
@@ -315,6 +318,7 @@ def plan_reproduction(
     project_root = resolve_project_root(log.root)
     contexts = _entry_contexts(log)
     entries = _load_entries(log, project_root, contexts)
+    selection = _execution_selection(entries, entry, execution_id, selection)
     selected_ids = (entry.id,) if entry is not None else tuple(entries)
     state = _PlanningState(
         log,
@@ -329,6 +333,7 @@ def plan_reproduction(
         _owner_index(entries, project_root),
         command_queue=selection.command_queue,
         command_scope=selection.command_scope,
+        execution_id=execution_id,
     )
     _trace_selected_evidence(selected_ids, entries, state)
     _trace_queued_commands(state)
@@ -336,9 +341,7 @@ def plan_reproduction(
         _apply_validation_admission(state, batch_projection)
     _apply_cycle_and_dependency_failures(state)
     retained_commands = dict(
-        _load_prior_results(
-            log, replace_outdated=selection.policy == RECHECK_SELECTION
-        )
+        _load_prior_results(log, replace_outdated=selection.policy == RECHECK_SELECTION)
     )
     if selection.prior_commands is not None:
         retained_commands.update(selection.prior_commands)
@@ -361,6 +364,50 @@ def plan_reproduction(
     return plan
 
 
+def _require_execution_selector(
+    entry: EntryContext | None, identity: str | None
+) -> None:
+    if identity is None:
+        return
+    if entry is None:
+        raise ActionError(
+            "reproduction.execution.entry_required", "--execution-id requires --entry"
+        )
+    if not valid_reproduction_target(
+        {"kind": "execution", "entry": entry.id, "execution_id": identity}
+    ):
+        raise ActionError(
+            "reproduction.execution.invalid",
+            "--execution-id requires a full pyrun-exec/v1 ID",
+        )
+
+
+def _execution_selection(
+    entries: Mapping[str, _EntryState],
+    entry: EntryContext | None,
+    identity: str | None,
+    selection: ReproductionSelection,
+) -> ReproductionSelection:
+    if identity is None:
+        return selection
+    assert entry is not None
+    if identity not in entries[entry.id].pyrun.executions:
+        raise ActionError(
+            "reproduction.execution.unknown",
+            f"unknown execution in {entry.id}: {identity}",
+        )
+    scope = frozenset({(entry.id, identity)})
+    queue = scope if selection.command_queue is None else selection.command_queue
+    if not queue <= scope or selection.command_scope not in (None, scope):
+        raise ActionError(
+            "reproduction.execution.scope_changed",
+            "execution continuation scope changed",
+        )
+    return ReproductionSelection(
+        selection.policy, queue, scope, selection.prior_commands, identity
+    )
+
+
 def _trace_selected_evidence(
     selected_ids: Sequence[str],
     entries: Mapping[str, _EntryState],
@@ -374,7 +421,7 @@ def _trace_selected_evidence(
             state.authority_paths.add(current.data.path)
         if current.pyrun.path.is_file():
             state.authority_paths.add(current.pyrun.path)
-        if current.evidence is None:
+        if state.execution_id is not None or current.evidence is None:
             continue
         if current.data is None:
             raise ActionError(
@@ -408,7 +455,16 @@ def _trace_queued_commands(state: _PlanningState) -> None:
             and not state.include_all
         ):
             continue
-        _trace_execution(owner, state, depth=0)
+        _trace_execution(
+            owner,
+            state,
+            depth=0,
+            trace_inputs=not (
+                state.execution_id is not None
+                and not owner.execution.auto_reproduce
+                and not state.include_all
+            ),
+        )
 
 
 def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
@@ -441,8 +497,12 @@ def _entry_contexts(log: LogContext) -> tuple[EntryContext, ...]:
     return tuple(item[2] for item in found)
 
 
-def project_reproduction_state(log: LogContext) -> ReproductionStateProjection:
-    """Project current evidence reachability without validating or writing."""
+def project_reproduction_state(
+    log: LogContext,
+    *,
+    targets: Sequence[Mapping[str, object]] = (),
+) -> ReproductionStateProjection:
+    """Project evidence and retained execution-target coverage without writing."""
 
     root = resolve_project_root(log.root)
     entries = _load_entries(log, root, _entry_contexts(log))
@@ -456,19 +516,32 @@ def project_reproduction_state(log: LogContext) -> ReproductionStateProjection:
             for source in record.sources:
                 resolved = resolve_input_token(source.source, entry.data)
                 projector.resource(resolved.resource, entry)
+    execution_keys = {
+        (target.get("entry"), target.get("execution_id"))
+        for target in targets
+        if target.get("kind") == "execution"
+    }
+    for candidates in owners.values():
+        for owner in candidates:
+            if owner.key in execution_keys:
+                projector.execution(owner, trace_inputs=False)
     return projector.result()
 
 
 def project_reproduction_command_inventory(
     log: LogContext, target: Mapping[str, object]
 ) -> ReproductionCommandInventory:
-    """Count every command in a log or entry target without selecting evidence."""
+    """Count current commands in an exact log, entry, or execution target."""
 
     project_root = resolve_project_root(log.root)
     contexts = _entry_contexts(log)
     kind = target.get("kind")
     entry = target.get("entry")
-    if kind == "entry" and isinstance(entry, str):
+    if not valid_reproduction_target(target):
+        raise ActionError(
+            "reproduction.target.invalid", "reproduction target is invalid"
+        )
+    if kind in {"entry", "execution"} and isinstance(entry, str):
         contexts = tuple(context for context in contexts if context.id == entry)
         if not contexts:
             raise ActionError(
@@ -498,10 +571,15 @@ def project_reproduction_command_inventory(
                 str(getattr(error, "code", "reproduction.metadata.invalid")),
                 str(error),
             ) from error
-        total += len(state.executions)
+        executions = [
+            execution
+            for identity, execution in state.executions.items()
+            if kind != "execution" or identity == target["execution_id"]
+        ]
+        total += len(executions)
         policy_skipped += sum(
             execution.requires_reproduction and not execution.auto_reproduce
-            for execution in state.executions.values()
+            for execution in executions
         )
     return ReproductionCommandInventory(total, policy_skipped)
 
@@ -509,13 +587,17 @@ def project_reproduction_command_inventory(
 def project_reproduction_command_details(
     log: LogContext, target: Mapping[str, object]
 ) -> tuple[Mapping[str, object], ...]:
-    """Project every current command recipe in one log or entry target."""
+    """Project current recipes in an exact log, entry, or execution target."""
 
     project_root = resolve_project_root(log.root)
     contexts = _entry_contexts(log)
     kind = target.get("kind")
     entry = target.get("entry")
-    if kind == "entry" and isinstance(entry, str):
+    if not valid_reproduction_target(target):
+        raise ActionError(
+            "reproduction.target.invalid", "reproduction target is invalid"
+        )
+    if kind in {"entry", "execution"} and isinstance(entry, str):
         contexts = tuple(context for context in contexts if context.id == entry)
         if not contexts:
             raise ActionError(
@@ -546,6 +628,8 @@ def project_reproduction_command_details(
             ) from error
         cwd = context.root.resolve().relative_to(project_root).as_posix()
         for execution_id, execution in sorted(state.executions.items()):
+            if kind == "execution" and execution_id != target["execution_id"]:
+                continue
             details.append(
                 {
                     "auto_reproduce": execution.auto_reproduce,
@@ -1012,6 +1096,8 @@ def _record_boundary_failure(
     reason: str,
     details: tuple[str, ...],
 ) -> None:
+    producers = _resource_owners(state.owners, request.resource.canonical_target)
+    details += tuple(f"prerequisite={_reference(owner.key)}" for owner in producers)
     consumer = request.consumer
     if consumer is None:
         _record_failure(
@@ -1053,6 +1139,11 @@ def _boundary(
         "kind": request.kind,
         "name": resource.name,
     }
+    if state.execution_id is not None:
+        value["producers"] = [
+            _reference(owner.key)
+            for owner in _resource_owners(state.owners, resource.canonical_target)
+        ]
     state.boundaries[(request.kind, entry.context.id, artifact)] = value
     _retain_material(
         state,
@@ -1387,7 +1478,11 @@ def _select_and_order(
     policy_skipped = {
         key
         for key, owner in state.selected.items()
-        if state.selection_policy == RECHECK_SELECTION
+        if (
+            state.selection_policy == RECHECK_SELECTION
+            or state.execution_id is not None
+            and owner.execution.requires_reproduction
+        )
         and not state.include_all
         and not owner.execution.auto_reproduce
     }
@@ -1420,6 +1515,7 @@ def _select_and_order(
         if key not in policy_skipped
         and key not in needs_run
         and key not in not_needed
+        and (state.execution_id is None or key not in state.blocked)
         and _command_result_current(prior.get(key), state.command_digests[key])
         and (
             state.selection_policy == INCREMENTAL_SELECTION
@@ -1712,7 +1808,16 @@ def _project_plan(
         _canonical_path(state.log.summary, state.project_root),
         {
             "entry": entry.id if entry is not None else None,
-            "kind": "entry" if entry is not None else "log",
+            "kind": "execution"
+            if state.execution_id is not None
+            else "entry"
+            if entry is not None
+            else "log",
+            **(
+                {"execution_id": state.execution_id}
+                if state.execution_id is not None
+                else {}
+            ),
         },
         state.include_all,
         accepted_validation,
@@ -1760,6 +1865,11 @@ def _project_command_details(
                     "exclusive": execution.exclusive,
                     "queued": (
                         (entry_id, execution_id) in state.command_queue
+                        and (
+                            state.execution_id is None
+                            or execution.auto_reproduce
+                            or state.include_all
+                        )
                         if state.command_queue is not None
                         else execution.auto_reproduce or state.include_all
                     ),

@@ -19,6 +19,7 @@ from log_commands.reproduction_contract import (
 from log_commands.reproduction_jobs import ReproductionLaunch
 from log_commands.reproduction_planner import (
     ReproductionCommandInventory,
+    ReproductionSelection,
     ReproductionStateProjection,
 )
 from log_commands.reproduction_queries import (
@@ -201,7 +202,7 @@ class ReproductionQueryTests(unittest.TestCase):
             entry=None,
             include_all=False,
             runtime=ReproductionRuntime(4, 300),
-            recheck=False,
+            selection=ReproductionSelection(),
         )
 
     def test_dispatcher_rejects_summary_for_a_real_launch(self) -> None:
@@ -875,7 +876,7 @@ class ReproductionQueryTests(unittest.TestCase):
             entry="e003",
             include_all=False,
             runtime=ReproductionRuntime(1, 17),
-            recheck=True,
+            selection=ReproductionSelection("recheck"),
         )
 
         output = StringIO()
@@ -896,7 +897,7 @@ class ReproductionQueryTests(unittest.TestCase):
             entry=None,
             include_all=False,
             runtime=ReproductionRuntime(),
-            recheck=True,
+            selection=ReproductionSelection("recheck"),
         )
 
         output = StringIO()

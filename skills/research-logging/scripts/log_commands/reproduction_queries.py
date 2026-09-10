@@ -132,7 +132,9 @@ def reproduction_reconciliation_text(
         summary=summary,
         updated_at=generated_at,
     )
-    state = project_reproduction_state(log)
+    state = project_reproduction_state(
+        log, targets=[run.target for run in results.runs]
+    )
     projected, _currentness = project_current_results(results, state)
     outcomes = _no_work_command_outcomes(
         plan,
@@ -961,7 +963,9 @@ def _current(
         expected = resolve_project_root(log.root) / results.summary
         if expected.resolve() != log.summary.resolve():
             raise ReproductionResultError("result summary identity changed")
-        state = project_reproduction_state(log)
+        state = project_reproduction_state(
+            log, targets=[run.target for run in results.runs]
+        )
         return project_current_results(results, state)
     except ReproductionResultSchemaError as error:
         raise ActionError(

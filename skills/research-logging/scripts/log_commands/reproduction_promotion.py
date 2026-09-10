@@ -485,7 +485,8 @@ def _report_candidates(
         load_reproduction_results(result_path), project_root=project
     )
     projected, currentness = project_current_results(
-        results, project_reproduction_state(log)
+        results,
+        project_reproduction_state(log, targets=[run.target for run in results.runs]),
     )
     context = load_report_context(log.summary)
     return {

@@ -814,6 +814,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log reproduce")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
+    parser.add_argument("--execution-id")
     parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--jobs", type=int, default=1)
@@ -831,10 +832,17 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         help="print a bounded human summary of a dry-run plan",
     )
     args = parser.parse_args(arguments)
+    if args.execution_id is not None and args.entry is None:
+        parser.error("--execution-id requires --entry")
     if args.summary and not args.dry_run:
         parser.error("--summary requires --dry-run")
     log = resolve_log(args.path)
     from .reproduction_jobs import dry_run_reproduction, launch_reproduction
+    from .reproduction_planner import ReproductionSelection
+
+    selection = ReproductionSelection(
+        "recheck" if args.recheck else "incremental", execution_id=args.execution_id
+    )
 
     if args.dry_run:
         plan = dry_run_reproduction(
@@ -842,7 +850,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             entry=args.entry,
             include_all=args.include_all,
             runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
-            recheck=args.recheck,
+            selection=selection,
         )
         if args.summary:
             from .reproduction_contract import format_reproduction_plan_summary
@@ -859,7 +867,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
             entry=args.entry,
             include_all=args.include_all,
             runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
-            recheck=args.recheck,
+            selection=selection,
         )
         print(launch.render(), end="")
     return 0

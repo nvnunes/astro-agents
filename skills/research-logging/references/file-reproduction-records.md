@@ -48,8 +48,8 @@ with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/9`. Every newly
-published run counts every command in its log or entry target exactly once as
+The current result schema is `research-log-reproduction-result/10`. Every newly
+published run counts every command in its log, entry, or execution target exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
 selected command failure. Those command counts are separate from
@@ -62,7 +62,7 @@ attempt selection, source digest, planning detail, accounting reason, and
 terminal disposition. Historical command list and show queries use this
 projection without consulting current `pyrun.json`.
 
-Each evidence-relevant command also has one current record keyed by entry and
+Each evidence-relevant or individually targeted command also has one current record keyed by entry and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning

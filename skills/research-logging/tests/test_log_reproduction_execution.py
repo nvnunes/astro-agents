@@ -177,6 +177,90 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_individual_selection_executes_and_publishes_without_evidence(self) -> None:
+        from log_commands.context import resolve_entry
+        from log_commands.reproduction_comparison import compare_execution_outputs
+        from log_commands.reproduction_planner import (
+            ReproductionSelection,
+            plan_reproduction,
+        )
+        from log_commands.reproduction_publication import (
+            CompletedPublication,
+            publish_completed_reproduction,
+        )
+        from log_commands.reproduction_queries import (
+            show_reproduction_artifact,
+            show_reproduction_command,
+        )
+        from test_log_reproduction_planning import _admission
+
+        script = (
+            "import argparse\nfrom pathlib import Path\n"
+            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
+            "p.add_argument('--output'); a=p.parse_args()\n"
+            "Path(a.output).write_text(Path(a.source).read_text().upper())\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), script)
+            admission = _admission(fixture)
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.validation),
+            ):
+                plan = plan_reproduction(
+                    fixture.log,
+                    entry=resolve_entry(fixture.log, "e001"),
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        "recheck", execution_id=fixture.identity
+                    ),
+                )
+            run_id = "reproduce-targeted-success"
+            run_root = (
+                fixture.project
+                / "tmp/reproduction/2030-01-01"
+                / f"reproduce-study-e001-{run_id}"
+            )
+            workspace = prepare_output_workspace(fixture.project, run_root, run_id)
+            batch = execute_reproduction_plan(
+                fixture.log,
+                plan,
+                workspace,
+                ExecutionControl(confinement=_FixtureConfinement()),
+            )
+            self.assertEqual(len(batch.attempts), 1)
+            attempt = batch.attempts[0]
+            self.assertEqual(attempt.checkpoint.state, "succeeded")
+            compared = compare_execution_outputs(fixture.log, plan, workspace, attempt)
+            self.assertTrue(compared.complete)
+            self.assertEqual(compared.artifacts[0].outcome, "changed")
+            published = publish_completed_reproduction(
+                fixture.log,
+                CompletedPublication(
+                    plan,
+                    (compared,),
+                    run_id,
+                    "2030-01-01T00:00:00Z",
+                    "2030-01-01T00:01:00Z",
+                    run_root,
+                ),
+            )
+            self.assertEqual(len(published.results.commands), 1)
+            self.assertEqual(published.results.commands[0].disposition, "succeeded")
+            self.assertEqual(published.results.artifacts[0].outcome, "changed")
+            command = show_reproduction_command(
+                fixture.log, entry="e001", execution_id=fixture.identity, run_id=run_id
+            )
+            self.assertIn("succeeded", json.dumps(command))
+            artifact = show_reproduction_artifact(
+                fixture.log, entry="e001", artifact="data/result.txt"
+            )
+            self.assertIn("changed", json.dumps(artifact))
+            self.assertEqual(fixture.output.read_text(), "retained\n")
+            self.assertEqual(
+                workspace.map_source(fixture.output).read_text(), "SOURCE\n"
+            )
+
     def test_scratch_is_fresh_confined_and_cleaned_on_terminal_outcomes(self) -> None:
         script = (
             "import json, os, subprocess, sys, tempfile, time\n"
@@ -351,9 +435,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertTrue(continued.work_project.is_dir())
             self.assertTrue(continued.runtime_root.is_dir())
             self.assertTrue(continued.diagnostics_root.is_dir())
-            self.assertEqual(
-                continued.staging_root, workspace.run_root / "executions"
-            )
+            self.assertEqual(continued.staging_root, workspace.run_root / "executions")
 
     def test_continuation_rejects_symlinked_attempt_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

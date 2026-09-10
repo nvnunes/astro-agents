@@ -36,7 +36,8 @@ Choose the core operation:
   `references/operation-validate.md`. The validation run is code-only; neither
   path becomes semantic review or reproduction. Those remain separate
   workflows.
-- Explicit mechanical reproduction of a maintained log or one entry: read
+- Explicit mechanical reproduction of a maintained log, one entry, or one
+  recorded execution: read
   `references/operation-reproduce.md`. Reproduce is CLI-owned, uses JSON as its
   graph and execution authority, and never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, causal group, finding class,

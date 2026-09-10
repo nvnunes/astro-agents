@@ -200,7 +200,18 @@ opening generated JSON:
 ```bash
 <skill>/scripts/log reproduce artifacts list --path <log> [--entry <entry>] [--outcome <outcome>] [--artifact <path>]
 <skill>/scripts/log reproduce artifacts show --path <log> --entry <entry> --artifact <path>
+<skill>/scripts/log reproduce commands list --path <log> [--bucket <bucket>] [--entry <entry>] [--reason <reason>] [--run-id <run-id>] [--format text|json]
+<skill>/scripts/log reproduce commands show --path <log> --entry <entry> --execution-id <execution-id> [--run-id <run-id>] [--format text|json]
 ```
+
+Use the command routes whenever the researcher asks which commands make up a
+compact command count. The public list buckets are
+`reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
+`blocked`. Omit `--run-id` for the latest completed run. Present text output
+unchanged unless a programmatic consumer needs JSON. If the CLI reports that
+details are unavailable because current command metadata no longer reconciles
+with the selected run, say so plainly; do not reconstruct the list from
+generated JSON or Markdown.
 
 Do not select a changed result for adoption. A research agent acting with
 researcher direction may inspect the retained complete execution output set

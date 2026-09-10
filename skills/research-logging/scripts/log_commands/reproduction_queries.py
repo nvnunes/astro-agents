@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Mapping, cast
@@ -16,6 +17,7 @@ from .reproduction_accounting import CommandAccountingError, project_command_sel
 from .reproduction_contract import ReproductionPlan
 from .reproduction_planner import (
     ReproductionCommandInventory,
+    project_reproduction_command_details,
     project_reproduction_command_inventory,
     project_reproduction_state,
 )
@@ -23,6 +25,7 @@ from .reproduction_results import (
     ArtifactCurrentness,
     ReproductionResultError,
     ReproductionResults,
+    RunResult,
     artifact_summary_counts,
     command_summary_counts,
     compose_reproduction_reconciliation_summary,
@@ -36,8 +39,26 @@ from .reproduction_results import (
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
+COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/1"
+COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/1"
 SUMMARY_SCHEMA = "research-log-reproduction-summary/4"
 ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/4"
+COMMAND_BUCKETS = (
+    "reproduction-not-retried",
+    "skipped-by-policy",
+    "succeeded",
+    "failed",
+    "blocked",
+)
+COMMAND_REASONS = (
+    "reproduction_not_needed",
+    "unchanged_failed",
+    "unchanged_blocked",
+    "not_automatic",
+    "succeeded",
+    "failed",
+    "blocked",
+)
 
 
 def reproduction_report(log: LogContext, *, entry: str | None) -> str:
@@ -417,6 +438,311 @@ def show_reproduction_artifact(
         "schema": ARTIFACT_SHOW_SCHEMA,
         "summary": results.summary,
     }
+
+
+def list_reproduction_commands(
+    log: LogContext,
+    *,
+    bucket: str | None,
+    entry: str | None,
+    reason: str | None,
+    run_id: str | None,
+) -> dict[str, object]:
+    """Return at most 50 commands from one completed run's accounting."""
+
+    if bucket is not None and bucket not in COMMAND_BUCKETS:
+        raise ActionError(
+            "reproduction.command.bucket.invalid",
+            f"unsupported command bucket: {bucket}",
+        )
+    records, results, selected_run = _reproduction_command_records(log, run_id=run_id)
+    selected = [
+        record
+        for record in records
+        if (bucket is None or record["bucket"] == bucket)
+        and (entry is None or record["entry"] == entry)
+        and (reason is None or record["reason"] == reason)
+    ]
+    returned = selected[:50]
+    return {
+        "filters": {"bucket": bucket, "entry": entry, "reason": reason},
+        "matched": len(selected),
+        "omitted": len(selected) - len(returned),
+        "records": [_command_list_record(record) for record in returned],
+        "returned": len(returned),
+        "run_id": selected_run.run_id,
+        "schema": COMMAND_LIST_SCHEMA,
+        "summary": results.summary,
+    }
+
+
+def show_reproduction_command(
+    log: LogContext,
+    *,
+    entry: str,
+    execution_id: str,
+    run_id: str | None,
+) -> dict[str, object]:
+    """Return one complete command record from completed-run accounting."""
+
+    records, results, selected_run = _reproduction_command_records(log, run_id=run_id)
+    selected = [
+        record
+        for record in records
+        if record["entry"] == entry and record["execution_id"] == execution_id
+    ]
+    if not selected:
+        raise ActionError(
+            "reproduction.command.unknown",
+            f"reproduction run contains no {entry}:{execution_id}",
+        )
+    if len(selected) != 1:
+        raise ActionError(
+            "reproduction.command.ambiguous",
+            f"reproduction run contains ambiguous {entry}:{execution_id}",
+        )
+    return {
+        "command": dict(selected[0]),
+        "run_id": selected_run.run_id,
+        "schema": COMMAND_SHOW_SCHEMA,
+        "summary": results.summary,
+    }
+
+
+def compose_reproduction_command_list(value: Mapping[str, object]) -> str:
+    """Render one bounded command list in a concise human form."""
+
+    filters = cast(Mapping[str, object], value["filters"])
+    records = cast(Sequence[Mapping[str, object]], value["records"])
+    bucket = filters.get("bucket") or "all buckets"
+    lines = [
+        f"Commands for {value['run_id']} — {bucket}",
+        f"Matched {value['matched']}; returned {value['returned']}; "
+        f"omitted {value['omitted']}.",
+    ]
+    for record in records:
+        lines.extend(
+            (
+                "",
+                f"{record['entry']} {record['execution_id']}",
+                f"  {record['bucket']}: {record['reason']}",
+                f"  {record['cwd']}$ {record['command']}",
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def compose_reproduction_command(value: Mapping[str, object]) -> str:
+    """Render one complete command record in a human-readable form."""
+
+    record = cast(Mapping[str, object], value["command"])
+    recipe = cast(Mapping[str, object], record["recipe"])
+    lines = [
+        f"Command {record['entry']} {record['execution_id']}",
+        f"Run: {value['run_id']}",
+        f"Accounting: {record['bucket']} ({record['reason']})",
+        f"Working directory: {record['cwd']}",
+        f"Command: {record['command']}",
+        f"Automatic: {'yes' if record['auto_reproduce'] else 'no'}",
+        "Requires reproduction at query time: "
+        + ("yes" if record["requires_reproduction"] else "no"),
+        f"Exclusive: {'yes' if record['exclusive'] else 'no'}",
+        "Inputs: " + ", ".join(cast(Sequence[str], recipe["inputs"])),
+        "Outputs: "
+        + ", ".join(sorted(cast(Mapping[str, str], recipe["outputs"]))),
+    ]
+    details = cast(Sequence[str], record["details"])
+    if details:
+        lines.append("Details: " + "; ".join(details))
+    return "\n".join(lines) + "\n"
+
+
+def _reproduction_command_records(
+    log: LogContext, *, run_id: str | None
+) -> tuple[list[dict[str, object]], ReproductionResults, RunResult]:
+    """Reconstruct exact rows and verify them against published run counts."""
+
+    results, _currentness = _current(log)
+    runs = [
+        run
+        for run in results.runs
+        if run.status == "complete" and (run_id is None or run.run_id == run_id)
+    ]
+    if not runs:
+        subject = "the latest completed run" if run_id is None else run_id
+        raise ActionError(
+            "reproduction.command.run_unavailable",
+            f"published reproduction contains no command accounting for {subject}",
+        )
+    selected_run = runs[0]
+    if selected_run.command_outcomes is None:
+        raise ActionError(
+            "reproduction.command.details_unavailable",
+            f"command accounting predates bounded queries: {selected_run.run_id}",
+        )
+
+    from .reproduction_accounting import command_snapshot_index
+    from .reproduction_jobs import _find_run, _load_run, _plan_from_record
+
+    run_root = _find_run(log, selected_run.run_id)
+    plan = _plan_from_record(_load_run(run_root / "run.json"))
+    try:
+        snapshots = command_snapshot_index(plan)
+    except CommandAccountingError as error:
+        raise ActionError(
+            "reproduction.command.details_unavailable", str(error)
+        ) from error
+    if not snapshots:
+        raise ActionError(
+            "reproduction.command.details_unavailable",
+            f"accepted run has no per-command snapshot: {selected_run.run_id}",
+        )
+
+    current = project_reproduction_command_details(log, plan.target)
+    details = {
+        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
+        for item in current
+    }
+    if len(details) != len(current) or not set(snapshots) <= set(details):
+        raise ActionError(
+            "reproduction.command.details_unavailable",
+            "current command metadata no longer matches the accepted run",
+        )
+    terminal = {
+        (item.entry, item.execution_id): item
+        for item in results.commands
+        if item.run_id == selected_run.run_id
+    }
+    records: list[dict[str, object]] = []
+    for key, detail in sorted(details.items()):
+        snapshot = snapshots.get(key)
+        leaf, reason, extra = _command_accounting_identity(
+            detail,
+            snapshot=snapshot,
+            terminal=terminal,
+            include_all=selected_run.include_all,
+            plan=plan,
+        )
+        records.append(
+            {
+                **dict(detail),
+                "bucket": _command_bucket(leaf),
+                "command": _recorded_command(detail),
+                "details": extra,
+                "reason": reason,
+                "run_selection": (
+                    snapshot.get("selection") if snapshot is not None else None
+                ),
+            }
+        )
+    _verify_command_record_counts(records, selected_run.command_outcomes)
+    return records, results, selected_run
+
+
+def _command_accounting_identity(
+    detail: Mapping[str, object],
+    *,
+    snapshot: Mapping[str, object] | None,
+    terminal: Mapping[tuple[str, str], object],
+    include_all: bool,
+    plan: ReproductionPlan,
+) -> tuple[str, str, list[str]]:
+    key = (cast(str, detail["entry"]), cast(str, detail["execution_id"]))
+    if snapshot is None:
+        if (
+            not include_all
+            and detail["requires_reproduction"] is True
+            and detail["auto_reproduce"] is False
+        ):
+            return "not_automatic", "not_automatic", []
+        return "reproduction_not_needed", "reproduction_not_needed", []
+    selection = snapshot["selection"]
+    if selection == "not_needed":
+        return "reproduction_not_needed", "reproduction_not_needed", []
+    if selection == "unchanged":
+        leaf = f"unchanged_{snapshot['prior_disposition']}"
+        return leaf, leaf, []
+    result = terminal.get(key)
+    if result is None:
+        raise ActionError(
+            "reproduction.command.details_unavailable",
+            f"terminal command record is unavailable: {key[0]}:{key[1]}",
+        )
+    disposition = cast(str, getattr(result, "disposition"))
+    reasons = sorted(
+        {
+            cast(str, case["reason"])
+            for case in plan.cases
+            if case.get("entry") == key[0]
+            and case.get("execution_id") == key[1]
+            and isinstance(case.get("reason"), str)
+        }
+    )
+    return disposition, reasons[0] if len(reasons) == 1 else disposition, reasons
+
+
+def _command_bucket(leaf: str) -> str:
+    if leaf in {
+        "reproduction_not_needed",
+        "unchanged_failed",
+        "unchanged_blocked",
+    }:
+        return "reproduction-not-retried"
+    if leaf == "not_automatic":
+        return "skipped-by-policy"
+    return leaf
+
+
+def _recorded_command(detail: Mapping[str, object]) -> str:
+    recipe = cast(Mapping[str, object], detail["recipe"])
+    arguments = [
+        "<project>/.conda/bin/python",
+        cast(str, recipe["script"]),
+        *cast(Sequence[str], recipe["parameters"]),
+    ]
+    return shlex.join(arguments)
+
+
+def _command_list_record(record: Mapping[str, object]) -> dict[str, object]:
+    return {
+        name: record[name]
+        for name in (
+            "auto_reproduce",
+            "bucket",
+            "command",
+            "cwd",
+            "entry",
+            "execution_id",
+            "reason",
+        )
+    }
+
+
+def _verify_command_record_counts(
+    records: Sequence[Mapping[str, object]], expected: Mapping[str, int]
+) -> None:
+    counts = {name: 0 for name in COMMAND_REASONS}
+    for record in records:
+        reason = cast(str, record["reason"])
+        leaf = (
+            cast(str, record["bucket"])
+            if record["bucket"] in {"succeeded", "failed", "blocked"}
+            else "not_automatic"
+            if record["bucket"] == "skipped-by-policy"
+            else reason
+        )
+        if leaf not in counts:
+            raise ActionError(
+                "reproduction.command.details_unavailable",
+                f"command accounting reason is unsupported: {leaf}",
+            )
+        counts[leaf] += 1
+    actual = {**counts, "total": len(records)}
+    if actual != dict(expected):
+        raise ActionError(
+            "reproduction.command.details_unavailable",
+            "current command metadata no longer reconciles with published run counts",
+        )
 
 
 def _current(

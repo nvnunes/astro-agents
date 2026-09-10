@@ -437,6 +437,60 @@ def project_reproduction_command_inventory(
     return ReproductionCommandInventory(total, policy_skipped)
 
 
+def project_reproduction_command_details(
+    log: LogContext, target: Mapping[str, object]
+) -> tuple[Mapping[str, object], ...]:
+    """Project every current command recipe in one log or entry target."""
+
+    project_root = resolve_project_root(log.root)
+    contexts = _entry_contexts(log)
+    kind = target.get("kind")
+    entry = target.get("entry")
+    if kind == "entry" and isinstance(entry, str):
+        contexts = tuple(context for context in contexts if context.id == entry)
+        if not contexts:
+            raise ActionError(
+                "reproduction.entry.unknown", f"unknown reproduction entry: {entry}"
+            )
+    elif target != {"entry": None, "kind": "log"}:
+        raise ActionError(
+            "reproduction.target.invalid", "reproduction target is invalid"
+        )
+
+    details: list[Mapping[str, object]] = []
+    for context in contexts:
+        path = context.root / "pyrun.json"
+        try:
+            state = (
+                load_pyrun_state(
+                    path,
+                    entry_root=context.root,
+                    project_root=project_root,
+                )
+                if path.is_file() or path.is_symlink()
+                else empty_pyrun_state(context.root)
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            raise ActionError(
+                str(getattr(error, "code", "reproduction.metadata.invalid")),
+                str(error),
+            ) from error
+        cwd = context.root.resolve().relative_to(project_root).as_posix()
+        for execution_id, execution in sorted(state.executions.items()):
+            details.append(
+                {
+                    "auto_reproduce": execution.auto_reproduce,
+                    "cwd": cwd,
+                    "entry": context.id,
+                    "execution_id": execution_id,
+                    "exclusive": execution.exclusive,
+                    "recipe": execution.recipe.as_dict(),
+                    "requires_reproduction": execution.requires_reproduction,
+                }
+            )
+    return tuple(details)
+
+
 def _load_entries(
     log: LogContext,
     project_root: Path,

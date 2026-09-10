@@ -787,6 +787,8 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         return _dispatch_reproduction_report(arguments[1:])
     if arguments and arguments[0] == "artifacts":
         return _dispatch_reproduction_artifacts(arguments[1:])
+    if arguments and arguments[0] == "commands":
+        return _dispatch_reproduction_commands(arguments[1:])
     if arguments and arguments[0] == "promote":
         parser = argparse.ArgumentParser(prog="log reproduce promote")
         parser.add_argument("--path", required=True, type=Path)
@@ -929,6 +931,60 @@ def _dispatch_reproduction_artifacts(arguments: Sequence[str]) -> int:
             log, entry=args.entry, artifact=args.artifact
         )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="log reproduce commands")
+    actions = parser.add_subparsers(dest="action", required=True)
+    listing = actions.add_parser("list", help="List completed-run command accounting")
+    listing.add_argument("--path", required=True, type=Path)
+    listing.add_argument("--bucket")
+    listing.add_argument("--entry")
+    listing.add_argument("--reason")
+    listing.add_argument("--run-id")
+    showing = actions.add_parser("show", help="Show one accounted command")
+    showing.add_argument("--path", required=True, type=Path)
+    showing.add_argument("--entry", required=True)
+    showing.add_argument("--execution-id", required=True)
+    showing.add_argument("--run-id")
+    for subparser in (listing, showing):
+        subparser.add_argument("--format", choices=("text", "json"), default="text")
+    args = parser.parse_args(arguments)
+    from .reproduction_queries import (
+        compose_reproduction_command,
+        compose_reproduction_command_list,
+        list_reproduction_commands,
+        show_reproduction_command,
+    )
+
+    log = resolve_log(args.path)
+    if args.action == "list":
+        result = list_reproduction_commands(
+            log,
+            bucket=args.bucket,
+            entry=args.entry,
+            reason=args.reason,
+            run_id=args.run_id,
+        )
+        output = (
+            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+            if args.format == "json"
+            else compose_reproduction_command_list(result)
+        )
+    else:
+        result = show_reproduction_command(
+            log,
+            entry=args.entry,
+            execution_id=args.execution_id,
+            run_id=args.run_id,
+        )
+        output = (
+            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+            if args.format == "json"
+            else compose_reproduction_command(result)
+        )
+    print(output, end="")
     return 0
 
 

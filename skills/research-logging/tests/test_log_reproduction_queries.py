@@ -17,8 +17,10 @@ from log_commands.reproduction_planner import (
     ReproductionStateProjection,
 )
 from log_commands.reproduction_queries import (
+    compose_reproduction_command_list,
     compose_root_reproduction_summary,
     list_reproduction_artifacts,
+    list_reproduction_commands,
     reproduction_reconciliation_text,
     reproduction_report,
     reproduction_summary,
@@ -27,6 +29,7 @@ from log_commands.reproduction_queries import (
 )
 from log_commands.reproduction_results import (
     ArtifactResult,
+    CommandResult,
     ComparisonRecord,
     ReproductionResults,
     RunFolder,
@@ -394,6 +397,188 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn('"matched": 0', output.getvalue())
 
+        output = StringIO()
+        with (
+            mock.patch("log_commands.dispatcher.resolve_log", return_value=log),
+            mock.patch(
+                "log_commands.reproduction_queries.list_reproduction_commands",
+                return_value={
+                    "filters": {"bucket": "skipped-by-policy"},
+                    "matched": 30,
+                    "omitted": 0,
+                    "records": [],
+                    "returned": 30,
+                    "run_id": "reproduce-fixture",
+                },
+            ) as listing,
+            mock.patch(
+                "log_commands.reproduction_queries."
+                "compose_reproduction_command_list",
+                return_value="30 commands\n",
+            ),
+            redirect_stdout(output),
+        ):
+            status = main(
+                [
+                    "reproduce",
+                    "commands",
+                    "list",
+                    "--path",
+                    "/project/log",
+                    "--bucket",
+                    "skipped-by-policy",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue(), "30 commands\n")
+        listing.assert_called_once_with(
+            log,
+            bucket="skipped-by-policy",
+            entry=None,
+            reason=None,
+            run_id=None,
+        )
+
+    def test_command_list_reconstructs_and_reconciles_run_accounting(self) -> None:
+        run_id = "reproduce-20300101t000000z-commands"
+        succeeded_id = "pyrun-exec/v1:" + "1" * 64
+        unchanged_id = "pyrun-exec/v1:" + "2" * 64
+        skipped_id = "pyrun-exec/v1:" + "3" * 64
+        commands = (
+            {
+                "auto_reproduce": True,
+                "entry": "e002",
+                "execution_id": unchanged_id,
+                "prior_disposition": "failed",
+                "selection": "unchanged",
+                "source_digest": "2" * 64,
+            },
+            {
+                "auto_reproduce": True,
+                "entry": "e003",
+                "execution_id": succeeded_id,
+                "prior_disposition": None,
+                "selection": "run",
+                "source_digest": "1" * 64,
+            },
+        )
+        plan = ReproductionPlan(
+            "docs/research.md",
+            {"entry": None, "kind": "log"},
+            False,
+            {},
+            source_snapshot(
+                authority_files=(), commands=commands, executions=(), materials=()
+            ),
+            (),
+            (),
+            (),
+            (),
+        )
+        run = RunResult(
+            run_id,
+            {"entry": None, "kind": "log"},
+            False,
+            "complete",
+            "2030-01-01T00:00:00Z",
+            "2030-01-01T00:05:00Z",
+            {
+                name: 0
+                for name in (
+                    "matched",
+                    "changed",
+                    "failed",
+                    "comparison_failed",
+                    "skipped",
+                )
+            },
+            RunFolder("tmp/reproduction/2030-01-01/reproduce-commands", "available"),
+            (),
+            {
+                "blocked": 0,
+                "failed": 0,
+                "not_automatic": 1,
+                "reproduction_not_needed": 0,
+                "unchanged_blocked": 0,
+                "unchanged_failed": 1,
+                "succeeded": 1,
+                "total": 3,
+            },
+        )
+        results = ReproductionResults(
+            "docs/research.md",
+            "2030-01-01T00:05:00Z",
+            (),
+            (run,),
+            (
+                CommandResult(
+                    "e003",
+                    succeeded_id,
+                    "succeeded",
+                    "1" * 64,
+                    "2030-01-01T00:05:00Z",
+                    run_id,
+                ),
+            ),
+        )
+
+        def detail(entry: str, identity: str, *, automatic: bool) -> dict[str, object]:
+            return {
+                "auto_reproduce": automatic,
+                "cwd": f"docs/research/entries/2030-01-01-{entry}",
+                "entry": entry,
+                "execution_id": identity,
+                "exclusive": False,
+                "recipe": {
+                    "environment": {},
+                    "inputs": [],
+                    "outputs": {"data/result.txt": "file"},
+                    "parameters": ["--output", "data/result.txt"],
+                    "script": "scripts/build.py",
+                },
+                "requires_reproduction": True,
+            }
+
+        with (
+            mock.patch(
+                "log_commands.reproduction_queries._current",
+                return_value=(results, {}),
+            ),
+            mock.patch(
+                "log_commands.reproduction_queries."
+                "project_reproduction_command_details",
+                return_value=(
+                    detail("e001", skipped_id, automatic=False),
+                    detail("e002", unchanged_id, automatic=True),
+                    detail("e003", succeeded_id, automatic=True),
+                ),
+            ),
+            mock.patch(
+                "log_commands.reproduction_jobs._find_run",
+                return_value=Path("/run"),
+            ),
+            mock.patch("log_commands.reproduction_jobs._load_run", return_value={}),
+            mock.patch(
+                "log_commands.reproduction_jobs._plan_from_record", return_value=plan
+            ),
+        ):
+            listing = list_reproduction_commands(
+                mock.sentinel.log,
+                bucket="skipped-by-policy",
+                entry=None,
+                reason=None,
+                run_id=None,
+            )
+
+        self.assertEqual((listing["matched"], listing["returned"]), (1, 1))
+        self.assertEqual(listing["records"][0]["entry"], "e001")
+        self.assertIn(
+            "'<project>/.conda/bin/python' scripts/build.py",
+            listing["records"][0]["command"],
+        )
+        self.assertIn("skipped-by-policy", compose_reproduction_command_list(listing))
+
     def test_dispatcher_limits_recheck_to_launch_and_dry_run(self) -> None:
         log = mock.sentinel.log
         plan = mock.Mock()
@@ -473,6 +658,7 @@ class ReproductionQueryTests(unittest.TestCase):
             ],
             ["report", "--path", "/project/log"],
             ["artifacts", "list", "--path", "/project/log"],
+            ["commands", "list", "--path", "/project/log"],
             [
                 "artifacts",
                 "show",

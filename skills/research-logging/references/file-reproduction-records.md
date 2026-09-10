@@ -28,7 +28,10 @@ per-run command accounting, and run history.
 parse either file during ordinary work; use
 `log reproduce report --path <log> --summary` for the compact per-log view,
 `log reproduce report --root <project> --summary` for the cross-log view, and
-the complete report or bounded artifact `list` and `show` routes for detail.
+the complete report or bounded artifact and command `list` and `show` routes
+for detail. Use command queries to enumerate the execution units behind a
+compact command count; do not derive those lists by parsing this generated
+record.
 
 The machine record is disposable and rebuildable by reproduction. Removing it
 discards local result history and unchanged failure and block dispositions.

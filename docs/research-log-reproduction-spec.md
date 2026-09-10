@@ -2185,6 +2185,38 @@ publication time, and fail precisely for absent, ambiguous, malformed, or
 unsupported state. They never validate, reproduce, repair, publish, clean up,
 or write a file. Run-specific diagnosis remains on `status --json`.
 
+### Bounded Command Queries
+
+Agents inspect the command units behind compact command counts through:
+
+```text
+log reproduce commands list --path LOG [--bucket BUCKET] [--entry ENTRY] [--reason REASON] [--run-id RUN_ID] [--format text|json]
+log reproduce commands show --path LOG --entry ENTRY --execution-id EXECUTION_ID [--run-id RUN_ID] [--format text|json]
+```
+
+Without `--run-id`, both commands select the latest completed run. `list`
+returns at most 50 deterministic records and always reports exact matched,
+returned, and omitted counts. Its public buckets are
+`reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
+`blocked`; entry, bucket, and exact reason filters are combinable. `show`
+returns one exact entry-qualified execution, including its recorded recipe,
+working directory, automatic-reproduction policy, run selection, accounting
+reason, declared inputs and outputs, and any available planning detail.
+
+These queries use the same seven-category accounting projection that produced
+the selected run's compact counts. They reconcile every projected row against
+the published totals before returning it. Recipe detail for commands that were
+outside the accepted evidence graph comes from current `pyrun.json`, because
+result schema v6 retained their count but not their complete recipes. If the
+current command inventory no longer agrees with the selected run, or a prior
+run's terminal records have since been superseded, the query fails with
+`details_unavailable` rather than returning a partial or misleading list. A
+subsequent completed reproduction establishes a new queryable latest run.
+
+Both commands are bounded read-only queries. They never validate, reproduce,
+repair, publish, clean up, or write a file. Operational lifecycle diagnosis
+remains on `status --json`.
+
 ### Agent Monitoring
 
 After launching a durable job, an agent may offer to create a scheduled status

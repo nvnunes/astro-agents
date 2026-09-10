@@ -2796,6 +2796,21 @@ does not connect an otherwise unreached artifact or suppress a Hygiene finding.
 
 ### Command Tokens And Roles
 
+Both runners supply absolute paths for declared filesystem arguments, including
+file and directory inputs and outputs. Ordinary relative outputs resolve
+through output bindings against the entry; reproduction redirects those same
+bindings to its workspace. Scalars and recorded recipe identities remain
+unchanged. Existing declaration, fingerprint, and symlink checks still apply:
+`<project>` and `<log>` placeholders alone declare no dependency. Scripts must
+consume supplied paths without source-layout assumptions and pass them to
+helpers and children. Additional files previously selected by paths embedded
+in input contents need explicit declared parameters, including existing
+directory-member tokens where appropriate. Stored paths may remain descriptive
+metadata. Missing declarations or helper imports require script fixes; no
+embedded-path resolver or import-discovery framework is introduced. Direct
+Python execution gains no runner behavior.
+
+
 Every command in every `bash`, `console`, `sh`, `shell`, or `zsh` fence must be
 a direct `pyrun` invocation or part of the closed finite-loop grammar below.
 All such fences are checked for conformance. Only fences in an entry section
@@ -2949,8 +2964,16 @@ execution signature and child environment. Duplicate names, malformed names,
 and runner-managed names are invalid. Each run receives fresh temporary
 directories for `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and its private Python code
 observer state. The observer's private environment is not part of the
-execution signature. Script filenames receive no command-argument provenance
-classification.
+execution signature. Each command also receives a fresh, unique scratch
+directory under `/private/tmp`, assigned through `TMPDIR` after authored values.
+Scripts use `tempfile` without a hardcoded temporary root; children inherit the
+environment and must finish before the ordinary wrapper returns. Scratch is
+removed after execution and is separate from retained outputs, caches,
+diagnostics, and checkpoints. Its assigned path and runner-added environment
+are outside recipe identity. Reproduction supervision, confinement, cleanup,
+and recovery follow the reproduction specification's Execution Safety
+contract. Scripts relying on relative output argument spelling need migration.
+Script filenames receive no command-argument provenance classification.
 
 The exact entry-local `data` and `images` directories are shared artifact-tree
 roots, not material artifacts or collections. An unclassified argument that
@@ -3204,8 +3227,8 @@ root, or `provenance.root.missing` check.
 
 Validation finds current command signatures through bounded static expansion of
 the entry and all its subentry Markdown files. `pyrun` does not parse Markdown
-or attempt to identify the command that called it. The entry-root working
-directory identifies record ownership; subentries intentionally share that
+or attempt to identify the command that called it. The enclosing entry of the
+working directory identifies record ownership; subentries intentionally share that
 entry-level command and output-support surface.
 
 The resulting claim is bounded: the retained evidence artifact is connected to

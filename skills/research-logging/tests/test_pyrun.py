@@ -6,9 +6,11 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -573,6 +575,123 @@ class PyrunResolutionTests(unittest.TestCase):
 
 
 class PyrunOutputSupportTests(unittest.TestCase):
+    def test_interrupt_waits_for_child_before_removing_scratch(self) -> None:
+        for captured in (False, True):
+            for ignore_termination in (False, True):
+                with self.subTest(captured=captured, ignore=ignore_termination):
+                    self._check_interrupted_child(captured, ignore_termination)
+
+    def _check_interrupted_child(
+        self, captured: bool, ignore_termination: bool
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            script = entry / "scripts/interruption.py"
+            script.write_text(
+                "import json, os, signal, sys, time\n"
+                "from pathlib import Path\n"
+                "ready = Path(sys.argv[1])\n"
+                "scratch = Path(os.environ['TMPDIR'])\n"
+                "def stopped(signum, frame):\n"
+                " assert scratch.is_dir()\n"
+                " ready.with_suffix('.stopped').write_text('scratch still present')\n"
+                " sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN if "
+                "sys.argv[2] == 'ignore' else stopped)\n"
+                "ready.write_text(json.dumps([os.getpid(), str(scratch)]))\n"
+                "while True: time.sleep(0.1)\n"
+            )
+            arguments = ["--capture-stdout", "data/run.log"] if captured else []
+            arguments += [
+                "--other-outputs",
+                "@1",
+                "--",
+                "scripts/interruption.py",
+                "data/ready.json",
+                "ignore" if ignore_termination else "stop",
+            ]
+            ready = entry / "data/ready.json"
+            child_pid = None
+            with subprocess.Popen(
+                [sys.executable, str(PYRUN), *arguments],
+                cwd=entry,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ) as runner:
+                try:
+                    deadline = time.monotonic() + 5
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertTrue(ready.exists(), "child failed to start")
+                    child_pid, scratch = json.loads(ready.read_text())
+                    runner.send_signal(signal.SIGINT)
+                    self.assertNotEqual(runner.wait(timeout=10), 0)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(child_pid, 0)
+                    self.assertFalse(Path(scratch).exists())
+                    self.assertEqual(
+                        ready.with_suffix(".stopped").exists(), not ignore_termination
+                    )
+                    self.assertFalse((entry / "pyrun.json").exists())
+                finally:
+                    if runner.poll() is None:
+                        runner.kill()
+                        runner.wait(timeout=5)
+                    if child_pid is not None:
+                        try:
+                            os.kill(child_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    def test_nested_execution_passes_absolute_outputs_and_fresh_scratch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            nested = entry / "scripts/nested"
+            nested.mkdir()
+            (entry / "scripts/paths.py").write_text(
+                "import json, os, sys, tempfile\n"
+                "from pathlib import Path\n"
+                "output = Path(sys.argv[1])\n"
+                "assert output.is_absolute()\n"
+                "assert Path(sys.argv[2]).is_absolute()\n"
+                "scratch = Path(os.environ['TMPDIR'])\n"
+                "assert list(scratch.iterdir()) == []\n"
+                "with tempfile.NamedTemporaryFile() as handle:\n"
+                " assert Path(handle.name).parent == scratch\n"
+                "output.write_text(json.dumps([str(scratch), sys.argv[3]]))\n"
+                "sys.exit(int(sys.argv[3]))\n"
+            )
+            paths = []
+            for code in ("0", "7", "0"):
+                result = run(
+                    [
+                        sys.executable,
+                        str(PYRUN),
+                        "--other-outputs",
+                        "@1",
+                        "--other-inputs",
+                        "@2",
+                        "--",
+                        "scripts/paths.py",
+                        "data/paths.json",
+                        "<input_csv>",
+                        code,
+                    ],
+                    cwd=nested,
+                )
+                self.assertEqual(result.returncode, int(code), result.stderr)
+                scratch, observed = json.loads((entry / "data/paths.json").read_text())
+                self.assertEqual(observed, code)
+                self.assertEqual(Path(scratch).parent, Path("/private/tmp"))
+                self.assertFalse(Path(scratch).exists())
+                paths.append(scratch)
+            self.assertEqual(len(set(paths)), len(paths))
+            recipe = execution_for_output(entry, "data/paths.json")["recipe"]
+            self.assertNotIn("TMPDIR", recipe["environment"])
+            self.assertIn("data/paths.json", recipe["parameters"])
+
     def test_execution_receives_explicit_and_isolated_managed_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

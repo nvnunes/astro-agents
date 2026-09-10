@@ -1420,28 +1420,70 @@ earlier selected execution, it substitutes the regenerated path from the same
 run workspace. Comparison reads the retained artifact as its immutable
 baseline. No retained input or baseline is copied into the workspace.
 
-Recipes execute from the workspace's mirrored entry directory. The executor
-uses the project-local Python environment and recorded execution environment.
-Runner-owned temporary and cache locations, including `MPLCONFIGDIR` and
-`XDG_CACHE_HOME`, are located inside the run's allowed paths.
+Both ordinary `pyrun` and reproduction pass absolute paths for declared file
+and directory inputs and outputs. Ordinary output bindings resolve relative
+targets against the entry, even when launched from a nested working directory;
+project output identities and captures retain their existing bindings.
+Reproduction substitutes regenerated files and directory members exactly and
+fails when required regenerated material is absent. It never falls back to old
+material. Scalar arguments, including commit projections, and recipe identity
+are unchanged by runner substitution.
+
+Scripts consume the supplied paths without source-entry or working-directory
+assumptions and pass them to helpers and children. A path embedded in input
+contents must not select an additional file: expose that file as an explicit
+declared parameter, using existing directory/member declarations where
+appropriate. Stored paths may remain descriptive metadata. Missing declarations
+and helper imports are script repairs under existing mechanisms; there is no
+embedded-path resolver or code-discovery framework. Scripts relying on relative
+output argument spelling need migration. Direct Python execution gains no
+runner resolution or recording behavior.
+
+Recipes execute from the workspace's mirrored entry directory using the
+project-local Python and recorded environment. Each attempt receives distinct
+runtime cache and diagnostic roots. `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and
+`MATLAB_PREFDIR` remain under its runtime root.
+
+Both runners create fresh, unique scratch directories under `/private/tmp`
+before launching each command and assign `TMPDIR` after authored environment
+values. Children inherit it. Scripts use `tempfile` without a hardcoded root;
+libraries and children may receive explicit paths created through `tempfile`.
+Users and research agents supply no scratch path. Runner-added paths and
+environment values do not enter recipe identity.
+
+Scratch is separate from declared inputs/outputs, caches, diagnostics, and
+checkpoints. Reproduction records its assigned absolute scratch path in
+`<run-root>/scratch/<entry>/<execution-digest>.json` before launch. This private
+execution-state record is a JSON string and is removed only after scratch
+cleanup succeeds. It is not a dependency, checkpoint, or resume input.
+Confinement permits the assigned scratch directory and its contents alongside
+the attempt's run, runtime, and diagnostic roots, preserving read-only retained
+boundaries and restrictions on unrelated paths.
+
+Both runners remove scratch after success, failure, timeout, or stop once
+workers finish. Ordinary scripts must finish children before returning.
+Reproduction retains cleanup ownership while workers remain alive and blocks
+reuse until workers stop and scratch is removed. Cleanup failures are reported;
+scratch is never retained for debugging. Completed results may be reused under
+existing resume rules, but every relaunched command receives empty scratch.
+Abrupt runner or host termination can leave scratch behind. Recovery confirms
+workers are gone and removes recorded reproduction scratch before relaunch;
+it never treats leftovers as reusable state or sweeps unrelated ordinary
+temporary directories.
 
 For parallel execution, each attempt receives a distinct mirrored entry run
-directory and runner-temporary root. Its writable confinement is exactly that run directory, declared
-output targets outside that directory, runner capture targets, and its private
-temporary and diagnostic roots. Those paths form the accepted `run_path`,
-`write_paths`, and `writable_paths` claims. Regenerated dependencies are made
-read-only to consumers after their producer checkpoint is durable. The
-supervisor, not a child process, performs any atomic materialization into a
-shared dependency location. Two independent executions in the same entry may
-therefore run concurrently when their logical output, input, and writable
-claims do not conflict; a resumed `stopped` attempt reuses its original run path.
-
-Generated outputs, temporary files, checkpoints, captures, and diagnostics are
-confined to the attempt's declared run-owned paths. Retained scripts, participating code, inputs,
-boundaries, comparison baselines, and the project-local environment remain
-read-only. A script that accepts but ignores a substituted output and attempts
-another write fails at runtime; static inspection never substitutes for this
-control.
+directory. Its run directory, declared output targets outside that directory,
+capture targets, and private runtime and diagnostic roots form the accepted
+`run_path`, `write_paths`, and `writable_paths` claims. Fresh scratch is private
+to each launch and adds no shared scheduling claim. Regenerated dependencies become read-only to consumers after their
+producer checkpoint is durable. The supervisor performs atomic materialization
+into shared dependency locations. Independent executions in the same entry may
+run concurrently when their logical output, input, and writable claims do not
+conflict; a resumed stopped attempt reuses its original run path and receives
+new scratch. Retained scripts, participating code, inputs, boundaries,
+comparison baselines, and the project-local environment remain read-only.
+A script that ignores a substituted output and attempts an unrelated write
+fails at runtime; static inspection never substitutes for confinement.
 
 ### Network And External Effects
 

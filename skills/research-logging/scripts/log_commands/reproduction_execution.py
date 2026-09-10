@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -58,6 +59,7 @@ from .reproduction_contract import (
     successful_checkpoint_state,
 )
 from .reproduction_paths import canonical_run_root, checkpoint_temporary_path
+from .storage import atomic_write_text
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -542,7 +544,6 @@ def execute_planned_recipe(
     prior_started_at = prior.started_at if prior is not None else None
     prior_elapsed = prior.elapsed_seconds or 0.0 if prior is not None else 0.0
     backend = control.confinement or DarwinSeatbelt()
-    confined = _confined_command(backend, prepared.command, plan, workspace, prepared)
 
     def launched(started_at: str) -> None:
         _write_checkpoint(
@@ -556,9 +557,10 @@ def execute_planned_recipe(
             legacy=control.legacy,
         )
 
-    outcome, launched_at, active_elapsed = _run_prepared(
+    outcome, launched_at, active_elapsed = _run_with_scratch(
         prepared,
-        confined,
+        backend,
+        plan,
         workspace,
         _RunCallbacks(
             control.stop_requested,
@@ -640,6 +642,85 @@ def execute_planned_recipe(
         prepared.stdout.relative_to(workspace.run_root).as_posix(),
         prepared.stderr.relative_to(workspace.run_root).as_posix(),
     )
+
+
+def cleanup_reproduction_scratch(run_root: Path) -> None:
+    """Remove owned scratch only after the caller has confirmed workers stopped.
+
+    Durable ownership records are retained on failure, blocking relaunch until
+    recovery can complete. No unrelated temporary directories are inspected.
+    """
+
+    for record in sorted((run_root / "scratch").glob("*/*.json")):
+        _remove_execution_scratch(record)
+
+
+def _remove_execution_scratch(record: Path) -> None:
+    try:
+        if record.is_symlink():
+            raise ValueError(f"scratch record is a symlink: {record}")
+        value = json.loads(record.read_text(encoding="utf-8"))
+        path = Path(value)
+        if path.parent != Path("/private/tmp") or not path.name.startswith(
+            "reproduction-scratch-"
+        ):
+            raise ValueError(f"invalid scratch directory: {path}")
+        if path.is_symlink():
+            raise ValueError(f"scratch directory is a symlink: {path}")
+        if path.exists():
+            shutil.rmtree(path)
+        record.unlink()
+    except (OSError, TypeError, ValueError) as error:
+        raise ReproductionControlPlaneError(
+            ActionError("scratch_cleanup_incomplete", str(error)),
+            cleanup_incomplete=True,
+        ) from error
+
+
+def _run_with_scratch(
+    prepared: _PreparedExecution,
+    backend: ConfinementBackend,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    callbacks: _RunCallbacks,
+) -> tuple[_ProcessOutcome, str | None, float]:
+    record = (
+        workspace.run_root
+        / "scratch"
+        / prepared.entry
+        / f"{prepared.execution_id.rsplit(':', 1)[-1]}.json"
+    )
+    if record.exists() or record.is_symlink():
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "scratch_cleanup_incomplete", f"scratch recovery required: {record}"
+            ),
+            cleanup_incomplete=True,
+        )
+    scratch = Path(tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp"))
+    try:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        _control_plane_call(atomic_write_text, record, json.dumps(str(scratch)) + "\n")
+    except BaseException:
+        shutil.rmtree(scratch)
+        raise
+    prepared = replace(
+        prepared, environment={**prepared.environment, "TMPDIR": str(scratch)}
+    )
+    cleanup_pending = False
+    try:
+        command = _confined_command(
+            backend, prepared.command, plan, workspace, prepared
+        )
+        result = _run_prepared(prepared, command, workspace, callbacks)
+        cleanup_pending = any(worker.state == "running" for worker in result[0].workers)
+        return result
+    except ReproductionControlPlaneError as error:
+        cleanup_pending = error.cleanup_incomplete
+        raise
+    finally:
+        if not cleanup_pending:
+            _remove_execution_scratch(record)
 
 
 def _prepare_execution(
@@ -747,7 +828,8 @@ def _confined_command(
     readonly = _readonly_boundaries(plan, workspace)
     return backend.command(
         command,
-        writable_roots=(
+        writable_roots=(Path(prepared.environment["TMPDIR"]),)
+        + (
             (workspace.work_project, workspace.runtime_root)
             if prepared.legacy
             else (
@@ -1933,7 +2015,6 @@ def _execution_environment(
         "MPLCONFIGDIR": execution_root / "matplotlib",
         "XDG_CACHE_HOME": execution_root / "cache",
         "MATLAB_PREFDIR": execution_root / "matlab",
-        "TMPDIR": execution_root / "tmp",
     }
     for path in roots.values():
         path.mkdir(exist_ok=True)

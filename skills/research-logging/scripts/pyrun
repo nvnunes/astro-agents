@@ -178,8 +178,8 @@ def find_entry_root(cwd: Path, log: Path) -> Path | None:
 
 def require_entry_root(cwd: Path, log: Path) -> Path:
     entry = find_entry_root(cwd, log)
-    if entry is None or cwd.resolve() != entry:
-        raise SystemExit("pyrun: data operations must run from an entry root")
+    if entry is None:
+        raise SystemExit("pyrun: execution must run within an entry")
     return entry
 
 
@@ -490,7 +490,10 @@ def _run_with_captures(
 
     if not captures:
         process = subprocess.Popen(command, cwd=cwd, env=environment)
-        return process.wait(), process.pid
+        try:
+            return process.wait(), process.pid
+        finally:
+            _finish_process(process, ())
     capture_errors: list[BaseException] = []
     mirror_errors: list[BaseException] = []
     capture_failed = threading.Event()
@@ -517,6 +520,7 @@ def _run_with_captures(
             ),
         )
         pumps: list[threading.Thread] = []
+        stack.callback(_finish_process, process, pumps)
 
         if process.stdout is not None:
             option = (
@@ -566,6 +570,34 @@ def _run_with_captures(
         return returncode, process.pid
 
 
+def _finish_process(
+    process: subprocess.Popen[bytes], pumps: Iterable[threading.Thread]
+) -> None:
+    """Stop and reap a live child before closing captures or removing scratch."""
+
+    if process.poll() is None:
+        _terminate_process(process)
+    for thread in pumps:
+        thread.join()
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> int:
+    """Give the child a bounded shutdown interval, then kill and reap it."""
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        return process.wait(timeout=CAPTURE_TERMINATION_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        return process.wait()
+
+
 def _pump_captured_stream(
     source: BinaryIO,
     destination: BinaryIO,
@@ -609,18 +641,7 @@ def _wait_for_captured_process(
     while process.poll() is None:
         if not capture_failed.wait(CAPTURE_POLL_SECONDS):
             continue
-        try:
-            process.terminate()
-        except OSError:
-            pass
-        try:
-            return process.wait(timeout=CAPTURE_TERMINATION_SECONDS)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-            except OSError:
-                pass
-            return process.wait()
+        return _terminate_process(process)
     return process.wait()
 
 
@@ -826,7 +847,7 @@ def main(argv: list[str]) -> int:
                     tuple(output_paths), entry_root=entry, project_root=root
                 )
                 try:
-                    project_output_bindings(
+                    projection = project_output_bindings(
                         parameters,
                         {key: kind for key, (_path, kind) in output_paths.items()},
                         entry_root=entry,
@@ -835,13 +856,24 @@ def main(argv: list[str]) -> int:
                     )
                 except OutputBindingError as error:
                     raise SystemExit(f"pyrun: {error}") from error
+                for binding in projection.parameters:
+                    if binding.parameter_index is not None:
+                        resolved_arguments[binding.parameter_index] = (
+                            binding.substituted(output_paths[binding.output][0])
+                        )
             capture_paths = _capture_paths(captures, entry, root, log, data)
-            with tempfile.TemporaryDirectory(prefix="pyrun-") as temporary:
+            with (
+                tempfile.TemporaryDirectory(prefix="pyrun-") as temporary,
+                tempfile.TemporaryDirectory(
+                    prefix="pyrun-scratch-", dir="/private/tmp"
+                ) as scratch,
+            ):
                 environment, trace_directory = prepare_environment(
                     _execution_environment(explicit_env, Path(temporary)),
                     temporary_root=Path(temporary),
                     log_root=log,
                 )
+                environment["TMPDIR"] = scratch
                 returncode, root_pid = _run_with_captures(
                     [python_executable(root), str(script_path), *resolved_arguments],
                     capture_paths,

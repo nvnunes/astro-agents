@@ -53,6 +53,7 @@ from .reproduction_execution import (
     ExecutionControl,
     ReproductionWorkspace,
     WorkerRecord,
+    cleanup_reproduction_scratch,
     completed_execution_attempts,
     execute_reproduction_plan,
     open_existing_workspace,
@@ -1245,7 +1246,7 @@ def _finish_stopped(
     wait_for_retry: bool = True,
 ) -> None:
     latest = attempts[-1] if attempts else None
-    observed_survivors = _terminate_marked_workers(run_id)
+    observed_survivors = _stop_workers_and_clean_scratch(run_root, run_id)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
@@ -1470,7 +1471,7 @@ def _finish_failed(
 
 
 def _continue_failed_cleanup(log: LogContext, run_root: Path, run_id: str) -> bool:
-    survivors = _terminate_marked_workers(run_id)
+    survivors = _stop_workers_and_clean_scratch(run_root, run_id)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
@@ -1543,7 +1544,7 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> 
     ):
         _continue_failed_cleanup(log, run_root, run_id)
         return
-    survivors = _terminate_marked_workers(run_id)
+    survivors = _stop_workers_and_clean_scratch(run_root, run_id)
     if record.get("schema") == LEGACY_RUN_SCHEMA:
         for worker in survivors:
             cast(dict[str, object], worker).pop("entry", None)
@@ -1598,6 +1599,15 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> 
         timestamps = cast(dict[str, object], record["timestamps"])
         timestamps.update({"stopped_at": now, "updated_at": now})
         _write_run(run_root, record)
+
+
+def _stop_workers_and_clean_scratch(
+    run_root: Path, run_id: str
+) -> list[Mapping[str, object]]:
+    survivors = _terminate_marked_workers(run_id)
+    if not survivors:
+        cleanup_reproduction_scratch(run_root)
+    return survivors
 
 
 def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:

@@ -44,6 +44,22 @@ When writing entry or log scripts, pass input and output paths as command-line
 arguments. Do not hard-code project, log, entry, data, image, or output paths in
 scripts. Do not make ordinary analysis scripts read the input registry;
 `pyrun` resolves named inputs and passes their paths to the script.
+Both `pyrun` and reproduction supply absolute declared file/directory input and
+output paths. Consume them directly and pass them to helpers and children;
+do not reconstruct paths from `__file__`, parent counts, or source-entry layout.
+Expose additional files selected by paths embedded in input contents as explicit
+declared parameters, using existing directory/member tokens where appropriate.
+Stored paths may remain descriptive metadata. Repair missing declarations and
+helper imports through existing mechanisms; do not add an embedded-path resolver
+or discovery framework. Direct Python execution supplies no runner behavior.
+
+Use `tempfile` without a hardcoded temporary root for disposable intermediates.
+Both runners assign a fresh scratch directory under `/private/tmp` through
+`TMPDIR`; no researcher-supplied scratch path is needed. Pass created temporary
+paths to libraries and children as needed, and wait for children before returning.
+The runner removes scratch once workers stop, including on failure or stop.
+Never use it as a checkpoint, later input, cache, or retained debugging material;
+files needed later must be declared outputs. Every relaunch receives new scratch.
 
 Use the project-declared execution environment. If it is unavailable, report
 that before using another interpreter.

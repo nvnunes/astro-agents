@@ -24,7 +24,9 @@ checks. Record an executable command only when it is a valid `pyrun`
 invocation. Otherwise describe the historical command in prose and state the
 reconstruction or provenance limit; do not invent or rerun a replacement.
 
-Write commands from the entry root as the working directory. Put every
+Write recorded commands from the entry root as the working directory. The
+runner also accepts nested entry working directories and keeps declared script
+and output identities based at the entry. Put every
 recorded executable command in a `bash` fence under the applicable `Steps:`
 label. Every command in every shell-language fence must invoke `pyrun`
 directly. Non-`pyrun` reconstruction history belongs in prose, not a shell
@@ -70,6 +72,18 @@ angle tokens. Do not embed a token in `label=<name>` or another opaque value.
 `--env NAME=value` runner options only for additional result-affecting
 environment values. They require the `--` separator, are normalized into the
 execution signature, and cannot override the two runner-managed names.
+Both runners also create fresh scratch under `/private/tmp` and assign `TMPDIR`
+after authored environment values. Do not supply a scratch path; scripts use
+`tempfile` and finish children before returning. Scratch is removed once workers
+stop and is never a retained output or resume input.
+
+Both runners pass absolute declared file/directory input and output arguments.
+Relative ordinary output targets resolve against the entry through their output
+bindings. Consume supplied paths directly in scripts, helpers, and children.
+Additional files selected by stored paths inside input contents need explicit
+declared parameters; existing directory/member inputs remain valid. Stored paths
+can remain descriptive metadata. Relative output spelling assumptions and missing
+helper imports require script repairs.
 
 Treat each recorded command as a compact specification of the run. Expose
 result-defining values through named CLI options, including the dataset or

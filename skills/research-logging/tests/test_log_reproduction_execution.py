@@ -27,15 +27,17 @@ from log_commands.reproduction_execution import (
     _generated_output_paths,
     _load_checkpoint,
     _output_already_materialized,
+    _resolve_parameter,
     _seatbelt_profile,
     _write_checkpoint,
+    cleanup_reproduction_scratch,
     completed_execution_attempts,
     execute_planned_recipe,
     execute_reproduction_plan,
     populate_output_workspace,
     prepare_output_workspace,
 )
-from research_log_data import Fingerprint
+from research_log_data import Fingerprint, build_local_input, load_data_file
 from validation.pyrun_state import (
     ExecutionRecipe,
     ObservedExecution,
@@ -175,6 +177,155 @@ class _Fixture:
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_scratch_is_fresh_confined_and_cleaned_on_terminal_outcomes(self) -> None:
+        script = (
+            "import json, os, subprocess, sys, tempfile, time\n"
+            "from pathlib import Path\n"
+            "source, output = Path(sys.argv[2]), Path(sys.argv[4])\n"
+            "assert source.is_absolute() and output.is_absolute()\n"
+            "scratch = Path(os.environ['TMPDIR'])\n"
+            "assert scratch.parent == Path('/private/tmp')\n"
+            "assert list(scratch.iterdir()) == []\n"
+            "with tempfile.NamedTemporaryFile() as handle:\n"
+            " assert Path(handle.name).parent == scratch\n"
+            " subprocess.run([sys.executable, '-c', "
+            "'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(\"child\")', "
+            "handle.name], check=True, timeout=5)\n"
+            " assert Path(handle.name).read_text() == 'child'\n"
+            "Path(os.environ['XDG_CACHE_HOME'], 'cache').write_text('cache')\n"
+            "output.write_text(json.dumps(str(scratch)))\n"
+            "print(str(scratch), flush=True)\n"
+            "mode = source.read_text().strip()\n"
+            "if mode == 'failure': sys.exit(7)\n"
+            "if mode in ('timeout', 'stop'): time.sleep(30)\n"
+        )
+        paths = []
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), script)
+            workspace = fixture.workspace()
+            for mode in ("success", "failure", "timeout", "stop", "success"):
+                with self.subTest(mode=mode):
+                    fixture.source.write_text(mode)
+                    started = time.monotonic()
+                    attempt = execute_planned_recipe(
+                        fixture.log,
+                        fixture.plan,
+                        fixture.planned,
+                        workspace,
+                        ExecutionControl(
+                            confinement=(
+                                DarwinSeatbelt()
+                                if os.environ.get("REPRODUCTION_SANDBOX_TEST") == "1"
+                                else _FixtureConfinement()
+                            ),
+                            execution_timeout_seconds=1,
+                            stop_requested=lambda: (
+                                mode == "stop" and time.monotonic() - started > 0.5
+                            ),
+                        ),
+                    )
+                    scratch = Path(
+                        (workspace.run_root / attempt.stdout)
+                        .read_text()
+                        .splitlines()[-1]
+                    )
+                    paths.append(scratch)
+                    self.assertFalse(scratch.exists())
+                    self.assertEqual(
+                        list((workspace.run_root / "scratch").glob("*/*.json")), []
+                    )
+                    self.assertTrue(
+                        (workspace.run_root / attempt.checkpoint.path).is_file()
+                    )
+                    self.assertTrue(list(workspace.runtime_root.glob("**/cache/cache")))
+                    self.assertTrue(attempt.checkpoint.outputs)
+                    self.assertEqual(
+                        attempt.checkpoint.state,
+                        "succeeded"
+                        if mode == "success"
+                        else "stopped"
+                        if mode == "stop"
+                        else "failed",
+                    )
+            self.assertEqual(len(set(paths)), len(paths))
+
+    def test_recovery_removes_only_owned_scratch_and_reports_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = root / "scratch/e001/attempt.json"
+            record.parent.mkdir(parents=True)
+            scratch = Path(
+                tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp")
+            )
+            try:
+                (scratch / "leftover").write_text("abandoned")
+                record.write_text(json.dumps(str(scratch)))
+                with mock.patch(
+                    "log_commands.reproduction_execution.shutil.rmtree",
+                    side_effect=OSError("cleanup failed"),
+                ):
+                    with self.assertRaisesRegex(
+                        ReproductionControlPlaneError, "cleanup failed"
+                    ):
+                        cleanup_reproduction_scratch(root)
+                self.assertTrue(record.exists())
+                cleanup_reproduction_scratch(root)
+                self.assertFalse(scratch.exists())
+                self.assertFalse(record.exists())
+            finally:
+                if scratch.exists():
+                    import shutil
+
+                    shutil.rmtree(scratch)
+
+    def test_regenerated_directory_members_never_fall_back_to_retained_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory), "print('unused')\n")
+            collection = fixture.entry_root / "data/collection"
+            collection.mkdir()
+            (collection / "member.txt").write_text("retained")
+            resource = build_local_input(
+                "collection",
+                "directory",
+                "data/collection",
+                entry_root=fixture.entry_root,
+                origin=True,
+            )
+            fixture.data["inputs"].append(resource.as_dict())
+            path = fixture.entry_root / "data.json"
+            path.write_text(json.dumps(fixture.data))
+            data = load_data_file(path, entry_root=fixture.entry_root)
+            workspace = fixture.workspace()
+            regenerated = workspace.work_project / "regenerated"
+
+            def resolve(token, generated):
+                return _resolve_parameter(
+                    token,
+                    data=data,
+                    source_log=fixture.log_root,
+                    workspace=workspace,
+                    generated=generated,
+                )
+
+            self.assertEqual(resolve("<source>", {}), str(fixture.source.resolve()))
+            self.assertEqual(resolve("42", {}), "42")
+            mapping = {collection.resolve(): (regenerated, "directory")}
+            with self.assertRaisesRegex(
+                ActionError, "regenerated input is unavailable"
+            ):
+                resolve("<collection>/member.txt", mapping)
+            regenerated.mkdir()
+            (regenerated / "member.txt").write_text("regenerated")
+            self.assertEqual(resolve("<collection>", mapping), str(regenerated))
+            self.assertEqual(
+                resolve("<collection>/member.txt", mapping),
+                str(regenerated / "member.txt"),
+            )
+            with self.assertRaises(ActionError):
+                resolve("<undeclared>", {})
+
     def test_continuation_populates_workspace_beside_archived_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory), "print('unused')\n")
@@ -484,7 +635,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 (workspace.map_source(fixture.entry_root) / "scratch.txt").exists()
             )
             self.assertEqual(
-                set(confinement.writable_roots),
+                set(confinement.writable_roots[1:]),
                 {
                     attempt_root,
                     workspace.runtime_root / "e001" / tail,
@@ -653,8 +804,10 @@ class ReproductionExecutionTests(unittest.TestCase):
                     return_value=(),
                 ) as stop_all,
                 mock.patch(
-                    "log_commands.reproduction_execution.os.replace",
-                    side_effect=OSError("checkpoint write failed"),
+                    "log_commands.reproduction_execution._write_checkpoint",
+                    side_effect=ReproductionControlPlaneError(
+                        OSError("checkpoint write failed")
+                    ),
                 ),
             ):
                 with self.assertRaisesRegex(

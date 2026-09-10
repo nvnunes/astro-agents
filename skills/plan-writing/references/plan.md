@@ -25,6 +25,12 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
   registry.
 - Mark unresolved choices beside the work they affect. Distinguish choices that
   block progress from details that can be resolved during implementation.
+- Give every main agent plan a top-level `## Execution Record`. Organize its
+  top-level entries by Phase and nest Parts and Tasks beneath them. Use the
+  plan's highest-level work units when those levels do not apply. Initialize
+  one `not started` entry for each Phase or highest-level work unit, identified
+  by its plan identifier and title. Add nested Part and Task entries only when
+  they are executed separately or need distinct state.
 
 ## Execution Detail
 - Use concrete action verbs and identify the affected artifacts or behavior.

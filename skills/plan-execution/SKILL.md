@@ -1,6 +1,6 @@
 ---
 name: plan-execution
-description: Implement or resume work governed by an existing plan, coordinate explicitly authorized sub-agents for named shard files, maintain progress, perform prescribed checks, and complete planned work. Use plan-writing for initial design, sharding, delegation changes, or substantive scope/contract redesign.
+description: Implement or resume work governed by an existing plan, coordinate explicitly authorized subagents for named plan files, maintain progress, perform prescribed checks, and complete planned work. Use plan-writing for initial design, sharding, delegation changes, or substantive scope/contract redesign.
 ---
 
 # Plan Execution
@@ -36,16 +36,7 @@ When work is expensive:
 
 After reading the assigned plan:
 
-- If it identifies a parent agent, read `references/sub-agent.md`.
-- If it calls for you to start sub-agents, read `references/delegation.md`
+- If you are a subagent, read `references/sub-agent.md`.
+- If it calls for you to start subagents, read `references/delegation.md`
   before starting one.
-
-Both conditions may apply.
-
-## Maintain Or Revise The Plan
-
-- Update the plan's existing progress record as work advances.
-- Record decisions and blockers only when they affect remaining work, and put
-  them with that work. Do not add progress narration.
-- If execution requires changing the planned scope, order, requirements,
-  structure, or sub-agent assignments, stop and use `$plan-writing`.
+- If you are not a subagent, also read `references/plan-maintenance.md`.

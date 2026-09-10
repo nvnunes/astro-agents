@@ -69,14 +69,16 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/6` |
-| Per-log summary | `research-log-reproduction-summary/4` |
-| Cross-log summary | `research-log-reproduction-root-summary/4` |
-| Durable run state | `research-log-reproduction-run/3` |
-| Run status projection | `research-log-reproduction-status/3` |
-| Dry-run plan | `research-log-reproduction-plan/3` |
+| Reproduction result | `research-log-reproduction-result/7` |
+| Per-log summary | `research-log-reproduction-summary/5` |
+| Cross-log summary | `research-log-reproduction-root-summary/5` |
+| Durable run state | `research-log-reproduction-run/4` |
+| Run status projection | `research-log-reproduction-status/4` |
+| Dry-run plan | `research-log-reproduction-plan/4` |
+| Command list | `research-log-reproduction-command-list/2` |
+| Command detail | `research-log-reproduction-command/2` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/6` |
+| Source snapshot | `research-log-reproduction-source-snapshot/7` |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -935,7 +937,7 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/3` projection with exactly
+deterministic `research-log-reproduction-plan/4` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`, `validation_snapshot`,
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
 
@@ -982,12 +984,17 @@ file digests cover the exact completed result and batch projection;
 projection. Reproduction treats these values as immutable currentness tokens.
 
 The source snapshot uses
-`research-log-reproduction-source-snapshot/6` and has exactly `schema`,
+`research-log-reproduction-source-snapshot/7` and has exactly `schema`,
 `authority_files`, `commands`, `executions`, and `materials`. `authority_files` records the
 canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
-for the plan. `commands` records every evidence-relevant command's entry,
-execution ID, automatic policy, `run`, `not_needed`, `unchanged`, or `blocked`
-selection, nullable prior disposition, and source-closure digest. The prior
+for the plan. `commands` records every command in the target. Each record has
+the entry, execution ID, recorded recipe and working directory, automatic and
+exclusive policy flags, whether the initial policy queued it, whether it
+required reproduction at acceptance, `run`, `not_needed`, `policy`,
+`unchanged`, or `blocked` selection, planning detail, nullable prior
+disposition, and nullable source-closure digest. Commands omitted by the
+automatic policy have `selection: "policy"`, `queued: false`, and no source
+digest. The prior
 disposition is `failed` or `blocked` exactly when selection is `unchanged` and
 is null otherwise. `executions` records each runnable execution ID and the SHA-256
 digest of its canonical execution record after omitting only the mutable
@@ -998,11 +1005,13 @@ identity, role, kind, and closed fingerprint. All arrays are unique and
 canonically sorted.
 
 At acceptance, the CLI verifies the validation result, batch projection, and
-complete source snapshot. At execution, resume, and final reproduction-
-publication boundaries it rechecks the accepted validation files and source
-snapshot; comparison and reproduction-requirement updates remain inside the
-same accepted scope lock. This permits the run's own requirement-clearing
-writes while still rejecting any
+complete source snapshot. At execution and final publication boundaries it
+rechecks the active attempt's accepted validation files and source snapshot;
+comparison and reproduction-requirement updates remain inside the same
+accepted scope lock. A continuation resume plans and accepts a fresh attempt
+snapshot before launching any command. This permits the run's own
+requirement-clearing writes and researcher corrections between attempts while
+still rejecting any within-attempt
 change to a recipe, observation, policy, input, script, code path, data
 declaration, evidence root, comparison baseline, or admitted batch decision.
 
@@ -1052,16 +1061,31 @@ They must reject `--entry`, `--include-all`, and `--jobs`.
 ### Durable State
 
 Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/3`. Its top-level object has exactly:
+`research-log-reproduction-run/4`. Its top-level object has exactly:
 
 ```json
 {
-  "schema": "research-log-reproduction-run/3",
+  "schema": "research-log-reproduction-run/4",
   "run_id": "reproduce-...",
+  "attempt": 2,
+  "attempts": [
+    {
+      "attempt": 1,
+      "source_snapshot": {},
+      "validation_snapshot": {},
+      "plan": {},
+      "state": {},
+      "progress": {},
+      "timestamps": {},
+      "workers": [],
+      "checkpoints": []
+    }
+  ],
   "summary": "docs/research.md",
   "target": {"kind": "entry", "entry": "e003"},
   "include_all": false,
   "jobs": 2,
+  "queue": [],
   "source_snapshot": {},
   "validation_snapshot": {},
   "plan": {},
@@ -1119,10 +1143,19 @@ Each run directory contains one canonical `run.json` using
 `target` has exactly `kind` and `entry`. `kind` is `entry` or `log`; `entry`
 is the stable entry ID for an entry target and null for a log target.
 The top-level `jobs` value must equal the immutable value in `plan`.
+`queue` is the immutable, canonically sorted initial command projection from
+the first source snapshot. It fixes the logical scope and records which target
+commands the launch policy queued. Resume may narrow work within that queue but
+must never add a command or change the original include-all authorization.
+`attempt` is the one-based current attempt number. `attempts` contains exactly
+the preceding attempts in order; each item preserves the listed plan,
+snapshots, state, progress, timestamps, workers, and checkpoints. Attempt-local
+files are retained beneath `attempts/NNNN/` when a continuation begins.
 `source_snapshot` and `validation_snapshot` are byte-for-byte the projections
 defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/3` object without its outer `schema` and must
-not change after acceptance.
+`research-log-reproduction-plan/4` object without its outer `schema`; it is
+immutable within the current attempt and replaced only by a fresh accepted
+continuation plan.
 
 `state.status` is null while active and otherwise one terminal status:
 `complete`, `stopped`, or `failed`. `state.phase` is one of `accepted`,
@@ -1169,7 +1202,8 @@ The run record therefore durably retains:
 - run ID, log, target kind, target entry when applicable, include-all policy,
   and jobs cap;
 - accepted source and validation snapshots;
-- immutable deterministic execution plan;
+- immutable logical command queue, current deterministic attempt plan, and
+  complete preceding-attempt lineage;
 - run status, current phase, active executions, latest execution diagnostic,
   and operational failure;
 - accepted, started, updated, stopped, resumed, and finished timestamps where
@@ -1202,12 +1236,17 @@ immutable run ID rather than reading unlocked mutable state to rediscover it.
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/3` object containing exactly `schema`,
+`research-log-reproduction-status/4` object containing exactly `schema`,
 `run_id`, `summary`, `target`, `include_all`, `jobs`, `status`, `phase`,
 `active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
-`operational_failure`, and `surviving_workers`. The values are the
+`operational_failure`, `surviving_workers`, `attempt`, `attempts`, `resolved`,
+and `resumable`. The values are the
 corresponding strict projection of `run.json`.
+`attempt` identifies the active or most recent attempt and `attempts` is the
+total number of attempts so far. `resolved` is true only when every initially
+queued command has a durable successful outcome. `resumable` is true for a
+terminal state that can continue unresolved work or retry failed publication.
 `active_executions` uses the run-state execution-reference shape and order.
 `active_workers` contains every current worker record associated with those
 references and is empty when no execution is active.
@@ -1268,36 +1307,43 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 
 ### Resume
 
-`resume` is available for `stopped` runs and for a `failed` run whose sole
-operational failure is `reproduction.publication.failed`. It reacquires the
-original scope lock and reuses the same run-local output workspace and run
-paths and immutable `jobs` cap. Two exact pre-fix v3 failures recorded as
+For a v4 logical reproduction, `resume` is available after a terminal
+`complete`, `failed`, or `stopped` attempt while the initial command queue is
+unresolved. It reacquires the original scope lock, preserves the run ID,
+target, include-all authorization, queue, and `jobs` cap, then creates a fresh
+attempt plan and source snapshot. It preserves successful commands, selects
+commands with no durable outcome, reruns a failed command only when its source
+closure changed, and reconsiders every blocked command. Newly selected work
+also selects downstream commands that it may affect. An unchanged failure is
+retained as `unchanged_failed`; an unresolved blocker remains blocked. If no
+command is actionable, resume returns the standard zero-execution
+reconciliation and creates no attempt.
+
+The new attempt uses clean attempt-local output, checkpoint, diagnostic, and
+runtime paths. Its snapshot is strict until that attempt terminates. A command
+interrupted without a durable terminal checkpoint is therefore attempted again
+from clean output space. `--recheck` applies only to initial launch and is not
+a resume option. Policy-skipped commands remain outside the logical queue even
+if current metadata later reclassifies them.
+
+For publication failure, resume reuses every durable comparison, terminal
+failed attempt, dependency skip, and succeeded checkpoint and performs no
+second research-command attempt. Two exact pre-fix v3 failures recorded as
 `reproduction.job.failed` with message `unsupported artifact reason:
 'validation_blocked'` or `unsupported artifact reason:
 'reproduction.run.invalid'` are recognized as the corresponding publication
 failure only when their durable run state, workers, and checkpoints are
-terminal. A stopped run skips `succeeded` and `failed`
-execution checkpoints and reinvokes only `stopped` executions in their original run paths,
-preserving script-native checkpoint and resume behavior. It restores the stable
-ready queue from the accepted plan and durable checkpoints, but does not reuse
-an expired scheduling permit. A publication retry reuses every durable comparison, terminal `failed`
-attempt, dependency skip, and `succeeded` checkpoint; it performs no second
-research-command attempt.
-
-Before executing, resume must verify exact agreement with the recorded recipes,
-scripts, participating code, inputs, and retained comparison artifacts. Any
-difference refuses resume without deleting the old run; a new reproduction run
-is required.
+terminal. Existing v2 and v3 stopped runs retain their original exact-snapshot,
+same-path resume compatibility and are never upgraded in place.
 
 ### One-Attempt Rule
 
-Within one reproduction run, each compound `(entry, execution_id)` is attempted
+Within one immutable attempt, each compound `(entry, execution_id)` is attempted
 at most once. Multiple artifact cases and dependent branches reuse that one
-terminal result. A failed execution remains failed, its dependents are skipped
-with `dependency_failed`, and independent executions continue. Resuming a
-stopped execution at the unchanged run path continues the same attempt; it is
-not a second attempt. Only a separately requested reproduction run may create a
-new attempt after an execution has terminally failed.
+terminal result. A failed execution remains failed for that attempt, its
+dependents are skipped with `dependency_failed`, and independent executions
+continue. A later explicit resume may create a new attempt under the rules
+above; it never mutates or reuses the preceding attempt's source snapshot.
 
 ### Recovery
 
@@ -1568,11 +1614,11 @@ set. It is `baseline_changed`, `baseline_unavailable`,
 
 `<log>/.cache/reproduction/results.json` is disposable local state encoded as
 strict canonical UTF-8 JSON using
-`research-log-reproduction-result/6`. It has exactly this shape:
+`research-log-reproduction-result/7`. It has exactly this shape:
 
 ```json
 {
-  "schema": "research-log-reproduction-result/6",
+  "schema": "research-log-reproduction-result/7",
   "summary": "docs/research.md",
   "updated_at": "2030-01-01T00:05:00Z",
   "artifacts": [
@@ -1620,6 +1666,31 @@ strict canonical UTF-8 JSON using
         "blocked": 0,
         "total": 3
       },
+      "command_records": [
+        {
+          "entry": "e003",
+          "execution_id": "pyrun-exec/v1:...",
+          "cwd": "docs/research/entries/2030-01-01-e003-example",
+          "recipe": {
+            "script": "scripts/build.py",
+            "inputs": [],
+            "outputs": {"data/result.csv": "file"},
+            "parameters": [],
+            "environment": {}
+          },
+          "auto_reproduce": true,
+          "exclusive": false,
+          "queued": true,
+          "requires_reproduction": true,
+          "run_selection": "run",
+          "prior_disposition": null,
+          "source_digest": "...",
+          "bucket": "succeeded",
+          "reason": "succeeded",
+          "terminal_disposition": "succeeded",
+          "details": []
+        }
+      ],
       "artifact_outcomes": {
         "matched": 1,
         "changed": 0,
@@ -1701,9 +1772,20 @@ mutually exclusive categories:
 
 `total` is exactly the sum of those seven values. Each target command is
 counted once even when it produces several artifacts. New publications always
-record the complete mapping. A row decoded from the read-only v3 result format
-may already contain command accounting but has no reusable failure or block
-records. A later reproduction publishes v6.
+record the complete mapping. `command_records` is the immutable, canonically
+ordered historical query projection for those same commands. It retains the
+accepted recipe, working directory, policy and exclusivity flags, queue and
+requirement state, attempt selection and prior disposition, source digest,
+planning detail, accounting bucket and reason, and terminal disposition. Its
+bucket totals must exactly equal `command_outcomes`. Later command metadata or
+terminal publications never reinterpret these records.
+
+When a later attempt publishes the same logical run ID, publication merges its
+terminal command state into that run item, preserves the original accepted
+time and policy-skipped records, and retains successful prior outcomes that the
+new attempt correctly selected as not needed. Artifact mismatch does not keep
+the logical command queue unresolved: a command that ran to completion is a
+durable success regardless of comparison outcome.
 
 The `executions` array records one explicit timing projection for each launched
 attempt in accepted execution order. Planned work that never launched has no
@@ -1955,13 +2037,14 @@ inspection is an operational refusal, not permission to bypass exclusion.
 Existing `research-log-reproduction-run/2` jobs are never rewritten. Their
 original serial supervisor, status/2 projection, stop, resume, recovery, and
 publication semantics remain available through a version-dispatched
-compatibility path. Before accepting the first v3 run, and before every later
-v3 launch while v2 state exists, the CLI performs a bounded project run scan.
+compatibility path. Before accepting the first managed parallel run, and before
+every later v3 or v4 launch while v2 state exists, the CLI performs a bounded
+project run scan.
 An active v2 run with its pre-upgrade supervisor or any unreconciled worker
-blocks v3 acceptance with `reproduction.scheduler.legacy_active`; the CLI does
+blocks acceptance with `reproduction.scheduler.legacy_active`; the CLI does
 not attempt retroactive enrollment. A v2 run started or explicitly resumed by
 the new implementation acquires one conservative project-wide exclusive permit
-for each remaining execution so it cannot overlap v3 managed work.
+for each remaining execution so it cannot overlap managed work.
 
 A stopped v2 run remains resumable only while its original source snapshot
 still matches byte-for-byte under the v2 decoder. Exclusivity migration changes
@@ -2078,6 +2161,14 @@ The same CLI owns compact per-log and cross-log projections:
 log reproduce report --path LOG --summary [--format json]
 log reproduce report --root PROJECT --summary [--format json]
 ```
+
+The per-log JSON uses `research-log-reproduction-summary/5` and includes
+nullable `resolved` beside the latest completed run ID. The cross-log JSON uses
+`research-log-reproduction-root-summary/5`; its coverage object reports
+resolved and unresolved completed logs separately. Human summaries name an
+unresolved latest run as resumable, and the generated Runs table distinguishes
+`complete (resolved)` from `complete (unresolved)` without changing the stored
+run status.
 
 The applicable CLI projection must use the same counts, vocabulary, ordering,
 and wording as the file projection. A reproduction agent presents compact
@@ -2204,14 +2295,20 @@ working directory, automatic-reproduction policy, run selection, accounting
 reason, declared inputs and outputs, and any available planning detail.
 
 These queries use the same seven-category accounting projection that produced
-the selected run's compact counts. They reconcile every projected row against
-the published totals before returning it. Recipe detail for commands that were
-outside the accepted evidence graph comes from current `pyrun.json`, because
-result schema v6 retained their count but not their complete recipes. If the
-current command inventory no longer agrees with the selected run, or a prior
-run's terminal records have since been superseded, the query fails with
-`details_unavailable` rather than returning a partial or misleading list. A
-subsequent completed reproduction establishes a new queryable latest run.
+the selected run's compact counts. For result v7 they read only that run's
+immutable `command_records` and reconcile every projected row against its
+published totals before returning it. They never consult current `pyrun.json`,
+reinterpret historical policy, or require another reproduction because a
+command was changed, removed, or reclassified after publication.
+
+The reproduction-result contract centrally decides whether a run has current
+command-query metadata. Command queries do not provide a partial compatibility
+path when it does not. Both `list` and `show` fail with
+`reproduction.command.schema_unsupported` and instruct the caller to run
+reproduction with `--recheck` to rebuild the generated result. They do not
+reconstruct command rows from an accepted run directory, terminal command
+records, aggregate counts, or current command metadata. Malformed records in a
+current command-query projection are invalid rather than outdated.
 
 Both commands are bounded read-only queries. They never validate, reproduce,
 repair, publish, clean up, or write a file. Operational lifecycle diagnosis
@@ -2232,18 +2329,21 @@ and Reproduce require `pyrun.json`; neither executes legacy
 legacy validation Reproduction section is not a current report surface.
 
 Parallel scheduling uses `research-log-pyrun/v4` and reproduction plan, run,
-and status version 3. Version 2 execution records are unsupported; version 2
-accepted reproduction runs use only the bounded historical compatibility paths
-defined above. No accepted run is upgraded in place, and no consumer may decode
-a v2 object with v3 defaults. The maintained-corpus execution-state cutover is
-complete.
+and status version 4. Version 2 execution records are unsupported; version 2
+and 3 accepted reproduction runs use only their bounded historical
+compatibility paths. No accepted run is upgraded in place, and no consumer may
+decode an older object with current-schema defaults. The maintained-corpus
+execution-state cutover is complete.
 
-The result reader accepts canonical `research-log-reproduction-result/3` only
-as a read-only migration input. It does not infer command records from artifact
-outcomes or run counts. The next successful reproduction reruns the applicable
-commands, seeds their exact source closures and terminal dispositions, and
-publishes `research-log-reproduction-result/6`. Versions 4 and 5 are no longer
-supported. Earlier result schemas are unsupported.
+The result reader accepts canonical `research-log-reproduction-result/3` and
+`research-log-reproduction-result/6` as read-only migration inputs. It does not
+infer command records from artifact outcomes or current metadata. The next
+successful publication writes `research-log-reproduction-result/7`. Bounded
+command queries reject a retained run when the central result contract marks
+its command-query metadata as unsupported and instruct the caller to run
+reproduction with `--recheck`. Query code does not branch on a concrete result
+version. After current metadata is published, the new run is queryable.
+Versions 4 and 5 are unsupported. Earlier result schemas are unsupported.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded
@@ -2274,9 +2374,10 @@ Command-oriented version 3 execution state, parallel planning and scheduling,
 safety, run-local execution, exact and evidence-scoped artifact comparison,
 durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
-control, stop and same-path resume, publication retry, lost-supervisor
-reconciliation, ordinary post-reproduction validation, and whole-execution
-copy-based promotion are implemented. The maintained-corpus exclusivity
+control, immutable completed-run command inspection, fresh-attempt continuation
+resume, publication retry, lost-supervisor reconciliation, ordinary
+post-reproduction validation, and whole-execution copy-based promotion are
+implemented. The maintained-corpus exclusivity
 cutover is complete, and version 2 execution state is rejected.
 Promotion retains its own approved targeted Evidence and
 Provenance refresh without running general validation; reproduction has no

@@ -21,6 +21,7 @@ from log_commands.reproduction_results import (
     compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
     compose_reproduction_summary,
+    current_command_query_metadata,
     merge_reproduction_results,
     project_current_results,
     query_artifacts,
@@ -41,13 +42,53 @@ class ReproductionResultContractTests(unittest.TestCase):
         value = _complete_results().as_dict()
         value["schema"] = "research-log-reproduction-result/3"
         del value["commands"]
+        for run in value["runs"]:
+            del run["command_records"]
 
         decoded = ReproductionResults.from_json(_canonical(value))
 
         self.assertEqual(decoded.commands, ())
         self.assertIn(
-            '"schema": "research-log-reproduction-result/6"', decoded.serialized()
+            '"schema": "research-log-reproduction-result/7"', decoded.serialized()
         )
+
+    def test_v6_result_is_readable_without_inventing_command_records(self) -> None:
+        value = _complete_results().as_dict()
+        value["schema"] = "research-log-reproduction-result/6"
+        for run in value["runs"]:
+            del run["command_records"]
+
+        decoded = ReproductionResults.from_json(_canonical(value))
+
+        self.assertIsNone(decoded.runs[0].command_records)
+        self.assertIsNone(current_command_query_metadata(decoded.runs[0]))
+        self.assertIn(
+            '"schema": "research-log-reproduction-result/7"', decoded.serialized()
+        )
+
+    def test_current_result_exposes_current_command_query_records(self) -> None:
+        results = _complete_results()
+        records = (
+            _command_record(
+                queued=True,
+                selection="run",
+                bucket="succeeded",
+                reason="succeeded",
+                terminal="succeeded",
+            ),
+        )
+        run = replace(
+            results.runs[0],
+            command_outcomes=_command_counts(succeeded=1),
+            command_records=records,
+        )
+
+        metadata = current_command_query_metadata(run)
+
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertEqual(metadata.outcomes, run.command_outcomes)
+        self.assertEqual(metadata.records, records)
 
     def test_v2_result_is_not_retained_as_a_compatibility_format(self) -> None:
         value = _complete_results().as_dict()
@@ -179,6 +220,52 @@ class ReproductionResultContractTests(unittest.TestCase):
                 item for item in merged.artifacts if item.artifact == "data/failed.json"
             ).run_id,
             current.runs[0].run_id,
+        )
+
+    def test_continuation_merge_never_widens_an_initial_policy_skip(self) -> None:
+        run_id = "reproduce-20300101t000000z-policy"
+        previous_record = _command_record(
+            queued=False,
+            selection="policy",
+            bucket="skipped-by-policy",
+            reason="not_automatic",
+            terminal=None,
+        )
+        current_record = _command_record(
+            queued=True,
+            selection="run",
+            bucket="succeeded",
+            reason="succeeded",
+            terminal="succeeded",
+        )
+        previous = replace(
+            _run(run_id, "2030-01-01T00:00:00Z"),
+            command_outcomes=_command_counts(not_automatic=1),
+            command_records=(previous_record,),
+        )
+        current = replace(
+            previous,
+            accepted_at="2030-01-02T00:00:00Z",
+            finished_at="2030-01-02T00:05:00Z",
+            command_outcomes=_command_counts(succeeded=1),
+            command_records=(current_record,),
+        )
+
+        merged = merge_reproduction_results(
+            ReproductionResults(
+                "docs/research.md",
+                "2030-01-01T00:05:00Z",
+                (),
+                (previous,),
+            ),
+            (),
+            current,
+        )
+
+        self.assertEqual(merged.runs[0].accepted_at, previous.accepted_at)
+        self.assertEqual(merged.runs[0].command_records, (previous_record,))
+        self.assertEqual(
+            merged.runs[0].command_outcomes, _command_counts(not_automatic=1)
         )
 
     def test_failed_pre_execution_case_may_have_no_execution_id(self) -> None:
@@ -555,6 +642,8 @@ class ReproductionReportTests(unittest.TestCase):
         self.assertNotIn("content_changed", report)
         self.assertNotIn("dependency_cycle", report)
         self.assertIn("| Run ID | Target | Run status | Time | Folder |", report)
+        self.assertIn("complete (unresolved)", report)
+        self.assertIn("unresolved; resume this run", report)
 
     def test_bounded_query_reports_exact_matched_returned_and_omitted_counts(
         self,
@@ -708,6 +797,54 @@ def _context() -> ReportContext:
             ),
         },
     )
+
+
+def _command_counts(**updates: int) -> dict[str, int]:
+    counts = {
+        "blocked": 0,
+        "failed": 0,
+        "not_automatic": 0,
+        "reproduction_not_needed": 0,
+        "succeeded": 0,
+        "unchanged_blocked": 0,
+        "unchanged_failed": 0,
+    }
+    counts.update(updates)
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def _command_record(
+    *,
+    queued: bool,
+    selection: str,
+    bucket: str,
+    reason: str,
+    terminal: str | None,
+) -> dict[str, object]:
+    return {
+        "auto_reproduce": queued,
+        "bucket": bucket,
+        "cwd": "docs/research/entries/2030-01-01-e001-example",
+        "details": [],
+        "entry": "e001",
+        "execution_id": "pyrun-exec/v1:" + "1" * 64,
+        "exclusive": False,
+        "prior_disposition": None,
+        "queued": queued,
+        "reason": reason,
+        "recipe": {
+            "environment": {},
+            "inputs": [],
+            "outputs": {"data/result.txt": "file"},
+            "parameters": [],
+            "script": "scripts/build.py",
+        },
+        "requires_reproduction": True,
+        "run_selection": selection,
+        "source_digest": "1" * 64 if queued else None,
+        "terminal_disposition": terminal,
+    }
 
 
 def _canonical(value: object) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence, cast
@@ -25,7 +25,8 @@ from .reproduction_paths import (
 from .reproduction_planner import ReproductionStateProjection
 
 LEGACY_RESULT_SCHEMA = "research-log-reproduction-result/3"
-RESULT_SCHEMA = "research-log-reproduction-result/6"
+PREQUERY_RESULT_SCHEMA = "research-log-reproduction-result/6"
+RESULT_SCHEMA = "research-log-reproduction-result/7"
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_RESULT_BYTES = 64 << 20
 MAX_ARTIFACT_RESULTS = 10_000
@@ -272,6 +273,7 @@ class RunResult:
     folder: RunFolder
     executions: tuple[Mapping[str, object], ...] = ()
     command_outcomes: Mapping[str, int] | None = None
+    command_records: tuple[Mapping[str, object], ...] | None = None
 
     def __post_init__(self) -> None:
         _run_id(self.run_id)
@@ -295,6 +297,8 @@ class RunResult:
         _execution_timings(self.executions)
         if self.command_outcomes is not None:
             _command_counts(self.command_outcomes)
+        if self.command_records is not None:
+            _command_records(self.command_records, self.command_outcomes)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -303,6 +307,11 @@ class RunResult:
             "command_outcomes": (
                 dict(self.command_outcomes)
                 if self.command_outcomes is not None
+                else None
+            ),
+            "command_records": (
+                [dict(value) for value in self.command_records]
+                if self.command_records is not None
                 else None
             ),
             "finished_at": self.finished_at,
@@ -359,10 +368,14 @@ class ReproductionResults:
             ) from error
         item = _mapping(value, "result")
         schema = item.get("schema")
-        if schema not in {LEGACY_RESULT_SCHEMA, RESULT_SCHEMA}:
+        if schema not in {
+            LEGACY_RESULT_SCHEMA,
+            PREQUERY_RESULT_SCHEMA,
+            RESULT_SCHEMA,
+        }:
             raise ReproductionResultError("result schema is unsupported")
         fields = {"artifacts", "runs", "schema", "summary", "updated_at"}
-        if schema == RESULT_SCHEMA:
+        if schema in {PREQUERY_RESULT_SCHEMA, RESULT_SCHEMA}:
             fields.add("commands")
         if set(item) != fields:
             raise ReproductionResultError("result has incorrect fields")
@@ -371,7 +384,7 @@ class ReproductionResults:
             for index, value in enumerate(_sequence(item["artifacts"], "artifacts"))
         )
         runs = tuple(
-            _decode_run(value, index)
+            _decode_run(value, index, current=schema == RESULT_SCHEMA)
             for index, value in enumerate(_sequence(item["runs"], "runs"))
         )
         commands = (
@@ -389,14 +402,26 @@ class ReproductionResults:
             runs,
             commands,
         )
-        expected = (
-            _legacy_serialized(result)
-            if schema == LEGACY_RESULT_SCHEMA
-            else result.serialized()
-        )
+        expected = _serialized_for_schema(result, cast(str, schema))
         if text != expected:
             raise ReproductionResultError("result serialization is not canonical")
         return result
+
+
+@dataclass(frozen=True)
+class CommandQueryMetadata:
+    """The complete current metadata required by bounded command queries."""
+
+    outcomes: Mapping[str, int]
+    records: tuple[Mapping[str, object], ...]
+
+
+def current_command_query_metadata(run: RunResult) -> CommandQueryMetadata | None:
+    """Return metadata only when a run has the current command-query contract."""
+
+    if run.command_outcomes is None or run.command_records is None:
+        return None
+    return CommandQueryMetadata(run.command_outcomes, run.command_records)
 
 
 @dataclass(frozen=True)
@@ -459,8 +484,11 @@ def merge_reproduction_results(
 ) -> ReproductionResults:
     """Replace published artifact and command cases and append one run."""
 
-    if any(item.run_id == run.run_id for item in current.runs):
-        raise ReproductionResultError(f"duplicate run ID: {run.run_id}")
+    previous_run = next(
+        (item for item in current.runs if item.run_id == run.run_id), None
+    )
+    if previous_run is not None:
+        run = _merge_logical_run(previous_run, run)
     replacements = {(item.entry, item.artifact): item for item in artifacts}
     if len(replacements) != len(artifacts):
         raise ReproductionResultError("published artifacts are duplicated")
@@ -491,8 +519,78 @@ def merge_reproduction_results(
         current.summary,
         _timestamp(run.finished_at, "run.finished_at"),
         tuple(sorted(merged.values(), key=_artifact_key)),
-        tuple(sorted((*current.runs, run), key=_run_key)),
+        tuple(
+            sorted(
+                (*(item for item in current.runs if item.run_id != run.run_id), run),
+                key=_run_key,
+            )
+        ),
         tuple(sorted(merged_commands.values(), key=_command_key)),
+    )
+
+
+def _merge_logical_run(previous: RunResult, current: RunResult) -> RunResult:
+    """Merge a later attempt into one persistent logical run result."""
+
+    if previous.command_records is None or current.command_records is None:
+        raise ReproductionResultError(
+            f"duplicate run ID without continuation records: {current.run_id}"
+        )
+    old = {
+        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
+        for item in previous.command_records
+    }
+    merged = dict(old)
+    for item in current.command_records:
+        key = (cast(str, item["entry"]), cast(str, item["execution_id"]))
+        prior = old.get(key)
+        if prior is not None and prior["queued"] is False:
+            continue
+        if prior is not None and (
+            item["run_selection"] == "not_needed"
+            and prior["terminal_disposition"] == "succeeded"
+            or item["run_selection"] == "unchanged"
+            and prior["terminal_disposition"] in {"failed", "blocked"}
+        ):
+            continue
+        if prior is not None:
+            item = {
+                **dict(item),
+                **{
+                    name: prior[name]
+                    for name in (
+                        "auto_reproduce",
+                        "cwd",
+                        "exclusive",
+                        "queued",
+                        "recipe",
+                        "requires_reproduction",
+                    )
+                },
+            }
+        merged[key] = item
+    records = tuple(
+        merged[key]
+        for key in sorted(merged, key=lambda key: (_entry_key(key[0]), key[1]))
+    )
+    counts = {name: 0 for name in COMMAND_OUTCOMES}
+    for item in records:
+        bucket = item["bucket"]
+        reason = cast(str, item["reason"])
+        leaf = (
+            cast(str, bucket)
+            if bucket in {"blocked", "failed", "succeeded"}
+            else "not_automatic"
+            if bucket == "skipped-by-policy"
+            else reason
+        )
+        counts[leaf] += 1
+    counts["total"] = len(records)
+    return replace(
+        current,
+        accepted_at=previous.accepted_at,
+        command_outcomes=counts,
+        command_records=records,
     )
 
 
@@ -655,7 +753,7 @@ def compose_reproduction_report(
         )
         folder = _folder_label(run.folder, folder_links_from)
         lines.append(
-            f"| `{run.run_id}` | {target} | {run.status} | "
+            f"| `{run.run_id}` | {target} | {_run_status_label(run)} | "
             f"`{run.finished_at or run.accepted_at}` | {folder} |"
         )
     if not results.runs:
@@ -864,10 +962,35 @@ def _summary_lines(
 
 
 def _latest_run_context(latest: RunResult | None) -> tuple[str, ...]:
-    return (
-        "Latest completed run: "
-        + (f"`{latest.run_id}`" if latest is not None else "none"),
+    if latest is None:
+        return ("Latest completed run: none",)
+    state = "resolved" if run_is_resolved(latest) else "unresolved; resume this run"
+    return (f"Latest completed run: `{latest.run_id}` ({state})",)
+
+
+def run_is_resolved(run: RunResult) -> bool:
+    """Return whether every command in a completed logical queue succeeded."""
+
+    outcomes = run.command_outcomes
+    return bool(
+        run.status == "complete"
+        and outcomes is not None
+        and all(
+            outcomes[name] == 0
+            for name in (
+                "blocked",
+                "failed",
+                "unchanged_blocked",
+                "unchanged_failed",
+            )
+        )
     )
+
+
+def _run_status_label(run: RunResult) -> str:
+    if run.status != "complete":
+        return run.status
+    return "complete (resolved)" if run_is_resolved(run) else "complete (unresolved)"
 
 
 def query_artifacts(
@@ -980,6 +1103,111 @@ def _decode_command(value: object, index: int) -> CommandResult:
     )
 
 
+def _decode_command_record(value: object, index: int) -> Mapping[str, object]:
+    item = _mapping(value, f"command_records[{index}]")
+    fields = {
+        "auto_reproduce",
+        "bucket",
+        "cwd",
+        "details",
+        "entry",
+        "execution_id",
+        "exclusive",
+        "prior_disposition",
+        "queued",
+        "reason",
+        "recipe",
+        "requires_reproduction",
+        "run_selection",
+        "source_digest",
+        "terminal_disposition",
+    }
+    if set(item) != fields:
+        raise ReproductionResultError(f"command_records[{index}] has incorrect fields")
+    entry = _entry(item["entry"], f"command_records[{index}].entry")
+    execution_id = _execution(item["execution_id"])
+    for name in (
+        "auto_reproduce",
+        "exclusive",
+        "queued",
+        "requires_reproduction",
+    ):
+        if not isinstance(item[name], bool):
+            raise ReproductionResultError(
+                f"command_records[{index}].{name} must be boolean"
+            )
+    cwd = _portable_path(item["cwd"], f"command_records[{index}].cwd")
+    details = _sequence(item["details"], f"command_records[{index}].details")
+    if any(not isinstance(detail, str) for detail in details):
+        raise ReproductionResultError(f"command_records[{index}].details is invalid")
+    recipe = _mapping(item["recipe"], f"command_records[{index}].recipe")
+    if set(recipe) != {"environment", "inputs", "outputs", "parameters", "script"}:
+        raise ReproductionResultError(
+            f"command_records[{index}].recipe has incorrect fields"
+        )
+    if not _json_value(recipe):
+        raise ReproductionResultError(f"command_records[{index}].recipe is invalid")
+    bucket = _choice(
+        item["bucket"],
+        (
+            "blocked",
+            "failed",
+            "reproduction-not-retried",
+            "skipped-by-policy",
+            "succeeded",
+        ),
+        f"command_records[{index}].bucket",
+    )
+    reason = _string(item["reason"], f"command_records[{index}].reason")
+    selection = _choice(
+        item["run_selection"],
+        ("blocked", "not_needed", "policy", "run", "unchanged"),
+        f"command_records[{index}].run_selection",
+    )
+    prior = item["prior_disposition"]
+    terminal = item["terminal_disposition"]
+    if prior is not None:
+        prior = _choice(
+            prior, COMMAND_DISPOSITIONS, f"command_records[{index}].prior_disposition"
+        )
+    if terminal is not None:
+        terminal = _choice(
+            terminal,
+            COMMAND_DISPOSITIONS,
+            f"command_records[{index}].terminal_disposition",
+        )
+    source_digest = item["source_digest"]
+    if source_digest is not None:
+        source_digest = _sha256_digest(
+            source_digest, f"command_records[{index}].source_digest"
+        )
+    return {
+        "auto_reproduce": item["auto_reproduce"],
+        "bucket": bucket,
+        "cwd": cwd,
+        "details": list(cast(Sequence[str], details)),
+        "entry": entry,
+        "execution_id": execution_id,
+        "exclusive": item["exclusive"],
+        "prior_disposition": prior,
+        "queued": item["queued"],
+        "reason": reason,
+        "recipe": dict(recipe),
+        "requires_reproduction": item["requires_reproduction"],
+        "run_selection": selection,
+        "source_digest": source_digest,
+        "terminal_disposition": terminal,
+    }
+
+
+def _json_value(value: object) -> bool:
+    try:
+        json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _decode_comparison(value: object, subject: str) -> ComparisonRecord:
     item = _mapping(value, subject)
     required = {"contract", "expected", "profile", "regenerated"}
@@ -1051,7 +1279,7 @@ def _valid_evidence_comparison(value: Mapping[str, object]) -> bool:
     return True
 
 
-def _decode_run(value: object, index: int) -> RunResult:
+def _decode_run(value: object, index: int, *, current: bool) -> RunResult:
     item = _mapping(value, f"runs[{index}]")
     fields = {
         "accepted_at",
@@ -1065,6 +1293,8 @@ def _decode_run(value: object, index: int) -> RunResult:
         "target",
     }
     fields.add("command_outcomes")
+    if current:
+        fields.add("command_records")
     if set(item) != fields:
         raise ReproductionResultError(f"runs[{index}] has incorrect fields")
     target = _target(item["target"])
@@ -1096,6 +1326,16 @@ def _decode_run(value: object, index: int) -> RunResult:
             None
             if item["command_outcomes"] is None
             else _command_counts(item["command_outcomes"])
+        ),
+        (
+            tuple(
+                _decode_command_record(raw, record_index)
+                for record_index, raw in enumerate(
+                    _sequence(item["command_records"], f"runs[{index}].command_records")
+                )
+            )
+            if current and item["command_records"] is not None
+            else None
         ),
     )
 
@@ -1204,6 +1444,43 @@ def _command_counts(value: object) -> Mapping[str, int]:
     ):
         raise ReproductionResultError("command outcome counts do not reconcile")
     return result
+
+
+def _command_records(
+    value: Sequence[Mapping[str, object]],
+    expected: Mapping[str, int] | None,
+) -> None:
+    if len(value) > MAX_COMMAND_RESULTS:
+        raise ReproductionResultError("too many run command records")
+    decoded = tuple(
+        _decode_command_record(item, index) for index, item in enumerate(value)
+    )
+    keys = [
+        (cast(str, item["entry"]), cast(str, item["execution_id"])) for item in decoded
+    ]
+    if keys != sorted(keys, key=lambda key: (_entry_key(key[0]), key[1])):
+        raise ReproductionResultError("run command records are not canonically ordered")
+    if len(keys) != len(set(keys)):
+        raise ReproductionResultError("run command record identities are duplicated")
+    if expected is None:
+        raise ReproductionResultError("run command records need command outcomes")
+    counts = {name: 0 for name in COMMAND_OUTCOMES}
+    for item in decoded:
+        bucket = item["bucket"]
+        reason = cast(str, item["reason"])
+        leaf = (
+            cast(str, bucket)
+            if bucket in {"blocked", "failed", "succeeded"}
+            else "not_automatic"
+            if bucket == "skipped-by-policy"
+            else reason
+        )
+        if leaf not in counts or leaf == "total":
+            raise ReproductionResultError("run command record reason is invalid")
+        counts[leaf] += 1
+    counts["total"] = len(decoded)
+    if counts != dict(expected):
+        raise ReproductionResultError("run command records do not reconcile")
 
 
 def _folder(value: object) -> RunFolder:
@@ -1406,6 +1683,7 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
         RunFolder(run.folder.path, availability),
         run.executions,
         run.command_outcomes,
+        run.command_records,
     )
 
 
@@ -1415,6 +1693,20 @@ def _legacy_serialized(results: ReproductionResults) -> str:
     value = results.as_dict()
     value["schema"] = LEGACY_RESULT_SCHEMA
     value.pop("commands")
+    for run in cast(list[dict[str, object]], value["runs"]):
+        run.pop("command_records")
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _serialized_for_schema(results: ReproductionResults, schema: str) -> str:
+    if schema == RESULT_SCHEMA:
+        return results.serialized()
+    if schema == LEGACY_RESULT_SCHEMA:
+        return _legacy_serialized(results)
+    value = results.as_dict()
+    value["schema"] = PREQUERY_RESULT_SCHEMA
+    for run in cast(list[dict[str, object]], value["runs"]):
+        run.pop("command_records")
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

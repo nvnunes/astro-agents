@@ -17,7 +17,6 @@ from .reproduction_accounting import CommandAccountingError, project_command_sel
 from .reproduction_contract import ReproductionPlan
 from .reproduction_planner import (
     ReproductionCommandInventory,
-    project_reproduction_command_details,
     project_reproduction_command_inventory,
     project_reproduction_state,
 )
@@ -31,18 +30,20 @@ from .reproduction_results import (
     compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
     compose_reproduction_summary,
+    current_command_query_metadata,
     load_reproduction_results,
     load_results_or_empty,
     project_current_results,
     query_artifacts,
+    run_is_resolved,
 )
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
-COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/1"
-COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/1"
-SUMMARY_SCHEMA = "research-log-reproduction-summary/4"
-ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/4"
+COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/2"
+COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/2"
+SUMMARY_SCHEMA = "research-log-reproduction-summary/5"
+ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/5"
 COMMAND_BUCKETS = (
     "reproduction-not-retried",
     "skipped-by-policy",
@@ -92,6 +93,7 @@ def reproduction_summary(log: LogContext) -> dict[str, object]:
         ),
         "generated_at": results.updated_at,
         "run_id": latest.run_id if latest is not None else None,
+        "resolved": run_is_resolved(latest) if latest is not None else None,
         "schema": SUMMARY_SCHEMA,
         "status": "complete" if latest is not None else "not_run",
         "summary": results.summary,
@@ -194,6 +196,7 @@ def root_reproduction_summary(root: Path) -> dict[str, object]:
                         "generated_at": None,
                         "log": name,
                         "run_id": None,
+                        "resolved": None,
                         "schema": SUMMARY_SCHEMA,
                         "status": "not_run",
                         "summary": summary.relative_to(project_root).as_posix(),
@@ -207,8 +210,10 @@ def root_reproduction_summary(root: Path) -> dict[str, object]:
     coverage = {
         "complete": sum(row["status"] == "complete" for row in rows),
         "not_run": sum(row["status"] == "not_run" for row in rows),
+        "resolved": sum(row.get("resolved") is True for row in rows),
         "total": len(rows),
         "unavailable": sum(row["status"] == "unavailable" for row in rows),
+        "unresolved": sum(row.get("resolved") is False for row in rows),
     }
     command_rows = [
         _flat_commands(cast(Mapping[str, object], row["commands"]))
@@ -255,6 +260,7 @@ def compose_root_reproduction_summary(summary: Mapping[str, object]) -> str:
         "",
         "Coverage: "
         f"{coverage['complete']} with a completed run, "
+        f"{coverage['resolved']} resolved, {coverage['unresolved']} unresolved, "
         f"{coverage['not_run']} not yet reproduced, {coverage['unavailable']} "
         f"unavailable ({coverage['total']} logs total).",
         "",
@@ -304,6 +310,7 @@ def _unavailable_row(
         "generated_at": None,
         "log": name,
         "run_id": None,
+        "resolved": None,
         "schema": SUMMARY_SCHEMA,
         "status": "unavailable",
         "summary": summary.relative_to(project_root).as_posix(),
@@ -351,9 +358,7 @@ def _flat_commands(summary: Mapping[str, object]) -> dict[str, int]:
     selected = cast(Mapping[str, int], summary["selected"])
     return {
         "not_automatic": cast(int, summary["skipped_by_policy"]),
-        "reproduction_not_retried": cast(
-            int, summary["reproduction_not_retried"]
-        ),
+        "reproduction_not_retried": cast(int, summary["reproduction_not_retried"]),
         "succeeded": selected["succeeded"],
         "failed": selected["failed"],
         "blocked": selected["blocked"],
@@ -464,10 +469,11 @@ def list_reproduction_commands(
         and (reason is None or record["reason"] == reason)
     ]
     returned = selected[:50]
+    matched = len(selected)
     return {
         "filters": {"bucket": bucket, "entry": entry, "reason": reason},
-        "matched": len(selected),
-        "omitted": len(selected) - len(returned),
+        "matched": matched,
+        "omitted": matched - len(returned),
         "records": [_command_list_record(record) for record in returned],
         "returned": len(returned),
         "run_id": selected_run.run_id,
@@ -536,21 +542,39 @@ def compose_reproduction_command(value: Mapping[str, object]) -> str:
     """Render one complete command record in a human-readable form."""
 
     record = cast(Mapping[str, object], value["command"])
-    recipe = cast(Mapping[str, object], record["recipe"])
+    recipe = record.get("recipe")
     lines = [
         f"Command {record['entry']} {record['execution_id']}",
         f"Run: {value['run_id']}",
         f"Accounting: {record['bucket']} ({record['reason']})",
-        f"Working directory: {record['cwd']}",
-        f"Command: {record['command']}",
+        f"Working directory: {record.get('cwd') or 'unavailable'}",
+        f"Command: {record.get('command') or 'unavailable'}",
         f"Automatic: {'yes' if record['auto_reproduce'] else 'no'}",
-        "Requires reproduction at query time: "
-        + ("yes" if record["requires_reproduction"] else "no"),
-        f"Exclusive: {'yes' if record['exclusive'] else 'no'}",
-        "Inputs: " + ", ".join(cast(Sequence[str], recipe["inputs"])),
-        "Outputs: "
-        + ", ".join(sorted(cast(Mapping[str, str], recipe["outputs"]))),
+        "Requires reproduction at acceptance: "
+        + (
+            "unavailable"
+            if record.get("requires_reproduction") is None
+            else "yes"
+            if record["requires_reproduction"]
+            else "no"
+        ),
+        "Exclusive: "
+        + (
+            "unavailable"
+            if record.get("exclusive") is None
+            else "yes"
+            if record["exclusive"]
+            else "no"
+        ),
     ]
+    if isinstance(recipe, Mapping):
+        lines.extend(
+            (
+                "Inputs: " + ", ".join(cast(Sequence[str], recipe["inputs"])),
+                "Outputs: "
+                + ", ".join(sorted(cast(Mapping[str, str], recipe["outputs"]))),
+            )
+        )
     details = cast(Sequence[str], record["details"])
     if details:
         lines.append("Details: " + "; ".join(details))
@@ -559,10 +583,14 @@ def compose_reproduction_command(value: Mapping[str, object]) -> str:
 
 def _reproduction_command_records(
     log: LogContext, *, run_id: str | None
-) -> tuple[list[dict[str, object]], ReproductionResults, RunResult]:
-    """Reconstruct exact rows and verify them against published run counts."""
+) -> tuple[
+    list[dict[str, object]],
+    ReproductionResults,
+    RunResult,
+]:
+    """Load complete immutable rows from one completed reproduction run."""
 
-    results, _currentness = _current(log)
+    results = _published_results(log)
     runs = [
         run
         for run in results.runs
@@ -575,122 +603,19 @@ def _reproduction_command_records(
             f"published reproduction contains no command accounting for {subject}",
         )
     selected_run = runs[0]
-    if selected_run.command_outcomes is None:
+    command_metadata = current_command_query_metadata(selected_run)
+    if command_metadata is None:
         raise ActionError(
-            "reproduction.command.details_unavailable",
-            f"command accounting predates bounded queries: {selected_run.run_id}",
+            "reproduction.command.schema_unsupported",
+            "selected run has unsupported command-query metadata; run reproduction "
+            f"with --recheck to rebuild it: {selected_run.run_id}",
         )
-
-    from .reproduction_accounting import command_snapshot_index
-    from .reproduction_jobs import _find_run, _load_run, _plan_from_record
-
-    run_root = _find_run(log, selected_run.run_id)
-    plan = _plan_from_record(_load_run(run_root / "run.json"))
-    try:
-        snapshots = command_snapshot_index(plan)
-    except CommandAccountingError as error:
-        raise ActionError(
-            "reproduction.command.details_unavailable", str(error)
-        ) from error
-    if not snapshots:
-        raise ActionError(
-            "reproduction.command.details_unavailable",
-            f"accepted run has no per-command snapshot: {selected_run.run_id}",
-        )
-
-    current = project_reproduction_command_details(log, plan.target)
-    details = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
-        for item in current
-    }
-    if len(details) != len(current) or not set(snapshots) <= set(details):
-        raise ActionError(
-            "reproduction.command.details_unavailable",
-            "current command metadata no longer matches the accepted run",
-        )
-    terminal = {
-        (item.entry, item.execution_id): item
-        for item in results.commands
-        if item.run_id == selected_run.run_id
-    }
-    records: list[dict[str, object]] = []
-    for key, detail in sorted(details.items()):
-        snapshot = snapshots.get(key)
-        leaf, reason, extra = _command_accounting_identity(
-            detail,
-            snapshot=snapshot,
-            terminal=terminal,
-            include_all=selected_run.include_all,
-            plan=plan,
-        )
-        records.append(
-            {
-                **dict(detail),
-                "bucket": _command_bucket(leaf),
-                "command": _recorded_command(detail),
-                "details": extra,
-                "reason": reason,
-                "run_selection": (
-                    snapshot.get("selection") if snapshot is not None else None
-                ),
-            }
-        )
-    _verify_command_record_counts(records, selected_run.command_outcomes)
+    records = [
+        {**dict(record), "command": _recorded_command(record)}
+        for record in command_metadata.records
+    ]
+    _verify_command_record_counts(records, command_metadata.outcomes)
     return records, results, selected_run
-
-
-def _command_accounting_identity(
-    detail: Mapping[str, object],
-    *,
-    snapshot: Mapping[str, object] | None,
-    terminal: Mapping[tuple[str, str], object],
-    include_all: bool,
-    plan: ReproductionPlan,
-) -> tuple[str, str, list[str]]:
-    key = (cast(str, detail["entry"]), cast(str, detail["execution_id"]))
-    if snapshot is None:
-        if (
-            not include_all
-            and detail["requires_reproduction"] is True
-            and detail["auto_reproduce"] is False
-        ):
-            return "not_automatic", "not_automatic", []
-        return "reproduction_not_needed", "reproduction_not_needed", []
-    selection = snapshot["selection"]
-    if selection == "not_needed":
-        return "reproduction_not_needed", "reproduction_not_needed", []
-    if selection == "unchanged":
-        leaf = f"unchanged_{snapshot['prior_disposition']}"
-        return leaf, leaf, []
-    result = terminal.get(key)
-    if result is None:
-        raise ActionError(
-            "reproduction.command.details_unavailable",
-            f"terminal command record is unavailable: {key[0]}:{key[1]}",
-        )
-    disposition = cast(str, getattr(result, "disposition"))
-    reasons = sorted(
-        {
-            cast(str, case["reason"])
-            for case in plan.cases
-            if case.get("entry") == key[0]
-            and case.get("execution_id") == key[1]
-            and isinstance(case.get("reason"), str)
-        }
-    )
-    return disposition, reasons[0] if len(reasons) == 1 else disposition, reasons
-
-
-def _command_bucket(leaf: str) -> str:
-    if leaf in {
-        "reproduction_not_needed",
-        "unchanged_failed",
-        "unchanged_blocked",
-    }:
-        return "reproduction-not-retried"
-    if leaf == "not_automatic":
-        return "skipped-by-policy"
-    return leaf
 
 
 def _recorded_command(detail: Mapping[str, object]) -> str:
@@ -733,15 +658,15 @@ def _verify_command_record_counts(
         )
         if leaf not in counts:
             raise ActionError(
-                "reproduction.command.details_unavailable",
+                "reproduction.command.invalid",
                 f"command accounting reason is unsupported: {leaf}",
             )
         counts[leaf] += 1
     actual = {**counts, "total": len(records)}
     if actual != dict(expected):
         raise ActionError(
-            "reproduction.command.details_unavailable",
-            "current command metadata no longer reconciles with published run counts",
+            "reproduction.command.invalid",
+            "immutable command records do not reconcile with published run counts",
         )
 
 
@@ -762,5 +687,25 @@ def _current(
             raise ReproductionResultError("result summary identity changed")
         state = project_reproduction_state(log)
         return project_current_results(results, state)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ActionError("reproduction.results.invalid", str(error)) from error
+
+
+def _published_results(log: LogContext) -> ReproductionResults:
+    """Load historical results without consulting current command metadata."""
+
+    path = log.root / REPRODUCTION_RESULTS
+    if not path.is_file() or path.is_symlink():
+        raise ActionError(
+            "reproduction.results.missing",
+            f"No completed reproduction result. Run log reproduce --dry-run to "
+            f"check the current plan, then launch reproduction: {path}",
+        )
+    try:
+        results = load_reproduction_results(path)
+        expected = resolve_project_root(log.root) / results.summary
+        if expected.resolve() != log.summary.resolve():
+            raise ReproductionResultError("result summary identity changed")
+        return results
     except (OSError, UnicodeError, ValueError) as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error

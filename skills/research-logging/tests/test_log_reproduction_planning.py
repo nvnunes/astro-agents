@@ -16,6 +16,8 @@ from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import (
     RECHECK_SELECTION,
+    RESUME_SELECTION,
+    ReproductionSelection,
     SelectionPolicy,
     _admit_validation,
     plan_reproduction,
@@ -200,7 +202,9 @@ def _plan(
             fixture.log,
             entry=entry,
             include_all=include_all,
-            selection_policy=RECHECK_SELECTION if recheck else "incremental",
+            selection=ReproductionSelection(
+                RECHECK_SELECTION if recheck else "incremental"
+            ),
         )
 
 
@@ -789,7 +793,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                     fixture.log,
                     entry=None,
                     include_all=False,
-                    selection_policy=cast(SelectionPolicy, "unsupported"),
+                    selection=ReproductionSelection(
+                        cast(SelectionPolicy, "unsupported")
+                    ),
                 )
 
     def test_default_stops_at_nonautomatic_boundary_and_include_all_runs_it(
@@ -1109,15 +1115,26 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             plan = _plan(fixture, entry)
 
-            self.assertEqual(plan.executions, ())
+            self.assertEqual(
+                [value["execution_id"] for value in plan.executions], [upstream[0]]
+            )
             self.assertEqual(plan.boundaries, ())
-            self.assertEqual(plan.cases[0]["disposition"], "current")
             self.assertEqual(
-                plan.source_snapshot["commands"][0]["execution_id"], current[0]
+                next(
+                    value["disposition"]
+                    for value in plan.cases
+                    if value["execution_id"] == current[0]
+                ),
+                "current",
             )
+            commands = {
+                value["execution_id"]: value
+                for value in plan.source_snapshot["commands"]
+            }
             self.assertEqual(
-                plan.source_snapshot["commands"][0]["selection"], "not_needed"
+                commands[current[0]]["selection"], "not_needed"
             )
+            self.assertFalse(commands[current[0]]["queued"])
 
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1877,6 +1894,29 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             incremental = _plan(fixture, entry)
             recheck = _plan(fixture, entry, recheck=True)
+            blocked_record = blocked.source_snapshot["commands"][0]
+            key = (entry.id, execution[0])
+            admission = _admission(fixture)
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.record),
+            ):
+                resume = plan_reproduction(
+                    fixture.log,
+                    entry=entry,
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        RESUME_SELECTION,
+                        command_queue=frozenset({key}),
+                        command_scope=frozenset({key}),
+                        prior_commands={
+                            key: {
+                                "disposition": "blocked",
+                                "source_digest": blocked_record["source_digest"],
+                            }
+                        },
+                    ),
+                )
 
             self.assertEqual(
                 incremental.source_snapshot["commands"][0]["selection"], "unchanged"
@@ -1889,6 +1929,161 @@ class ReproductionPlanningTests(unittest.TestCase):
                 recheck.source_snapshot["commands"][0]["selection"], "blocked"
             )
             self.assertEqual(recheck.executions, ())
+            self.assertEqual(
+                resume.source_snapshot["commands"][0]["selection"], "blocked"
+            )
+
+    def test_resume_preserves_a_successful_command_with_a_current_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw", encoding="utf-8")
+            output.write_text("output", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"output": output}
+            )
+            fixture.write_pyrun(entry, [execution])
+            initial = _plan(fixture, entry)
+            command = initial.source_snapshot["commands"][0]
+            key = (entry.id, execution[0])
+            admission = _admission(fixture)
+
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.record),
+            ):
+                resumed = plan_reproduction(
+                    fixture.log,
+                    entry=entry,
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        RESUME_SELECTION,
+                        command_queue=frozenset({key}),
+                        command_scope=frozenset({key}),
+                        prior_commands={
+                            key: {
+                                "disposition": "succeeded",
+                                "source_digest": command["source_digest"],
+                            }
+                        },
+                    ),
+                )
+                unchanged_failure = plan_reproduction(
+                    fixture.log,
+                    entry=entry,
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        RESUME_SELECTION,
+                        command_queue=frozenset({key}),
+                        command_scope=frozenset({key}),
+                        prior_commands={
+                            key: {
+                                "disposition": "failed",
+                                "source_digest": command["source_digest"],
+                            }
+                        },
+                    ),
+                )
+
+            self.assertEqual(resumed.executions, ())
+            self.assertEqual(
+                resumed.source_snapshot["commands"][0]["selection"], "not_needed"
+            )
+            self.assertEqual(unchanged_failure.executions, ())
+            self.assertEqual(
+                unchanged_failure.source_snapshot["commands"][0]["selection"],
+                "unchanged",
+            )
+
+            script = entry.root / execution[1].recipe.script
+            script.write_text("print('corrected')\n", encoding="utf-8")
+            corrected = replace(
+                execution[1],
+                observed=replace(
+                    execution[1].observed,
+                    script=_fingerprint(script),
+                ),
+            )
+            fixture.write_pyrun(entry, [(execution[0], corrected)])
+            admission = _admission(fixture)
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.record),
+            ):
+                changed_failure = plan_reproduction(
+                    fixture.log,
+                    entry=entry,
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        RESUME_SELECTION,
+                        command_queue=frozenset({key}),
+                        command_scope=frozenset({key}),
+                        prior_commands={
+                            key: {
+                                "disposition": "failed",
+                                "source_digest": command["source_digest"],
+                            }
+                        },
+                    ),
+                )
+
+            self.assertEqual(
+                [item["execution_id"] for item in changed_failure.executions],
+                [execution[0]],
+            )
+
+    def test_resume_does_not_widen_the_initial_policy_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw", encoding="utf-8")
+            output.write_text("output", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"output": output}
+            )
+            fixture.write_pyrun(entry, [execution])
+            key = (entry.id, execution[0])
+            admission = _admission(fixture)
+
+            with mock.patch(
+                "log_commands.reproduction_planner._admit_validation",
+                return_value=(admission, mock.sentinel.record),
+            ):
+                resumed = plan_reproduction(
+                    fixture.log,
+                    entry=entry,
+                    include_all=False,
+                    selection=ReproductionSelection(
+                        RESUME_SELECTION,
+                        command_queue=frozenset(),
+                        command_scope=frozenset({key}),
+                    ),
+                )
+
+            self.assertEqual(resumed.executions, ())
+            command = resumed.source_snapshot["commands"][0]
+            self.assertFalse(command["queued"])
+            self.assertEqual(command["selection"], "policy")
 
     def test_changed_source_during_dry_run_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2039,7 +2234,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     fixture.log,
                     entry=None,
                     include_all=False,
-                    selection_policy=RECHECK_SELECTION,
+                    selection=ReproductionSelection(RECHECK_SELECTION),
                 )
 
             self.assertEqual(

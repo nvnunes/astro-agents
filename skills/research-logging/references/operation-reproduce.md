@@ -123,13 +123,20 @@ Use the immutable run ID for every later action:
 Use ordinary status for people. Agents and scheduled monitors use `--json` and
 must not parse human text or generated files. `stop` is the sole stopping
 action. It preserves diagnostics and completed checkpoints for an explicit
-same-path `resume`; resume remains guarded by the original source snapshot.
-The same command may retry a run whose sole operational failure was
-reproduction-result publication; that retry reuses durable comparisons and
-terminal attempts rather than rerunning commands.
+`resume`. Resume keeps the same logical run ID, original target, include-all
+authorization, command queue, and jobs cap, but plans unresolved work against a
+fresh attempt snapshot. It never reruns a succeeded command, reruns a failed
+command only after its source closure changes, reconsiders blocked commands,
+and reruns interrupted commands with no durable terminal checkpoint in clean
+attempt-local output space. An unchanged failure produces the ordinary
+zero-execution reconciliation. The same command may retry a run whose sole
+operational failure was reproduction-result publication; that retry reuses
+durable comparisons and terminal attempts rather than rerunning commands.
 Status reports every active execution and worker; queued work is not presented
-as execution time. Resume always reuses the accepted `jobs` value and cannot
-override it.
+as execution time. Its JSON projection distinguishes scheduler completion from
+logical `resolved` state and reports whether the run is `resumable`. Resume
+always reuses the accepted `jobs` value and cannot override it. `--recheck`
+applies only to the initial launch.
 
 Accepted run folders live at
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`,
@@ -174,7 +181,8 @@ For a cross-log overview, use the CLI-owned aggregation:
 Present its two tables and coverage line unchanged. A dash means the value is
 unavailable, not zero. Use `--format json` with either summary route only for a
 programmatic consumer. If an older result reports that command accounting is
-unavailable, run reproduction again; do not reconstruct historical counts.
+unavailable, run reproduction with `--recheck`; do not reconstruct historical
+counts.
 
 When the researcher asks for every artifact, retained run, or entry-specific
 detail, retrieve the complete report instead:
@@ -208,10 +216,13 @@ Use the command routes whenever the researcher asks which commands make up a
 compact command count. The public list buckets are
 `reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
 `blocked`. Omit `--run-id` for the latest completed run. Present text output
-unchanged unless a programmatic consumer needs JSON. If the CLI reports that
-details are unavailable because current command metadata no longer reconciles
-with the selected run, say so plainly; do not reconstruct the list from
-generated JSON or Markdown.
+unchanged unless a programmatic consumer needs JSON. Completed-run queries use
+the selected run's immutable historical records and never reinterpret them
+through current `pyrun.json`. Command queries do not partially support a run
+whose command-query schema is unsupported. If either route reports that state,
+run reproduction with `--recheck` to rebuild the generated result; do not
+reconstruct missing detail from its run directory, generated JSON, Markdown,
+terminal records, aggregate counts, or current command metadata.
 
 Do not select a changed result for adoption. A research agent acting with
 researcher direction may inspect the retained complete execution output set

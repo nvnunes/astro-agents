@@ -24,6 +24,7 @@ from log_commands.reproduction_jobs import (
     LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
     LEGACY_RUN_SCHEMA,
     LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
+    PRECONTINUATION_RUN_SCHEMA,
     PUBLICATION_RETRY,
     RUN_SCHEMA,
     ReproductionLaunch,
@@ -56,6 +57,7 @@ from log_commands.reproduction_jobs import (
     resume_reproduction,
     supervise_reproduction,
 )
+from log_commands.reproduction_planner import ReproductionSelection
 from log_commands.reproduction_results import RunFolder, RunResult
 from log_commands.storage import atomic_write_text
 from validation.operation_state import operation_directory
@@ -116,12 +118,11 @@ class ReproductionJobTests(unittest.TestCase):
                     "skipped": 0,
                 },
             )
-            with self.assertRaisesRegex(ActionError, "only a stopped run"):
-                resume_reproduction(log, run_id)
+            self.assertTrue(status["resumable"])
 
     def test_exact_legacy_artifact_rejections_are_publication_retry_only(self) -> None:
         record = {
-            "schema": RUN_SCHEMA,
+            "schema": PRECONTINUATION_RUN_SCHEMA,
             "state": {
                 "active_executions": [],
                 "operational_failure": {
@@ -748,7 +749,7 @@ class ReproductionJobTests(unittest.TestCase):
                     entry=mock.ANY,
                     include_all=include_all,
                     jobs=1,
-                    selection_policy="recheck",
+                    selection=ReproductionSelection("recheck"),
                 )
                 safety.assert_called_once_with()
                 verify.assert_called_once_with(log, plan)
@@ -976,6 +977,9 @@ class ReproductionJobTests(unittest.TestCase):
                 accepted_at="2030-01-01T00:00:00Z",
             )
             record["schema"] = LEGACY_RUN_SCHEMA
+            record.pop("attempt")
+            record.pop("attempts")
+            record.pop("queue")
             record.pop("jobs")
             plan = cast(dict[str, object], record["plan"])
             plan.pop("jobs")
@@ -1058,7 +1062,7 @@ class ReproductionJobTests(unittest.TestCase):
                 entry=mock.ANY,
                 include_all=False,
                 jobs=1,
-                selection_policy="recheck",
+                selection=ReproductionSelection("recheck"),
             )
             spawn.assert_called_once()
 
@@ -1136,7 +1140,7 @@ class ReproductionJobTests(unittest.TestCase):
                 "total_executions": 2,
             },
             "run_id": "reproduce-20300101t000000z-fixture",
-            "schema": RUN_SCHEMA,
+            "schema": PRECONTINUATION_RUN_SCHEMA,
             "state": {
                 "active_executions": [
                     {
@@ -1356,6 +1360,7 @@ class ReproductionJobTests(unittest.TestCase):
                     "worker_id": "worker-4321",
                 }
             ]
+            _as_precontinuation(record)
             atomic_write_text(
                 run_root / "run.json",
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -1414,12 +1419,116 @@ class ReproductionJobTests(unittest.TestCase):
                 log,
                 run_root.resolve(),
                 (),
-                resume=True,
-                retry_publication=False,
+                mode="stopped",
             )
             resumed = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(resumed["phase"], "accepted")
             self.assertIsNone(resumed["status"])
+
+    def test_completed_unresolved_run_starts_a_fresh_attempt_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            log, run_root, run_id = _write_accepted_run(project)
+            (log.root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
+            (run_root / "workspace").mkdir()
+            (run_root / "workspace" / "old.txt").write_text(
+                "old attempt\n", encoding="utf-8"
+            )
+            record = _load_run(run_root / "run.json")
+            cast(dict[str, object], record["state"]).update(
+                {"phase": None, "status": "complete"}
+            )
+            cast(dict[str, object], record["timestamps"])["finished_at"] = (
+                "2030-01-01T00:00:05Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs.plan_reproduction",
+                    return_value=_plan(),
+                ) as planner,
+                mock.patch(
+                    "log_commands.reproduction_jobs.verify_reproduction_snapshot"
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    return_value=(),
+                ),
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                self.assertEqual(resume_reproduction(log, run_id), run_id)
+
+            kwargs = planner.call_args.kwargs
+            selection = kwargs["selection"]
+            self.assertEqual(selection.policy, "resume")
+            self.assertEqual(len(selection.command_queue), 1)
+            self.assertEqual(selection.command_queue, selection.command_scope)
+            spawn.assert_called_once_with(
+                log,
+                run_root.resolve(),
+                (),
+                mode="continuation",
+            )
+            resumed = _load_run(run_root / "run.json")
+            self.assertEqual(resumed["attempt"], 2)
+            self.assertEqual(len(cast(list[object], resumed["attempts"])), 1)
+            self.assertTrue(
+                (run_root / "attempts" / "0001" / "workspace" / "old.txt").is_file()
+            )
+            status = _status_projection(resumed)
+            self.assertEqual(status["attempt"], 2)
+            self.assertFalse(status["resolved"])
+
+    def test_unresolved_resume_with_no_action_returns_current_reconciliation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            log, run_root, run_id = _write_accepted_run(project)
+            (log.root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
+            record = _load_run(run_root / "run.json")
+            cast(dict[str, object], record["state"]).update(
+                {"phase": None, "status": "complete"}
+            )
+            cast(dict[str, object], record["timestamps"])["finished_at"] = (
+                "2030-01-01T00:00:05Z"
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+            no_action = replace(_plan(), executions=())
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs.plan_reproduction",
+                    return_value=no_action,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_queries.reproduction_reconciliation_text",
+                    return_value="# Current reconciliation\n",
+                ) as summarize,
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks"
+                ) as acquire,
+                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
+            ):
+                result = resume_reproduction(log, run_id)
+
+            self.assertEqual(result, "# Current reconciliation\n")
+            summarize.assert_called_once_with(log, no_action, generated_at=mock.ANY)
+            acquire.assert_not_called()
+            spawn.assert_not_called()
+            unchanged = _load_run(run_root / "run.json")
+            self.assertEqual(unchanged["attempt"], 1)
+            self.assertEqual(
+                cast(Mapping[str, object], unchanged["state"])["status"],
+                "complete",
+            )
 
     def test_resume_retries_failed_publication_without_starting_a_new_run(
         self,
@@ -1487,8 +1596,7 @@ class ReproductionJobTests(unittest.TestCase):
                 log,
                 run_root.resolve(),
                 (),
-                resume=True,
-                retry_publication=True,
+                mode="publication",
             )
             resumed = _status_projection(_load_run(run_root / "run.json"))
             self.assertIsNone(resumed["operational_failure"])
@@ -1525,6 +1633,7 @@ class ReproductionJobTests(unittest.TestCase):
             cast(dict[str, object], record["timestamps"])["stopped_at"] = (
                 "2030-01-01T00:00:05Z"
             )
+            _as_precontinuation(record)
             atomic_write_text(
                 run_root / "run.json",
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -1551,6 +1660,13 @@ class ReproductionJobTests(unittest.TestCase):
             preserved = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(preserved["status"], "stopped")
             self.assertIsNone(preserved["phase"])
+
+
+def _as_precontinuation(record: dict[str, object]) -> None:
+    record["schema"] = PRECONTINUATION_RUN_SCHEMA
+    record.pop("attempt")
+    record.pop("attempts")
+    record.pop("queue")
 
 
 def _write_accepted_run(
@@ -1658,7 +1774,33 @@ def _plan() -> ReproductionPlan:
         {"entry": "e003", "kind": "entry"},
         False,
         {},
-        source_snapshot(authority_files=(), executions=(), materials=()),
+        source_snapshot(
+            authority_files=(),
+            commands=(
+                {
+                    "auto_reproduce": True,
+                    "cwd": "docs/research/entries/2030-01-01-e003-example",
+                    "details": [],
+                    "entry": "e003",
+                    "execution_id": execution,
+                    "exclusive": False,
+                    "prior_disposition": None,
+                    "queued": True,
+                    "recipe": {
+                        "environment": {},
+                        "inputs": [],
+                        "outputs": {"data/result.txt": "file"},
+                        "parameters": [],
+                        "script": "scripts/build.py",
+                    },
+                    "requires_reproduction": True,
+                    "selection": "run",
+                    "source_digest": "1" * 64,
+                },
+            ),
+            executions=(),
+            materials=(),
+        ),
         (),
         (
             {
@@ -1712,13 +1854,17 @@ def _status_fixture(name: str) -> dict[str, object]:
         "operational_failure": None,
         "phase": name,
         "run_id": "reproduce-20300101t000000z-fixture",
-        "schema": "research-log-reproduction-status/3",
+        "schema": "research-log-reproduction-status/4",
         "status": None,
         "summary": "docs/research.md",
         "surviving_workers": [],
         "target": {"entry": "e003", "kind": "entry"},
         "timestamps": timestamps,
         "total_executions": 1,
+        "attempt": 1,
+        "attempts": 1,
+        "resolved": False,
+        "resumable": False,
     }
     if name != "accepted":
         timestamps["started_at"] = "2030-01-01T00:00:01Z"
@@ -1735,7 +1881,7 @@ def _status_fixture(name: str) -> dict[str, object]:
     }.get(name)
     if updated is not None:
         timestamps["updated_at"] = f"2030-01-01T00:00:{updated}Z"
-    if name in {"executing", "comparing"}:
+    if name in {"executing", "comparing", "publishing", "complete"}:
         if name == "executing":
             value["active_executions"] = [{"entry": "e003", "execution_id": execution}]
         value["execution_timings"] = [
@@ -1745,10 +1891,10 @@ def _status_fixture(name: str) -> dict[str, object]:
                 "execution_id": execution,
                 "failure": None,
                 "finished_at": (
-                    "2030-01-01T00:00:02Z" if name == "comparing" else None
+                    "2030-01-01T00:00:02Z" if name != "executing" else None
                 ),
                 "started_at": "2030-01-01T00:00:01Z",
-                "state": "succeeded" if name == "comparing" else "active",
+                "state": "active" if name == "executing" else "succeeded",
             }
         ]
     if name in {"publishing", "complete"}:
@@ -1787,10 +1933,14 @@ def _status_fixture(name: str) -> dict[str, object]:
             "message": "Reproduction was stopped by request.",
             "recorded_at": "2030-01-01T00:00:05Z",
         }
+        value["resumable"] = True
     if name in {"complete", "failed"}:
         value["phase"] = None
         value["status"] = name
         timestamps["finished_at"] = "2030-01-01T00:00:06Z"
+        value["resumable"] = name == "failed"
+    if name == "complete":
+        value["resolved"] = True
     if name == "failed":
         value["operational_failure"] = {
             "code": "publication_failed",

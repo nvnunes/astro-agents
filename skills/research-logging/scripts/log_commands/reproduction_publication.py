@@ -111,6 +111,15 @@ def publish_completed_reproduction(
             )
             current = reconcile_run_folders(current, project_root=project_root)
             state_projection = project_reproduction_state(log)
+            snapshots = command_snapshot_index(request.plan)
+            state_projection = replace(
+                state_projection,
+                reachable_commands=frozenset(
+                    key
+                    for key, item in snapshots.items()
+                    if item.get("queued") is True
+                ),
+            )
             if request.plan.target.get("kind") == "log":
                 state_projection = replace(
                     state_projection,
@@ -331,6 +340,7 @@ def _run_result(
             "reproduction.run.path_invalid", "run folder is outside the project"
         ) from error
     counts = Counter(item.outcome for item in artifacts)
+    command_outcomes = _command_outcomes(plan, request, inventory)
     return RunResult(
         request.run_id,
         plan.target,
@@ -341,8 +351,77 @@ def _run_result(
         {outcome: counts[outcome] for outcome in OUTCOMES},
         RunFolder(folder, "available"),
         _execution_timings(plan, request.run_folder),
-        _command_outcomes(plan, request, inventory),
+        command_outcomes,
+        _command_records(plan, request),
     )
+
+
+def _command_records(
+    plan: ReproductionPlan,
+    request: CompletedPublication,
+) -> tuple[Mapping[str, object], ...] | None:
+    """Freeze every command-accounting row from accepted immutable metadata."""
+
+    try:
+        snapshots = command_snapshot_index(plan)
+    except CommandAccountingError as error:
+        raise ActionError("reproduction.publication.invalid", str(error)) from error
+    if not snapshots or any("recipe" not in item for item in snapshots.values()):
+        return None
+    compared = {
+        (item.entry, item.execution_id): item for item in request.comparisons
+    }
+    skipped = _dependency_skip_index(request.dependency_skips)
+    records: list[Mapping[str, object]] = []
+    for key, snapshot in sorted(snapshots.items()):
+        selection = cast(str, snapshot["selection"])
+        prior = cast(str | None, snapshot["prior_disposition"])
+        terminal: str | None = None
+        details = list(cast(Sequence[str], snapshot["details"]))
+        if selection == "policy":
+            bucket = "skipped-by-policy"
+            reason = "not_automatic"
+        elif selection == "not_needed":
+            bucket = "reproduction-not-retried"
+            reason = "reproduction_not_needed"
+        elif selection == "unchanged":
+            terminal = prior
+            bucket = "reproduction-not-retried"
+            reason = f"unchanged_{prior}"
+        elif selection == "blocked" or key in skipped:
+            terminal = "blocked"
+            bucket = "blocked"
+            reason = details[0] if len(details) == 1 else "blocked"
+        else:
+            comparison = compared.get(key)
+            if comparison is None:
+                raise ActionError(
+                    "reproduction.publication.invalid",
+                    f"command has no terminal comparison: {key[0]}:{key[1]}",
+                )
+            terminal = "succeeded" if comparison.complete else "failed"
+            bucket = terminal
+            reason = details[0] if len(details) == 1 else terminal
+        records.append(
+            {
+                "auto_reproduce": snapshot["auto_reproduce"],
+                "bucket": bucket,
+                "cwd": snapshot["cwd"],
+                "details": details,
+                "entry": snapshot["entry"],
+                "execution_id": snapshot["execution_id"],
+                "exclusive": snapshot["exclusive"],
+                "prior_disposition": prior,
+                "queued": snapshot["queued"],
+                "reason": reason,
+                "recipe": dict(cast(Mapping[str, object], snapshot["recipe"])),
+                "requires_reproduction": snapshot["requires_reproduction"],
+                "run_selection": selection,
+                "source_digest": snapshot["source_digest"],
+                "terminal_disposition": terminal,
+            }
+        )
+    return tuple(records)
 
 
 def _command_outcomes(

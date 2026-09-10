@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import os
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
@@ -54,6 +55,7 @@ from .reproduction_contract import (
     LEGACY_SOURCE_SNAPSHOT_SCHEMA,
     PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
     PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
+    PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
     SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
     canonical_execution_source_digest,
@@ -70,9 +72,20 @@ MAX_BOUNDARIES = 10_000
 MAX_FAILURES = 10_000
 RESULT_MAX_BYTES = 64 * 1024 * 1024
 ExecutionKey = tuple[str, str]
-SelectionPolicy = Literal["incremental", "recheck"]
+SelectionPolicy = Literal["incremental", "recheck", "resume"]
 INCREMENTAL_SELECTION: SelectionPolicy = "incremental"
 RECHECK_SELECTION: SelectionPolicy = "recheck"
+RESUME_SELECTION: SelectionPolicy = "resume"
+
+
+@dataclass(frozen=True)
+class ReproductionSelection:
+    """Work-selection policy and optional immutable continuation bounds."""
+
+    policy: SelectionPolicy = INCREMENTAL_SELECTION
+    command_queue: frozenset[ExecutionKey] | None = None
+    command_scope: frozenset[ExecutionKey] | None = None
+    prior_commands: Mapping[ExecutionKey, Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +176,8 @@ class _PlanningState:
     command_digests: dict[ExecutionKey, str] = field(default_factory=dict)
     command_selections: dict[ExecutionKey, str] = field(default_factory=dict)
     prior_command_dispositions: dict[ExecutionKey, str] = field(default_factory=dict)
+    command_queue: frozenset[ExecutionKey] | None = None
+    command_scope: frozenset[ExecutionKey] | None = None
 
 
 @dataclass(frozen=True)
@@ -261,11 +276,11 @@ def plan_reproduction(
     entry: EntryContext | None,
     include_all: bool,
     jobs: int = 1,
-    selection_policy: SelectionPolicy = INCREMENTAL_SELECTION,
+    selection: ReproductionSelection = ReproductionSelection(),
 ) -> ReproductionPlan:
     """Build one deterministic plan under the requested work-selection policy."""
 
-    _require_selection_policy(selection_policy)
+    _require_selection_policy(selection.policy)
     if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs <= 0:
         raise ActionError("reproduction.jobs.invalid", "--jobs must be positive")
     _require_existing_locks_available(log, entry)
@@ -289,16 +304,21 @@ def plan_reproduction(
         entry is not None,
         include_all,
         jobs,
-        selection_policy,
+        selection.policy,
         entries,
         _owner_index(entries, project_root),
+        command_queue=selection.command_queue,
+        command_scope=selection.command_scope,
     )
     _trace_selected_evidence(selected_ids, entries, state)
+    _trace_queued_commands(state)
     if batch_projection is not None:
         _apply_validation_admission(state, batch_projection)
     _apply_cycle_and_dependency_failures(state)
-    prior_commands = _load_prior_results(log)
-    ordered = _select_and_order(state, prior_commands)
+    retained_commands = dict(_load_prior_results(log))
+    if selection.prior_commands is not None:
+        retained_commands.update(selection.prior_commands)
+    ordered = _select_and_order(state, retained_commands)
     plan = _project_plan(
         state,
         ordered,
@@ -346,8 +366,33 @@ def _trace_selected_evidence(
                 )
 
 
+def _trace_queued_commands(state: _PlanningState) -> None:
+    """Trace every authorized command, including commands outside evidence roots."""
+
+    owners: dict[ExecutionKey, _Owner] = {}
+    for candidates in state.owners.values():
+        for owner in candidates:
+            owners.setdefault(owner.key, owner)
+    for key, owner in sorted(owners.items()):
+        if key[0] not in state.selected_entries:
+            continue
+        if state.command_queue is not None and key not in state.command_queue:
+            continue
+        if (
+            state.command_queue is None
+            and not owner.execution.auto_reproduce
+            and not state.include_all
+        ):
+            continue
+        _trace_execution(owner, state, depth=0)
+
+
 def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
-    if selection_policy not in {INCREMENTAL_SELECTION, RECHECK_SELECTION}:
+    if selection_policy not in {
+        INCREMENTAL_SELECTION,
+        RECHECK_SELECTION,
+        RESUME_SELECTION,
+    }:
         raise ActionError(
             "reproduction.selection.invalid",
             f"unsupported reproduction selection policy: {selection_policy}",
@@ -618,35 +663,9 @@ def _trace_resource(
         for value in candidates
         if value.entry.context.id in state.selected_entries
     )
+    request = _BoundaryRequest("cross_entry", owner_entry, resource, artifact, consumer)
     if not in_scope:
-        if state.entry_target:
-            _verified_boundary(
-                state,
-                _BoundaryRequest(
-                    "cross_entry", owner_entry, resource, artifact, consumer
-                ),
-            )
-            if consumer is None:
-                execution_id = (
-                    candidates[0].execution_id if len(candidates) == 1 else None
-                )
-                state.cases[(owner_entry.context.id, artifact)] = _case(
-                    owner_entry.context.id,
-                    artifact,
-                    execution_id,
-                    "skipped",
-                    "outside_entry",
-                )
-            return
-        _record_failure(
-            state,
-            _Failure(
-                owner_entry.context.id,
-                artifact,
-                None,
-                "cross_log_generated_input",
-            ),
-        )
+        _trace_out_of_scope_resource(candidates, request, state)
         return
     if len(in_scope) != 1:
         _record_failure(
@@ -660,18 +679,78 @@ def _trace_resource(
             ),
         )
         return
-    producer = in_scope[0]
+    _trace_resource_producer(in_scope[0], request, state, depth)
+
+
+def _trace_out_of_scope_resource(
+    candidates: Sequence[_Owner],
+    request: _BoundaryRequest,
+    state: _PlanningState,
+) -> None:
+    if not state.entry_target:
+        _record_failure(
+            state,
+            _Failure(
+                request.entry.context.id,
+                request.artifact,
+                None,
+                "cross_log_generated_input",
+            ),
+        )
+        return
+    _verified_boundary(state, request)
+    if request.consumer is None:
+        execution_id = candidates[0].execution_id if len(candidates) == 1 else None
+        state.cases[(request.entry.context.id, request.artifact)] = _case(
+            request.entry.context.id,
+            request.artifact,
+            execution_id,
+            "skipped",
+            "outside_entry",
+        )
+
+
+def _trace_resource_producer(
+    producer: _Owner,
+    request: _BoundaryRequest,
+    state: _PlanningState,
+    depth: int,
+) -> None:
+    if state.command_queue is not None and producer.key not in state.command_queue:
+        _verified_boundary(
+            state,
+            _BoundaryRequest(
+                "outside_queue",
+                request.entry,
+                request.resource,
+                request.artifact,
+                request.consumer,
+            ),
+        )
+        if request.consumer is None:
+            state.cases[(request.entry.context.id, request.artifact)] = _case(
+                request.entry.context.id,
+                request.artifact,
+                producer.execution_id,
+                "skipped",
+                "outside_queue",
+            )
+        return
     if _stop_at_nonautomatic_policy(
         producer,
         _BoundaryRequest(
-            "non_automatic", owner_entry, resource, artifact, consumer
+            "non_automatic",
+            request.entry,
+            request.resource,
+            request.artifact,
+            request.consumer,
         ),
         state,
         depth=depth,
     ):
         return
-    if consumer is not None:
-        state.dependencies[consumer.key].add(producer.key)
+    if request.consumer is not None:
+        state.dependencies[request.consumer.key].add(producer.key)
     _trace_execution(producer, state, depth=depth)
 
 
@@ -684,7 +763,12 @@ def _stop_at_nonautomatic_policy(
 ) -> bool:
     """Bound traversal at one current or policy-skipped nonautomatic command."""
 
-    if producer.execution.auto_reproduce or state.include_all:
+    if (
+        producer.execution.auto_reproduce
+        or state.include_all
+        or state.command_queue is not None
+        and producer.key in state.command_queue
+    ):
         return False
     if not producer.execution.requires_reproduction:
         _trace_execution(producer, state, depth=depth, trace_inputs=False)
@@ -1282,28 +1366,33 @@ def _select_and_order(
     runnable = set(state.selected) - state.blocked
     needs_run = _initial_work(state, prior, runnable)
     _propagate_required_work(state, runnable, needs_run)
-    not_needed = (
-        {
-            key
-            for key in state.selected
-            if key not in needs_run
-            and key not in state.blocked
-            and not state.selected[key].execution.requires_reproduction
-        }
-        if state.selection_policy == INCREMENTAL_SELECTION
-        else set()
-    )
-    unchanged = (
-        {
-            key
-            for key in state.selected
-            if key not in needs_run
-            and key not in not_needed
-            and _command_result_current(prior.get(key), state.command_digests[key])
-        }
-        if state.selection_policy == INCREMENTAL_SELECTION
-        else set()
-    )
+    not_needed = {
+        key
+        for key in state.selected
+        if state.selection_policy != RECHECK_SELECTION
+        and key not in needs_run
+        and key not in state.blocked
+        and (
+            not state.selected[key].execution.requires_reproduction
+            or state.selection_policy == RESUME_SELECTION
+            and prior.get(key, {}).get("disposition") == "succeeded"
+            and _command_result_current(
+                prior.get(key), state.command_digests[key], {"succeeded"}
+            )
+        )
+    }
+    unchanged = {
+        key
+        for key in state.selected
+        if key not in needs_run
+        and key not in not_needed
+        and _command_result_current(prior.get(key), state.command_digests[key])
+        and (
+            state.selection_policy == INCREMENTAL_SELECTION
+            or state.selection_policy == RESUME_SELECTION
+            and prior.get(key, {}).get("disposition") == "failed"
+        )
+    }
     state.prior_command_dispositions = {
         key: cast(str, prior[key]["disposition"]) for key in unchanged
     }
@@ -1330,6 +1419,21 @@ def _initial_work(
 
     if state.selection_policy == RECHECK_SELECTION:
         return set(runnable)
+
+    if state.selection_policy == RESUME_SELECTION:
+        return {
+            key
+            for key in runnable
+            if state.selected[key].execution.requires_reproduction
+            and not (
+                prior.get(key, {}).get("disposition") in {"failed", "succeeded"}
+                and _command_result_current(
+                    prior.get(key),
+                    state.command_digests[key],
+                    {"failed", "succeeded"},
+                )
+            )
+        }
 
     return {
         key
@@ -1399,13 +1503,15 @@ def _topological_order(
 
 
 def _command_result_current(
-    result: Mapping[str, object] | None, source_digest: str
+    result: Mapping[str, object] | None,
+    source_digest: str,
+    dispositions: Collection[str] = ("failed", "blocked"),
 ) -> bool:
     """Return whether one prior terminal command result has the same closure."""
 
     return (
         result is not None
-        and result.get("disposition") in {"failed", "blocked"}
+        and result.get("disposition") in dispositions
         and result.get("source_digest") == source_digest
     )
 
@@ -1515,18 +1621,29 @@ def _project_plan(
         ),
         key=lambda value: (str(value["role"]), str(value["identity"])),
     )
+    command_details = {
+        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
+        for item in _project_command_details(state)
+    }
     snapshot = source_snapshot(
         authority_files=authority_files,
         commands=[
             {
-                "auto_reproduce": state.selected[key].execution.auto_reproduce,
-                "entry": key[0],
-                "execution_id": key[1],
+                **dict(command_details[key]),
                 "prior_disposition": state.prior_command_dispositions.get(key),
-                "selection": state.command_selections[key],
-                "source_digest": state.command_digests[key],
+                "selection": state.command_selections.get(
+                    key,
+                    (
+                        "policy"
+                        if command_details[key]["queued"] is False
+                        else "not_needed"
+                    ),
+                ),
+                "source_digest": state.command_digests.get(key),
             }
-            for key in sorted(state.selected)
+            for key in sorted(
+                command_details, key=lambda item: (item not in state.selected, item)
+            )
         ],
         executions=execution_snapshot,
         materials=materials,
@@ -1570,6 +1687,50 @@ def _project_plan(
         failures,
         state.jobs,
     )
+
+
+def _project_command_details(
+    state: _PlanningState,
+) -> tuple[Mapping[str, object], ...]:
+    """Project immutable accepted metadata for every command in the target."""
+
+    details: list[Mapping[str, object]] = []
+    for entry_id in state.selected_entries:
+        current = state.entries[entry_id]
+        cwd = current.context.root.resolve().relative_to(state.project_root).as_posix()
+        for execution_id, execution in sorted(current.pyrun.executions.items()):
+            if (
+                state.command_scope is not None
+                and (entry_id, execution_id) not in state.command_scope
+            ):
+                continue
+            reasons = sorted(
+                {
+                    cast(str, case["reason"])
+                    for case in state.cases.values()
+                    if case.get("entry") == entry_id
+                    and case.get("execution_id") == execution_id
+                    and isinstance(case.get("reason"), str)
+                }
+            )
+            details.append(
+                {
+                    "auto_reproduce": execution.auto_reproduce,
+                    "cwd": cwd,
+                    "details": reasons,
+                    "entry": entry_id,
+                    "execution_id": execution_id,
+                    "exclusive": execution.exclusive,
+                    "queued": (
+                        (entry_id, execution_id) in state.command_queue
+                        if state.command_queue is not None
+                        else execution.auto_reproduce or state.include_all
+                    ),
+                    "recipe": execution.recipe.as_dict(),
+                    "requires_reproduction": execution.requires_reproduction,
+                }
+            )
+    return tuple(details)
 
 
 def _execution_claims(state: _PlanningState, owner: _Owner) -> dict[str, object]:
@@ -1779,6 +1940,7 @@ def verify_reproduction_runtime_snapshot(
         return
     if plan.source_snapshot.get("schema") not in {
         PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
+        PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
         SOURCE_SNAPSHOT_SCHEMA,
     }:
         raise ActionError("reproduction.source.invalid", "unknown source snapshot")
@@ -1860,6 +2022,7 @@ def _recheck_executions(
             in {
                 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
                 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
+                PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
                 SOURCE_SNAPSHOT_SCHEMA,
             }
             else canonical_record_digest(encoded)

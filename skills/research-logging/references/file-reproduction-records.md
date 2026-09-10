@@ -48,7 +48,7 @@ with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/6`. Every newly
+The current result schema is `research-log-reproduction-result/7`. Every newly
 published run counts every command in its log or entry target exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
@@ -56,22 +56,35 @@ selected command failure. Those command counts are separate from
 artifact counts because one command may produce several artifacts.
 Compact reports combine the first three internal categories into one
 `reproduction not retried` total without exposing the prior disposition.
+Each run also owns a complete immutable command-query projection containing
+the recorded recipe and working directory, initial policy and queue state,
+attempt selection, source digest, planning detail, accounting reason, and
+terminal disposition. Historical command list and show queries use this
+projection without consulting current `pyrun.json`.
 
 Each evidence-relevant command also has one current record keyed by entry and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning
-state. Incremental reproduction uses current `pyrun.json` state directly for
-completed commands and retains unchanged failure and block dispositions. It
-selects only commands still requiring reproduction, or unchanged cached
-failures and blocks whose source closure has changed, plus their affected
-downstream closure. It never infers this decision from artifact outcomes.
-`--recheck` remains the explicit override for runnable commands.
+state. Initial incremental reproduction uses current `pyrun.json` state
+directly for completed commands and retains unchanged failure and block
+dispositions. A logical run's first attempt freezes its authorized queue.
+Resume preserves successes, retries failures only after their source closure
+changes, reconsiders blocks, reruns commands with no durable terminal outcome,
+and adds only affected downstream commands already in that queue. It never
+infers this decision from artifact outcomes. `--recheck` is an initial-launch
+override and does not apply to resume.
 
-The reader accepts canonical v3 results only as a one-time migration input.
-Because v3 has no command source closures, the next successful reproduction
-runs the applicable commands and publishes v6. Versions 4 and 5 are no longer
-supported; no other older result schema is supported.
+The reader accepts canonical v3 and v6 results only as read-only migration
+inputs. Because v3 has no command source closures, the next successful
+reproduction runs the applicable commands and publishes v7. Command list and
+show ask the central result contract whether a retained run has current
+command-query metadata; they do not branch on a concrete result version. When
+the contract reports unsupported metadata, they instruct the caller to run
+reproduction with `--recheck` and query the newly published run. They never
+reconstruct command rows from a retained run directory, published aggregates,
+or current metadata. Versions 4 and 5 are unsupported; no other older result
+schema is supported.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;
@@ -87,12 +100,13 @@ relocate, or make a second copy of those outputs. A researcher may delete the
 folder manually; later reporting prunes a run-history row only when absence can
 be proved, and otherwise reports unknown availability.
 
-New runs use the strict run/status v3 shapes. They retain the immutable `jobs`
-cap, every active entry-qualified execution, complete worker history, and
-per-attempt `active`, `succeeded`, `failed`, or `stopped` checkpoints. A
+New runs use the strict run/status v4 shapes. They retain the immutable logical
+queue and `jobs` cap, attempt lineage, every active entry-qualified execution,
+complete worker history, and per-attempt `active`, `succeeded`, `failed`, or
+`stopped` checkpoints. A
 scheduling permit is released only after terminal checkpoint publication and
-worker exit. Existing v2 runs remain readable and keep their original serial
-record; they are never rewritten into v3.
+worker exit. Existing v2 and v3 runs remain readable under their original
+compatibility paths and are never rewritten into v4.
 
 ## Research Boundary
 

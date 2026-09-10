@@ -872,7 +872,14 @@ def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
 
 
 def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog=f"log reproduce {action}")
+    description = (
+        "Continue unresolved work in the original logical command queue"
+        if action == "resume"
+        else None
+    )
+    parser = argparse.ArgumentParser(
+        prog=f"log reproduce {action}", description=description
+    )
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
     if action == "status":
@@ -937,13 +944,17 @@ def _dispatch_reproduction_artifacts(arguments: Sequence[str]) -> int:
 def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log reproduce commands")
     actions = parser.add_subparsers(dest="action", required=True)
-    listing = actions.add_parser("list", help="List completed-run command accounting")
+    listing = actions.add_parser(
+        "list", help="List current completed-run command accounting"
+    )
     listing.add_argument("--path", required=True, type=Path)
     listing.add_argument("--bucket")
     listing.add_argument("--entry")
     listing.add_argument("--reason")
     listing.add_argument("--run-id")
-    showing = actions.add_parser("show", help="Show one accounted command")
+    showing = actions.add_parser(
+        "show", help="Show one current completed-run command record"
+    )
     showing.add_argument("--path", required=True, type=Path)
     showing.add_argument("--entry", required=True)
     showing.add_argument("--execution-id", required=True)

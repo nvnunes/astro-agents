@@ -1,6 +1,6 @@
-# Agent-Surface Validation
+# Agent-Surface Checks
 
-Use this reference for the gates selected by [Testing](../testing.md).
+Use this reference for the checks selected by [Testing](../testing.md).
 Commands run from the project root.
 
 ## Environment And Deterministic Checks
@@ -35,7 +35,7 @@ git diff --check
 
 ## Codex Runtime Discovery
 
-Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream usage guidance:
+Run the Codex runtime discovery smoke test when changing skill names, skill descriptions, `agents/openai.yaml`, the user-level skill layout, or downstream skill-discovery guidance:
 
 ```bash
 ./.conda/bin/python scripts/validate_agent_surface.py --codex-discovery
@@ -94,35 +94,3 @@ Do not run the full skill-selection eval for routine documentation edits,
 reference-file cleanup, or stale-path-only changes unless those edits affect
 selection behavior. Treat failures as selection-regression signals that need
 human review, not as proof that the skill can never work.
-
-## Review Scope
-
-Use `$agent-surface-review` for changed agent instructions and their affected
-contracts. Select scope before loading review references. A bounded change
-uses the focused route; an explicitly requested full review uses the full
-workflow within its requested target. Load the documentation profile workflow
-when organization, ownership, profile, or completeness is affected, or when
-full review is requested. A routine operation-reference edit does not by
-itself require documentation-architecture review.
-
-Use `$documentation-surface-review` directly for documentation-only review.
-Its chooser selects the applicable profile; it defaults to `private-default`
-when the project does not declare another profile. Technical reviews are
-required for the changed scope, not a reason to inspect unrelated documents.
-
-When a review combines material references, include a short `Review Path
-Summary` naming those sources. Reuse applicable review evidence and resolve
-overlapping findings once.
-
-## Specialized Review Requirements
-
-Changes to review behavior require the deterministic harness and the relevant
-review in addition to any applicable agent-surface review:
-
-- Documentation-surface review behavior: `$documentation-surface-review`.
-- Code-quality review behavior: `$code-quality-review`.
-- Upgrade planning behavior: `$project-upgrade-planning`.
-
-Include focused prompt-writing, scope, or selection-boundary checks when the
-changed skill affects those behaviors. These reviews gate the changed behavior;
-they do not require unrelated source-code, documentation, or upgrade work.

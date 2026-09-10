@@ -123,7 +123,7 @@ At the project root:
 - `docs/usage.md`
   - how to apply this library in other projects and workspaces
 - `docs/testing.md`
-  - validation requirements for changes inside `astro-agents`
+  - project checks for changes inside `astro-agents`
 - `docs/research-logging.md`
   - researcher-facing research-log workflow and responsibilities
 - `docs/research-log-mechanical-validator-spec.md`
@@ -133,7 +133,7 @@ At the project root:
 - `skills/project-upgrade-planning/references/upgrade-model.md`
   - shared upgrade model for downstream project upgrades
 - `examples/downstream-testing.md`
-  - example downstream `docs/testing.md`
+  - example downstream project-check document
 - `skills/`
   - user-facing reusable capabilities
 
@@ -283,30 +283,17 @@ Future validation changes must preserve these invariants:
   independently. Cache state is disposable; authored evidence-format changes
   use an explicit upgrade rather than compatibility branches in validation.
 
-## Validation
+## Checks And Reviews
 
-Use skills as the primary way to review the agent surface, code quality, and project upgrades:
-
-- `skills/agent-surface-review/SKILL.md`
-  - focused review of changed agent instructions, affected contracts, and necessary consumers; explicit full reviews retain the combined workflow and coverage snapshot
-- `skills/documentation-surface-review/SKILL.md`
-  - documentation surface profile selection, profile-scoped documentation review, and documentation completion checks
-- `skills/code-quality-review/SKILL.md`
-  - current-state source-code quality review
-- `skills/project-upgrade-planning/SKILL.md`
-  - review-led upgrade planning against `skills/project-upgrade-planning/references/upgrade-model.md`
-
-Use [docs/testing.md](testing.md) as the short validation router. Its linked
+Use [docs/testing.md](testing.md) as the short project-check router. Its linked
 `docs/testing/` references own commands and detailed requirements for agent
 surfaces, research-logging tools, and optional model evaluations. Read only the
 reference selected by the changed scope.
 
-Agent-surface review selects scope before loading its workflow. Documentation
-organization, ownership, profile, or completeness changes trigger the
-applicable documentation-surface review; routine operation-reference changes
-do not automatically load that architecture workflow. Full agent-surface
-review retains the profile-scoped documentation assessment. Local validation
-requirements remain active for either route.
+Review skills define reusable review procedures. The
+[plan-writing execution policy](../skills/plan-writing/references/execution-policy.md)
+owns which review skills a plan requires, their scopes and milestone, and
+whether they run once or repeat after in-scope corrections.
 
 ## Maintenance Expectations
 

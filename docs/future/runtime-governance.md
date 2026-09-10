@@ -184,7 +184,7 @@ Use these representative routes to compare the current governance model against 
 - how explicit the downstream routing templates in `docs/usage.md` should become before they give up too much portability
 - what maximum route depth is acceptable for common requests in lower-budget subscription tiers
 - whether `skills/agent-surface-review/SKILL.md` should remain the single user-addressable review skill or split into thinner user-facing skills plus internal workflow logic
-- what the future runtime model should expose about project-local follow-on review inclusion after the shared validation path is active
+- what the future runtime model should expose about plan-selected review routing and results
 - whether the first integrated runtime design should treat tool and interface governance as intentionally out of scope or define an initial contract model
 - whether the first integrated runtime design should define any permission or approval model for consequential actions, or explicitly defer that surface
 - how should stable policy, task-local state, compaction summaries, rediscovered project state, retrieved context, and any longer-lived memory be distinguished in this project's runtime model

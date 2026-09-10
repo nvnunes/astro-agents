@@ -38,7 +38,7 @@ supplies project-local working context for this repository.
 1. Make a checkout of `astro-agents` available in the workspace where you want to use it.
 2. Use the [usage guide](docs/usage.md) to choose a bootstrap path and adopt the parts of `astro-agents` that fit your project.
 
-[`docs/usage.md`](docs/usage.md) owns the exact project-local and global bootstrap snippets, the recommended project surface, and the optional shared-validation path.
+[`docs/usage.md`](docs/usage.md) owns the exact project-local and global bootstrap snippets, the recommended project surface, and the downstream project-check template.
 
 ## Project Layout
 
@@ -108,11 +108,11 @@ mirrors and should not be expected to repeat the same detail.
 - [`skills/`](skills/)
   - reusable skill packages listed above
 - [`examples/downstream-testing.md`](examples/downstream-testing.md)
-  - example downstream `docs/testing.md`
+  - example downstream project-check document
 - [`docs/runtime-model.md`](docs/runtime-model.md)
   - runtime vocabulary, current support boundary, and concrete Codex behavior
 - [`docs/testing.md`](docs/testing.md)
-  - validation requirements for changes inside `astro-agents`
+  - project checks for changes inside `astro-agents`
 
 ## Project Status
 

@@ -5,7 +5,7 @@ should apply `astro-agents`.
 
 Use it when adopting `astro-agents`, setting up Codex skill discovery, choosing
 minimal `AGENTS.md` context, declaring a documentation surface profile, and
-wiring shared validation.
+setting up project checks.
 
 Use `docs/glossary.md` when usage guidance depends on shared terms that need
 one stable meaning across projects.
@@ -165,22 +165,19 @@ For example:
 Use the actual configured roots from `pubify.yaml` when they differ from
 `papers/` or `slides/`.
 
-## Shared Validation
+## Project Checks
 
-Shared validation gives a downstream project a starting shape for validation
-without moving project-specific commands into the shared library.
+The downstream testing example gives a project a starting shape for its own
+checks without moving project-specific commands into the shared library.
 
 Start from `<astro-agents-path>/examples/downstream-testing.md` when creating a
 downstream project's `docs/testing.md`, then replace the project-local
-verification section with that project's real commands and completion
+checks with that project's real commands and completion
 expectations.
 
-Common shared validation paths include:
-
-- `$agent-surface-review` for full agent-surface review
-- `$documentation-surface-review` for documentation-surface review
-- `$code-quality-review` for source-code quality review
-- `$project-upgrade-planning` for upgrade planning and readiness review
+Keep review skills out of project-check routing. When a plan requires reviews,
+use `$plan-writing` to record the selected skills, scopes, milestone, and
+whether they run once or repeat after in-scope corrections.
 
 ### Documentation Surface Profile
 
@@ -203,7 +200,7 @@ root `AGENTS.md`:
 If no profile is declared, shared documentation review should treat the project
 as `private-default`.
 
-Use `$documentation-surface-review` when a project wants shared validation for
+Use `$documentation-surface-review` when a project wants a review of
 documentation surface profile behavior, project documentation architecture,
 README scope, private/default docs, or public Python documentation.
 

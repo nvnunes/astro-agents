@@ -1,29 +1,51 @@
 ---
 name: plan-execution
-description: Implement or resume work governed by an existing plan, maintain progress and continuation notes, perform prescribed checks, and complete planned work. Use for routine plan status updates too; use plan-writing for initial design, sharding, or substantive scope/contract redesign.
+description: Implement or resume work governed by an existing plan, coordinate explicitly authorized sub-agents for named shard files, maintain progress, perform prescribed checks, and complete planned work. Use plan-writing for initial design, sharding, delegation changes, or substantive scope/contract redesign.
 ---
 
 # Plan Execution
 
-For status-only updates, edit the existing progress record from evidence. Do not
-load plan-writing or deeper references, rewrite the phase, or rerun checks or
-reviews. Retrieve missing evidence; do not declare completion with pending gates.
+## Execute The Assigned Scope
 
-For implementation, follow user authorization and project instructions. In
-sharded plans, read the selected phase and its direct dependencies; use main
-navigation for orientation. Otherwise, read the relevant section and governing
-shared constraints. Pair with the implementation skill; return substantive
-redesign to `$plan-writing`.
+Follow human authorization and project instructions. Read the plan assigned to
+you. Pair with the applicable implementation skill and stay within the
+authorized scope.
 
-Load only applicable references:
+A failed completion gate stops the assigned work unless its plan gives an exact
+continuation route and stopping point.
 
-- `references/continuation.md`: starting a Part or checkpoint, resuming work,
-  notes/history, and downstream decisions.
-- `references/verification.md`: checks and human review/commit checkpoints.
-- `references/operations.md`: expensive processing, running operations, or
-  repeated inspection.
+When work is expensive:
 
-Preserve the existing plan structure. For sharded plans, keep task/Part progress
-in its phase and phase progress in the main table; otherwise update progress
-where it already lives, without adding phases or tables.
-Retain useful execution evidence in notes/history, not a diary in the plan.
+- Retain the operation's execution handle or result location.
+- Before stopping, restarting, or rerunning it, inspect its current status and
+  saved results.
+- Bound checks of its status, logs, and outputs. Stop when that bound is
+  exhausted; unresolved uncertainty does not justify continued inspection.
+- Rerun the same operation only when a specific hypothesis gives reason to
+  expect different evidence.
+- Before adopting a different approach, confirm that it remains within the
+  authorized scope. If it does not, stop and ask the human for direction.
+- If the approach is within scope, run the cheapest representative test that
+  could show whether substantial further work is worthwhile.
+- Before stopping, exhaust the obvious, inexpensive, in-scope checks and
+  alternatives.
+- Ask for direction when the remaining options are repetitive, speculative, or
+  require a human decision.
+
+## Follow Your Agent Role
+
+After reading the assigned plan:
+
+- If it identifies a parent agent, read `references/sub-agent.md`.
+- If it calls for you to start sub-agents, read `references/delegation.md`
+  before starting one.
+
+Both conditions may apply.
+
+## Maintain Or Revise The Plan
+
+- Update the plan's existing progress record as work advances.
+- Record decisions and blockers only when they affect remaining work, and put
+  them with that work. Do not add progress narration.
+- If execution requires changing the planned scope, order, requirements,
+  structure, or sub-agent assignments, stop and use `$plan-writing`.

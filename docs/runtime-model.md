@@ -188,7 +188,7 @@ according to its normal search rules, and it exposes discovered skills for
 model-mediated selection. From there, the remaining behavior comes from how the
 downstream project and shared skills are written: the task prompt may cause the
 model to select `$agent-surface-review`, the project may declare a documentation
-surface profile, and local validation expectations may be named in
+surface profile, and local project checks may be named in
 `docs/testing.md`. Those later steps are project conventions expressed through
 skills and instruction files, not built-in Codex behavior.
 [\[1\]](#ref-1)[\[2\]](#ref-2)[\[3\]](#ref-3)

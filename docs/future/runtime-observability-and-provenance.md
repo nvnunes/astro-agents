@@ -33,7 +33,10 @@ This section describes the current runtime observability and provenance state of
 
 #### Traceability
 
-- the project is reasonably traceable at the static document level: `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and the relevant review/planning skills make the intended skill and review surface legible to a human reviewer
+- the project is reasonably traceable at the static document level: `AGENTS.md`,
+  `docs/architecture.md`, and the relevant review and planning skills make the
+  intended review surface legible to a human reviewer, while `docs/testing.md`
+  identifies the separate project checks
 - combined review outputs expose a short `Review Path Summary`, which makes the chosen validation path more legible than before
 - actual runtime traceability is still weak: the project has no trace, span, or run record showing which skills, instructions, prompts, or source-of-truth docs were actually discovered, loaded, or superseded during a concrete task
 - this gap is most visible in `agent-surface-review`, where reviewers can see the declared review path but still cannot replay discovery or runtime instruction loading from evidence

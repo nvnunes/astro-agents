@@ -63,11 +63,75 @@ from log_commands.reproduction_jobs import (
 )
 from log_commands.reproduction_planner import ReproductionSelection
 from log_commands.reproduction_results import RunFolder, RunResult
+from log_commands.reproduction_scheduler import (
+    acquire_scheduling_permit,
+    release_scheduling_permit,
+)
 from log_commands.storage import atomic_write_text
 from validation.operation_state import operation_directory
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_dead_terminal_owner_permit_is_reconciled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            _, run_root, run_id = _write_accepted_run(project)
+            planned = cast(Mapping[str, object], _plan().executions[0])
+            permit = acquire_scheduling_permit(
+                project,
+                run_root,
+                run_id,
+                planned,
+                stop_requested=lambda: False,
+            )
+            assert permit is not None
+            record = _load_run(run_root / "run.json")
+            cast(dict[str, object], record["state"]).update(
+                {"phase": None, "status": "stopped"}
+            )
+            cast(dict[str, object], record["timestamps"]).update(
+                {
+                    "stopped_at": "2030-01-01T00:00:01Z",
+                    "updated_at": "2030-01-01T00:00:01Z",
+                }
+            )
+            atomic_write_text(
+                run_root / "run.json",
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+            scheduler = operation_directory(project) / "reproduction-scheduler.json"
+            state = json.loads(scheduler.read_text(encoding="utf-8"))
+            state["active"][0]["supervisor_pid"] = 2**30
+            atomic_write_text(
+                scheduler,
+                json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n",
+            )
+            candidate = dict(planned)
+            candidate.update(
+                {
+                    "exclusive": True,
+                    "execution_id": "pyrun-exec/v1:" + "2" * 64,
+                    "order": 2,
+                    "run_path": "<run>/executions/e003/" + "2" * 64,
+                }
+            )
+
+            recovered = acquire_scheduling_permit(
+                project,
+                run_root,
+                "reproduce-run-b",
+                candidate,
+                stop_requested=lambda: False,
+            )
+
+            assert recovered is not None
+            reconciled = json.loads(scheduler.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["permit_id"] for item in reconciled["active"]],
+                [recovered.permit_id],
+            )
+            release_scheduling_permit(recovered)
+
     def test_control_plane_failure_finishes_run_operationally(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log, run_root, run_id = _write_accepted_run(

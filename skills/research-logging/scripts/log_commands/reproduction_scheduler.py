@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence, cast
 
+import psutil
 from validation.operation_state import (
     OperationLockError,
     operation_directory,
@@ -27,6 +28,7 @@ POLL_SECONDS = 0.1
 MAX_WAITERS = 10_000
 MAX_PERMITS = 4_096
 MAX_SCHEDULER_BYTES = 64 * 1024 * 1024
+MAX_RUN_PATH_ANCESTORS = 8
 _THREAD_LOCK = threading.Lock()
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
@@ -67,7 +69,16 @@ def acquire_scheduling_permit(
     while not stop_requested():
         with _coordinator_lock(project_root):
             state = _load(project_root)
-            _remove_dead(state)
+            unresolved = _remove_dead(project_root, state)
+            if unresolved:
+                _write(project_root, state)
+                owner = unresolved[0]
+                raise ActionError(
+                    "reproduction.scheduler.reconciliation_required",
+                    "dead supervisor owns an unreconciled scheduling permit for "
+                    f"{owner['run_id']}:{owner['entry']}:{owner['execution_id']}; "
+                    "inspect that run with `log reproduce status` before retrying",
+                )
             if exclusive and waiter_ticket is None:
                 if len(cast(list[object], state["waiters"])) >= MAX_WAITERS:
                     raise ActionError(
@@ -297,30 +308,118 @@ def _write(project_root: Path, state: Mapping[str, object]) -> None:
     atomic_write_text(path, encoded)
 
 
-def _remove_dead(state: dict[str, object]) -> None:
-    def alive(item: Mapping[str, object]) -> bool:
-        pid = item.get("supervisor_pid")
-        assert isinstance(pid, int) and not isinstance(pid, bool) and pid > 1
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError as error:
-            raise ActionError(
-                "reproduction.scheduler.inspection_unavailable", str(error)
-            ) from error
-        return True
+def _remove_dead(
+    project_root: Path, state: dict[str, object]
+) -> tuple[Mapping[str, object], ...]:
+    """Remove dead waiters and provably inactive permits.
+
+    A dead permit remains fail-closed unless its canonical owner record is
+    terminal, has no active execution, and records no surviving worker. The
+    returned permits require explicit owner-run recovery.
+    """
 
     state["waiters"] = [
         item
         for item in cast(list[Mapping[str, object]], state["waiters"])
-        if alive(item)
+        if _supervisor_alive(item)
     ]
-    # A dead supervisor is not proof that its marked descendants are gone.
-    # Active permits remain fail-closed until run recovery reconciles strict
-    # durable state and process identity, then explicitly releases the run.
+    retained: list[Mapping[str, object]] = []
+    unresolved: list[Mapping[str, object]] = []
+    for item in cast(list[Mapping[str, object]], state["active"]):
+        if _supervisor_alive(item):
+            retained.append(item)
+        elif _terminal_permit_owner_is_inactive(project_root, item):
+            continue
+        else:
+            retained.append(item)
+            unresolved.append(item)
+    state["active"] = retained
+    return tuple(unresolved)
+
+
+def _supervisor_alive(item: Mapping[str, object]) -> bool:
+    pid = item.get("supervisor_pid")
+    assert isinstance(pid, int) and not isinstance(pid, bool) and pid > 1
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as error:
+        raise ActionError(
+            "reproduction.scheduler.inspection_unavailable", str(error)
+        ) from error
+    return True
+
+
+def _terminal_permit_owner_is_inactive(
+    project_root: Path, item: Mapping[str, object]
+) -> bool:
+    """Prove that a dead permit belongs to one fully inactive terminal run."""
+
+    record = _permit_owner_record(project_root, item)
+    if record is None:
+        return False
+    state = cast(Mapping[str, object], record["state"])
+    workers = cast(Sequence[Mapping[str, object]], record["workers"])
+    active = state.get(
+        "active_executions",
+        state.get("current_execution"),
+    )
+    return (
+        record.get("run_id") == item.get("run_id")
+        and state.get("status") in {"complete", "stopped", "failed"}
+        and state.get("phase") is None
+        and active in (None, [])
+        and not any(worker.get("state") == "running" for worker in workers)
+        and not _recorded_worker_alive(cast(str, record["run_id"]), workers)
+    )
+
+
+def _recorded_worker_alive(
+    run_id: str, workers: Sequence[Mapping[str, object]]
+) -> bool:
+    for worker in workers:
+        try:
+            process = psutil.Process(cast(int, worker["pid"]))
+            marker = process.environ().get("RESEARCH_LOG_REPRODUCTION_RUN_ID")
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+        except psutil.AccessDenied:
+            return True
+        except (OSError, psutil.Error) as error:
+            raise ActionError(
+                "reproduction.scheduler.inspection_unavailable", str(error)
+            ) from error
+        if marker == run_id or (
+            isinstance(marker, str) and marker.startswith(f"{run_id}:")
+        ):
+            return True
+    return False
+
+
+def _permit_owner_record(
+    project_root: Path, item: Mapping[str, object]
+) -> Mapping[str, object] | None:
+    run_path = item.get("run_path")
+    if not isinstance(run_path, str):
+        return None
+    try:
+        from .reproduction_jobs import _load_run
+        from .reproduction_paths import canonical_run_root
+
+        owner_root = next(
+            candidate
+            for candidate in tuple(Path(run_path).parents)[:MAX_RUN_PATH_ANCESTORS]
+            if (candidate / "run.json").is_file()
+        )
+        owner_root = canonical_run_root(
+            owner_root, project_root, require_exists=True
+        )
+        return _load_run(owner_root / "run.json")
+    except (ActionError, OSError, StopIteration):
+        return None
 
 
 def _waiter(

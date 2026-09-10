@@ -2060,6 +2060,11 @@ reconciles coordinator entries against strict run state and live supervised
 process identity; it may remove a proved-dead waiter or permit but never infer a
 completed attempt or launch work. Coordinator corruption or unavailable process
 inspection is an operational refusal, not permission to bypass exclusion.
+Permit admission also reconciles an entry whose supervisor is dead when its
+canonical owner run is already terminal, records no active execution, and records
+no surviving worker. If those conditions cannot be proved, admission fails with
+`reproduction.scheduler.reconciliation_required` instead of waiting indefinitely;
+the owner run must be inspected or recovered before retrying.
 
 Existing `research-log-reproduction-run/2` jobs are never rewritten. Their
 original serial supervisor, status/2 projection, stop, resume, recovery, and

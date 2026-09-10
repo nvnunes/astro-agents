@@ -113,17 +113,53 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     _claims_conflict(permit, candidate, run_b, project), conflict
                 )
 
-    def test_dead_supervisor_does_not_release_active_permit(self) -> None:
-        state: dict[str, object] = {
-            "schema": "research-log-reproduction-scheduler/1",
-            "next_ticket": 0,
-            "waiters": [],
-            "active": [{"supervisor_pid": 2**30}],
-        }
+    def test_dead_supervisor_retains_unproved_active_permit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state: dict[str, object] = {
+                "schema": "research-log-reproduction-scheduler/1",
+                "next_ticket": 0,
+                "waiters": [],
+                "active": [{"supervisor_pid": 2**30}],
+            }
 
-        _remove_dead(state)
+            unresolved = _remove_dead(Path(directory), state)
 
         self.assertEqual(len(cast(list[object], state["active"])), 1)
+        self.assertEqual(list(unresolved), state["active"])
+
+    def test_dead_unreconciled_permit_refuses_instead_of_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            permit = acquire_scheduling_permit(
+                project,
+                project / "tmp/run-a",
+                "reproduce-run-a",
+                _planned(1, exclusive=False, leaf="a"),
+                stop_requested=lambda: False,
+            )
+            assert permit is not None
+            scheduler = operation_directory(project) / "reproduction-scheduler.json"
+            state = json.loads(scheduler.read_text(encoding="utf-8"))
+            state["active"][0]["supervisor_pid"] = 2**30
+            scheduler.write_text(
+                json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ActionError) as raised:
+                acquire_scheduling_permit(
+                    project,
+                    project / "tmp/run-b",
+                    "reproduce-run-b",
+                    _planned(2, exclusive=True, leaf="b"),
+                    stop_requested=lambda: False,
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                "reproduction.scheduler.reconciliation_required",
+            )
 
     def test_malformed_coordinator_item_refuses_admission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

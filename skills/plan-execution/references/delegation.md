@@ -13,7 +13,7 @@ For the next subagent assignment in your plan:
    until the final handoff has been recorded or recovery has concluded.
 3. Give it this minimal prompt:
 
-   `Use $plan-execution to execute <absolute-plan-path>. Work in
+   `You are a subagent. Use $plan-execution to execute <absolute-plan-path>. Work in
    <absolute-workspace-path>.`
 
 In addition, include only dynamic context that you believe the subagent may

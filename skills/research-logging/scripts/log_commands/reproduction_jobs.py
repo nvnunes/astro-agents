@@ -217,6 +217,18 @@ def launch_reproduction(
     if not plan.executions:
         from .reproduction_queries import reproduction_reconciliation_text
 
+        if selection.policy == "recheck" and entry is None:
+            from .reproduction_publication import (
+                empty_reproduction_recovery_needed,
+                recover_empty_reproduction_results,
+            )
+
+            if empty_reproduction_recovery_needed(log, plan):
+                lock_fds = _acquire_scope_locks(log, None)
+                try:
+                    recover_empty_reproduction_results(log, plan, updated_at=_utc_now())
+                finally:
+                    _close_fds(lock_fds)
         return ReproductionLaunch(
             summary=reproduction_reconciliation_text(
                 log,

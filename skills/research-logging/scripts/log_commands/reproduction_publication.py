@@ -46,6 +46,7 @@ from .reproduction_planner import (
     project_reproduction_command_inventory,
     project_reproduction_state,
     verify_reproduction_runtime_snapshot,
+    verify_reproduction_snapshot,
 )
 from .reproduction_results import (
     OUTCOMES,
@@ -58,6 +59,7 @@ from .reproduction_results import (
     RunFolder,
     RunResult,
     compose_reproduction_report,
+    empty_reproduction_results,
     load_reproduction_results,
     load_results_or_empty,
     merge_reproduction_results,
@@ -188,6 +190,66 @@ def publish_completed_reproduction(
     except (OperationLockError, OSError, PublicationError) as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
     return PublishedReproduction(merged, report)
+
+
+def empty_reproduction_recovery_needed(log: LogContext, plan: ReproductionPlan) -> bool:
+    """Recognize unsupported results for a completely empty whole-log plan."""
+
+    if (
+        not _replaces_outdated_results(plan)
+        or plan.executions
+        or plan.cases
+        or plan.failures
+        or plan.boundaries
+        or plan.source_snapshot.get("commands")
+    ):
+        return False
+    path = log.root / REPRODUCTION_RESULTS
+    if not path.exists() and not path.is_symlink():
+        return False
+    try:
+        load_reproduction_results(path)
+    except ReproductionResultSchemaError:
+        return True
+    except ReproductionResultError as error:
+        raise ActionError("reproduction.results.invalid", str(error)) from error
+    return False
+
+
+def recover_empty_reproduction_results(
+    log: LogContext, plan: ReproductionPlan, *, updated_at: str
+) -> bool:
+    """Replace unsupported generated results for an explicitly rechecked empty log.
+
+    The caller holds the whole-log scope lock and authorizes this only for a
+    recheck launch. Supported history and absent results remain untouched.
+    """
+
+    try:
+        with operation_lock(log.root, "reproduction-publication.lock"):
+            verify_reproduction_snapshot(log, plan)
+            if project_reproduction_command_inventory(log, plan.target).total:
+                return False
+            if not empty_reproduction_recovery_needed(log, plan):
+                return False
+            path = log.root / REPRODUCTION_RESULTS
+            project = resolve_project_root(log.root)
+            results = empty_reproduction_results(
+                log.summary.resolve().relative_to(project).as_posix(),
+                updated_at=updated_at,
+            )
+            report = compose_reproduction_report(
+                results,
+                context=load_report_context(log.summary),
+                folder_links_from=log.root,
+            )
+            verify_reproduction_snapshot(log, plan)
+            atomic_write_texts(
+                {path: results.serialized(), log.root / REPRODUCTION_REPORT: report}
+            )
+            return True
+    except (OperationLockError, OSError, PublicationError) as error:
+        raise ActionError("reproduction.publication.failed", str(error)) from error
 
 
 def _replaces_outdated_results(plan: ReproductionPlan) -> bool:

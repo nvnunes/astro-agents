@@ -1199,9 +1199,14 @@ background job, persists its accepted scope and source snapshot, starts its
 supervisor, emits its run ID, and returns immediately. The job is independent
 of the invoking terminal and agent turn. There is no foreground mode.
 
-A non-dry launch with no selected executions is a successful no-op
+A non-dry launch with no selected executions normally performs a no-op
 reconciliation. It creates no run ID, lock, run folder, worker, result write,
-or report write. Standard output is the standard per-log summary using the
+or report write. The sole exception is explicitly launched empty-target
+whole-log recheck recovery of unsupported generated results, as specified in
+[Compatibility And Evolution](#compatibility-and-evolution): it acquires the
+scope and publication locks and atomically replaces the generated result and
+report, while still creating no run or worker. Standard output is the standard
+per-log summary using the
 current plan's command partition: commands for which reproduction is not
 needed, policy exclusions, and any blocked commands. Succeeded and failed
 are zero because no command ran. Current artifact state remains a separate
@@ -2619,6 +2624,17 @@ result/10. Malformed records in either supported schema remain invalid and
 are never treated as outdated. Later schema changes require an explicit
 compatibility decision; unsupported-state replacement is limited to a
 whole-log recheck accepted with the current result schema.
+
+An explicitly launched whole-log `--recheck` also recovers unsupported results
+when the accepted target is completely empty: no recorded commands (including
+nonautomatic commands), artifact cases, boundaries, or planning failures. Under
+the whole-log scope and publication locks, it rechecks the accepted source and
+validation snapshot and atomically replaces only the generated result and human
+report with canonical empty, not-yet-reproduced state. It creates no run, claims
+no successful execution, and does not invoke research or validation. Supported
+history and absent results remain unchanged. A dry-run preview never performs
+this recovery; incremental, partial, policy-skipped, and blocked no-work targets
+do not gain unsupported-state replacement authority.
 
 Mechanical validation retains a read-only legacy output-record reader and an
 internal output-keyed projection of current execution state. That bounded

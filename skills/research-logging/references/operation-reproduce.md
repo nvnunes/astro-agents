@@ -228,6 +228,13 @@ programmatic consumer. If the CLI reports an unsupported generated result
 schema, launch whole-log reproduction with `--recheck`; do not resume a partial
 publication or reconstruct historical counts.
 
+If that whole-log target contains no recorded commands or artifact cases, the
+launch still replaces unsupported generated results with empty state and a
+not-yet-reproduced report. It creates no run and executes nothing. Preview is
+read-only; omit `--dry-run --summary` to perform the recovery. A target with
+policy-skipped commands or blockers is not empty. Do not enable nonautomatic
+commands or delete research state to force this route.
+
 When the researcher asks for every artifact, retained run, or entry-specific
 detail, retrieve the complete report instead:
 

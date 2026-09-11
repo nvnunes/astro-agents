@@ -1,6 +1,6 @@
 ---
 name: plan-execution
-description: Implement or resume work governed by an existing plan, coordinate explicitly authorized subagents for named plan files, maintain progress, perform prescribed checks, and complete planned work. Use plan-writing for initial design, sharding, delegation changes, or substantive scope/contract redesign.
+description: Implement or resume work governed by an existing plan, coordinate explicitly authorized delegated Tasks for named plan files, maintain progress, perform prescribed checks, and complete planned work. Use plan-writing for initial design, sharding, delegation changes, or substantive scope/contract redesign.
 ---
 
 # Plan Execution
@@ -36,7 +36,8 @@ When work is expensive:
 
 After reading the assigned plan:
 
-- If you are a subagent, read `references/sub-agent.md`.
-- If it calls for you to start subagents, read `references/delegation.md`
+- If you are a delegated Task, read `references/delegated-task.md`.
+- If it calls for you to start delegated Tasks, read `references/delegation.md`
   before starting one.
-- If you are not a subagent, also read `references/plan-maintenance.md`.
+- If it calls for agentic review, read `references/review.md`.
+- Read `references/plan-maintenance.md` for your own plan.

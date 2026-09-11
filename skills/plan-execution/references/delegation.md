@@ -1,22 +1,24 @@
-# Working With Subagents
+# Working With Delegated Tasks
 
-When your plan assigns phase/part/task level work to a separate subagent, start
-a fresh subagent to execute it and coordinate interaction with the human.
+When your plan assigns phase, part, or plan task work to a separate Task, start
+a fresh Task to execute it. The Task owns its reviews and human interaction.
 
-## Start A Subagent
+## Start A Delegated Task
 
-For the next subagent assignment in your plan:
+For the next delegated Task assignment in your plan:
 
-1. Resolve the referenced subagent plan to an absolute path. Do not read it.
-2. Start a fresh subagent without passing it the current conversation context.
-   Record its runtime handle in the unit's `in progress` execution-record entry
-   until the final handoff has been recorded or recovery has concluded.
+1. Resolve the referenced child plan to an absolute path. Do not read it.
+2. Start the explicitly authorized Task without passing it the current
+   conversation context. Follow the Task tool's workspace rules and ensure its
+   workspace can access the plan and required inputs. Record its Task ID in
+   the unit's `in progress` execution-record entry.
 3. Give it this minimal prompt:
 
-   `You are a subagent. Use $plan-execution to execute <absolute-plan-path>. Work in
-   <absolute-workspace-path>.`
+   `You are a delegated Task. Use $plan-execution to execute
+   <absolute-plan-path>. Work in <absolute-workspace-path>. Send the final
+   handoff to the main Task <task-id>.`
 
-In addition, include only dynamic context that you believe the subagent may
+In addition, include only dynamic context that you believe the Task may
 need:
 
 - uncommitted work or workspace boundaries it must preserve;
@@ -27,52 +29,24 @@ Do not copy the conversation or a whole earlier handoff, or restate
 `$plan-execution` instructions. If no dynamic context applies, send only the
 minimal prompt.
 
-If subagents are unavailable, ask the human before doing the assigned work
+If Tasks are unavailable, ask the human before doing the assigned work
 yourself.
 
-## While The Subagent Works
+## While The Delegated Task Works
 
-- Do not repeatedly poll or read the subagent's thread.
+- Do not repeatedly poll or read the Task's thread. Use bounded Task waits.
 - Do not request routine progress, command output, or intermediate reasoning.
-- The subagent may send brief milestone updates.
+- The Task may send brief milestone updates.
 - When no other work can proceed, wait for status in bounded intervals. If a
-  wait returns no result, check the retained handle's status before treating
-  the delegation as interrupted.
-- Wait for a human request, a blocker or failure, or the final handoff.
-
-## Human Input
-
-You own the human-facing thread. When a subagent sends a concise
-request for human input through the normal agent channel, present it without
-redoing the subagent's work. Return the human's response to the same subagent
-session so it can continue owning the assigned work.
-
-## Coordinate Agentic Review
-
-When your plan requires agentic review of delegated implementation:
-
-1. Keep the implementation unit `in progress` and retain the implementer's
-   handle after its implementation handoff.
-2. Follow your plan, which may direct you to perform the assigned review
-   yourself or start a fresh subagent with the assigned review skill and scope.
-   When delegating, identify the workspace and files or diff to inspect. Do not
-   pass conversation context, an execution plan, or `$plan-execution`.
-3. Return in-scope findings to the same implementer session. Do not address the
-   findings yourself.
-4. If the review policy requires a repeat, review the corrected work again. Use
-   the same reviewer session when the review was delegated.
-5. When the review passes, tell the implementer to follow the human-review and
-   commit policy.
-
-If the review blocks, fails, or requires work outside the plan, follow any
-specific continuation route in your plan. If none exists, stop.
+  wait returns no result, check the retained Task's status before treating
+  the delegation as interrupted. A finished turn is not a final handoff.
+- Wait for a blocker or failure, or the final handoff.
 
 ## Finish Or Stop
 
-- Trust a successful subagent handoff except when performing its assigned
-  agentic review yourself. Do not otherwise inspect its full diff, replay its
+- Trust a successful Task handoff. Do not inspect its full diff, replay its
   investigation, or rerun its checks.
-- Update the corresponding Phase, Part, or Task in your plan's execution record
+- Update the corresponding phase, part, or plan task in your execution record
   from the final handoff.
 - If the final handoff reports blocked or failed work, follow any specific
   continuation route in your plan. If none exists, stop.
@@ -80,15 +54,15 @@ specific continuation route in your plan. If none exists, stop.
 
 ## Recover Interrupted Delegation
 
-Use this section when execution stopped unexpectedly before a subagent's
+Use this section when execution stopped unexpectedly before a Task's
 handoff was recorded or acted on. Recover existing work before starting a
 replacement.
 
 - Read your plan, current Git and workspace state, and the latest relevant
   execution record entries.
-- Resume with the same subagent if possible.
-- If a subagent created a commit but returned no handoff, recover from the
+- Resume with the same Task if possible.
+- If a Task created a commit but returned no handoff, recover from the
   commit and current workspace state. Do not redo the work or its checks.
-- If work remains incomplete and the same subagent cannot be resumed, start a
+- If work remains incomplete and the same Task cannot be resumed, start a
   replacement with concrete recovery instructions only when your plan or the
   human authorizes that route.

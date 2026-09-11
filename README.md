@@ -61,8 +61,8 @@ frontmatter is the source of truth for its exact selection boundary.
 - `$code-quality-review`: review source-code quality, architecture, contracts, lifecycle clarity, tests, and maintainability.
 - `$concept-writing`: write, revise, or review concept documents, foundation notes, rationale docs, and early-stage explanatory docs.
 - `$documentation-surface-review`: review documentation surfaces, documentation profiles, source-of-truth docs, README scope, and documentation architecture.
-- `$plan-writing`: design, revise, review, and shard plans, including explicit sub-agent assignments.
-- `$plan-execution`: implement or resume planned work, coordinate plan-authorized sub-agents, and maintain progress and recovery state.
+- `$plan-writing`: design, revise, review, and shard plans, including explicit Task assignments.
+- `$plan-execution`: implement or resume planned work, coordinate authorized Tasks, and maintain progress and recovery state.
 - `$project-docs-writing`: write, revise, or review durable project documentation and source-of-truth docs.
 - `$project-upgrade-planning`: assess project upgrade readiness and plan upgrade grouping, sequencing, validation, and next steps.
 - `$prompt-writing`: write, revise, or review reusable agent-facing prompts and workflow instructions.

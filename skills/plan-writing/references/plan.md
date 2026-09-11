@@ -6,17 +6,18 @@ execution. Execution and routine progress updates belong to `$plan-execution`.
 Inherit prose discipline from `skills/technical-writing/references/base.md`.
 
 ## Scope
-- Include a task, constraint, or note only when it serves the requested outcome, a necessary dependency, an explicit requirement, or a concrete risk supported by inspected evidence.
+- Include a plan task, constraint, or note only when it serves the requested outcome, a necessary dependency, an explicit requirement, or a concrete risk supported by inspected evidence.
 - Make the scoped work executable; completeness does not require cataloguing related possibilities.
 - Prefer existing interfaces, tools, and validation workflows. Reuse does not imply redesign, generalization, or migration of existing consumers.
-- Limit supporting infrastructure changes to what the current task requires.
+- Limit supporting infrastructure changes to what the requested work requires.
 - State what completes the requested work. Treat downstream consequences as decisions, not automatic extensions; retain deferred work only when requested or needed to resume the scoped work.
 
 ## Structure
-- Use Title Case for Phase, Part, and Task headings.
+- Use Title Case for Phase, Part, and Task headings. Distinguish a numbered
+  plan task from a Codex Task, which is a separate user-facing conversation.
 - Use numbered phases for work with meaningful stages or dependency boundaries. State each phase's action, output, and conditions for proceeding where relevant.
 - Break complex phases into lettered parts that group related work: `Phase 2`, `Part 2.C`.
-- Subdivide a large, coherent part into named, numbered tasks when individual scope, outputs, or tracking help: `Phase 2 > Part 2.C > Task 2.C.1`. Tasks may be sequential or independent. Keep this third level optional.
+- Subdivide a large, coherent part into named, numbered plan tasks when individual scope, outputs, or tracking help: `Phase 2 > Part 2.C > Task 2.C.1`. Plan tasks may be sequential or independent. Keep this third level optional.
 - Use bullets for discrete requirements, outputs, and checks, numbered lists for ordered actions, and paragraphs for explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
 - State each requirement once. After orientation, present work in execution
@@ -34,20 +35,20 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
   registry.
 - Mark unresolved choices beside the work they affect. Distinguish choices that
   block progress from details that can be resolved during implementation.
-- Give every main agent plan one `## Execution Record`. Its position does not
+- Give every independently executed plan one `## Execution Record`. Its position does not
   affect maintenance; usually place it after brief orientation and before the
   detailed work.
 - Format the record as an expandable list, not a table. Identify each entry by
   its plan identifier and title, and initialize it with only an indented
   `State:` point set to `not started`. Organize top-level entries by Phase and
-  nest Parts and Tasks beneath them only when separately executed or needing
+  nest parts and plan tasks beneath them only when separately executed or needing
   distinct state. Use the plan's highest-level work units when those levels do
   not apply. Do not add empty placeholders for possible later information.
 
 ## Execution Detail
 - Use concrete action verbs and identify the owner and affected artifacts or
   behavior. In a main agent plan, an unqualified imperative assigns work to the
-  main agent; name the responsible subagent or linked plan whenever work is
+  main agent; name the delegated Task and linked plan whenever work is
   delegated.
 - When the main agent is intended to orchestrate delegated work, limit its
   actions to coordination and any review or commit the plan assigns to it
@@ -66,7 +67,7 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
 
 When a plan contains consequential design choices that require a decision, suggest developing it progressively:
 
-- Capture known scope as lightweight phase, part, or task stubs. Mark unresolved
+- Capture known scope as lightweight phase, part, or plan task stubs. Mark unresolved
   choices without inventing detail, and stop the executable flow before any
   unit whose ownership, scope, dependencies, or policy remains unresolved.
 - Ask for one consequential decision at a time. Resolve routine implementation details using available evidence and judgment.
@@ -92,7 +93,7 @@ considering extraction.
 ## Final Scope Check
 Before delivering:
 
-- Remove tasks that fail the scope test above.
+- Remove plan tasks that fail the scope test above.
 - Remove hypothetical safeguards, unnecessary generalization, and generic
   execution mechanics already supplied by selected skills. Retain only
   task-specific choices and exceptions.

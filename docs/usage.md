@@ -73,10 +73,11 @@ Natural-language prompts can also lead the model to select skills, but explicit
 `$skill-name` invocation is clearer when the task could match more than one
 skill.
 
-Plan execution uses one agent unless the plan explicitly assigns named child
-shard files to fresh sub-agents. A shard file alone is document organization,
+Plan execution uses one Task unless the plan explicitly assigns named child
+shard files to fresh Tasks. A shard file alone is document organization,
 not delegation authority. Use `$plan-writing` to add or change those assignments
-before execution.
+before execution. Each delegated Task owns its reviewer subagents and direct
+user interaction.
 
 ## Project Setup
 

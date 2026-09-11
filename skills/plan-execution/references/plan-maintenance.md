@@ -5,7 +5,7 @@ document does not affect maintenance.
 
 - Use an expandable list, not a table. Identify each recorded unit by its plan
   identifier and title, with one indented `State:` point. Use top-level entries
-  for Phases and nest their Parts and Tasks beneath them. For a plan without
+  for Phases and nest their parts and plan tasks beneath them. For a plan without
   those levels, use its highest-level work units.
 - Use only these states: `not started`, `in progress`, `completed`, `blocked`,
   or `failed`.
@@ -14,8 +14,10 @@ document does not affect maintenance.
 - Set a unit to `in progress` before beginning its work. On resumption, recover
   an `in progress` unit from the execution record and current workspace state
   before starting it again.
-- For delegated work, keep the active subagent's runtime handle in the
+- For delegated work, keep the delegated Task's ID in the
   `in progress` entry until its final handoff is recorded or recovery concludes.
+- Keep each delegated unit's aggregate outcome here; its owning Task maintains
+  internal progress, reviewer handles, and human decisions in its own plan.
 - Add concise, freeform points only for material outcomes, prescribed checks and
   reviews, created commits or durable artifacts, and the smallest action or
   decision needed for blocked work. Do not force labels, add empty placeholders,
@@ -23,10 +25,10 @@ document does not affect maintenance.
 
 Record decisions and constraints that affect remaining work beside that work
 in your plan. Do not read or edit other plan documents, including sharded
-Phase, Part, or Task plans, to propagate them.
+phase, part, or plan task files, to propagate them.
 
 The execution record reports state. It does not change scope, requirements,
-execution order, review or commit policy, or subagent assignments.
+execution order, review or commit policy, or delegated Task assignments.
 
 If execution requires changing the planned scope, order, requirements,
-structure, or subagent assignments, stop and use `$plan-writing`.
+structure, or delegated Task assignments, stop and use `$plan-writing`.

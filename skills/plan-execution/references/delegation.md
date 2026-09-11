@@ -34,13 +34,12 @@ yourself.
 
 ## While The Delegated Task Works
 
-- Do not repeatedly poll or read the Task's thread. Use bounded Task waits.
+- Check delegated Task status every five minutes by default, unless the human
+  specifies a different interval. Do not make additional routine status checks
+  between intervals. Act on incoming messages and final handoffs when they arrive.
 - Do not request routine progress, command output, or intermediate reasoning.
 - The Task may send brief milestone updates.
-- When no other work can proceed, wait for status in bounded intervals. If a
-  wait returns no result, check the retained Task's status before treating
-  the delegation as interrupted. A finished turn is not a final handoff.
-- Wait for a blocker or failure, or the final handoff.
+- A finished turn is not a final handoff.
 
 ## Finish Or Stop
 

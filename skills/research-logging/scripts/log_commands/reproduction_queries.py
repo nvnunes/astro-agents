@@ -151,7 +151,6 @@ def reproduction_reconciliation_text(
     return compose_reproduction_reconciliation_summary(
         projected,
         outcomes,
-        generated_at=generated_at,
     )
 
 

@@ -735,7 +735,6 @@ def compose_reproduction_report(
     )
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
-        results.updated_at,
         artifact_summary_counts(artifacts, results.commands),
         latest.command_outcomes if latest is not None else None,
         _SummaryPresentation(
@@ -798,7 +797,6 @@ def compose_reproduction_summary(
 
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
-        results.updated_at,
         artifact_summary_counts(results.artifacts, results.commands),
         latest.command_outcomes if latest is not None else None,
         _SummaryPresentation(
@@ -813,14 +811,11 @@ def compose_reproduction_summary(
 def compose_reproduction_reconciliation_summary(
     results: ReproductionResults,
     command_outcomes: Mapping[str, int],
-    *,
-    generated_at: str,
 ) -> str:
     """Render a terminal no-work reconciliation without inventing a run."""
 
     latest = next((run for run in results.runs if run.status == "complete"), None)
     lines = _summary_lines(
-        generated_at,
         artifact_summary_counts(results.artifacts, results.commands),
         command_outcomes,
         _SummaryPresentation(
@@ -909,15 +904,12 @@ def command_summary_counts(commands: Mapping[str, int]) -> Mapping[str, object]:
 
 
 def _summary_lines(
-    updated_at: str,
     artifacts: Mapping[str, object],
     command_outcomes: Mapping[str, int] | None,
     presentation: _SummaryPresentation,
 ) -> list[str]:
     lines = [
         presentation.heading,
-        "",
-        f"Generated: `{updated_at}`",
         "",
         *presentation.run_context,
         "",

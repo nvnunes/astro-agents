@@ -31,7 +31,7 @@ and Repair do not parse it as machine authority. Reproduction is a separate
 operation with `.cache/reproduction/results.json` and `reproduction.md`;
 mechanical validation preserves both.
 
-The human report contains the validation date, one compact Area and Result
+The human report omits run dates and contains one compact Area and Result
 table, and findings grouped by entry and human issue type. Each issue group
 shows at most ten deterministic target details and an overflow command. It
 contains no internal failure codes, check identities, raw observed state,

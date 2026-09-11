@@ -46,8 +46,6 @@ def compose_validation_report(
     lines = [
         "# Validation",
         "",
-        f"Validated: `{record.result_date}`",
-        "",
         "## Mechanical Validation",
         "",
         *_area_table(area_results(record, groups)),

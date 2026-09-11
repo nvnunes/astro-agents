@@ -464,7 +464,6 @@ class ReproductionReportTests(unittest.TestCase):
                 "succeeded": 0,
                 "total": 250,
             },
-            generated_at="2030-01-02T00:00:00Z",
         )
 
         self.assertIn(
@@ -671,6 +670,16 @@ class ReproductionReportTests(unittest.TestCase):
             folder_links_from=context.log_root,
         )
 
+        self.assertNotIn("Generated:", report)
+        self.assertEqual(
+            report,
+            compose_reproduction_report(
+                replace(result, updated_at="2030-01-02T00:00:00Z"),
+                context=context,
+                currentness=currentness,
+                folder_links_from=context.log_root,
+            ),
+        )
         self.assertIn("## [e002 — Earlier](entries/e002.md)", report)
         self.assertIn("## [e003 — Example](entries/e003.md)", report)
         self.assertIn("| `data/changed.bin` | **changed** |", report)

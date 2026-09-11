@@ -6,6 +6,7 @@ import json
 import sqlite3
 import tempfile
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 from research_log_validation_test_support import (
@@ -64,6 +65,12 @@ class MechanicalControllerTests(unittest.TestCase):
         )
 
         report = REPORT.compose_validation_report(record)
+
+        self.assertNotIn("Validated:", report)
+        self.assertEqual(
+            report,
+            REPORT.compose_validation_report(replace(record, result_date="2026-08-31")),
+        )
 
         self.assertIn("| Structure | 1 issue |", report)
         self.assertIn("| Evidence | Clear |", report)

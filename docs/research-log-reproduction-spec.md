@@ -2459,8 +2459,8 @@ accounted totals, and explicit counts of complete, not-yet-reproduced, and
 unavailable logs. Its JSON form uses the schemas listed in
 [Versioned Surfaces](#versioned-surfaces).
 
-The complete report header contains generation time, latest completed run, and
-the same two summary trees. It has no aggregate pass/fail headline.
+The complete report header contains the latest completed run and the same two
+summary trees. It omits the report-generation timestamp. It has no aggregate pass/fail headline.
 
 The current-state body has one section per entry in canonical log order. Each
 heading contains the stable entry ID and human title and links to the exact

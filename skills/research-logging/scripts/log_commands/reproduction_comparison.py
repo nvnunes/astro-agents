@@ -39,7 +39,11 @@ from validation.pyrun_state import (
 
 from .context import LogContext, resolve_entry
 from .model import ActionError
-from .reproduction_contract import ReproductionPlan, successful_checkpoint_state
+from .reproduction_contract import (
+    ReproductionPlan,
+    is_repair_verification,
+    successful_checkpoint_state,
+)
 from .reproduction_execution import ExecutionAttempt, ReproductionWorkspace
 from .storage import atomic_write_text
 
@@ -389,7 +393,7 @@ def clear_execution_reproduction_requirement_locked(
 ) -> bool:
     """Record that one execution no longer requires reproduction."""
 
-    if not result.complete:
+    if not result.complete or is_repair_verification(plan):
         return False
     planned = {
         (str(item.get("entry")), str(item.get("execution_id")))

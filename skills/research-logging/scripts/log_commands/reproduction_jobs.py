@@ -47,6 +47,7 @@ from .reproduction_contract import (
     PRETIMEOUT_PLAN_SCHEMA,
     ReproductionPlan,
     ReproductionRuntime,
+    is_repair_verification,
     successful_checkpoint_state,
     valid_reproduction_target,
 )
@@ -470,6 +471,7 @@ def _resume_plan(log: LogContext, context: _ResumeContext) -> ReproductionPlan:
         ),
         selection=ReproductionSelection(
             RESUME_SELECTION,
+            verify_repair=is_repair_verification(_plan_from_record(context.record)),
             execution_id=cast(Mapping[str, str], context.record["target"]).get(
                 "execution_id"
             ),
@@ -1851,6 +1853,7 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         raise ActionError(
             "reproduction.run.invalid", "accepted execution timeout changed"
         )
+    is_repair_verification(plan)
     return plan
 
 

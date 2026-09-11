@@ -62,6 +62,12 @@ attempt selection, source digest, planning detail, accounting reason, and
 terminal disposition. Historical command list and show queries use this
 projection without consulting current `pyrun.json`.
 
+A `repair_verification` command detail marks explicit verification of repaired
+script/recorded-code bytes. Its accepted run snapshot retains both historical
+and accepted source fingerprints. Success and comparisons are reported normally,
+but this mode neither rewrites recorded observations nor clears the historical
+reproduction requirement. Its outputs are not promotable.
+
 Each evidence-relevant or individually targeted command also has one current record keyed by entry and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,

@@ -78,7 +78,7 @@ The initial implementation must use these versions:
 | Command list | `research-log-reproduction-command-list/2` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/8` |
+| Source snapshot | `research-log-reproduction-source-snapshot/8` (ordinary), `/9` (repair verification) |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
@@ -545,8 +545,8 @@ state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
 An ordinary successful publication records `requires_reproduction: false`.
 Migrated state that has not completed a successful execution records
-`requires_reproduction: true` and remains runnable. Reproduction changes the
-field to false immediately after the command reaches its complete mechanical
+`requires_reproduction: true` and remains runnable. Outside repair-verification
+mode, reproduction changes the field to false immediately after the command reaches its complete mechanical
 endpoint and its complete comparison is durably recorded. Artifact matching is
 separate: a completed command clears the requirement even when an artifact is
 changed or its comparison fails. The mutation preserves the recipe,
@@ -724,7 +724,7 @@ or unresolved blocker aborts without partial cutover or omission.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY [--execution-id ID]] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
+log reproduce --path LOG [--entry ENTRY [--execution-id ID]] [--include-all] [--recheck] [--verify-repair] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
@@ -772,6 +772,48 @@ retains the exact target and immutable one-command scope. Targeted publication
 replaces only covered command/artifact results and retains unrelated results
 and identities. Published execution targets remain visible in artifact queries
 and promotion even when they have no evidence references.
+
+### Verification After A Source Repair
+
+`--verify-repair` is an explicit single-execution verification mode. It requires
+`--entry`, a full recorded `--execution-id`, and `--recheck` on preview and
+launch. It permits intentional changes to the selected script and its recorded
+participating local Python source files. Ordinary reproduction retains its
+`script_changed` and `participating_code_changed` admission failures.
+
+The repair plan observes current bytes for those source files and snapshots
+both their recorded and accepted fingerprints. It retains the recorded recipe,
+execution ID, input/output declarations, original observation digest, and
+one-command scope. Missing source files still block. Inputs, producer
+boundaries, retained comparison baselines, policy, and validation admission use
+their ordinary checks; the option does not accept changed prerequisite or
+baseline material. Changed recipe parameters or declarations still require a
+separate supported recording/adoption route and cannot be smuggled through
+this source-only option. It neither discovers nor records a new participating
+code closure.
+
+Dry run is write-free and names the verification mode and the accepted versus
+historical source fingerprints. Before launch, execution, and publication of
+an attempt, the current source files must match that attempt's accepted snapshot
+and the recorded execution must retain its original digest. Further source
+edits invalidate reuse of that snapshot. Resuming a current `/6` stopped run
+creates a continuation that can accept repaired source with a fresh snapshot,
+subject to the ordinary continuation selection and admission checks. It keeps
+the explicit verification mode and original single-command scope. Publication
+retries retain the original attempt's snapshot and cannot accept further
+source edits.
+
+Execution uses the ordinary confined run-output workspace and comparison
+machinery. Success verifies execution of the accepted repaired source; it does
+not establish that the retained artifacts were produced by that source.
+Publication preserves unrelated results and adds `repair_verification` to the
+run's immutable command-query details without changing its success/failure
+accounting reason. Command success and artifact comparisons remain distinct.
+No verification outcome changes `pyrun.json`: historical observations,
+`last_run_at`, policy, and `requires_reproduction` all remain unchanged.
+Verification runs cannot be promoted. A later ordinary reproduction still
+applies recorded-source admission; this mode does not adopt the repair into
+ordinary execution history.
 
 ### Admission Gate
 
@@ -1036,6 +1078,15 @@ projection. Reproduction treats these values as immutable currentness tokens.
 The source snapshot uses
 `research-log-reproduction-source-snapshot/8` and has exactly `schema`,
 `authority_files`, `commands`, `executions`, `materials`, and `result_schema`.
+Repair verification instead uses source-snapshot/9 with the same fields plus
+`repair_verification: true`; only an execution target may carry that marker.
+Its script/code material records add `recorded_fingerprint`, while their
+ordinary `fingerprint` is the accepted current fingerprint. The historical
+fingerprints must exactly match the unchanged recorded source closure; all
+recorded source members must be snapshotted for a runnable target. Other
+material roles cannot use repair admission. Ordinary snapshots neither carry
+nor infer the marker. Both snapshot shapes retain exact readers.
+
 `result_schema` binds the accepted plan to the exact cumulative-result schema it
 may publish. The compatible result/9 reader retains old entry/log runs while
 new writes use result/10; other schema cutovers require the documented rebuild.
@@ -1062,7 +1113,7 @@ At acceptance, the CLI verifies the validation result, batch projection, and
 complete source snapshot. At execution and final publication boundaries it
 rechecks the active attempt's accepted validation files and source snapshot;
 comparison and reproduction-requirement updates remain inside the same
-accepted scope lock. A continuation resume plans and accepts a fresh attempt
+accepted scope lock. Repair verification does not update the requirement. A continuation resume plans and accepts a fresh attempt
 snapshot before launching any command. This permits the run's own
 requirement-clearing writes and researcher corrections between attempts while
 still rejecting any within-attempt
@@ -2190,8 +2241,9 @@ It never reads or writes validation state.
 
 ### Reproduction Requirement And Post-Reproduction Validation
 
-When a command reaches its complete mechanical endpoint, reproduction
-atomically changes only that execution's `requires_reproduction` field to false
+Outside explicit repair-verification mode, when a command reaches its complete
+mechanical endpoint, reproduction atomically changes only that execution's
+`requires_reproduction` field to false
 in its entry-local `pyrun.json`. This is independent of artifact comparison:
 matched, changed, and comparison-failed outputs all belong to a completed
 command. The run already holds the owning entry or log scope lock. Each update

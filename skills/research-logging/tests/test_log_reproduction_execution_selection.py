@@ -75,13 +75,22 @@ class ExecutionSelectionTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
-    def plan(self, *, policy="incremental", include_all=False, identity=None):
+    def plan(
+        self,
+        *,
+        policy="incremental",
+        include_all=False,
+        identity=None,
+        verify_repair=False,
+    ):
         return plan_reproduction(
             self.fixture.log,
             entry=self.entry,
             include_all=include_all,
             selection=ReproductionSelection(
-                policy, execution_id=identity or self.target[0]
+                policy,
+                execution_id=identity or self.target[0],
+                verify_repair=verify_repair,
             ),
         )
 
@@ -443,6 +452,9 @@ class ExecutionSelectionTests(unittest.TestCase):
             mock.patch("log_commands.reproduction_jobs._reconcile_lost_supervisor")
         )
 
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        self.admission.update(_admission(self.fixture))
+        recorded = (self.entry.root / "pyrun.json").read_bytes()
         args = [
             "reproduce",
             "--path",
@@ -452,13 +464,25 @@ class ExecutionSelectionTests(unittest.TestCase):
             "--execution-id",
             self.target[0],
             "--recheck",
+            "--verify-repair",
         ]
+        before = {
+            p.relative_to(self.fixture.root): p.read_bytes()
+            for p in self.fixture.root.rglob("*")
+            if p.is_file()
+        }
         output = StringIO()
         with (
             redirect_stdout(output),
             mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
         ):
             self.assertEqual(main([*args, "--dry-run", "--summary"]), 0)
+        after = {
+            p.relative_to(self.fixture.root): p.read_bytes()
+            for p in self.fixture.root.rglob("*")
+            if p.is_file()
+        }
+        self.assertEqual(before, after)
         self.assertIn(self.target[0], output.getvalue())
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             main([*args, "--summary"])
@@ -519,5 +543,198 @@ class ExecutionSelectionTests(unittest.TestCase):
             )
         resumed = _load_run(path)
         self.assertEqual(resumed["target"], record["target"])
+        self.assertTrue(resumed["source_snapshot"]["repair_verification"])
+        self.assertEqual((self.entry.root / "pyrun.json").read_bytes(), recorded)
         self.assertEqual(len(resumed["queue"]), 1)
         self.assertEqual(resumed["queue"][0]["execution_id"], self.target[0])
+
+    def test_repaired_script_and_known_code_need_explicit_verification(self) -> None:
+        from log_commands.reproduction_planner import verify_reproduction_snapshot
+        from test_log_reproduction_planning import _fingerprint
+
+        helper = self.entry.root / "scripts/helper.py"
+        helper.write_text("# recorded helper\n")
+        target = replace(
+            self.target[1],
+            observed=replace(
+                self.target[1].observed,
+                code=(("scripts/helper.py", _fingerprint(helper)),),
+            ),
+        )
+        self.fixture.write_pyrun(
+            self.entry, [self.prerequisite, (self.target[0], target), self.sibling]
+        )
+        recorded = (self.entry.root / "pyrun.json").read_bytes()
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        helper.write_text("# repaired helper\n")
+        self.admission.update(_admission(self.fixture))
+        ordinary = self.plan(policy="recheck")
+        self.assertFalse(ordinary.executions)
+        repaired = self.plan(policy="recheck", verify_repair=True)
+        self.assertEqual(
+            [item["execution_id"] for item in repaired.executions], [self.target[0]]
+        )
+        sources = [
+            item
+            for item in repaired.source_snapshot["materials"]
+            if "recorded_fingerprint" in item
+        ]
+        self.assertEqual(len(sources), 2)
+        self.assertTrue(
+            all(item["fingerprint"] != item["recorded_fingerprint"] for item in sources)
+        )
+        self.assertTrue(repaired.source_snapshot["repair_verification"])
+        self.assertEqual((self.entry.root / "pyrun.json").read_bytes(), recorded)
+        summary = format_reproduction_plan_summary(repaired, recheck=True)
+        self.assertIn("repaired-source verification", summary)
+        self.assertIn("scripts/target.py", summary)
+        self.assertIn("scripts/helper.py", summary)
+        helper.write_text("# changed after acceptance\n")
+        with self.assertRaises(ActionError):
+            verify_reproduction_snapshot(self.fixture.log, repaired)
+
+    def test_repair_verification_does_not_bypass_prerequisites_or_baselines(
+        self,
+    ) -> None:
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        self.input.write_text("changed prerequisite\n")
+        self.admission.update(_admission(self.fixture))
+        blocked = self.plan(policy="recheck", verify_repair=True)
+        self.assertFalse(blocked.executions)
+        self.assertEqual(
+            {x["reason"] for x in blocked.failures}, {"direct_input_changed"}
+        )
+        self.input.write_text("input\n")
+        self.outputs[0].write_text("changed baseline\n")
+        self.admission.update(_admission(self.fixture))
+        blocked = self.plan(policy="recheck", verify_repair=True)
+        self.assertFalse(blocked.executions)
+        self.assertEqual({x["reason"] for x in blocked.failures}, {"baseline_changed"})
+
+    def test_repair_verification_keeps_policy_and_requires_exact_scope(self) -> None:
+        self.fixture.write_pyrun(
+            self.entry,
+            [
+                self.prerequisite,
+                (self.target[0], replace(self.target[1], auto_reproduce=False)),
+                self.sibling,
+            ],
+        )
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        self.admission.update(_admission(self.fixture))
+        self.assertFalse(self.plan(policy="recheck", verify_repair=True).executions)
+        self.assertEqual(
+            len(
+                self.plan(
+                    policy="recheck", verify_repair=True, include_all=True
+                ).executions
+            ),
+            1,
+        )
+        with self.assertRaises(ActionError):
+            self.plan(verify_repair=True)
+        with self.assertRaises(ActionError):
+            plan_reproduction(
+                self.fixture.log,
+                entry=self.entry,
+                include_all=False,
+                selection=ReproductionSelection("recheck", verify_repair=True),
+            )
+
+    def test_repair_verification_snapshot_survives_resume_and_rejects_promotion(
+        self,
+    ) -> None:
+        from log_commands.reproduction_contract import is_repair_verification
+        from log_commands.reproduction_planner import verify_reproduction_snapshot
+        from log_commands.reproduction_promotion import promote_execution
+
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        self.admission.update(_admission(self.fixture))
+        plan = self.plan(policy="recheck", verify_repair=True)
+        run_root = (
+            self.fixture.root
+            / "tmp/reproduction/2030-01-01/reproduce-study-e001-reproduce-repair"
+        )
+        run_root.mkdir(parents=True)
+        record = _accepted_record(
+            self.fixture.log,
+            plan,
+            "reproduce-repair",
+            run_root,
+            accepted_at="2030-01-01T00:00:00Z",
+        )
+        path = run_root / "run.json"
+        path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        loaded = _plan_from_record(_load_run(path))
+        self.assertTrue(is_repair_verification(loaded))
+        context = _ResumeContext(run_root, record, record["state"], False, True, "e001")
+        resumed = _resume_plan(self.fixture.log, context)
+        self.assertTrue(is_repair_verification(resumed))
+        self.assertEqual(resumed.target, plan.target)
+        self.assertEqual(len(resumed.executions), 1)
+        with self.assertRaises(ActionError) as caught:
+            promote_execution(
+                self.fixture.log, run_id="reproduce-repair", execution_id=self.target[0]
+            )
+        self.assertEqual(
+            caught.exception.code, "reproduction.promotion.repair_verification"
+        )
+        (self.entry.root / "scripts/target.py").write_text("# second repair\n")
+        with self.assertRaises(ActionError):
+            verify_reproduction_snapshot(self.fixture.log, loaded)
+
+    def test_repair_snapshot_rejects_changed_history_and_missing_source_material(
+        self,
+    ) -> None:
+        from copy import deepcopy
+
+        from log_commands.reproduction_planner import (
+            verify_reproduction_runtime_snapshot,
+        )
+
+        (self.entry.root / "scripts/target.py").write_text("# repaired script\n")
+        self.admission.update(_admission(self.fixture))
+        plan = self.plan(policy="recheck", verify_repair=True)
+        snapshot = deepcopy(dict(plan.source_snapshot))
+        source = next(
+            item for item in snapshot["materials"] if item["role"] == "script"
+        )
+        source["recorded_fingerprint"] = source["fingerprint"]
+        with self.assertRaises(ActionError):
+            verify_reproduction_runtime_snapshot(
+                self.fixture.log, replace(plan, source_snapshot=snapshot)
+            )
+        snapshot = deepcopy(dict(plan.source_snapshot))
+        snapshot["materials"] = [
+            item for item in snapshot["materials"] if item["role"] != "script"
+        ]
+        with self.assertRaises(ActionError):
+            verify_reproduction_runtime_snapshot(
+                self.fixture.log, replace(plan, source_snapshot=snapshot)
+            )
+        snapshot = {
+            **plan.source_snapshot,
+            "schema": "research-log-reproduction-source-snapshot/8",
+        }
+        with self.assertRaises(ActionError):
+            verify_reproduction_runtime_snapshot(
+                self.fixture.log, replace(plan, source_snapshot=snapshot)
+            )
+
+    def test_repair_verification_still_requires_source_and_validation(self) -> None:
+        (self.entry.root / "scripts/target.py").unlink()
+        self.admission.update(_admission(self.fixture))
+        plan = self.plan(policy="recheck", verify_repair=True)
+        self.assertFalse(plan.executions)
+        self.assertEqual(
+            {item["reason"] for item in plan.failures}, {"script_unavailable"}
+        )
+        with mock.patch(
+            "log_commands.reproduction_planner._admit_validation",
+            side_effect=ActionError(
+                "reproduction.validation.unavailable", "fixture validation unavailable"
+            ),
+        ):
+            with self.assertRaises(ActionError) as caught:
+                self.plan(policy="recheck", verify_repair=True)
+        self.assertEqual(caught.exception.code, "reproduction.validation.unavailable")

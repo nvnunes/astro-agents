@@ -35,7 +35,11 @@ from .reproduction_comparison import (
     ArtifactComparison,
     ExecutionComparison,
 )
-from .reproduction_contract import REPRODUCTION_RESULT_SCHEMA, ReproductionPlan
+from .reproduction_contract import (
+    REPRODUCTION_RESULT_SCHEMA,
+    ReproductionPlan,
+    is_repair_verification,
+)
 from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
     ReproductionCommandInventory,
@@ -449,6 +453,8 @@ def _command_records(
             terminal = "succeeded" if comparison.complete else "failed"
             bucket = terminal
             reason = details[0] if len(details) == 1 else terminal
+        if is_repair_verification(request.plan):
+            details.append("repair_verification")
         records.append(
             {
                 "auto_reproduce": snapshot["auto_reproduce"],

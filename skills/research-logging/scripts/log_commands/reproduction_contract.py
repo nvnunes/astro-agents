@@ -16,6 +16,7 @@ PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 PREQUERY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
 SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/8"
+REPAIR_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/9"
 PREEXECUTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
 REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
@@ -175,6 +176,8 @@ def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -
         lines.extend(["", f"{omitted} additional {noun} omitted."])
     if target_kind == "execution":
         lines.extend(_execution_plan_summary(plan))
+    if is_repair_verification(plan):
+        lines.extend(_repair_plan_summary(plan))
     return "\n".join(lines) + "\n"
 
 
@@ -222,12 +225,34 @@ def _execution_plan_summary(plan: ReproductionPlan) -> list[str]:
     return lines
 
 
+def _repair_plan_summary(plan: ReproductionPlan) -> list[str]:
+    lines = [
+        "",
+        "- Mode: repaired-source verification; "
+        "recorded recipe and observations preserved.",
+        "- Accepted source fingerprints:",
+    ]
+    for item in cast(Sequence[Mapping[str, Any]], plan.source_snapshot["materials"]):
+        if "recorded_fingerprint" in item:
+            lines.append(
+                f"  - `{item['identity']}`: "
+                f"recorded={item['recorded_fingerprint']}; "
+                f"accepted={item['fingerprint']}"
+            )
+    lines.append(
+        "- This run does not clear the recorded reproduction requirement "
+        "or authorize promotion."
+    )
+    return lines
+
+
 def source_snapshot(
     *,
     authority_files: Sequence[Mapping[str, object]],
     commands: Sequence[Mapping[str, object]] = (),
     executions: Sequence[Mapping[str, object]],
     materials: Sequence[Mapping[str, object]],
+    verify_repair: bool = False,
 ) -> dict[str, object]:
     """Build the exact top-level source-snapshot field set."""
 
@@ -237,8 +262,69 @@ def source_snapshot(
         "executions": executions,
         "materials": materials,
         "result_schema": REPRODUCTION_RESULT_SCHEMA,
-        "schema": SOURCE_SNAPSHOT_SCHEMA,
+        "schema": REPAIR_SOURCE_SNAPSHOT_SCHEMA
+        if verify_repair
+        else SOURCE_SNAPSHOT_SCHEMA,
+        **({"repair_verification": True} if verify_repair else {}),
     }
+
+
+def is_repair_verification(plan: ReproductionPlan) -> bool:
+    """Decode the explicit repaired-source admission marker without defaults."""
+
+    from .model import ActionError
+
+    snapshot = plan.source_snapshot
+    if snapshot.get("schema") != REPAIR_SOURCE_SNAPSHOT_SCHEMA:
+        if "repair_verification" in snapshot:
+            raise ActionError(
+                "reproduction.source.invalid",
+                "repair marker requires source snapshot/9",
+            )
+        return False
+    if (
+        set(snapshot)
+        != {
+            "schema",
+            "authority_files",
+            "commands",
+            "executions",
+            "materials",
+            "result_schema",
+            "repair_verification",
+        }
+        or snapshot.get("result_schema") != REPRODUCTION_RESULT_SCHEMA
+        or snapshot.get("repair_verification") is not True
+        or not valid_reproduction_target(plan.target)
+        or plan.target.get("kind") != "execution"
+    ):
+        raise ActionError(
+            "reproduction.source.invalid", "invalid repair verification snapshot"
+        )
+    _validate_repair_material_structure(snapshot["materials"])
+    return True
+
+
+def _validate_repair_material_structure(materials: object) -> None:
+    """Validate the additional source-history fields before any source recheck."""
+
+    from .model import ActionError
+
+    if not isinstance(materials, Sequence) or isinstance(materials, (str, bytes)):
+        raise ActionError("reproduction.source.invalid", "invalid repair materials")
+    fields = {"identity", "role", "kind", "fingerprint"}
+    for item in materials:
+        if not isinstance(item, Mapping):
+            raise ActionError("reproduction.source.invalid", "invalid repair material")
+        expected = fields | (
+            {"recorded_fingerprint"}
+            if item.get("role") in {"script", "code"}
+            else set()
+        )
+        if set(item) != expected or not isinstance(item.get("identity"), str):
+            raise ActionError(
+                "reproduction.source.invalid", "invalid repair material fields"
+            )
 
 
 def canonical_record_digest(value: Mapping[str, Any]) -> str:

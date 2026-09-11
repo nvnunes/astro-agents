@@ -817,6 +817,11 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser.add_argument("--execution-id")
     parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
+    parser.add_argument(
+        "--verify-repair",
+        action="store_true",
+        help="verify intentionally repaired source for one recorded execution",
+    )
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument(
         "--execution-timeout-seconds",
@@ -832,16 +837,15 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         help="print a bounded human summary of a dry-run plan",
     )
     args = parser.parse_args(arguments)
-    if args.execution_id is not None and args.entry is None:
-        parser.error("--execution-id requires --entry")
-    if args.summary and not args.dry_run:
-        parser.error("--summary requires --dry-run")
+    _validate_reproduction_arguments(parser, args)
     log = resolve_log(args.path)
     from .reproduction_jobs import dry_run_reproduction, launch_reproduction
     from .reproduction_planner import ReproductionSelection
 
     selection = ReproductionSelection(
-        "recheck" if args.recheck else "incremental", execution_id=args.execution_id
+        "recheck" if args.recheck else "incremental",
+        execution_id=args.execution_id,
+        verify_repair=args.verify_repair,
     )
 
     if args.dry_run:
@@ -871,6 +875,17 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         )
         print(launch.render(), end="")
     return 0
+
+
+def _validate_reproduction_arguments(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    if args.execution_id is not None and args.entry is None:
+        parser.error("--execution-id requires --entry")
+    if args.verify_repair and (not args.recheck or args.execution_id is None):
+        parser.error("--verify-repair requires --entry, --execution-id, and --recheck")
+    if args.summary and not args.dry_run:
+        parser.error("--summary requires --dry-run")
 
 
 def _dispatch_validate_batch(arguments: Sequence[str]) -> int:

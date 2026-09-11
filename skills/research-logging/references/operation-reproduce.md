@@ -1,15 +1,15 @@
 # Reproduce Operation Instructions
 
 Use this operation only when the researcher explicitly asks to reproduce a
-maintained research log, one entry, or one recorded execution. Reproduce is a mechanical CLI workflow,
-separate from Record, Review, and Validate. It selects the requested scope from JSON authority, plans and executes only from JSON authority, retains all
-regenerated outputs in a project-local run folder, compares them with retained
-artifacts, clears the reproduction requirement for every completed execution,
-and publishes
-generated reproduction state. After successful reproduction publication, the
-CLI invokes ordinary log validation as a separate operation.
-It reads verified scripts, code, inputs, and comparison baselines in place;
-it does not copy the project into that folder.
+maintained research log, one entry, or one recorded execution. Reproduce is a
+mechanical CLI workflow, separate from Record, Review, and Validate. It plans
+and executes from JSON authority, retains regenerated outputs in a project-local
+run folder, compares them with retained artifacts, and publishes generated
+reproduction state. Outside repair-verification mode, completed executions also
+clear their reproduction requirement. After successful publication, the CLI
+invokes ordinary log validation as a separate operation. It reads verified
+scripts, code, inputs, and comparison baselines in place; it does not copy the
+project into the run folder.
 
 Read `references/file-reproduction-records.md` before launching or reporting a
 run.
@@ -79,6 +79,18 @@ prerequisite failures, and non-automatic execution still needs authorized
 `--include-all`. A zero-execution preview does not verify execution. Resume
 preserves the accepted single-command scope, and publication retains unrelated
 results. Inspect command success and each artifact comparison separately.
+
+For explicitly requested verification after a script or recorded local-code
+repair, add `--verify-repair` alongside `--entry`, `--execution-id`, and
+`--recheck`. Inspect the preview's recorded and accepted source fingerprints.
+The option retains the recorded recipe and all prerequisite, baseline,
+validation, and policy checks. Launch without `--dry-run --summary`, then use the
+same status, resume, and command/artifact queries. Treat the command detail's
+`repair_verification` marker as verification of repaired source, not adoption
+of new ordinary execution history. This mode preserves `pyrun.json` completely,
+including its reproduction requirement, and its outputs cannot be promoted.
+Do not use it to bypass changed recipe parameters/declarations or establish
+new participating-code observations; those need a supported adoption route.
 
 `--jobs` defaults to `1`, preserving serial execution. A larger value is an
 immutable per-run concurrency cap: dependency readiness, conflicting path

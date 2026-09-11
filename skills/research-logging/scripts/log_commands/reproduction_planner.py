@@ -57,11 +57,13 @@ from .reproduction_contract import (
     PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
     PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
     PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
+    REPAIR_SOURCE_SNAPSHOT_SCHEMA,
     SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
     ReproductionRuntime,
     canonical_execution_source_digest,
     canonical_record_digest,
+    is_repair_verification,
     source_snapshot,
     valid_reproduction_target,
 )
@@ -90,6 +92,7 @@ class ReproductionSelection:
     command_scope: frozenset[ExecutionKey] | None = None
     prior_commands: Mapping[ExecutionKey, Mapping[str, object]] | None = None
     execution_id: str | None = None
+    verify_repair: bool = False
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,7 @@ class _PlanningState:
     command_queue: frozenset[ExecutionKey] | None = None
     command_scope: frozenset[ExecutionKey] | None = None
     execution_id: str | None = None
+    verify_repair: bool = False
 
 
 @dataclass(frozen=True)
@@ -289,6 +293,14 @@ def plan_reproduction(
     execution_id = selection.execution_id
     _require_execution_selector(entry, execution_id)
     _require_selection_policy(selection.policy)
+    if selection.verify_repair and (
+        execution_id is None
+        or selection.policy not in {RECHECK_SELECTION, RESUME_SELECTION}
+    ):
+        raise ActionError(
+            "reproduction.repair.invalid",
+            "--verify-repair requires --entry, --execution-id, and --recheck",
+        )
     if (
         isinstance(runtime.jobs, bool)
         or not isinstance(runtime.jobs, int)
@@ -334,6 +346,7 @@ def plan_reproduction(
         command_queue=selection.command_queue,
         command_scope=selection.command_scope,
         execution_id=execution_id,
+        verify_repair=selection.verify_repair,
     )
     _trace_selected_evidence(selected_ids, entries, state)
     _trace_queued_commands(state)
@@ -404,7 +417,12 @@ def _execution_selection(
             "execution continuation scope changed",
         )
     return ReproductionSelection(
-        selection.policy, queue, scope, selection.prior_commands, identity
+        selection.policy,
+        queue,
+        scope,
+        selection.prior_commands,
+        identity,
+        selection.verify_repair,
     )
 
 
@@ -962,29 +980,15 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         project_root=state.project_root,
     )
     failures: list[tuple[str, str]] = []
-    script_identity = script.resolve().as_posix()
-    failure = _material_failure(script, "file", execution.observed.script, "script")
-    if failure is None:
-        _retain_material(
-            state,
-            ("script", script_identity),
-            _material(script_identity, "script", "file", execution.observed.script),
-            owner=owner.key,
-        )
-    else:
+    failure = _record_source_material(
+        state, owner, script, "script", execution.observed.script
+    )
+    if failure is not None:
         failures.append(failure)
     for name, fingerprint in execution.observed.code:
         path = code_target_path(name, entry_root=owner.entry.context.root)
-        identity = path.resolve().as_posix()
-        failure = _material_failure(path, "file", fingerprint, "participating_code")
-        if failure is None:
-            _retain_material(
-                state,
-                ("code", identity),
-                _material(identity, "code", "file", fingerprint),
-                owner=owner.key,
-            )
-        else:
+        failure = _record_source_material(state, owner, path, "code", fingerprint)
+        if failure is not None:
             failures.append(failure)
     for output, kind in execution.recipe.outputs:
         fingerprint = dict(execution.observed.outputs)[output]
@@ -1024,6 +1028,36 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
                     details,
                 ),
             )
+
+
+def _record_source_material(
+    state: _PlanningState,
+    owner: _Owner,
+    path: Path,
+    role: str,
+    recorded: Fingerprint,
+) -> tuple[str, str] | None:
+    """Freeze current repair source separately from historical observations."""
+
+    identity = path.resolve().as_posix()
+    reason_role = "participating_code" if role == "code" else "script"
+    resource = InputResource(
+        "planning-source", "file", identity, recorded, True, identity
+    )
+    try:
+        accepted = observe_fingerprint(resource).fingerprint
+    except (OSError, ValueError) as error:
+        return f"{reason_role}_unavailable", f"{reason_role}:{identity}:{error}"
+    if not state.verify_repair and accepted != recorded:
+        return f"{reason_role}_changed", (
+            f"{reason_role}:{identity}:expected={recorded.content_identity}:"
+            f"observed={accepted.content_identity}"
+        )
+    material = _material(identity, role, "file", accepted)
+    if state.verify_repair:
+        material["recorded_fingerprint"] = recorded.as_dict()
+    _retain_material(state, (role, identity), material, owner=owner.key)
+    return None
 
 
 def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str | None:
@@ -1695,6 +1729,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
             "execution": canonical_execution_source_digest(owner.execution.as_dict()),
             "execution_id": owner.execution_id,
             "materials": materials,
+            **({"repair_verification": True} if state.verify_repair else {}),
             "outputs": outputs,
         }
     )
@@ -1779,6 +1814,7 @@ def _project_plan(
         ],
         executions=execution_snapshot,
         materials=materials,
+        verify_repair=state.verify_repair,
     )
     cases = tuple(
         state.cases[key]
@@ -2074,6 +2110,7 @@ def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> Non
     _recheck_authority_files(plan, project_root)
     _recheck_validation_result(plan, log)
     _recheck_executions(plan, log, project_root)
+    is_repair_verification(plan)
     _recheck_materials(plan)
     digest, _ = research_source_projection(log.summary)
     expected = plan.validation_snapshot.get("source_projection_digest")
@@ -2098,11 +2135,13 @@ def verify_reproduction_runtime_snapshot(
         PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
         PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
         SOURCE_SNAPSHOT_SCHEMA,
+        REPAIR_SOURCE_SNAPSHOT_SCHEMA,
     }:
         raise ActionError("reproduction.source.invalid", "unknown source snapshot")
     project_root = resolve_project_root(log.root)
     _recheck_authority_files(plan, project_root)
     _recheck_executions(plan, log, project_root)
+    is_repair_verification(plan)
     _recheck_materials(plan)
 
 
@@ -2180,6 +2219,7 @@ def _recheck_executions(
                 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
                 PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
                 SOURCE_SNAPSHOT_SCHEMA,
+                REPAIR_SOURCE_SNAPSHOT_SCHEMA,
             }
             else canonical_record_digest(encoded)
             if encoded is not None
@@ -2190,13 +2230,71 @@ def _recheck_executions(
                 "reproduction.source.changed",
                 f"execution recipe changed: {entry_id}:{identity}",
             )
+        _verify_repair_source_observations(
+            plan, execution, loaded[entry_id].entry_root, project_root
+        )
+
+
+def _verify_repair_source_observations(
+    plan: ReproductionPlan,
+    execution: PyrunExecution,
+    entry_root: Path,
+    project_root: Path,
+) -> None:
+    """Bind accepted repair materials to the unchanged recorded source closure."""
+
+    if not is_repair_verification(plan):
+        return
+    script = script_target_path(
+        execution.recipe.script, entry_root=entry_root, project_root=project_root
+    )
+    expected = {script.resolve().as_posix(): execution.observed.script.as_dict()}
+    expected.update(
+        {
+            code_target_path(name, entry_root=entry_root)
+            .resolve()
+            .as_posix(): fingerprint.as_dict()
+            for name, fingerprint in execution.observed.code
+        }
+    )
+    seen: set[str] = set()
+    for item in cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"]):
+        if item.get("role") not in {"script", "code"}:
+            if "recorded_fingerprint" in item:
+                raise ActionError(
+                    "reproduction.source.invalid",
+                    "only source may use repair admission",
+                )
+            continue
+        identity = cast(str, item.get("identity"))
+        if (
+            set(item)
+            != {"identity", "role", "kind", "fingerprint", "recorded_fingerprint"}
+            or item.get("kind") != "file"
+            or identity not in expected
+            or identity in seen
+            or item.get("recorded_fingerprint") != expected[identity]
+        ):
+            raise ActionError(
+                "reproduction.source.invalid", "repair source observation is invalid"
+            )
+        seen.add(identity)
+    if seen != set(expected):
+        raise ActionError(
+            "reproduction.source.invalid", "repair source closure is incomplete"
+        )
 
 
 def _recheck_materials(plan: ReproductionPlan) -> None:
     """Require every snapshotted material to retain its closed fingerprint."""
 
+    repair = is_repair_verification(plan)
     observed: set[tuple[str, str]] = set()
     for item in cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"]):
+        if not repair and "recorded_fingerprint" in item:
+            raise ActionError(
+                "reproduction.source.invalid", "repair source needs explicit admission"
+            )
         identity = item.get("identity")
         kind = item.get("kind")
         raw_fingerprint = item.get("fingerprint")

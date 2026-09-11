@@ -984,6 +984,22 @@ never expands to producers, siblings, or downstream commands. Resume preserves
 it, and publication retains unrelated results. Command success and artifact
 comparison outcomes remain separate.
 
+After an intentional script or recorded local-code repair, add `--verify-repair`
+to the single-execution `--recheck` command. For example:
+
+```bash
+<skill>/scripts/log reproduce --path <log> --entry <entry-id> \
+  --execution-id <full-id> --recheck --verify-repair --dry-run --summary
+```
+
+Remove `--dry-run --summary` to launch. The preview freezes current source bytes
+separately from historical observations. Prerequisites, baselines, structural
+validation, and automatic policy remain enforced. The run uses private outputs,
+publishes command and comparison results, and preserves `pyrun.json` completely;
+it does not clear the recorded reproduction requirement and cannot be promoted.
+Resume preserves the mode and accepted scope. This option does not adopt changed
+recipe parameters, declarations, or newly observed dependencies.
+
 `--jobs` defaults to `1`. A larger accepted value bounds concurrent executions
 within the run; graph dependencies, overlapping read/write/run/runtime claims,
 and project-wide exclusive commands can reduce actual concurrency. The dry run
@@ -1037,9 +1053,10 @@ a guarded resume. An optional scheduled monitor may use `status --json` to
 report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
 
-Each execution is attempted at most once in one run. Its complete comparison is
-recorded before a completed command clears `requires_reproduction` in
-`pyrun.json`; artifact matching remains a separate result. A cleared
+Each execution is attempted at most once in one run. Outside repair-verification
+mode, its complete comparison is recorded before a completed command clears
+`requires_reproduction` in `pyrun.json`; artifact matching remains a separate
+result. Repair verification leaves that field unchanged. A cleared
 requirement remains valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.

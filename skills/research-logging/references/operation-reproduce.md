@@ -182,8 +182,20 @@ must never stop, resume, promote, or otherwise control the run.
 
 ## Report The Result
 
-After a launched run reaches completion, immediately retrieve the centralized
-human projection:
+For a single-execution run, immediately retrieve and present its short result:
+
+```bash
+<skill>/scripts/log reproduce report --path <log> --run-id <run-id>
+```
+
+This shows that execution's outcome and every output comparison, including
+failure or block details. Human `status` uses the same view for individual runs.
+Use it for both ordinary individual selection and repaired-source verification.
+Do not present cumulative log artifact counts as the individual command result.
+A blocked or otherwise empty selection already returns its short explanation;
+present that response directly because no new run exists.
+
+For a broader launched run, immediately retrieve the centralized human projection:
 
 ```bash
 <skill>/scripts/log reproduce report --path <log> --summary

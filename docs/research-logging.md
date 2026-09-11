@@ -1061,7 +1061,14 @@ requirement remains valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.
 
-On completion, immediately retrieve and present the compact centralized
+For an individual execution, retrieve its short result with
+`log reproduce report --path <log> --run-id <run-id>`; human `status` shows the
+same view. It lists the command outcome, every output comparison, and available
+failure or block details, including in repair-verification mode. A no-work
+individual launch returns its short explanation directly. These views do not
+include cumulative log artifact counts.
+
+For broader runs, on completion retrieve and present the compact centralized
 projection with `log reproduce report --path <log> --summary`. It keeps commands
 from the latest completed run separate from current artifact state and explains
 why their totals need not match. Its two trees show command selection and

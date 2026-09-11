@@ -112,6 +112,9 @@ class ReproductionPlan:
 def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -> str:
     """Return the bounded human projection of one valid dry-run plan."""
 
+    if plan.target.get("kind") == "execution":
+        return format_execution_selection(plan, heading="Single-execution preview")
+
     entry_counts: dict[str, tuple[int, int]] = {}
     exclusive_count = 0
     required_claims = {"read_paths", "write_paths", "run_path", "writable_paths"}
@@ -176,6 +179,17 @@ def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -
         lines.extend(["", f"{omitted} additional {noun} omitted."])
     if target_kind == "execution":
         lines.extend(_execution_plan_summary(plan))
+    if is_repair_verification(plan):
+        lines.extend(_repair_plan_summary(plan))
+    return "\n".join(lines) + "\n"
+
+
+def format_execution_selection(plan: ReproductionPlan, *, heading: str) -> str:
+    """Describe a single command's selection without cumulative result counts."""
+
+    if plan.target.get("kind") != "execution":
+        raise ValueError("single-command reporting requires an execution target")
+    lines = [heading] + _execution_plan_summary(plan)
     if is_repair_verification(plan):
         lines.extend(_repair_plan_summary(plan))
     return "\n".join(lines) + "\n"

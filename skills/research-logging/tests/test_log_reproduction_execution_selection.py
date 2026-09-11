@@ -34,6 +34,107 @@ from test_log_reproduction_planning import _admission, _Fixture, _seed_command_r
 
 
 class ExecutionSelectionTests(unittest.TestCase):
+    def test_individual_report_has_complete_outputs_without_log_counts(self) -> None:
+        from log_commands.reproduction_comparison import (
+            ArtifactComparison,
+            ExecutionComparison,
+        )
+        from log_commands.reproduction_reporting import reproduction_execution_report
+
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                plan = self.plan(policy="recheck", verify_repair=repair)
+                root = self.fixture.root / "reproduce-study-e001-reproduce-report"
+                root.mkdir(exist_ok=True)
+                (root / "staging.json").write_text("fixture")
+                record = _accepted_record(
+                    self.fixture.log,
+                    plan,
+                    "reproduce-report",
+                    root,
+                    accepted_at="2030-01-01T00:00:00Z",
+                )
+                record["checkpoints"] = [
+                    {
+                        "entry": "e001",
+                        "execution_id": self.target[0],
+                        "state": "succeeded",
+                        "failure": None,
+                    }
+                ]
+                record["state"]["status"] = "complete"
+                comparison = ExecutionComparison(
+                    "e001",
+                    self.target[0],
+                    (
+                        ArtifactComparison(
+                            "data/a.txt", "matched", None, None, None, None
+                        ),
+                        ArtifactComparison(
+                            "data/b.txt", "changed", "content_changed", None, None, None
+                        ),
+                    ),
+                    None,
+                    True,
+                )
+                with (
+                    mock.patch(
+                        "log_commands.reproduction_jobs._find_run", return_value=root
+                    ),
+                    mock.patch(
+                        "log_commands.reproduction_jobs._load_run", return_value=record
+                    ),
+                    mock.patch(
+                        "log_commands.reproduction_reporting.open_existing_workspace"
+                    ),
+                    mock.patch(
+                        "log_commands.reproduction_reporting.load_recorded_comparisons",
+                        return_value=(comparison,),
+                    ),
+                ):
+                    result = reproduction_execution_report(
+                        self.fixture.log, "reproduce-report"
+                    )
+                    record["checkpoints"][0].update(
+                        state="failed",
+                        failure={
+                            "code": "execution.failed",
+                            "message": "script exited 1",
+                        },
+                    )
+                    failed = reproduction_execution_report(
+                        self.fixture.log, "reproduce-report"
+                    )
+                    self.assertIn(": failed", failed)
+                    self.assertIn("execution.failed: script exited 1", failed)
+                self.assertIn(": succeeded", result)
+                self.assertIn("data/a.txt: matched", result)
+                self.assertIn("data/b.txt: changed (content_changed)", result)
+                self.assertEqual("repaired-source verification" in result, repair)
+                self.assertNotIn("sibling", result)
+                self.assertNotIn("Reproduction Summary", result)
+                self.assertNotIn("Artifacts", result)
+
+    def test_individual_no_work_reports_blockers_without_historical_counts(
+        self,
+    ) -> None:
+        from log_commands.reproduction_queries import reproduction_reconciliation_text
+
+        self.input.write_text("changed prerequisite")
+        self.admission.update(_admission(self.fixture))
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                plan = self.plan(policy="recheck", verify_repair=repair)
+                text = reproduction_reconciliation_text(
+                    self.fixture.log, plan, generated_at="2030-01-01T00:00:00Z"
+                )
+                self.assertIn("No command executed", text)
+                self.assertIn("data/a.txt", text)
+                self.assertIn("data/b.txt", text)
+                self.assertIn("input_changed", text)
+                self.assertNotIn("Reproduction Summary", text)
+                self.assertNotIn("sibling", text)
+
     def setUp(self) -> None:
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
@@ -507,7 +608,8 @@ class ExecutionSelectionTests(unittest.TestCase):
         path = run_root / "run.json"
         record = _load_run(path)
         self.assertEqual(record["target"], self.plan(policy="recheck").target)
-        with redirect_stdout(StringIO()):
+        status_output = StringIO()
+        with redirect_stdout(status_output):
             self.assertEqual(
                 main(
                     [
@@ -521,6 +623,25 @@ class ExecutionSelectionTests(unittest.TestCase):
                 ),
                 0,
             )
+        report_output = StringIO()
+        with redirect_stdout(report_output):
+            self.assertEqual(
+                main(
+                    [
+                        "reproduce",
+                        "report",
+                        "--path",
+                        str(self.fixture.log_root),
+                        "--run-id",
+                        run_id,
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(report_output.getvalue(), status_output.getvalue())
+        self.assertIn("data/a.txt: not compared", report_output.getvalue())
+        self.assertIn("data/b.txt: not compared", report_output.getvalue())
+        self.assertNotIn("Reproduction Summary", report_output.getvalue())
         record["state"].update({"phase": None, "status": "stopped"})
         record["timestamps"]["stopped_at"] = record["timestamps"]["updated_at"]
         path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")

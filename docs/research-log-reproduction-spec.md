@@ -1026,14 +1026,15 @@ deterministic `research-log-reproduction-plan/6` projection with exactly
 `source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
 
 `--summary` is valid only with `--dry-run` and replaces the complete JSON
-projection on standard output with a bounded human projection. It reports the
-target, admission state, incremental-or-recheck and automatic-or-all selection,
+projection on standard output with a bounded human projection. For log and
+entry targets, it reports the target, admission state, incremental-or-recheck and automatic-or-all selection,
 concurrency cap, per-command runtime limit, artifact-case count, runnable
 ordinary and exclusive execution counts, localized planning-failure count,
 boundary count, scheduling-path-claim
 completeness, and per-entry runnable and exclusive counts. The entry table is
 limited to the first 20 stable entry IDs and reports the number omitted. The
-execution-target summary additionally names the full ID, script, selection
+execution-target summary uses a short command view instead of those aggregate
+counts. It names the full ID, script, selection
 reason, complete outputs, every verified retained prerequisite and known
 producer, and every blocker. It explains zero-execution plans. Complete JSON
 remains available without `--summary`. The summary is presentation only; it applies the same complete planning and final
@@ -2337,16 +2338,28 @@ unresolved latest run as resumable, and the generated Runs table distinguishes
 `complete (resolved)` from `complete (unresolved)` without changing the stored
 run status.
 
-The applicable CLI projection must use the same counts, vocabulary, ordering,
-and wording as the file projection. A reproduction agent presents compact
+The complete per-log CLI report must use the same counts, vocabulary,
+ordering, and wording as the file projection. A reproduction agent presents compact
 output unchanged by default and does not parse generated files or reconstruct
 a summary. It requests the complete per-log report only when the researcher
 asks for artifact or run detail.
 
-After a launched run completes, the reproduction agent retrieves and presents
-the compact summary immediately. A successful no-op launch already returns its
-current compact reconciliation, which the agent presents immediately without
-substituting the historical `report --summary` projection.
+For a single-execution run, `log reproduce report --path LOG --run-id RUN_ID`
+returns a short result for the current retained attempt: execution outcome,
+run lifecycle state, verification mode when applicable, every declared output's
+comparison outcome and reason, and available failure or block details. Human
+`status` uses this same view for execution targets; `status --json` retains its
+existing schema. Outputs without a recorded comparison are explicitly named as
+not compared. This view reads the retained attempt, never cumulative artifact
+counts; unavailable or invalid retained state raises a diagnostic. `--run-id`
+requires an execution-target run and cannot combine with other report filters.
+Broader runs keep their existing status and log/entry report interfaces.
+
+After a single-execution run completes, the reproduction agent presents this
+short result immediately. It uses the compact log summary for broader runs.
+A successful no-op launch already returns its current reconciliation (a short
+command view for execution targets), which the agent presents immediately
+without substituting the historical `report --summary` projection.
 
 The compact per-log projection has two visibly separate trees. The command tree
 starts with every command in the target, separates commands whose reproduction

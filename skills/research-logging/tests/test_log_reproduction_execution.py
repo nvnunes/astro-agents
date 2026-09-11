@@ -354,6 +354,32 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
             self.assertIn("succeeded", json.dumps(command))
             self.assertIn("repair_verification", json.dumps(command))
+            from log_commands.reproduction_jobs import _accepted_record
+            from log_commands.reproduction_reporting import (
+                reproduction_execution_report,
+            )
+
+            record = _accepted_record(
+                fixture.log,
+                plan,
+                run_id,
+                run_root,
+                accepted_at="2030-01-01T00:00:00Z",
+            )
+            record["checkpoints"] = [attempt.checkpoint.as_dict()]
+            record["state"]["status"] = "complete"
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._load_run", return_value=record
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._find_run", return_value=run_root
+                ),
+            ):
+                result_text = reproduction_execution_report(fixture.log, run_id)
+            self.assertIn("data/result.txt: changed", result_text)
+            self.assertIn(": succeeded", result_text)
+            self.assertNotIn("Reproduction Summary", result_text)
             self.assertEqual((fixture.entry_root / "pyrun.json").read_bytes(), recorded)
             artifact = show_reproduction_artifact(
                 fixture.log, entry="e001", artifact="data/result.txt"

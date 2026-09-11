@@ -122,6 +122,12 @@ def reproduction_reconciliation_text(
             "reproduction.reconciliation.invalid",
             "a no-work reconciliation cannot contain runnable executions",
         )
+    if plan.target.get("kind") == "execution":
+        from .reproduction_contract import format_execution_selection
+
+        return format_execution_selection(
+            plan, heading="No command executed; no run created."
+        )
     project = resolve_project_root(log.root)
     try:
         summary = log.summary.resolve().relative_to(project).as_posix()

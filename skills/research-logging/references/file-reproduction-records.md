@@ -26,6 +26,8 @@ artifact outcomes, unchanged terminal failure and block dispositions,
 per-run command accounting, and run history.
 `reproduction.md` is its source-controlled human-only projection. Agents do not
 parse either file during ordinary work; use
+`log reproduce report --path <log> --run-id <run-id>` for a single-execution
+result with complete output comparisons,
 `log reproduce report --path <log> --summary` for the compact per-log view,
 `log reproduce report --root <project> --summary` for the cross-log view, and
 the complete report or bounded artifact and command `list` and `show` routes

@@ -744,9 +744,26 @@ def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
     selection.add_argument("--path", type=Path)
     selection.add_argument("--root", type=Path)
     parser.add_argument("--entry")
+    parser.add_argument("--run-id", help="short result for one single-execution run")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
+    if args.run_id is not None:
+        if (
+            args.root is not None
+            or args.entry is not None
+            or args.summary
+            or args.format != "text"
+        ):
+            parser.error(
+                "--run-id requires --path and cannot combine with report filters"
+            )
+        from .reproduction_reporting import reproduction_execution_report
+
+        print(
+            reproduction_execution_report(resolve_log(args.path), args.run_id), end=""
+        )
+        return 0
     if args.root is not None and not args.summary:
         parser.error("--root requires --summary")
     if args.entry is not None and (args.root is not None or args.summary):
@@ -932,6 +949,13 @@ def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
         status = reproduction_status(log, args.run_id)
         if args.json:
             print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+        elif (
+            isinstance(status["target"], Mapping)
+            and status["target"].get("kind") == "execution"
+        ):
+            from .reproduction_reporting import reproduction_execution_report
+
+            print(reproduction_execution_report(log, args.run_id), end="")
         else:
             print(format_reproduction_status(status), end="")
     elif action == "stop":

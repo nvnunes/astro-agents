@@ -949,7 +949,7 @@ class MechanicalControllerTests(unittest.TestCase):
             summary, _ = _log(Path(directory))
             ordinary = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
             CONTROLLER.validate(ordinary)
-            unchanged = CONTROLLER.validate(ordinary)
+            CONTROLLER.validate(ordinary)
 
             recomputed = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(

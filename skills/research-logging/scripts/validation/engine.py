@@ -104,10 +104,13 @@ from .output_support import (
     ResolvedCodeSupport,
     confirmed_output_record,
     declared_output_resource,
+    execution_output_support_dict,
     output_producer_mismatches,
     output_support_matches_invocation,
+    require_current_execution_output,
     require_current_output_support,
     resolve_code_support,
+    resolve_execution_code,
     resolve_output_support,
 )
 from .presentation import (
@@ -125,7 +128,6 @@ from .provenance import (
 )
 from .pyrun_outputs import (
     PROJECT_OUTPUT_PREFIX,
-    OutputSupport,
     PyrunOutputsFile,
     empty_pyrun_outputs,
     load_pyrun_outputs,
@@ -134,11 +136,14 @@ from .pyrun_outputs import (
 )
 from .pyrun_state import (
     PYRUN_FILENAME,
+    OutputOwnerIndex,
     PyrunFile,
+    associate_execution,
     execution_id,
-    legacy_output_projection,
+    execution_output_owners,
     load_pyrun_state,
     recipe_from_invocation,
+    resolve_execution_output,
 )
 from .retention import RetentionFile, load_retention_file
 from .selection_codec import encode_selection
@@ -257,6 +262,8 @@ class _ScanState:
     records: list[_RecordOutcome] = field(default_factory=list)
     graph: MaterialGraphResult | None = None
     output_files: dict[str, PyrunOutputsFile] = field(default_factory=dict)
+    execution_states: dict[str, PyrunFile] = field(default_factory=dict)
+    execution_output_owners: dict[str, OutputOwnerIndex] = field(default_factory=dict)
     output_record_errors: dict[str, MechanicalContractError] = field(
         default_factory=dict
     )
@@ -1097,14 +1104,9 @@ def _load_output_support(state: _ScanState) -> None:
                     project_root=state.project_root,
                 )
                 _validate_execution_bindings(owner, execution_state, state)
-                state.output_files[owner] = legacy_output_projection(
-                    execution_state,
-                    tuple(
-                        invocation
-                        for invocation in state.invocations
-                        if invocation.material_owner == owner
-                    ),
-                    project_root=state.project_root,
+                state.execution_states[owner] = execution_state
+                state.execution_output_owners[owner] = execution_output_owners(
+                    execution_state
                 )
             else:
                 state.output_files[owner] = load_pyrun_outputs(
@@ -1247,7 +1249,7 @@ def _entry_root_for_owner(owner: str, state: _ScanState) -> Path:
 
 def _output_record(
     invocation: Invocation, material: str, state: _ScanState
-) -> tuple[str, OutputSupport | None]:
+) -> tuple[str, object | None]:
     root = _entry_root_for_owner(invocation.material_owner, state)
     try:
         key = portable_output_path(
@@ -1261,6 +1263,25 @@ def _output_record(
             material,
             {"owner": invocation.material_owner},
         )
+    execution_state = state.execution_states.get(invocation.material_owner)
+    if execution_state is not None:
+        association = associate_execution(
+            execution_state, invocation, project_root=state.project_root
+        )
+        owners = state.execution_output_owners[invocation.material_owner]
+        execution_output = resolve_execution_output(
+            invocation,
+            material,
+            project_root=state.project_root,
+            association=association,
+            owners=owners,
+        )
+        return (
+            key,
+            execution_output.association.execution
+            if execution_output.association
+            else None,
+        )
     file = state.output_files.get(invocation.material_owner)
     return key, file.outputs.get(key) if file is not None else None
 
@@ -1269,14 +1290,29 @@ def _has_confirmed_output_record(
     invocation: Invocation, material: str, state: _ScanState
 ) -> bool:
     try:
-        root = _entry_root_for_owner(invocation.material_owner, state)
+        execution_state = state.execution_states.get(invocation.material_owner)
+        if execution_state is not None:
+            association = associate_execution(
+                execution_state, invocation, project_root=state.project_root
+            )
+            resolved = resolve_execution_output(
+                invocation,
+                material,
+                project_root=state.project_root,
+                association=association,
+                owners=state.execution_output_owners[invocation.material_owner],
+            )
+            return (
+                resolved.association is not None
+                and not resolved.association.execution.requires_reproduction
+            )
         support = state.output_files.get(invocation.material_owner)
         if support is None:
             return False
         return confirmed_output_record(
             invocation,
             material,
-            entry_root=root,
+            entry_root=_entry_root_for_owner(invocation.material_owner, state),
             project_root=state.project_root,
             support=support,
         )
@@ -1335,6 +1371,54 @@ def _evaluate_output_support(
     if error is not None:
         raise error
     root = _entry_root_for_owner(invocation.material_owner, state)
+    execution_state = state.execution_states.get(invocation.material_owner)
+    if execution_state is not None:
+        association = associate_execution(
+            execution_state, invocation, project_root=state.project_root
+        )
+        execution_output = resolve_execution_output(
+            invocation,
+            material,
+            project_root=state.project_root,
+            association=association,
+            owners=state.execution_output_owners[invocation.material_owner],
+        )
+        current_output = _observe_output_path(
+            invocation, execution_output.path, state
+        )
+        execution = (
+            execution_output.association.execution
+            if execution_output.association
+            else None
+        )
+        resolved_code = (
+            resolve_execution_code(
+                execution, entry_root=root, subject=execution_output.subject
+            )
+            if execution is not None
+            else ()
+        )
+        current_code = (
+            _observe_output_code(resolved_code, state)
+            if execution is not None and not execution.requires_reproduction
+            else None
+        )
+        execution = require_current_execution_output(
+            invocation,
+            execution_output,
+            current_output=current_output,
+            current_code=current_code,
+        )
+        return {
+            "output": execution_output.key,
+            "record": execution_output_support_dict(
+                execution, invocation, execution_output.key
+            ),
+            "record_file": execution_state.path.as_posix(),
+            "record_file_sha256": state.output_file_observations.get(
+                execution_state.path.resolve().as_posix()
+            ),
+        }
     support = state.output_files[invocation.material_owner]
     resolved = resolve_output_support(
         invocation,
@@ -2267,41 +2351,92 @@ def _graph_code_inputs(state: _ScanState) -> Mapping[str, tuple[str, ...]]:
 
     result: dict[str, tuple[str, ...]] = {}
     for invocation in state.invocations:
-        root = _entry_root_for_owner(invocation.material_owner, state)
-        support = state.output_files.get(invocation.material_owner)
-        if support is None:
-            continue
-        mappings: list[tuple[tuple[str, Fingerprint], ...]] = []
-        paths: tuple[str, ...] | None = None
-        invalid = False
-        for material in _invocation_output_materials(invocation):
-            key = portable_output_path(
-                material,
-                entry_root=root,
-                project_root=state.project_root,
-            )
-            record = support.outputs.get(key)
-            if record is None or not output_support_matches_invocation(
-                invocation, record, material=material
-            ):
-                continue
-            try:
-                resolved = resolve_code_support(
-                    record,
-                    entry_root=root,
-                    subject=material,
-                )
-            except MechanicalContractError:
-                invalid = True
-                break
-            mappings.append(record.code)
-            current_paths = tuple(item.path.absolute().as_posix() for item in resolved)
-            if paths is None:
-                paths = current_paths
-        if invalid or not mappings or len(set(mappings)) != 1:
-            continue
-        result[invocation.identity] = paths or ()
+        execution_state = state.execution_states.get(invocation.material_owner)
+        if execution_state is not None:
+            paths = _execution_code_inputs(invocation, execution_state, state)
+        else:
+            paths = _legacy_code_inputs(invocation, state)
+        if paths is not None:
+            result[invocation.identity] = paths
     return result
+
+
+def _execution_code_inputs(
+    invocation: Invocation, execution_state: PyrunFile, state: _ScanState
+) -> tuple[str, ...] | None:
+    """Return code edges for one invocation associated with current state."""
+
+    association = associate_execution(
+        execution_state, invocation, project_root=state.project_root
+    )
+    if association is None:
+        return None
+    owners = state.execution_output_owners[invocation.material_owner]
+    associated = next(
+        (
+            output
+            for material in _invocation_output_materials(invocation)
+            if (
+                output := resolve_execution_output(
+                    invocation,
+                    material,
+                    project_root=state.project_root,
+                    association=association,
+                    owners=owners,
+                )
+            ).association is not None
+        ),
+        None,
+    )
+    if associated is None:
+        return None
+    try:
+        code = resolve_execution_code(
+            association.execution,
+            entry_root=owners.entry_root,
+            subject=associated.subject,
+        )
+    except MechanicalContractError:
+        return None
+    return tuple(item.path.absolute().as_posix() for item in code)
+
+
+def _legacy_code_inputs(
+    invocation: Invocation, state: _ScanState
+) -> tuple[str, ...] | None:
+    """Return code edges for one invocation using read-only legacy support."""
+
+    support = state.output_files.get(invocation.material_owner)
+    if support is None:
+        return None
+    root = _entry_root_for_owner(invocation.material_owner, state)
+    mappings: list[tuple[tuple[str, Fingerprint], ...]] = []
+    paths: tuple[str, ...] | None = None
+    for material in _invocation_output_materials(invocation):
+        key = portable_output_path(
+            material,
+            entry_root=root,
+            project_root=state.project_root,
+        )
+        record = support.outputs.get(key)
+        if record is None or not output_support_matches_invocation(
+            invocation, record, material=material
+        ):
+            continue
+        try:
+            resolved_code = resolve_code_support(
+                record,
+                entry_root=root,
+                subject=material,
+            )
+        except MechanicalContractError:
+            return None
+        mappings.append(record.code)
+        if paths is None:
+            paths = tuple(item.path.absolute().as_posix() for item in resolved_code)
+    if not mappings or len(set(mappings)) != 1:
+        return None
+    return paths or ()
 
 
 def _invocation_output_materials(invocation: Invocation) -> tuple[str, ...]:

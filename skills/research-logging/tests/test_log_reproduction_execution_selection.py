@@ -15,7 +15,6 @@ from log_commands.reproduction_contract import (
     valid_reproduction_target,
 )
 from log_commands.reproduction_jobs import (
-    PREEXECUTION_RUN_SCHEMA,
     _accepted_record,
     _load_run,
     _plan_from_record,
@@ -490,7 +489,6 @@ class ExecutionSelectionTests(unittest.TestCase):
                 run_root,
                 accepted_at="2030-01-01T00:00:00Z",
             )
-            record["schema"] = PREEXECUTION_RUN_SCHEMA
             path = run_root / "run.json"
             path.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
             self.assertEqual(_plan_from_record(_load_run(path)).target, target)

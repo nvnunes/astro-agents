@@ -359,6 +359,61 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(finding.scope, RESULTS.CheckScope.CONFORMANCE)
             self.assertIn(identity, finding.identity)
 
+    def test_current_execution_requires_exact_command_association(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            entry.write_text(
+                entry.read_text(encoding="utf-8").replace(
+                    "--output-data '<results>'",
+                    "--output-data '<results>' --mode exact",
+                ),
+                encoding="utf-8",
+            )
+
+            evaluation = _evaluate(summary).result
+
+            provenance = next(
+                check
+                for check in evaluation.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code,
+                "provenance.output.execution_unassociated",
+            )
+
+    def test_current_execution_rejects_changed_script_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            (entry.parent / "scripts/model.py").write_text(
+                "# changed model\n", encoding="utf-8"
+            )
+
+            evaluation = _evaluate(summary).result
+
+            provenance = next(
+                check
+                for check in evaluation.checks
+                if check.identity == "provenance:e001:success-rate"
+            )
+            self.assertEqual(
+                provenance.failure.code,
+                "provenance.output.signature_mismatch",
+            )
+            self.assertEqual(
+                provenance.failure.observed["fields"], ["script_fingerprint"]
+            )
+
     def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

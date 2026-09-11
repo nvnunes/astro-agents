@@ -25,7 +25,6 @@ from log_commands.reproduction_execution import (
     WorkerRecord,
 )
 from log_commands.reproduction_jobs import (
-    PUBLICATION_RETRY,
     RUN_SCHEMA,
     ReproductionLaunch,
     _accepted_record,
@@ -40,7 +39,6 @@ from log_commands.reproduction_jobs import (
     _failed_checkpoint_references,
     _find_run,
     _finish_failed,
-    _is_publication_retry,
     _load_run,
     _marker_identity,
     _reconcile_lost_supervisor,
@@ -226,7 +224,7 @@ class ReproductionJobTests(unittest.TestCase):
             "registered_at": "2030-01-01T00:00:04Z",
         }
 
-        workers = _reconciled_worker_history([prior], [survivor], legacy=False)
+        workers = _reconciled_worker_history([prior], [survivor])
 
         self.assertEqual(workers[0]["registered_at"], "2030-01-01T00:00:02Z")
         self.assertEqual(workers[0]["last_observed_at"], "2030-01-01T00:00:04Z")
@@ -332,7 +330,7 @@ class ReproductionJobTests(unittest.TestCase):
             checkpoints.mkdir()
             (checkpoints / "foreign.json").write_text("{}\n", encoding="utf-8")
             with self.assertRaisesRegex(ActionError, "checkpoint record"):
-                _checkpoint_dicts(run_root, legacy=False)
+                _checkpoint_dicts(run_root)
 
         with tempfile.TemporaryDirectory() as directory:
             run_root = Path(directory)
@@ -341,7 +339,7 @@ class ReproductionJobTests(unittest.TestCase):
             for index in range(2_049):
                 (checkpoints / f"{index:04d}.json").touch()
             with self.assertRaisesRegex(ActionError, "checkpoint bound"):
-                _checkpoint_dicts(run_root, legacy=False)
+                _checkpoint_dicts(run_root)
 
         with tempfile.TemporaryDirectory() as directory:
             _log, run_root, _run_id = _write_active_run(Path(directory))
@@ -363,14 +361,14 @@ class ReproductionJobTests(unittest.TestCase):
                 json.dumps(foreign, indent=2, sort_keys=True) + "\n",
             )
             with self.assertRaisesRegex(ActionError, "absent from the accepted plan"):
-                _checkpoint_dicts(run_root, legacy=False)
+                _checkpoint_dicts(run_root)
 
         with tempfile.TemporaryDirectory() as directory:
             _log, run_root, _run_id = _write_active_run(Path(directory))
             checkpoint = next((run_root / "checkpoints").iterdir())
             checkpoint.rename(checkpoint.with_name("foreign.json"))
             with self.assertRaisesRegex(ActionError, "file location"):
-                _checkpoint_dicts(run_root, legacy=False)
+                _checkpoint_dicts(run_root)
 
         with tempfile.TemporaryDirectory() as directory:
             _log, run_root, _run_id = _write_active_run(Path(directory))
@@ -399,7 +397,7 @@ class ReproductionJobTests(unittest.TestCase):
             temporary = checkpoint.with_name(f".{checkpoint.name}.12345.tmp")
             temporary.write_text("{\n", encoding="utf-8")
 
-            observed = _checkpoint_dicts(run_root, legacy=False)
+            observed = _checkpoint_dicts(run_root)
 
             self.assertEqual(len(observed), 1)
             self.assertEqual(observed[0]["path"], f"checkpoints/{checkpoint.name}")
@@ -419,7 +417,7 @@ class ReproductionJobTests(unittest.TestCase):
             foreign.write_text("{\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ActionError, "invalid checkpoint path"):
-                _checkpoint_dicts(run_root, legacy=False)
+                _checkpoint_dicts(run_root)
 
     def test_parallel_stop_retains_workers_from_every_attempt(self) -> None:
         identity_a = "pyrun-exec/v1:" + "1" * 64
@@ -459,7 +457,6 @@ class ReproductionJobTests(unittest.TestCase):
                 attempt("e001", identity_a, 4001, "running"),
                 attempt("e002", identity_b, 4002, "exited"),
             ),
-            legacy=False,
         )
 
         self.assertEqual(
@@ -1025,7 +1022,9 @@ class ReproductionJobTests(unittest.TestCase):
             path = run_root / "run.json"
             atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
 
-            with self.assertRaisesRegex(ActionError, "start a new current-format run") as caught:
+            with self.assertRaisesRegex(
+                ActionError, "start a new current-format run"
+            ) as caught:
                 _load_run(path)
             self.assertEqual(caught.exception.code, "reproduction.run.unsupported")
 

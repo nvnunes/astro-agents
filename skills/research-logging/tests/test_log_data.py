@@ -878,6 +878,24 @@ class LogDataTests(unittest.TestCase):
 
             registry_before = (entry / "data.json").read_bytes()
             support_before = (entry / "pyrun.json").read_bytes()
+            script.write_text(
+                script.read_text(encoding="utf-8") + "# changed\n",
+                encoding="utf-8",
+            )
+            stale_script = run(
+                entry,
+                "data",
+                "refresh",
+                *common,
+                "generated",
+                "--requires-reproduction",
+            )
+            self.assertEqual(
+                result(stale_script)["code"],
+                "provenance.output.signature_mismatch",
+            )
+            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
+            self.assertEqual((entry / "pyrun.json").read_bytes(), support_before)
             generated.write_text("value\nchanged\n", encoding="utf-8")
             stale_refresh = run(
                 entry, "data", "refresh", *common, "generated",

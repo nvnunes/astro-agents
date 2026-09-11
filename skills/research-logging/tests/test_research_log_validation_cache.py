@@ -27,19 +27,30 @@ def _selection(
         ),
     )
     return VALUES.SelectionResult(
-        locator_identity=locator_identity, source_identity=source_identity,
-        source_profile=source_profile, items=items, matches=1,
-        membership=("value",), identities=((VALUES.integer_value(0),),), shape=(1,),
+        locator_identity=locator_identity,
+        source_identity=source_identity,
+        source_profile=source_profile,
+        items=items,
+        matches=1,
+        membership=("value",),
+        identities=((VALUES.integer_value(0),),),
+        shape=(1,),
         dependency_projection=VALUES.selection_dependency(
-            source_identity=source_identity, locator_identity=locator_identity, items=items,
+            source_identity=source_identity,
+            locator_identity=locator_identity,
+            items=items,
         ),
     )
 
 
-def _lookup(cache: object, selection: object, *, evaluator: str = "evaluator/1"):
+def _lookup(
+    cache: object, selection: object, *, evaluator: str = "evaluator/1"
+):
     return cache.lookup_selection(
-        source_identity=selection.source_identity, source_profile=selection.source_profile,
-        locator_identity=selection.locator_identity, evaluator_version=evaluator,
+        source_identity=selection.source_identity,
+        source_profile=selection.source_profile,
+        locator_identity=selection.locator_identity,
+        evaluator_version=evaluator,
     )
 
 
@@ -142,7 +153,9 @@ class ValidationCacheTests(unittest.TestCase):
             path = root / ".cache" / CACHE.CACHE_FILENAME
             path.parent.mkdir(parents=True)
             with closing(sqlite3.connect(path)) as connection:
-                connection.execute(f"PRAGMA user_version={CACHE.CACHE_SCHEMA_VERSION + 1}")
+                connection.execute(
+                    f"PRAGMA user_version={CACHE.CACHE_SCHEMA_VERSION + 1}"
+                )
             before = path.read_bytes()
 
             with CACHE.ValidationCache(root, writable=True) as cache:
@@ -174,7 +187,9 @@ class ValidationCacheTests(unittest.TestCase):
             cache = CACHE.ValidationCache(Path(directory) / "log", writable=True)
             with (
                 mock.patch.object(
-                    cache, "_open_once", side_effect=sqlite3.OperationalError("database is locked")
+                    cache,
+                    "_open_once",
+                    side_effect=sqlite3.OperationalError("database is locked"),
                 ),
                 mock.patch.object(cache, "_discard_corrupt_cache") as discard,
             ):

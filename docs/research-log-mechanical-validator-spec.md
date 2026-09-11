@@ -2992,15 +2992,19 @@ recipe and its complete output set. The
 [reproduction specification](research-log-reproduction-spec.md#pyrunjson)
 owns its schema, execution identity, reproduction requirement, and publication
 lifecycle.
-Mechanical validation reads it without execution or mutation and derives an
-output-keyed projection for the graph checks in this section. That internal
-projection is not another persisted execution-state file.
+Mechanical validation and Repair read execution state directly without
+execution or mutation. They associate each current invocation with its exact
+execution identity, then use an output-to-execution-owner index for output and
+directory-member resolution. An invocation or output that has no exact current
+association fails as `provenance.output.execution_unassociated`; validation
+does not fabricate a legacy parameter vector. The legacy output projection is
+retained only by automatic targeted refresh until that evaluator is removed.
 
 Validation accepts only strict `research-log-pyrun/v5` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
-#### Legacy Output Records And Validation Projection
+#### Legacy Output Records
 
 Mechanical validation may read `pyrun-outputs.json` when no current
 `pyrun.json` exists. If both exist, it reports `pyrun.state.conflict` rather
@@ -3009,10 +3013,7 @@ it never writes, migrates, or confirms them. Ordinary `pyrun` and Reproduce do
 not use it to execute research commands.
 
 The legacy file is a mapping keyed by exact output path. Each output has a
-copy of its invocation support. The following shape also describes validation's
-legacy internal projection of current execution state, where
-`requires_reproduction: false` projects as `confirmed: true`; it is not the
-`pyrun.json` schema:
+copy of its invocation support:
 
 ```json
 {
@@ -3482,6 +3483,7 @@ failure preserves the original error without dumping the complete payload;
 | `pyrun.output.identity_invalid` | provenance | A `pyrun` output cannot map to one permitted entry-relative or `<project>/...` record key. |
 | `pyrun.output.binding_invalid` | conformance | One decoded execution has a missing, ambiguous, noncanonical, or otherwise invalid output binding. |
 | `provenance.output.unrecorded` | provenance | A reached generated output has no output support record. |
+| `provenance.output.execution_unassociated` | provenance | A current execution-state output cannot be associated with the current producer invocation. |
 | `provenance.output.reproduction_required` | provenance | A reached generated output still requires reproduction. |
 | `provenance.output.signature_mismatch` | provenance | Current output, script, parameters, direct inputs, or recorded code differ from the current record. |
 | `provenance.output.code_invalid` | provenance | A recorded code path is unavailable, is not a regular file, or duplicates another resolved code identity. |

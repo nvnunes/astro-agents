@@ -115,13 +115,14 @@ relocate, or make a second copy of those outputs. A researcher may delete the
 folder manually; later reporting prunes a run-history row only when absence can
 be proved, and otherwise reports unknown availability.
 
-New runs use the strict run/status v4 shapes. They retain the immutable logical
+New runs use the strict run/plan/status v6 shapes. They retain the immutable logical
 queue and `jobs` cap, attempt lineage, every active entry-qualified execution,
 complete worker history, and per-attempt `active`, `succeeded`, `failed`, or
 `stopped` checkpoints. A
 scheduling permit is released only after terminal checkpoint publication and
-worker exit. Existing v2 and v3 runs remain readable under their original
-compatibility paths and are never rewritten into v4.
+worker exit. Older job files remain untouched but are unsupported: Reproduce
+does not resume, migrate, or decode them, and directs the caller to start a
+new current-format run.
 
 ## Research Boundary
 

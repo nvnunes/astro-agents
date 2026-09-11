@@ -15,7 +15,7 @@ RESULTS = importlib.import_module("validation.mechanical_results")
 
 class HumanProjectionTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(HUMAN.CATALOG), 132)
+        self.assertEqual(len(HUMAN.CATALOG), 133)
         prefixes = {code.split(".", 1)[0] for code in HUMAN.CATALOG}
         candidates = set()
         scripts = Path(__file__).parents[1] / "scripts" / "validation"
@@ -69,6 +69,31 @@ class HumanProjectionTests(unittest.TestCase):
         self.assertIn("#### Unobserved Generated Fingerprint — 1 target", report)
         self.assertIn(
             "The generated material does not yet have an observed fingerprint.",
+            report,
+        )
+
+    def test_execution_association_failure_has_human_presentation(self) -> None:
+        check = RESULTS.MechanicalCheck(
+            "provenance:e001:generated",
+            RESULTS.CheckScope.PROVENANCE,
+            RESULTS.CheckStatus.FAIL,
+            "generated",
+            failure=RESULTS.FailurePayload(
+                "provenance.output.execution_unassociated",
+                "generated",
+                {"output": "data/generated.csv", "producer": "entry:e001:1"},
+                "Pyrun Execution State",
+            ),
+        )
+        record = RESULTS.MechanicalGeneratedRecord.build(
+            "/project/docs/study.md", "rules", "2026-09-09", (check,)
+        )
+
+        report = REPORT.compose_validation_report(record)
+
+        self.assertIn("#### Execution Association Missing — 1 target", report)
+        self.assertIn(
+            "The recorded execution no longer matches the current producing command.",
             report,
         )
 

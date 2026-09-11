@@ -503,6 +503,11 @@ CATALOG: Mapping[str, FindingPresentation] = {
     "provenance.output.missing": FindingPresentation(
         "Recorded Output Missing", "A recorded output target is missing.", "path"
     ),
+    "provenance.output.execution_unassociated": FindingPresentation(
+        "Execution Association Missing",
+        "The recorded execution no longer matches the current producing command.",
+        "path",
+    ),
     "provenance.output.signature_mismatch": FindingPresentation(
         "Output Signature Mismatch",
         "The producing invocation no longer matches the recorded output signature.",

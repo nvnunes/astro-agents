@@ -16,6 +16,7 @@ from .pyrun_outputs import (
     code_target_path,
     portable_output_path,
 )
+from .pyrun_state import PyrunExecution, ResolvedExecutionOutput
 
 
 class OutputSupportValidationError(MechanicalContractError):
@@ -212,9 +213,31 @@ def resolve_code_support(
 ) -> tuple[ResolvedCodeSupport, ...]:
     """Resolve one code mapping and reject unavailable or aliased targets."""
 
+    return _resolve_code_support(record.code, entry_root=entry_root, subject=subject)
+
+
+def resolve_execution_code(
+    execution: PyrunExecution,
+    *,
+    entry_root: Path,
+    subject: str,
+) -> tuple[ResolvedCodeSupport, ...]:
+    """Resolve code observed by one current execution without legacy output data."""
+
+    return _resolve_code_support(
+        execution.observed.code, entry_root=entry_root, subject=subject
+    )
+
+
+def _resolve_code_support(
+    code: tuple[tuple[str, Fingerprint], ...],
+    *,
+    entry_root: Path,
+    subject: str,
+) -> tuple[ResolvedCodeSupport, ...]:
     result: list[ResolvedCodeSupport] = []
     identities: dict[str, str] = {}
-    for key, _ in record.code:
+    for key, _ in code:
         path = code_target_path(key, entry_root=entry_root)
         try:
             resolved = path.resolve(strict=True)
@@ -243,6 +266,93 @@ def resolve_code_support(
             )
         result.append(ResolvedCodeSupport(key, path, resolved))
     return tuple(result)
+
+
+def require_current_execution_output(
+    invocation: Invocation,
+    resolved: ResolvedExecutionOutput,
+    *,
+    current_output: Fingerprint,
+    current_code: Mapping[str, Fingerprint] | None = None,
+) -> PyrunExecution:
+    """Require current state associated with one exact command-owned output."""
+
+    association = resolved.association
+    if association is None:
+        _fail(
+            (
+                "provenance.output.execution_unassociated"
+                if resolved.owner is not None
+                else "provenance.output.unrecorded"
+            ),
+            resolved.subject,
+            {"output": resolved.key, "producer": invocation.identity},
+        )
+    execution = association.execution
+    if execution.requires_reproduction:
+        _fail(
+            "provenance.output.reproduction_required",
+            resolved.subject,
+            {"output": resolved.key, "producer": invocation.identity},
+        )
+    observed = dict(execution.observed.outputs).get(resolved.key)
+    if observed is None:
+        _fail(
+            "provenance.output.execution_unassociated",
+            resolved.subject,
+            {"output": resolved.key, "producer": invocation.identity},
+        )
+    mismatches: list[str] = []
+    if observed != current_output:
+        mismatches.append("output_fingerprint")
+    current_script = (
+        Fingerprint("sha256", digest=invocation.script_identity)
+        if invocation.script_identity is not None
+        else None
+    )
+    if current_script is None or execution.observed.script != current_script:
+        mismatches.append("script_fingerprint")
+    expected_inputs = _output_signature_inputs(invocation, resolved.subject)
+    if dict(execution.observed.inputs) != expected_inputs:
+        mismatches.append("inputs")
+    if current_code is not None and dict(execution.observed.code) != current_code:
+        mismatches.append("code")
+    if mismatches:
+        _fail(
+            "provenance.output.signature_mismatch",
+            resolved.subject,
+            {
+                "fields": mismatches,
+                "output": resolved.key,
+                "producer": invocation.identity,
+            },
+        )
+    return execution
+
+
+def execution_output_support_dict(
+    execution: PyrunExecution, invocation: Invocation, output: str
+) -> dict[str, object]:
+    """Return the compatibility result projection for one associated output.
+
+    This is a generated-result representation, not a ``PyrunOutputsFile`` or
+    an execution-state conversion used for validation.
+    """
+
+    fingerprint = dict(execution.observed.outputs)[output]
+    return {
+        "code": {name: value.as_dict() for name, value in execution.observed.code},
+        "confirmed": not execution.requires_reproduction,
+        "fingerprint": fingerprint.as_dict(),
+        "inputs": {
+            name: value.as_dict() for name, value in execution.observed.inputs
+        },
+        "parameters": list(invocation.parameters),
+        "script": {
+            "fingerprint": execution.observed.script.as_dict(),
+            "path": execution.recipe.script,
+        },
+    }
 
 
 def output_producer_mismatches(

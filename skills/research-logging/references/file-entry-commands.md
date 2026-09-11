@@ -145,7 +145,7 @@ command semantics.
 
 There are no command types, generated roots, or simulation filename rules. A
 producer with no material inputs terminates lineage at its artifact-output
-relationship after its current output support is validated and found not to
+relationship after its current execution state is validated and found not to
 require reproduction. An explicitly
 registered origin terminates lineage. A generated input traces to its unique
 earlier producer regardless of storage location.
@@ -193,7 +193,7 @@ For a split entry, record each invocation in the document that presents its
 outputs, even when the script lives in the parent entry's `scripts/`.
 
 When stdout or stderr supports presented evidence, capture it through `pyrun`
-so it receives an output support record. Use `--capture-stdout <path>` and
+so it receives a current execution-state output observation. Use `--capture-stdout <path>` and
 `--capture-stderr <path>` separately, or use
 `--capture-stdout-stderr <path>` for a merged stream. With one runner option,
 keep that option and `--` on the `./pyrun` line:

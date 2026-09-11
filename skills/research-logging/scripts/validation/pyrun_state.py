@@ -172,6 +172,105 @@ class PyrunFile:
         )
 
 
+@dataclass(frozen=True)
+class ExecutionAssociation:
+    """One current command associated with its exact persisted execution."""
+
+    identity: str
+    execution: PyrunExecution
+
+
+@dataclass(frozen=True)
+class OutputOwnerIndex:
+    """One entry's canonical output identities mapped to execution owners."""
+
+    entry_root: Path
+    owners: Mapping[str, ExecutionAssociation]
+
+
+@dataclass(frozen=True)
+class ResolvedExecutionOutput:
+    """One output or directory-member path resolved against execution state."""
+
+    subject: str
+    key: str
+    path: Path
+    association: ExecutionAssociation | None
+    owner: ExecutionAssociation | None
+
+
+def associate_execution(
+    state: PyrunFile, invocation: Invocation, *, project_root: Path
+) -> ExecutionAssociation | None:
+    """Return the exact current execution for one authored command, if present.
+
+    The association is identity-based. A malformed or changed invocation is not
+    projected into a synthetic legacy support record.
+    """
+
+    try:
+        recipe = recipe_from_invocation(
+            invocation, entry_root=state.entry_root, project_root=project_root
+        )
+    except PyrunStateError:
+        return None
+    identity = execution_id(recipe)
+    execution = state.executions.get(identity)
+    return ExecutionAssociation(identity, execution) if execution is not None else None
+
+
+def execution_output_owners(state: PyrunFile) -> OutputOwnerIndex:
+    """Index every persisted output identity by its owning execution."""
+
+    owners: dict[str, ExecutionAssociation] = {}
+    for identity, execution in state.executions.items():
+        association = ExecutionAssociation(identity, execution)
+        for output, _ in execution.recipe.outputs:
+            owners[output] = association
+    return OutputOwnerIndex(state.entry_root, owners)
+
+
+def resolve_execution_output(
+    invocation: Invocation,
+    material: str,
+    *,
+    project_root: Path,
+    association: ExecutionAssociation | None,
+    owners: OutputOwnerIndex,
+) -> ResolvedExecutionOutput:
+    """Resolve an output or directory member and retain its state association."""
+
+    material_path = Path(material).resolve()
+    key = portable_output_path(
+        material_path, entry_root=owners.entry_root, project_root=project_root
+    )
+    owner = owners.owners.get(key)
+    if owner is None:
+        covering = {
+            Path(collection.root).resolve()
+            for collection in invocation.collections
+            if collection.direction == "output"
+            and collection.mechanism == "directory"
+            and collection.root is not None
+            and _within(material_path, Path(collection.root).resolve())
+        }
+        if len(covering) > 1:
+            _invalid(
+                material,
+                {"reason": "ambiguous_output_directory"},
+            )
+        if covering:
+            path = next(iter(covering))
+            key = portable_output_path(
+                path, entry_root=owners.entry_root, project_root=project_root
+            )
+            owner = owners.owners.get(key)
+            material_path = path
+    return ResolvedExecutionOutput(
+        material, key, material_path, owner if owner == association else None, owner
+    )
+
+
 def execution_id(recipe: ExecutionRecipe) -> str:
     """Return the stable v1 identity of one normalized execution recipe."""
 

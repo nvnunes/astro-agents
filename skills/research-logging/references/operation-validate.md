@@ -65,12 +65,12 @@ reports are not candidates.
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use
-`--recompute-validation` to bypass only the per-log check-comparison and
-selection cache, or `--recompute-fingerprints` to bypass only the project-level
-fingerprint cache. The two flags may be combined. `--recompute` remains
-shorthand for both: it evaluates every check from current research material
-and rebuilds both generated caches during a writable run. A dry run never
-writes either cache; a bypassed cache is not opened for reuse.
+`--recompute-validation` to bypass only per-log evidence-selection reuse, or
+`--recompute-fingerprints` to bypass only the project-level fingerprint cache.
+The two flags may be combined. `--recompute` remains shorthand for both: it
+evaluates every check from current research material and rebuilds both generated
+caches during a writable run. A dry run never writes either cache; a bypassed
+cache is not opened for reuse.
 
 Interpret `status` as follows:
 

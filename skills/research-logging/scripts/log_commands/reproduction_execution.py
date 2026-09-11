@@ -734,7 +734,9 @@ def _prepare_execution(
         )
     attempt_root = _attempt_root(workspace, entry_id, execution_id)
     runtime_root = _attempt_runtime_root(workspace, entry_id, execution_id)
-    diagnostics_root = workspace.diagnostics_root / entry_id / execution_id.rsplit(":", 1)[-1]
+    diagnostics_root = (
+        workspace.diagnostics_root / entry_id / execution_id.rsplit(":", 1)[-1]
+    )
     relative_entry = source_entry.root.resolve().relative_to(
         workspace.source_project.resolve()
     )
@@ -1082,7 +1084,7 @@ def _attempt_state(
         )
     if observed_outputs != declared_outputs:
         return (
-            incomplete,
+            "failed",
             "output_missing",
             "one or more declared outputs were not generated",
         )
@@ -2238,7 +2240,11 @@ def _diagnostic_relative_paths(
     entry: str,
     execution_id: str,
 ) -> tuple[Path, Path]:
-    root = workspace.diagnostics_root / entry / execution_id.removeprefix("pyrun-exec/v1:")
+    root = (
+        workspace.diagnostics_root
+        / entry
+        / execution_id.removeprefix("pyrun-exec/v1:")
+    )
     return root / "stdout.log", root / "stderr.log"
 
 

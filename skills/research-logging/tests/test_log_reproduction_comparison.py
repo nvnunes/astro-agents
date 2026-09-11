@@ -269,7 +269,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             regenerated.parent.mkdir(parents=True)
             regenerated.write_bytes(fixture.output.read_bytes())
             checkpoint = ExecutionCheckpoint(
-                "e001", fixture.identity, "complete", "checkpoint.json", "now", ()
+                "e001", fixture.identity, "succeeded", "checkpoint.json", "now", ()
             )
             attempt = ExecutionAttempt(
                 "e001",
@@ -317,7 +317,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             stdout.write_text("out\n")
             stderr.write_text("err\n")
             checkpoint = ExecutionCheckpoint(
-                "e001", fixture.identity, "complete", "checkpoint.json", "now", ()
+                "e001", fixture.identity, "succeeded", "checkpoint.json", "now", ()
             )
             attempt = ExecutionAttempt(
                 "e001",
@@ -392,7 +392,7 @@ class ExecutionComparisonTests(unittest.TestCase):
             first_work.write_bytes(fixture.output.read_bytes())
             second_work.write_text("second changed\n")
             checkpoint = ExecutionCheckpoint(
-                "e001", identity, "complete", "checkpoint.json", "now", ()
+                "e001", identity, "succeeded", "checkpoint.json", "now", ()
             )
             attempt = ExecutionAttempt(
                 "e001",

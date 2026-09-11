@@ -29,6 +29,7 @@ from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.output_support import (
     confirmed_output_record,
     declared_output_resource,
+    require_current_execution_output,
     require_current_output_support,
     resolve_output_support,
 )
@@ -47,8 +48,12 @@ from validation.pyrun_outputs import (
 )
 from validation.pyrun_state import (
     PYRUN_FILENAME,
-    legacy_output_projection,
+    OutputOwnerIndex,
+    PyrunFile,
+    associate_execution,
+    execution_output_owners,
     load_pyrun_state,
+    resolve_execution_output,
 )
 
 from .context import LogContext, resolve_project_root
@@ -67,6 +72,8 @@ class LogMaterials:
     input_names: Mapping[Path, frozenset[str]]
     failures: Mapping[Path, tuple[CommandDiscoveryFailure, ...]]
     _support: dict[str, PyrunOutputsFile] = field(default_factory=dict)
+    _states: dict[str, PyrunFile] = field(default_factory=dict)
+    _owners: dict[str, OutputOwnerIndex] = field(default_factory=dict)
     _producer_index: ProducerIndex | None = field(default=None, init=False, repr=False)
     _rejected_index: RejectedProducerIndex | None = field(
         default=None, init=False, repr=False
@@ -93,6 +100,21 @@ class LogMaterials:
         """Return confirmed support using the validator's exact output identity."""
 
         root = self._root(invocation)
+        state = self._execution_state(invocation.material_owner, root)
+        if state is not None:
+            resolved = resolve_execution_output(
+                invocation,
+                material,
+                project_root=self.project_root,
+                association=associate_execution(
+                    state, invocation, project_root=self.project_root
+                ),
+                owners=self._owners[invocation.material_owner],
+            )
+            return (
+                resolved.association is not None
+                and not resolved.association.execution.requires_reproduction
+            )
         return confirmed_output_record(
             invocation,
             material,
@@ -114,24 +136,58 @@ class LogMaterials:
                     invocation: Invocation, material: str
                 ) -> Mapping[str, object]:
                     root = self._root(invocation)
+                    state = self._execution_state(invocation.material_owner, root)
+                    if state is not None:
+                        execution_output = resolve_execution_output(
+                            invocation,
+                            material,
+                            project_root=self.project_root,
+                            association=associate_execution(
+                                state, invocation, project_root=self.project_root
+                            ),
+                            owners=self._owners[invocation.material_owner],
+                        )
+                        canonical = execution_output.path.resolve().as_posix()
+                        current = observations.get(canonical)
+                        if current is None:
+                            declared = declared_output_resource(
+                                invocation, execution_output.path
+                            )
+                            observation = (
+                                observe_fingerprint(declared)
+                                if declared is not None
+                                else (
+                                    cache.observe_directory(execution_output.path)
+                                    if execution_output.path.is_dir()
+                                    else cache.observe_regular_file(
+                                        execution_output.path
+                                    )
+                                )
+                            )
+                            current = observation.fingerprint
+                            observations[canonical] = current
+                        execution = require_current_execution_output(
+                            invocation, execution_output, current_output=current
+                        )
+                        return {"output": material, "execution": execution.as_dict()}
                     support = self._output_support(invocation.material_owner, root)
-                    resolved = resolve_output_support(
+                    legacy_output = resolve_output_support(
                         invocation,
                         material,
                         entry_root=root,
                         project_root=self.project_root,
                         support=support,
                     )
-                    canonical = resolved.path.resolve().as_posix()
+                    canonical = legacy_output.path.resolve().as_posix()
                     current = observations.get(canonical)
                     if current is None:
                         declared = declared_output_resource(
-                            invocation, resolved.path
+                            invocation, legacy_output.path
                         )
                         if declared is not None:
                             observation = observe_fingerprint(declared)
                         else:
-                            path = resolved.path
+                            path = legacy_output.path
                             observation = (
                                 cache.observe_directory(path)
                                 if path.is_dir()
@@ -141,7 +197,7 @@ class LogMaterials:
                         observations[canonical] = current
                     record = require_current_output_support(
                         invocation,
-                        resolved,
+                        legacy_output,
                         current_output=current,
                     )
                     return {"output": material, "record": record.as_dict()}
@@ -182,15 +238,35 @@ class LogMaterials:
             self._explain_producer_failure(error)
             raise
         root = self._root(producer)
-        resolved = resolve_output_support(
+        state = self._execution_state(producer.material_owner, root)
+        if state is not None:
+            execution_output = resolve_execution_output(
+                producer,
+                resource.canonical_target,
+                project_root=self.project_root,
+                association=associate_execution(
+                    state, producer, project_root=self.project_root
+                ),
+                owners=self._owners[producer.material_owner],
+            )
+            if (
+                execution_output.owner is not None
+                and not execution_output.owner.execution.requires_reproduction
+            ):
+                current = observe_fingerprint(resource).fingerprint
+                require_current_execution_output(
+                    producer, execution_output, current_output=current
+                )
+            return producer
+        legacy_output = resolve_output_support(
             producer,
             resource.canonical_target,
             entry_root=root,
             project_root=self.project_root,
             support=self._output_support(producer.material_owner, root),
         )
-        if resolved.record is not None and resolved.record.confirmed:
-            if resolved.path.resolve().as_posix() == resource.canonical_target:
+        if legacy_output.record is not None and legacy_output.record.confirmed:
+            if legacy_output.path.resolve().as_posix() == resource.canonical_target:
                 current = observe_fingerprint(resource).fingerprint
             else:
                 try:
@@ -198,9 +274,9 @@ class LogMaterials:
                         self.project_root, writable=False, reuse=True
                     ) as cache:
                         observation = (
-                            cache.observe_directory(resolved.path)
-                            if resolved.path.is_dir()
-                            else cache.observe_regular_file(resolved.path)
+                            cache.observe_directory(legacy_output.path)
+                            if legacy_output.path.is_dir()
+                            else cache.observe_regular_file(legacy_output.path)
                         )
                 except FingerprintCacheError as error:
                     raise ActionError(
@@ -209,7 +285,7 @@ class LogMaterials:
                 current = observation.fingerprint
             require_current_output_support(
                 producer,
-                resolved,
+                legacy_output,
                 current_output=current,
             )
         return producer
@@ -227,11 +303,58 @@ class LogMaterials:
                 for relationship in invocation.inputs
             ):
                 continue
+            state = self._execution_state(owner, entry_root)
+            if state is not None:
+                association = associate_execution(
+                    state, invocation, project_root=self.project_root
+                )
+                material = next(
+                    (
+                        relationship.path
+                        for relationship in invocation.outputs
+                    ),
+                    next(
+                        (
+                            collection.root
+                            for collection in invocation.collections
+                            if collection.direction == "output"
+                            and collection.root is not None
+                        ),
+                        None,
+                    ),
+                )
+                if material is None:
+                    continue
+                execution_output = resolve_execution_output(
+                    invocation,
+                    material,
+                    project_root=self.project_root,
+                    association=association,
+                    owners=self._owners[owner],
+                )
+                execution = association.execution if association is not None else (
+                    execution_output.owner.execution
+                    if execution_output.owner is not None
+                    else None
+                )
+                if (
+                    execution is not None
+                    and old_name in dict(execution.observed.inputs)
+                ):
+                    records.append(
+                        {
+                            "document": invocation.document,
+                            "fence": invocation.fence,
+                            "ordinal": invocation.ordinal,
+                            "tokens": list(invocation.tokens),
+                        }
+                )
+                continue
             support = self._output_support(owner, entry_root)
             requires_rerun = False
             for output in invocation.outputs:
                 try:
-                    resolved = resolve_output_support(
+                    legacy_output = resolve_output_support(
                         invocation,
                         output.path,
                         entry_root=entry_root,
@@ -240,7 +363,7 @@ class LogMaterials:
                     )
                 except ValueError:
                     continue
-                record = resolved.record
+                record = legacy_output.record
                 if record is not None and old_name in dict(record.inputs):
                     requires_rerun = True
                     break
@@ -268,29 +391,7 @@ class LogMaterials:
         if support is not None:
             return support
         path = root / "pyrun-outputs.json"
-        current = root / PYRUN_FILENAME
-        if (path.exists() or path.is_symlink()) and (
-            current.exists() or current.is_symlink()
-        ):
-            raise ActionError(
-                "pyrun.state.conflict", f"both execution-state formats exist: {root}"
-            )
-        if current.exists() or current.is_symlink():
-            state = load_pyrun_state(
-                current,
-                entry_root=root,
-                project_root=self.project_root,
-            )
-            support = legacy_output_projection(
-                state,
-                tuple(
-                    invocation
-                    for invocation in self.invocations
-                    if invocation.material_owner == owner
-                ),
-                project_root=self.project_root,
-            )
-        elif path.exists() or path.is_symlink():
+        if path.exists() or path.is_symlink():
             support = load_pyrun_outputs(
                 path,
                 entry_root=root,
@@ -300,6 +401,28 @@ class LogMaterials:
             support = empty_pyrun_outputs(root)
         self._support[owner] = support
         return support
+
+    def _execution_state(self, owner: str, root: Path) -> PyrunFile | None:
+        """Load current state directly; legacy support remains read-only fallback."""
+
+        current = root / PYRUN_FILENAME
+        legacy = root / "pyrun-outputs.json"
+        if (current.exists() or current.is_symlink()) and (
+            legacy.exists() or legacy.is_symlink()
+        ):
+            raise ActionError(
+                "pyrun.state.conflict", f"both execution-state formats exist: {root}"
+            )
+        if not current.exists() and not current.is_symlink():
+            return None
+        state = self._states.get(owner)
+        if state is None:
+            state = load_pyrun_state(
+                current, entry_root=root, project_root=self.project_root
+            )
+            self._states[owner] = state
+            self._owners[owner] = execution_output_owners(state)
+        return state
 
     def _index(self) -> ProducerIndex:
         """Return the one producer index for this inspected command state."""

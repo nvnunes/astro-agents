@@ -84,10 +84,9 @@ The initial implementation must use these versions:
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
 
-Execution-selector compatibility retains readers for run/5 and plan/5 with
-entry/log targets and result/9 cumulative records. New writes use run/6,
-plan/6, status/6, and result/10. Older supported run readers retain their
-existing behavior; legacy target records cannot claim execution scope.
+Reproduction uses run/6, plan/6, status/6, and result/10. Older job files are
+immutable but unsupported: the CLI reports `reproduction.run.unsupported` and
+directs the caller to start a new current-format run.
 
 Execution IDs version only their identity algorithm and canonicalization.
 Schema, runner, standard-environment, execution-contract, and comparison
@@ -687,10 +686,12 @@ researcher-approved; no migration or cleanup path may infer it.
 
 Migration is one metadata-only conversion from the final post-authoring
 `pyrun-outputs.json` state to `pyrun.json`. It must not invoke `pyrun`, a
-research script, a wrapper, or any other research executable. There is no
-compatibility period and no knowingly unmigrated case. After cutover, no
-runtime, validation, reorganization, or reproduction path reads
-`pyrun-outputs.json`.
+research script, a wrapper, or any other research executable. Ordinary
+`pyrun`, Reproduce, and Reorganize do not read the legacy file. Mechanical
+validation and Repair may read it only when no current execution state exists;
+that compatibility reader never writes, migrates, or confirms legacy records.
+Automatic targeted refresh retains the one temporary projection adapter until
+that evaluator is removed.
 
 Markdown may be used once during migration as evidence of the current
 mechanically valid `pyrun` recipe and its fixed output declaration. It is not
@@ -1488,7 +1489,7 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 
 ### Resume
 
-For a v5 logical reproduction, `resume` is available after a terminal
+For a v6 logical reproduction, `resume` is available after a terminal
 `complete`, `failed`, or `stopped` attempt while the initial command queue is
 unresolved. It reacquires the original scope lock, preserves the run ID,
 target, include-all authorization, queue, `jobs` cap, and per-command runtime
@@ -1508,15 +1509,10 @@ from clean output space. `--recheck` applies only to initial launch and is not
 a resume option. Policy-skipped commands remain outside the logical queue even
 if current metadata later reclassifies them.
 
-For publication failure, resume reuses every durable comparison, terminal
-failed attempt, dependency skip, and succeeded checkpoint and performs no
-second research-command attempt. Two exact pre-fix v3 failures recorded as
-`reproduction.job.failed` with message `unsupported artifact reason:
-'validation_blocked'` or `unsupported artifact reason:
-'reproduction.run.invalid'` are recognized as the corresponding publication
-failure only when their durable run state, workers, and checkpoints are
-terminal. Existing v2 and v3 stopped runs retain their original exact-snapshot,
-same-path resume compatibility and are never upgraded in place.
+For a current-format publication failure, resume reuses every durable
+comparison, terminal failed attempt, dependency skip, and succeeded checkpoint
+and performs no second research-command attempt. Older jobs are unsupported
+and require a new current-format run.
 
 ### One-Attempt Rule
 
@@ -2612,9 +2608,10 @@ history and absent results remain unchanged. A dry-run preview never performs
 this recovery; incremental, partial, policy-skipped, and blocked no-work targets
 do not gain unsupported-state replacement authority.
 
-Mechanical validation retains a read-only legacy output-record reader and an
-internal output-keyed projection of current execution state. That bounded
-compatibility path is defined in the
+Mechanical validation uses direct execution association and an output-owner
+index for current execution state. `legacy_output_projection` remains only as
+the temporary targeted-refresh adapter. The read-only legacy output-record
+reader is defined in the
 [mechanical-validator specification](research-log-mechanical-validator-spec.md#pyrun-output-support-records).
 It does not authorize legacy recording or reproduction. Migration converts
 legacy records to current execution state before another run.
@@ -2637,15 +2634,15 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-Command-oriented version 3 execution state, parallel planning and scheduling,
+Command-oriented version 5 execution state, parallel planning and scheduling,
 safety, run-local execution, exact and evidence-scoped artifact comparison,
 durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
 control, immutable completed-run command inspection, fresh-attempt continuation
 resume, publication retry, lost-supervisor reconciliation, ordinary
 post-reproduction validation, and whole-execution copy-based promotion are
-implemented. The maintained-corpus exclusivity
-cutover is complete, and version 2 execution state is rejected.
+implemented. The maintained-corpus exclusivity cutover is complete, and earlier
+execution-state schemas are rejected.
 Promotion retains its own approved targeted Evidence and
 Provenance refresh without running general validation; reproduction has no
 targeted-validation path. Maintained-corpus initialization and the bounded

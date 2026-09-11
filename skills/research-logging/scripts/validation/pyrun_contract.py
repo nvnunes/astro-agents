@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from pyrun_code_observer import MANAGED_ENVIRONMENT as PYRUN_CODE_ENVIRONMENT
+from research_log_data import input_token_parts
 
 PYRUN_CAPTURE_STREAMS = {
     "--capture-stdout": "stdout",
@@ -128,6 +129,9 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
     script_arguments = tuple(arguments[index + 1 :])
     roles = _normalized_roles(state.declarations)
     _validate_role_targets(roles, script_arguments)
+    effective_parameter_roles(
+        script_arguments, dict(roles), require_material_roles=False
+    )
     return PyrunLayout(
         index,
         arguments[index],
@@ -298,3 +302,46 @@ def _role_name(name: str, role: str) -> bool:
         return True
     atom = r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?"
     return re.fullmatch(rf"(?:{role}[-_]{atom}|{atom}[-_]{role})", name) is not None
+
+
+def recipe_script_parameters(parameters: Sequence[str]) -> tuple[str, ...]:
+    """Return script parameters after any persisted runner capture prefix."""
+    index = 0
+    while index < len(parameters) and parameters[index] in PYRUN_CAPTURE_STREAMS:
+        index += 2
+    if index and index < len(parameters) and parameters[index] == "--":
+        return tuple(parameters[index + 1 :])
+    return tuple(parameters)
+
+
+def effective_parameter_roles(
+    arguments: Sequence[str],
+    declarations: Mapping[str, str],
+    *,
+    require_material_roles: bool = True,
+) -> tuple[tuple[str, str], ...]:
+    """Resolve every valued parameter's role using the shared selector grammar.
+
+    Explicit roles override naming. Ordinary values cannot be registered material
+    tokens. The returned complete map is the execution recipe's role contract.
+    """
+    options, positionals = split_argument_values(arguments)
+    values = [(option.name, option.value) for option in options]
+    values.extend((f"@{index}", value) for index, value in enumerate(positionals, 1))
+    result = {}
+    for selector, value in values:
+        role = declarations.get(selector, automatic_option_role(selector) or "ordinary")
+        if role not in {"input", "output", "ordinary"}:
+            raise PyrunContractError(f"invalid parameter role: {role}")
+        if (
+            role == "ordinary"
+            and (require_material_roles or selector in declarations)
+            and input_token_parts(value) is not None
+        ):
+            raise PyrunContractError(
+                f"registered token {value} requires an input or output role"
+            )
+        result[selector] = role
+    if set(declarations) - set(result):
+        raise PyrunContractError("role selectors lack valued parameters")
+    return tuple(sorted(result.items()))

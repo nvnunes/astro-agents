@@ -16,7 +16,6 @@ from research_log_data import (
 from validation.commands import Invocation
 from validation.errors import MechanicalContractError
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
-from validation.pyrun_contract import automatic_option_role, parse_pyrun_arguments
 from validation.pyrun_outputs import output_target_path, portable_output_path
 from validation.pyrun_state import (
     PYRUN_FILENAME,
@@ -35,6 +34,7 @@ from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult
 from .pyrun_parameters import (
     CommandEdit,
+    changed_parameter_roles,
     changed_parameters,
     parameter_spans,
     script_parameters,
@@ -143,6 +143,9 @@ def _matching_recipe(
     project: Path,
 ) -> ExecutionRecipe:
     expected_parameters = changed_parameters(old.recipe.parameters, edit)
+    expected_roles = changed_parameter_roles(
+        old.recipe.parameters, old.recipe.parameter_roles, edit
+    )
     expected_script = old.recipe.script
     if edit.action == "set-script":
         expected_script = portable_script_path(
@@ -168,12 +171,7 @@ def _matching_recipe(
         expected = _output_aliases(expected_parameters, invocation, entry, project)
         if _parameter_signature(recipe.parameters) != _parameter_signature(expected):
             continue
-        if not all(
-            (
-                _role_agrees(invocation, edit),
-                _parameter_role_preserved(old.recipe, invocation, edit),
-            )
-        ):
+        if recipe.parameter_roles != expected_roles:
             continue
         if _material_changes_agree(old.recipe, recipe, edit, data, entry):
             matches.append(recipe)
@@ -219,47 +217,6 @@ def _output_aliases(
         else:
             result.append(aliases.get(token, token))
     return tuple(result)
-
-
-def _role_agrees(invocation: Invocation, edit: CommandEdit) -> bool:
-    requested = {
-        "add-input": "input",
-        "add-output": "output",
-        "set-role": edit.role,
-    }.get(edit.action)
-    if requested is None:
-        return True
-    # Invocation tokens include the actual pyrun executable, never a shell prefix
-    # in the supported direct layout. Discovery has already validated roles.
-    index = next(
-        i for i, token in enumerate(invocation.tokens) if token == invocation.executable
-    )
-    layout = parse_pyrun_arguments(invocation.tokens[index + 1 :])
-    role = dict(layout.roles).get(edit.selector, automatic_option_role(edit.selector))
-    return role == requested
-
-
-def _parameter_role_preserved(
-    old: ExecutionRecipe, invocation: Invocation, edit: CommandEdit
-) -> bool:
-    """A value edit cannot also reclassify the selected parameter's material role."""
-    if edit.action != "set-parameter":
-        return True
-    _, tokens = script_parameters(old.parameters)
-    spans = selected_spans(tokens, edit)
-    previous = spans[0].value if spans else None
-    parts = input_token_parts(previous) if previous is not None else None
-    role = "ordinary"
-    if parts is not None and parts[0] in old.inputs:
-        role = "input"
-    elif previous in dict(old.outputs):
-        role = "output"
-    index = invocation.tokens.index(invocation.executable)
-    layout = parse_pyrun_arguments(invocation.tokens[index + 1 :])
-    current = dict(layout.roles).get(
-        edit.selector, automatic_option_role(edit.selector)
-    )
-    return (current or "ordinary") == role
 
 
 def _material_changes_agree(

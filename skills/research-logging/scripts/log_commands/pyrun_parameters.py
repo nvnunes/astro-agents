@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from validation.pyrun_contract import recipe_script_parameters
+
 from .model import ActionError
 
 
@@ -86,10 +88,8 @@ def script_parameters(
     parameters: tuple[str, ...],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Separate the recipe's optional capture prefix from script parameters."""
-    if parameters and parameters[0].startswith("--capture-") and "--" in parameters:
-        boundary = parameters.index("--") + 1
-        return parameters[:boundary], parameters[boundary:]
-    return (), parameters
+    child = recipe_script_parameters(parameters)
+    return parameters[: len(parameters) - len(child)], child
 
 
 def changed_parameters(
@@ -141,3 +141,35 @@ def _replace_value(
     else:
         replacement = (spelling, edit.value)
     return tokens[:start] + replacement + tokens[stop:]
+
+
+def changed_parameter_roles(
+    parameters: tuple[str, ...], roles: tuple[tuple[str, str], ...], edit: CommandEdit
+) -> tuple[tuple[str, str], ...]:
+    """Apply only the requested selector change to the saved complete role map."""
+    result = dict(roles)
+    if edit.action == "set-script":
+        return roles
+    selector = edit.selector
+    if edit.action == "remove-parameter":
+        _, remaining = script_parameters(changed_parameters(parameters, edit))
+        if selector.startswith("@"):
+            removed = int(selector[1:])
+            result = {
+                (
+                    f"@{int(key[1:]) - 1}"
+                    if key.startswith("@") and int(key[1:]) > removed
+                    else key
+                ): role
+                for key, role in result.items()
+                if key != selector
+            }
+        elif not any(span.selector == selector for span in parameter_spans(remaining)):
+            result.pop(selector, None)
+    elif edit.action == "set-role":
+        result[selector] = str(edit.role)
+    elif edit.action in {"add-input", "add-output"}:
+        result[selector] = "input" if edit.action == "add-input" else "output"
+    else:
+        result.setdefault(selector, "ordinary")
+    return tuple(sorted(result.items()))

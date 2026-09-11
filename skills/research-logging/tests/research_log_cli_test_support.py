@@ -78,3 +78,46 @@ def run_pyrun_process(
         check=False,
         timeout=PROCESS_TIMEOUT_SECONDS,
     )
+
+
+def fixture_parameter_roles(parameters, inputs=(), outputs=()):
+    """Build explicit v5 roles for synthetic fixtures with known material sets."""
+    from research_log_data import input_token_parts
+    from validation.pyrun_contract import (
+        automatic_option_role,
+        recipe_script_parameters,
+        split_argument_values,
+    )
+
+    options, positionals = split_argument_values(recipe_script_parameters(parameters))
+    values = [(option.name, option.value) for option in options]
+    values += [(f"@{index}", value) for index, value in enumerate(positionals, 1)]
+    roles = {}
+    for name, value in values:
+        parts = input_token_parts(value)
+        if parts is not None and parts[0] in inputs:
+            role = "input"
+        elif value in dict(outputs):
+            role = "output"
+        else:
+            role = automatic_option_role(name) or "ordinary"
+        roles[name] = role
+    return tuple(sorted(roles.items()))
+
+
+def replace_fixture_recipe(recipe, **changes):
+    """Keep explicitly synthetic recipe roles aligned when changing its fields."""
+    from dataclasses import replace
+
+    updated = replace(recipe, **changes)
+    from validation.pyrun_state import ExecutionRecipe
+    if isinstance(updated, ExecutionRecipe) and "parameter_roles" not in changes:
+        updated = replace(
+            updated,
+            parameter_roles=fixture_parameter_roles(
+                updated.parameters,
+                updated.inputs,
+                updated.outputs,
+            ),
+        )
+    return updated

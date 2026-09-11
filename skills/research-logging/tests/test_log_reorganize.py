@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from research_log_cli_test_support import run_log
+from research_log_cli_test_support import fixture_parameter_roles, run_log
 from research_log_data import Fingerprint
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
@@ -90,6 +90,11 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
         (),
         (),
         tuple((output, "file") for output in outputs),
+        parameter_roles=fixture_parameter_roles(
+            tuple(value for output in outputs for value in ("--output", output)),
+            (),
+            tuple((output, "file") for output in outputs),
+        ),
     )
     fingerprint = Fingerprint("sha256", digest="a" * 64)
     execution = PyrunExecution(

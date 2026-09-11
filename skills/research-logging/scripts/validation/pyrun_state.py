@@ -17,7 +17,12 @@ from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
 from .errors import MechanicalContractError
 from .json_codec import V2JsonError, decode_json
-from .pyrun_contract import PYRUN_MANAGED_ENVIRONMENT
+from .pyrun_contract import (
+    PYRUN_MANAGED_ENVIRONMENT,
+    PyrunContractError,
+    effective_parameter_roles,
+    recipe_script_parameters,
+)
 from .pyrun_outputs import (
     OutputSupport,
     PyrunOutputsFile,
@@ -31,7 +36,7 @@ from .pyrun_outputs import (
 if TYPE_CHECKING:
     from .commands import Invocation
 
-PYRUN_SCHEMA = "research-log-pyrun/v4"
+PYRUN_SCHEMA = "research-log-pyrun/v5"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
@@ -67,6 +72,7 @@ class ExecutionRecipe:
     environment: tuple[tuple[str, str], ...]
     inputs: tuple[str, ...]
     outputs: tuple[tuple[str, str], ...]
+    parameter_roles: tuple[tuple[str, str], ...]
 
     def as_dict(self) -> dict[str, object]:
         """Return the exact persisted and identity projection."""
@@ -76,6 +82,7 @@ class ExecutionRecipe:
             "inputs": list(self.inputs),
             "outputs": dict(self.outputs),
             "parameters": list(self.parameters),
+            "parameter_roles": dict(self.parameter_roles),
             "script": self.script,
         }
 
@@ -151,8 +158,7 @@ class PyrunFile:
             )
         return {
             "executions": {
-                key: self.executions[key].as_dict()
-                for key in sorted(self.executions)
+                key: self.executions[key].as_dict() for key in sorted(self.executions)
             },
             "schema": self.schema,
         }
@@ -237,6 +243,7 @@ def recipe_from_invocation(
         invocation.environment,
         inputs,
         tuple(sorted(outputs.items())),
+        invocation.parameter_roles,
     )
     _decode_recipe(
         recipe.as_dict(),
@@ -771,7 +778,14 @@ def _decode_recipe(
     entry_root: Path,
     project_root: Path | None,
 ) -> ExecutionRecipe:
-    fields = {"environment", "inputs", "outputs", "parameters", "script"}
+    fields = {
+        "environment",
+        "inputs",
+        "outputs",
+        "parameters",
+        "script",
+        "parameter_roles",
+    }
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"recipe_fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
@@ -823,11 +837,33 @@ def _decode_recipe(
         tuple(sorted(decoded_environment)),
         tuple(cast(list[str], inputs)),
         tuple(sorted(decoded_outputs)),
+        _decode_parameter_roles(value.get("parameter_roles"), parameters, subject),
     )
     _require_nonoverlapping_outputs(
         recipe, entry_root=entry_root, project_root=project_root, subject=subject
     )
     return recipe
+
+
+def _decode_parameter_roles(
+    value: object, parameters: list[str], subject: object
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str)
+        and isinstance(role, str)
+        and role in {"input", "output", "ordinary"}
+        for key, role in value.items()
+    ):
+        _invalid(subject, {"reason": "parameter_roles"})
+    try:
+        effective = effective_parameter_roles(
+            recipe_script_parameters(parameters), value
+        )
+    except PyrunContractError as error:
+        _invalid(subject, {"reason": "parameter_roles", "error": str(error)})
+    if dict(effective) != value:
+        _invalid(subject, {"reason": "incomplete_parameter_roles"})
+    return effective
 
 
 def _decode_environment(value: object, subject: str) -> tuple[tuple[str, str], ...]:

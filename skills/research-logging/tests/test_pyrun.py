@@ -867,7 +867,7 @@ Path(a.results).write_text(','.join(states), encoding='utf-8')
                 "locked,locked",
             )
 
-    def test_ordinary_role_passes_literal_without_material_observation(self) -> None:
+    def test_ordinary_role_rejects_material_token_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -883,11 +883,32 @@ Path(a.results).write_text(','.join(states), encoding='utf-8')
                 "--input-label",
                 "<input_csv>",
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("<input_csv>", (entry / "data/ordinary.txt").read_text())
-            record = execution_for_output(entry, "data/ordinary.txt")
-            self.assertEqual(record["recipe"]["inputs"], [])
-            self.assertEqual(record["observed"]["inputs"], {})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires an input or output role", result.stderr)
+            self.assertFalse((entry / "data/ordinary.txt").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_shared_input_token_requires_roles_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            result = run_pyrun_process(
+                entry,
+                "--capture-stdout",
+                "data/shared.txt",
+                "--",
+                "scripts/print_args.py",
+                "--input",
+                "<input_csv>",
+                "--config",
+                "<input_csv>",
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires an input or output role", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertFalse((entry / "data/shared.txt").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_other_roles_publish_support_without_entering_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1150,7 +1171,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v4")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v5")
             record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["exclusive"], False)
             self.assertIs(record["requires_reproduction"], False)

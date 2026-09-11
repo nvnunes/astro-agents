@@ -580,7 +580,7 @@ ordinary direct execution or reserve unrelated host processes. For a later
 policy-only change, edit Markdown first and run `log pyrun set-auto-reproduce`
 or `log pyrun set-exclusive`, with `--path`, `--entry`, `--execution-id`, and
 `--value true|false`. Current
-execution state must use `research-log-pyrun/v4`; earlier schemas are
+execution state must use `research-log-pyrun/v5`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
 `./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
@@ -1019,7 +1019,7 @@ applies independently to each command and is retained across resume. A command
 that exceeds it fails with `execution_timeout`, its process tree is terminated,
 and independent commands continue.
 
-Entry-local execution state must use `research-log-pyrun/v4`; earlier schemas
+Entry-local execution state must use `research-log-pyrun/v5`; earlier schemas
 are rejected before planning and are not assigned guessed scheduling policy.
 
 Executions recorded with `auto_reproduce: false` are excluded by default.

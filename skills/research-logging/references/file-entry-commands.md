@@ -136,8 +136,9 @@ The runner infers file or directory kind from the registered input or completed
 output. Captures remain file-only. Use these declarations only when natural
 names do not expose the correct role; an explicit declaration overrides a
 misleading automatic role. Use `--other-parameters` with the same selectors for
-ordinary literal values that must not be treated as material paths or expanded
-as registered input tokens.
+ordinary values that must not be treated as material paths. Do not put a
+registered material token in an ordinary parameter; declare it as input or
+output.
 
 Do not add hidden command metadata. Comments adjacent to command fences have no
 command semantics.
@@ -265,7 +266,7 @@ the option does not alter the execution ID or reserve unrelated host work.
 ```
 
 For later changes, use the actions under [Correct A Recorded Command](#correct-a-recorded-command).
-Execution state must use `research-log-pyrun/v4`;
+Execution state must use `research-log-pyrun/v5`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the

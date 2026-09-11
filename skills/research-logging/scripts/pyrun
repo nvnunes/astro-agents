@@ -89,6 +89,7 @@ from validation.output_bindings import OutputBindingError, project_output_bindin
 from validation.pyrun_contract import (
     PyrunContractError,
     automatic_option_role,
+    effective_parameter_roles,
     parse_pyrun_arguments,
     split_argument_values,
 )
@@ -789,14 +790,9 @@ def main(argv: list[str]) -> int:
                 auto_reproduce,
                 exclusive,
             ) = _execution_layout(argv)
+            parameter_roles = effective_parameter_roles(script_args, roles)
             _require_declared_input_tokens(script_args, roles, data)
             material_roles = _material_value_roles(script_args, roles)
-            for value in script_args:
-                if input_token_parts(value) is not None and value not in material_roles:
-                    raise SystemExit(
-                        "pyrun: registered artifact tokens require an explicit "
-                        "input or output role"
-                    )
             verified: set[str] = set()
             observed_inputs: dict[str, Fingerprint] = {}
             script_identity = portable_script_path(
@@ -816,8 +812,6 @@ def main(argv: list[str]) -> int:
             for arg in script_args:
                 if material_roles.get(arg) == "output":
                     resolved_arguments.append(resolve_output_arg(arg, root, log, data))
-                elif material_roles.get(arg) == "ordinary":
-                    resolved_arguments.append(arg)
                 else:
                     resolved_arguments.append(
                         resolve_arg(
@@ -957,6 +951,7 @@ def main(argv: list[str]) -> int:
                     tuple(sorted(explicit_env.items())),
                     tuple(sorted(observed_inputs)),
                     tuple(sorted(output_kinds.items())),
+                    parameter_roles,
                 )
                 observed = ObservedExecution(
                     script_observation.fingerprint,
@@ -1016,6 +1011,8 @@ def main(argv: list[str]) -> int:
                     if residue is not None:
                         finish_guarded_publication(residue)
             return returncode
+    except PyrunContractError as error:
+        raise SystemExit(f"pyrun: {error}") from error
     except PyrunOutputsError as error:
         raise SystemExit(f"pyrun: {error}") from error
     except PyrunStateError as error:

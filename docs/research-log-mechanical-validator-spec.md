@@ -59,7 +59,7 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
-| `pyrun` execution state | `research-log-pyrun/v4`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v5`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -67,7 +67,7 @@ or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/reproduction-requirement-5` |
+| Mechanical rules | `research-log-mechanical/parameter-roles-6` |
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
@@ -2886,8 +2886,9 @@ items, duplicate selectors, selectors without a matching valued argument, and
 selectors declared in conflicting roles. A selector applies to every occurrence
 of its option. An explicit declaration overrides automatic role inference from
 the option name. `--other-parameters` declares ordinary literal values: it
-suppresses material inference and token expansion for those values in both
-discovery and execution.
+suppresses material inference for those values. Registered material tokens
+require an input or output role and are rejected as ordinary values before
+execution. Reserved project/log placeholders retain their normal expansion.
 
 The same runner-option prefix accepts `--auto-reproduce=false` and the
 flag-only `--exclusive`. Each may occur at most once. Omitting `--exclusive`
@@ -2995,7 +2996,7 @@ Mechanical validation reads it without execution or mutation and derives an
 output-keyed projection for the graph checks in this section. That internal
 projection is not another persisted execution-state file.
 
-Validation accepts only strict `research-log-pyrun/v4` state. An earlier schema
+Validation accepts only strict `research-log-pyrun/v5` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 

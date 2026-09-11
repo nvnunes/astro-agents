@@ -1171,7 +1171,15 @@ def _decode_command_record(value: object, index: int) -> Mapping[str, object]:
     if any(not isinstance(detail, str) for detail in details):
         raise ReproductionResultError(f"command_records[{index}].details is invalid")
     recipe = _mapping(item["recipe"], f"command_records[{index}].recipe")
-    if set(recipe) != {"environment", "inputs", "outputs", "parameters", "script"}:
+    fields = {
+        "environment",
+        "inputs",
+        "outputs",
+        "parameters",
+        "parameter_roles",
+        "script",
+    }
+    if set(recipe) != fields:
         raise ReproductionResultError(
             f"command_records[{index}].recipe has incorrect fields"
         )

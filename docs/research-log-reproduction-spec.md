@@ -65,7 +65,7 @@ The initial implementation must use these versions:
 
 | Surface | Version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v4` |
+| Execution-state file | `research-log-pyrun/v5` |
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
@@ -301,7 +301,7 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v4",
+  "schema": "research-log-pyrun/v5",
   "executions": {
     "pyrun-exec/v1:0123456789abcdef...": {
       "auto_reproduce": true,
@@ -319,6 +319,7 @@ exactly:
           "--output-csv",
           "data/results.csv"
         ],
+        "parameter_roles": {"input-data": "input", "output-csv": "output"},
         "environment": {},
         "inputs": ["catalog"],
         "outputs": {
@@ -377,8 +378,8 @@ migration record uses `null` because no ordinary `pyrun` completion time is
 known. Version fields are required nonempty identifiers from the code-owned
 supported sets.
 
-`recipe` has exactly `script`, `parameters`, `environment`, `inputs`, and
-`outputs`:
+`recipe` has exactly `script`, `parameters`, `parameter_roles`, `environment`,
+`inputs`, and `outputs`:
 
 - `script` is the normalized POSIX script argument. A script beneath the entry
   uses its entry-relative identity; any other script beneath the maintained log
@@ -391,6 +392,12 @@ supported sets.
   capture, it contains only that child-process argument tail. It contains no
   runner role declarations, `--auto-reproduce=false`, or explicit environment
   options.
+- `parameter_roles` maps every valued script parameter to its effective `input`,
+  `output`, or `ordinary` role, including roles inferred from naming. Keys use
+  the runner selectors: names without dashes and one-based `@N` positions.
+  Repeated named parameters share one role. Flags without values and runner
+  captures have no entries. Missing, extra, or invalid roles are rejected.
+  Registered material tokens cannot be ordinary values.
 - `environment` maps each explicit normalized `--env NAME=value` variable name
   to its exact value. It contains no inherited or runner-supplied variable.
 - `inputs` is the sorted unique list of directly consumed `data.json` names.
@@ -464,7 +471,7 @@ for `parameters`; `inputs` is sorted before serialization; environment and
 output map keys are sorted by canonical JSON serialization.
 
 The projection includes the normalized script, ordered replay parameters,
-explicit environment variables, direct input names, and complete output paths
+effective parameter roles, explicit environment variables, direct input names, and complete output paths
 and kinds. The replay parameters make each runner-owned stream capture and its
 output identity explicit. It excludes observations, the reproduction requirement,
 automatic-reproduction and exclusivity policy,
@@ -473,7 +480,7 @@ runner version, and execution-contract version.
 
 Changing script bytes or direct-input bytes makes observed state stale without
 changing the execution ID. Changing the script path, parameters, explicit
-environment, direct input names, or output membership creates a different ID.
+environment, effective parameter roles, direct input names, or output membership creates a different ID.
 The same normalized recipe, including each concrete expansion of a static
 loop, always reuses its ID. A Markdown command or loop has no separate shared
 execution ID.
@@ -660,13 +667,11 @@ writing. A request that leaves the recorded recipe unchanged is refused.
 
 ### Execution-Metadata Schema
 
-Entry-local execution state accepts only strict `research-log-pyrun/v4`.
-The one-time v2-to-v3 exclusivity cutover is complete, and its public converter
-has been removed. A v2 `pyrun.json` now fails at the shared decoder boundary
-with `pyrun.state.schema.unsupported`; direct execution, validation, policy
-updates, planning, and reproduction do not infer the missing `exclusive` value.
-Historical cutover evidence and a before/after migration fixture remain for
-auditability without retaining a production compatibility path.
+Entry-local execution state accepts only strict `research-log-pyrun/v5`.
+Historical command snapshots also require the complete `parameter_roles` map.
+Their execution IDs and source digests identify the original run; they are not
+execution authority for current state. Resuming a retained job requires its
+source snapshot to agree with current state.
 
 ### Retirement
 
@@ -2582,7 +2587,7 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling uses `research-log-pyrun/v4`; current reproduction plan,
+Parallel scheduling uses `research-log-pyrun/v5`; current reproduction plan,
 run, and status writes use version 6. Version 2 execution records are
 unsupported. Accepted reproduction runs at versions 2 through 5 retain their
 bounded historical compatibility paths; version 5 retains entry/log targets,

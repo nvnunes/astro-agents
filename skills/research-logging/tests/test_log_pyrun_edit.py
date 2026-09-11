@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from research_log_cli_test_support import run_log
+from research_log_cli_test_support import replace_fixture_recipe, run_log
 from research_log_data import InputResource, data_file_from_inputs
 from test_log_pyrun import _execution, _fingerprint, _fixture, _recipe, _write_state
 from validation.pyrun_state import execution_id, load_pyrun_state
@@ -160,7 +160,7 @@ class LogPyrunEditTests(unittest.TestCase):
 
     def test_remove_parameter_drops_material_association_only(self) -> None:
         self.registry("config")
-        self.recipe = replace(
+        self.recipe = replace_fixture_recipe(
             self.recipe,
             parameters=(*self.recipe.parameters, "--config", "<config>"),
             inputs=("config",),
@@ -179,47 +179,56 @@ class LogPyrunEditTests(unittest.TestCase):
         self.assertTrue((self.entry / "data/config.txt").exists())
 
     def test_set_role_for_existing_parameter(self) -> None:
-        self.registry("config")
-        self.recipe = replace(
-            self.recipe, parameters=(*self.recipe.parameters, "--config", "<config>")
+        (self.entry / "data/report.txt").write_text("report")
+        self.recipe = replace_fixture_recipe(
+            self.recipe,
+            parameters=(*self.recipe.parameters, "--report", "data/report.txt"),
         )
         self.old = replace(self.old, recipe=self.recipe)
         _write_state(self.entry, (self.old,))
         self.command(
-            "./pyrun --other-inputs config -- scripts/build.py "
-            "--output-data data/result.csv --config '<config>'"
+            "./pyrun --other-outputs report -- scripts/build.py "
+            "--output-data data/result.csv --report data/report.txt"
         )
-        result = self.run_edit("set-role", "--parameter", "config", "--role", "input")
+        result = self.run_edit("set-role", "--parameter", "report", "--role", "output")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.current().recipe.inputs, ("config",))
+        self.assertIn(("report", "output"), self.current().recipe.parameter_roles)
 
-    def test_ordinary_role_removes_input_without_changing_value(self) -> None:
-        self.registry("config")
-        self.recipe = replace(
+    def test_shared_output_role_change_is_rejected(self) -> None:
+        output = "data/report.txt"
+        (self.entry / output).write_text("report")
+        self.recipe = replace_fixture_recipe(
             self.recipe,
-            parameters=(*self.recipe.parameters, "--input-label", "<config>"),
-            inputs=("config",),
+            parameters=(*self.recipe.parameters, "--first", output, "--second", output),
+            outputs=(*self.recipe.outputs, (output, "file")),
         )
         self.old = replace(
             self.old,
             recipe=self.recipe,
             observed=replace(
-                self.old.observed, inputs=(("config", _fingerprint(b"config")),)
+                self.old.observed,
+                outputs=(*self.old.observed.outputs, (output, _fingerprint(b"report"))),
             ),
         )
         _write_state(self.entry, (self.old,))
+        before = self.state_path.read_bytes()
         self.command(
-            "./pyrun --other-parameters input-label -- scripts/build.py "
-            "--output-data data/result.csv --input-label '<config>'"
+            "./pyrun --other-parameters second -- scripts/build.py "
+            "--output-data data/result.csv --second data/report.txt"
         )
-        result = self.run_edit(
-            "set-role", "--parameter", "input-label", "--role", "ordinary"
+        result = self.run_edit("remove-parameter", "--parameter", "first")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.state_path.read_bytes(), before)
+        self.command(
+            "./pyrun --other-outputs second -- scripts/build.py "
+            "--output-data data/result.csv --second data/report.txt"
         )
+        result = self.run_edit("remove-parameter", "--parameter", "first")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.current().recipe.inputs, ())
+        self.assertIn((output, "file"), self.current().recipe.outputs)
 
     def test_repeated_parameter_needs_occurrence(self) -> None:
-        self.recipe = replace(
+        self.recipe = replace_fixture_recipe(
             self.recipe,
             parameters=(*self.recipe.parameters, "--count", "1", "--count", "2"),
         )
@@ -299,7 +308,7 @@ class LogPyrunEditTests(unittest.TestCase):
         self.assertTrue(self.current().exclusive)
 
     def test_unrelated_material_role_change_is_rejected(self) -> None:
-        self.recipe = replace(
+        self.recipe = replace_fixture_recipe(
             self.recipe,
             parameters=(*self.recipe.parameters, "--report", "data/report.txt"),
         )
@@ -317,7 +326,7 @@ class LogPyrunEditTests(unittest.TestCase):
 
     def test_value_change_cannot_also_add_a_material_role(self) -> None:
         self.registry("config")
-        self.recipe = replace(
+        self.recipe = replace_fixture_recipe(
             self.recipe, parameters=(*self.recipe.parameters, "--config", "old")
         )
         self.old = replace(self.old, recipe=self.recipe)
@@ -335,7 +344,7 @@ class LogPyrunEditTests(unittest.TestCase):
 
     def test_add_input_corrects_existing_parameter_value_and_role(self) -> None:
         self.registry("config")
-        self.recipe = replace(
+        self.recipe = replace_fixture_recipe(
             self.recipe,
             parameters=(*self.recipe.parameters, "--config", "data/config.txt"),
         )

@@ -97,7 +97,7 @@ immutable per-run concurrency cap: dependency readiness, conflicting path
 claims, and project-wide exclusivity may keep actual concurrency lower. Before
 a parallel launch, use the dry-run summary to verify the cap, runnable and
 exclusive counts, and complete path claims. Entry-local execution state must
-use `research-log-pyrun/v4`; earlier schemas are unsupported.
+use `research-log-pyrun/v5`; earlier schemas are unsupported.
 
 Each command defaults to a 300-second wall-clock runtime limit. Use
 `--execution-timeout-seconds` on launch or dry run to accept a different limit;

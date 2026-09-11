@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research_log_cli_test_support import run_log
+from research_log_cli_test_support import fixture_parameter_roles, run_log
 from research_log_data import Fingerprint
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
@@ -89,7 +89,14 @@ def _recipe(output: str, *, case: str | None = None) -> ExecutionRecipe:
         if case is None
         else ("--case", case, "--output-data", output)
     )
-    return ExecutionRecipe("scripts/build.py", parameters, (), (), ((output, "file"),))
+    return ExecutionRecipe(
+        "scripts/build.py",
+        parameters,
+        (),
+        (),
+        ((output, "file"),),
+        parameter_roles=fixture_parameter_roles(parameters, (), ((output, "file"),)),
+    )
 
 
 class LogPyrunPolicyTests(unittest.TestCase):
@@ -176,7 +183,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             state = json.loads((entry / "pyrun.json").read_text())
             self.assertTrue(state["executions"][identity]["exclusive"])
-            self.assertEqual(state["schema"], "research-log-pyrun/v4")
+            self.assertEqual(state["schema"], "research-log-pyrun/v5")
 
     def test_static_loop_setter_changes_every_distinct_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -27,6 +27,9 @@ from log_commands.reproduction_planner import (
     verify_reproduction_runtime_snapshot,
 )
 from log_commands.reproduction_results import CommandResult, ReproductionResults
+from research_log_cli_test_support import (
+    fixture_parameter_roles,
+)
 from research_log_data import (
     Fingerprint,
     InputResource,
@@ -152,6 +155,13 @@ class _Fixture:
             (),
             tuple(sorted(inputs)),
             tuple(sorted((f"data/{path.name}", "file") for path in outputs.values())),
+            parameter_roles=fixture_parameter_roles(
+                (),
+                tuple(sorted(inputs)),
+                tuple(
+                    sorted((f"data/{path.name}", "file") for path in outputs.values())
+                ),
+            ),
         )
         observed = ObservedExecution(
             _fingerprint(script),
@@ -903,6 +913,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                 (),
                 ("raw",),
                 (("data/bundle", "directory"),),
+                parameter_roles=fixture_parameter_roles(
+                    (), ("raw",), (("data/bundle", "directory"),)
+                ),
             )
             producer = (
                 execution_id(producer_recipe),
@@ -1419,6 +1432,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                 (),
                 (),
                 (("<project>/shared/result.txt", "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    (), (), (("<project>/shared/result.txt", "file"),)
+                ),
             )
             external = PyrunExecution(
                 True,
@@ -2244,6 +2260,9 @@ class ReproductionPlanningTests(unittest.TestCase):
                 (),
                 ("raw",),
                 (("<project>/shared/upstream.txt", "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    (), ("raw",), (("<project>/shared/upstream.txt", "file"),)
+                ),
             )
             upstream_execution = PyrunExecution(
                 True,

@@ -44,9 +44,10 @@ class ReproductionResultContractTests(unittest.TestCase):
             value = _complete_results().as_dict()
             value["schema"] = f"research-log-reproduction-result/{version}"
 
-            with self.subTest(version=version), self.assertRaises(
-                ReproductionResultSchemaError
-            ) as caught:
+            with (
+                self.subTest(version=version),
+                self.assertRaises(ReproductionResultSchemaError) as caught,
+            ):
                 ReproductionResults.from_json(_canonical(value))
 
             self.assertIn(
@@ -76,6 +77,24 @@ class ReproductionResultContractTests(unittest.TestCase):
         assert metadata is not None
         self.assertEqual(metadata.outcomes, run.command_outcomes)
         self.assertEqual(metadata.records, records)
+
+    def test_command_snapshot_requires_parameter_roles(self) -> None:
+        record = _command_record(
+            queued=True,
+            selection="run",
+            bucket="succeeded",
+            reason="succeeded",
+            terminal="succeeded",
+        )
+        del record["recipe"]["parameter_roles"]
+        with self.assertRaisesRegex(
+            ReproductionResultError, "recipe has incorrect fields"
+        ):
+            replace(
+                _complete_results().runs[0],
+                command_outcomes=_command_counts(succeeded=1),
+                command_records=(record,),
+            )
 
     def test_outside_queue_reason_round_trips_in_current_results(self) -> None:
         result = _complete_results()
@@ -855,6 +874,7 @@ def _command_record(
             "inputs": [],
             "outputs": {"data/result.txt": "file"},
             "parameters": [],
+            "parameter_roles": {},
             "script": "scripts/build.py",
         },
         "requires_reproduction": True,

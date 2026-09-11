@@ -18,6 +18,7 @@ from log_commands.reproduction_comparison import (
     load_recorded_comparisons,
 )
 from log_commands.reproduction_execution import ExecutionAttempt, ExecutionCheckpoint
+from research_log_cli_test_support import replace_fixture_recipe
 from research_log_data import Fingerprint
 from test_log_reproduction_execution import _Fixture
 from validation.pyrun_state import (
@@ -644,7 +645,7 @@ def _add_second_output(fixture: _Fixture) -> tuple[str, Path]:
         project_root=fixture.project,
     )
     execution = state.executions[fixture.identity]
-    recipe = replace(
+    recipe = replace_fixture_recipe(
         execution.recipe,
         outputs=(
             ("data/result.txt", "file"),

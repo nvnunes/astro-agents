@@ -37,6 +37,7 @@ from log_commands.reproduction_execution import (
     populate_output_workspace,
     prepare_output_workspace,
 )
+from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import Fingerprint, build_local_input, load_data_file
 from validation.pyrun_state import (
     ExecutionRecipe,
@@ -117,6 +118,11 @@ class _Fixture:
             (),
             ("source",),
             (("data/result.txt", "file"),),
+            parameter_roles=fixture_parameter_roles(
+                ("--source", "<source>", "--output", "data/result.txt"),
+                ("source",),
+                (("data/result.txt", "file"),),
+            ),
         )
         observed = ObservedExecution(
             _fingerprint(self.script),
@@ -1202,6 +1208,11 @@ class ReproductionExecutionTests(unittest.TestCase):
                 (),
                 (),
                 (("data/result.txt", "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    ("--capture-stdout", "data/result.txt", "--"),
+                    (),
+                    (("data/result.txt", "file"),),
+                ),
             )
             identity = execution_id(recipe)
             execution = PyrunExecution(
@@ -1257,6 +1268,16 @@ class ReproductionExecutionTests(unittest.TestCase):
                 (),
                 (),
                 (("data/result.txt", "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    (
+                        "--output",
+                        "data/result.txt",
+                        "--duplicate",
+                        "data/result.txt",
+                    ),
+                    (),
+                    (("data/result.txt", "file"),),
+                ),
             )
             identity = execution_id(recipe)
             execution = PyrunExecution(
@@ -1355,6 +1376,11 @@ class ReproductionExecutionTests(unittest.TestCase):
                 (),
                 ("generated",),
                 (("data/final.txt", "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    ("--input", "<generated>", "--output", "data/final.txt"),
+                    ("generated",),
+                    (("data/final.txt", "file"),),
+                ),
             )
             consumer_id = execution_id(consumer_recipe)
             consumer_execution = PyrunExecution(

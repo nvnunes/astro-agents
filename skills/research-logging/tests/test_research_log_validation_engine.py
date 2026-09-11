@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import research_log_data as DATA
+from research_log_cli_test_support import fixture_parameter_roles
 from research_log_validation_test_support import mock, unittest, write
 
 ENGINE = importlib.import_module("validation.engine")
@@ -183,6 +184,9 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
         (),
         ("catalog",),
         (("data/results.csv", "file"),),
+        parameter_roles=fixture_parameter_roles(
+            parameters, ("catalog",), (("data/results.csv", "file"),)
+        ),
     )
     observed = PYRUN_STATE.ObservedExecution(
         DATA.Fingerprint(
@@ -1747,6 +1751,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 (),
                 (),
                 ((output_key, "file"),),
+                parameter_roles=fixture_parameter_roles(
+                    ("--output-data", output_key), (), ((output_key, "file"),)
+                ),
             )
             observed = PYRUN_STATE.ObservedExecution(
                 DATA.Fingerprint(

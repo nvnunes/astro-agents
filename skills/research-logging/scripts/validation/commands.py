@@ -33,6 +33,7 @@ from .json_codec import canonical_json
 from .pyrun_contract import (
     OptionOccurrence,
     automatic_option_role,
+    effective_parameter_roles,
     parse_pyrun_arguments,
     split_argument_values,
 )
@@ -166,6 +167,7 @@ class Invocation:
     auto_reproduce: bool = True
     exclusive: bool = False
     authored_group: tuple[str, ...] = ()
+    parameter_roles: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -710,6 +712,12 @@ def _build_invocation(
         command.auto_reproduce,
         command.exclusive,
         command.authored_group,
+        effective_parameter_roles(
+            command.tokens[command.script_index + 1 :]
+            if command.script_index is not None
+            else (),
+            command.runner_roles,
+        ),
     )
 
 

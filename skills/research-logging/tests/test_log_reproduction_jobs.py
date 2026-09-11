@@ -1872,6 +1872,7 @@ def _plan() -> ReproductionPlan:
                         "inputs": [],
                         "outputs": {"data/result.txt": "file"},
                         "parameters": [],
+                        "parameter_roles": {},
                         "script": "scripts/build.py",
                     },
                     "requires_reproduction": True,

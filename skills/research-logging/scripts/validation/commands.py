@@ -1029,6 +1029,8 @@ def _collect_argument(
     state: _RoleState,
     candidates: list[dict[str, str]],
 ) -> None:
+    if role == "ordinary":
+        return
     if role is not None:
         _apply_role(value, role, target, state)
         return

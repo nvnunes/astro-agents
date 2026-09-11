@@ -516,41 +516,100 @@ def _add_data_update_parser(
     )
 
 
+def _pyrun_edit_arguments(
+    actions: argparse._SubParsersAction[_AuthoringParser],
+) -> None:
+    descriptions = {
+        "add-input": "Record an input parameter declaration",
+        "add-output": "Record an output parameter declaration",
+        "set-parameter": "Record a parameter value change or addition",
+        "remove-parameter": "Remove a recorded parameter and its associations",
+        "set-role": "Record an existing parameter's input, output, or ordinary role",
+        "set-script": "Record a corrected script path",
+    }
+    for name, description in descriptions.items():
+        action = actions.add_parser(
+            name,
+            help=description,
+            description=description
+            + ". Edit Markdown first; verifies it and writes only pyrun.json.",
+        )
+        _entry_arguments(action)
+        _mutation_argument(action)
+        action.add_argument("--execution-id", "--execution", required=True)
+        if name == "set-script":
+            action.add_argument("--script", dest="value", required=True)
+            continue
+        target = action.add_mutually_exclusive_group(required=True)
+        target.add_argument(
+            "--parameter", help="script parameter name, without leading dashes"
+        )
+        target.add_argument(
+            "--position", type=int, help="one-based positional parameter"
+        )
+        if name == "set-role":
+            action.add_argument(
+                "--role", choices=("input", "output", "ordinary"), required=True
+            )
+        else:
+            action.add_argument(
+                "--occurrence",
+                type=int,
+                help="one-based occurrence of a repeated named parameter",
+            )
+        if name in {"add-input", "add-output", "set-parameter"}:
+            action.add_argument("--value", required=True)
+
+
+def _dispatch_pyrun_edit(args: argparse.Namespace) -> ActionResult:
+    from .pyrun_edit import edit_command
+    from .pyrun_parameters import CommandEdit
+
+    edit = CommandEdit(
+        args.action,
+        getattr(args, "parameter", None),
+        getattr(args, "position", None),
+        getattr(args, "occurrence", None),
+        getattr(args, "value", None),
+        getattr(args, "role", None),
+    )
+    return edit_command(
+        resolve_entry(resolve_log(args.path), args.entry),
+        execution_id_value=args.execution_id,
+        edit=edit,
+        dry_run=args.dry_run,
+    )
+
+
 def _dispatch_pyrun(
     arguments: Sequence[str],
 ) -> ActionResult | Mapping[str, object] | str | int:
     parser = _AuthoringParser(prog="log pyrun")
     actions = parser.add_subparsers(dest="action", required=True)
-    update = actions.add_parser(
-        "update", help="Apply one Markdown-first execution policy change"
-    )
-    _entry_arguments(update)
-    update.add_argument("--execution-id", required=True)
-    policy = update.add_mutually_exclusive_group(required=True)
-    policy.add_argument(
-        "--auto-reproduce",
-        choices=("true", "false"),
-        help="exact automatic-reproduction policy",
-    )
-    policy.add_argument(
-        "--exclusive",
-        choices=("true", "false"),
-        help="exact managed-reproduction exclusivity policy",
-    )
+    for name in ("set-auto-reproduce", "set-exclusive"):
+        policy = actions.add_parser(
+            name, help="Apply a Markdown-first execution policy change"
+        )
+        _entry_arguments(policy)
+        policy.add_argument("--execution-id", "--execution", required=True)
+        policy.add_argument("--value", choices=("true", "false"), required=True)
+    _pyrun_edit_arguments(actions)
     args = parser.parse_args(arguments)
+    if args.action not in {"set-auto-reproduce", "set-exclusive"}:
+        return _dispatch_pyrun_edit(args)
     from . import pyrun_policy
 
     entry = resolve_entry(resolve_log(args.path), args.entry)
-    if args.auto_reproduce is not None:
-        return pyrun_policy.update_auto_reproduce(
+    if args.action == "set-auto-reproduce":
+        return pyrun_policy.set_auto_reproduce(
             entry,
             execution_id_value=args.execution_id,
-            auto_reproduce=args.auto_reproduce == "true",
+            auto_reproduce=args.value == "true",
         )
-    return pyrun_policy.update_exclusive(
+    return pyrun_policy.set_exclusive(
         entry,
         execution_id_value=args.execution_id,
-        exclusive=args.exclusive == "true",
+        exclusive=args.value == "true",
     )
 
 

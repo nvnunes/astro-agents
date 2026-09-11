@@ -16,6 +16,7 @@ PYRUN_CAPTURE_STREAMS = {
 PYRUN_ROLE_OPTIONS = {
     "--other-inputs": "input",
     "--other-outputs": "output",
+    "--other-parameters": "ordinary",
 }
 PYRUN_ENV_OPTION = "--env"
 PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
@@ -257,14 +258,19 @@ def _normalized_roles(
 ) -> tuple[tuple[str, str], ...]:
     inputs = set(declarations.get("--other-inputs", ()))
     outputs = set(declarations.get("--other-outputs", ()))
-    conflicts = sorted(inputs & outputs)
+    ordinary = set(declarations.get("--other-parameters", ()))
+    conflicts = sorted((inputs & outputs) | (inputs & ordinary) | (outputs & ordinary))
     if conflicts:
         raise PyrunContractError(
-            "selectors cannot be both inputs and outputs: " + ",".join(conflicts)
+            "selectors cannot have conflicting roles: " + ",".join(conflicts)
         )
     return tuple(
         (selector, direction)
-        for direction, selectors in (("input", inputs), ("output", outputs))
+        for direction, selectors in (
+            ("input", inputs),
+            ("output", outputs),
+            ("ordinary", ordinary),
+        )
         for selector in sorted(selectors)
     )
 

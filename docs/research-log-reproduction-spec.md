@@ -566,7 +566,7 @@ Automatic-reproduction policy is outside identity. A later policy-only change
 uses:
 
 ```text
-log pyrun update --path LOG --entry ENTRY --execution-id ID --auto-reproduce BOOL
+log pyrun set-auto-reproduce --path LOG --entry ENTRY --execution-id ID --value BOOL
 ```
 
 `BOOL` is exactly `true` or `false`. The operation takes the selected entry
@@ -595,14 +595,68 @@ Exclusivity is outside execution identity. A later Markdown-first policy change
 uses:
 
 ```text
-log pyrun update --path LOG --entry ENTRY --execution-id ID --exclusive BOOL
+log pyrun set-exclusive --path LOG --entry ENTRY --execution-id ID --value BOOL
 ```
 
-`BOOL` is exactly `true` or `false`. `--exclusive` and `--auto-reproduce` are
-mutually exclusive update selectors so one operation changes one policy. The
-operation otherwise uses the same concrete-expansion agreement, entry locking,
+`BOOL` is exactly `true` or `false`. Each setter changes only its named policy.
+The operation otherwise uses the same concrete-expansion agreement, entry locking,
 identity preservation, and validation boundary as automatic-reproduction
 policy updates.
+
+### Markdown-First Command Corrections
+
+Edit the recorded Markdown command first, then use one explicit operation below
+with `--path LOG --entry ENTRY --execution-id OLD_ID`. These operations read and
+verify Markdown; they write only the owning entry's `pyrun.json`.
+
+| Operation | Change selectors |
+|---|---|
+| `log pyrun add-input` | `--parameter NAME --value TOKEN` |
+| `log pyrun add-output` | `--parameter NAME --value TARGET` |
+| `log pyrun set-parameter` | `--parameter NAME --value VALUE` |
+| `log pyrun remove-parameter` | `--parameter NAME` |
+| `log pyrun set-role` | `--parameter NAME --role input\|output\|ordinary` |
+| `log pyrun set-script` | `--script PATH` |
+| `log pyrun set-auto-reproduce` | `--value true\|false` |
+| `log pyrun set-exclusive` | `--value true\|false` |
+
+The two policy setters follow [Automatic-Reproduction Policy](#automatic-reproduction-policy)
+and [Exclusive-Scheduling Policy](#exclusive-scheduling-policy): they preserve
+execution identity and reproduction state and do not accept `--dry-run`.
+The remaining rules in this section apply to recipe corrections.
+
+Use names without leading dashes. `--position N` replaces `--parameter NAME`
+for one-based positional parameters. New parameters append; existing parameters
+keep their position. A repeated named parameter requires `--occurrence N`, except
+`set-role`, which applies to every occurrence, matching the runner's role grammar.
+The bounded single-value parameter grammar is the same as command discovery.
+`add-input` and `add-output` set or append the selected value and require the
+corresponding Markdown role. Use `set-role` when only the role changes.
+`set-parameter` preserves the selected role; a new parameter is ordinary.
+Input tokens must resolve
+through the existing registry; named outputs must be local generated artifacts.
+`log data` owns registration. Removing a parameter removes its execution
+association only when no remaining parameter uses that material.
+
+The current Markdown must yield exactly one recipe matching the requested change,
+with unchanged environment and reproduction policies. Additional token or material
+changes, ambiguous matches, missing execution IDs, destination-ID collisions, and
+output-ownership conflicts within the entry refuse the operation without writes.
+Equals and separate-value option spellings may agree; parameter order and option
+spelling otherwise remain significant. These operations change one concrete
+execution; they do not apply a recipe edit to an entire loop expansion.
+
+The transaction replaces the old execution ID with the corrected recipe's ID,
+sets `requires_reproduction: true`, and sets `last_run_at: null`. It preserves
+observations for unchanged materials. Newly declared inputs require a verified
+registry fingerprint; newly declared outputs require retained files that can be
+fingerprinted. Changing the script observes the new script and clears the old
+script's code observations. These observations are reconstruction support, not
+proof that the corrected command ran. Retained files and registries are unchanged.
+The strict current state decoder validates the complete replacement before one
+atomic write under the entry lock. Reproduction and validation remain separate.
+`--dry-run` performs the same checks and returns the exact state diff without
+writing. A request that leaves the recorded recipe unchanged is refused.
 
 ### Execution-Metadata Schema
 

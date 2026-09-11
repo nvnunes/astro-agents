@@ -816,6 +816,8 @@ def main(argv: list[str]) -> int:
             for arg in script_args:
                 if material_roles.get(arg) == "output":
                     resolved_arguments.append(resolve_output_arg(arg, root, log, data))
+                elif material_roles.get(arg) == "ordinary":
+                    resolved_arguments.append(arg)
                 else:
                     resolved_arguments.append(
                         resolve_arg(

@@ -63,8 +63,7 @@ source records or script. Preserve the original in version control or a backup.
 | Input registration, target, or fingerprint | `log data` |
 | Evidence record or association | `log evidence` |
 | Disconnected-retention declaration | `log retention` |
-| Recorded execution policy | `log pyrun` |
-| Command material role | `references/file-entry-commands.md` |
+| Recorded execution policy or recipe | `log pyrun`; edit Markdown first, then verify and update state |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
 `log data add-generated --requires-reproduction` admits a retained output with one
@@ -73,6 +72,10 @@ producer or replace ordinary pre-production declaration.
 For an existing declaration whose files were restored, use
 `log data refresh --requires-reproduction` to record their current fingerprint
 under the same producer checks. This does not clear the reproduction requirement.
+
+For command edits, use the explicit actions in
+`references/file-entry-commands.md` under “Correct A Recorded Command”; do not hand-edit
+`pyrun.json`.
 
 Derive reconstructed fields from retained evidence; keep reconstructed execution
 support at `requires_reproduction: true`. Never hand-edit generated validation. Only when malformed

@@ -135,7 +135,9 @@ without leading hyphens and positional selectors as one-based `@N` values:
 The runner infers file or directory kind from the registered input or completed
 output. Captures remain file-only. Use these declarations only when natural
 names do not expose the correct role; an explicit declaration overrides a
-misleading automatic role.
+misleading automatic role. Use `--other-parameters` with the same selectors for
+ordinary literal values that must not be treated as material paths or expanded
+as registered input tokens.
 
 Do not add hidden command metadata. Comments adjacent to command fences have no
 command semantics.
@@ -262,10 +264,40 @@ the option does not alter the execution ID or reserve unrelated host work.
 ./pyrun --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
 ```
 
-For a later policy-only change, edit Markdown first, then use `log pyrun update
---exclusive true|false`. Execution state must use `research-log-pyrun/v4`;
+For later changes, use the actions under [Correct A Recorded Command](#correct-a-recorded-command).
+Execution state must use `research-log-pyrun/v4`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader
 to follow a cross-reference merely to find the reproduction command.
+
+
+## Correct A Recorded Command
+
+Edit Markdown first. Then run the matching `log pyrun` action with
+`--path <log> --entry <entry> --execution-id <old-id>`:
+
+| Change | Action and parameters |
+|---|---|
+| Declare an input parameter | `add-input --parameter NAME --value '<registered_name>'` |
+| Declare an output parameter | `add-output --parameter NAME --value TARGET` |
+| Set or append a parameter | `set-parameter --parameter NAME --value VALUE` |
+| Remove a parameter | `remove-parameter --parameter NAME` |
+| Correct an existing parameter's role | `set-role --parameter NAME --role input\|output\|ordinary` |
+| Correct the script path | `set-script --script PATH` |
+| Set automatic reproduction policy | `set-auto-reproduce --value true\|false` |
+| Set exclusive scheduling policy | `set-exclusive --value true\|false` |
+
+All actions verify Markdown and update only `pyrun.json`. The two policy setters
+preserve the execution ID and reproduction state. They do not accept `--dry-run`.
+
+For recipe edits, use `--position N` instead of `--parameter NAME` for positional parameters.
+For repeated named parameters, specify `--occurrence N`; roles apply to all
+occurrences. Preview with `--dry-run`. Use `log data` for registration first.
+Recipe edits return a new execution ID. Use that ID for subsequent edits.
+Input/output actions set or append the parameter and verify its role.
+`set-parameter` preserves an existing role or appends an ordinary parameter.
+New inputs must match their registered fingerprints; new outputs must exist.
+Recipe corrections require reproduction. Run validation only at the applicable
+checkpoint.

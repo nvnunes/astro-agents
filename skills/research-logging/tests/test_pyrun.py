@@ -867,6 +867,28 @@ Path(a.results).write_text(','.join(states), encoding='utf-8')
                 "locked,locked",
             )
 
+    def test_ordinary_role_passes_literal_without_material_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_entry_runner(entry)
+            result = run_pyrun_process(
+                entry,
+                "--other-parameters",
+                "input-label",
+                "--capture-stdout",
+                "data/ordinary.txt",
+                "--",
+                "scripts/print_args.py",
+                "--input-label",
+                "<input_csv>",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("<input_csv>", (entry / "data/ordinary.txt").read_text())
+            record = execution_for_output(entry, "data/ordinary.txt")
+            self.assertEqual(record["recipe"]["inputs"], [])
+            self.assertEqual(record["observed"]["inputs"], {})
+
     def test_other_roles_publish_support_without_entering_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

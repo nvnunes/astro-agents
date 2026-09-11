@@ -29,7 +29,7 @@ from .scaffold import observe_entries
 from .storage import entry_lock
 
 
-def update_auto_reproduce(
+def set_auto_reproduce(
     entry: EntryContext, *, execution_id_value: str, auto_reproduce: bool
 ) -> ActionResult:
     """Apply one Markdown-first automatic-reproduction policy under lock."""
@@ -42,7 +42,7 @@ def update_auto_reproduce(
     )
 
 
-def update_exclusive(
+def set_exclusive(
     entry: EntryContext, *, execution_id_value: str, exclusive: bool
 ) -> ActionResult:
     """Apply one Markdown-first managed-reproduction exclusivity policy."""
@@ -72,7 +72,7 @@ def _update_policy(
                 entry_root=entry.root,
                 project_root=project_root,
             )
-            candidates = _entry_invocations(entry, project_root=project_root)
+            candidates = entry_invocations(entry, project_root=project_root)
             recipes = tuple(
                 (
                     invocation,
@@ -90,7 +90,7 @@ def _update_policy(
                 )
             )
         except (DataContractError, MechanicalContractError, OSError) as error:
-            raise ActionError("pyrun.update.unavailable", str(error)) from error
+            raise ActionError("pyrun.policy.unavailable", str(error)) from error
         matching = [
             (invocation, recipe)
             for invocation, recipe in recipes
@@ -98,7 +98,7 @@ def _update_policy(
         ]
         if len(matching) != 1:
             raise ActionError(
-                "pyrun.update.command_unresolved",
+                "pyrun.policy.command_unresolved",
                 f"expected one current command for {execution_id_value}, "
                 f"found {len(matching)}",
             )
@@ -108,14 +108,14 @@ def _update_policy(
         for current, recipe in selected:
             if getattr(current, field) != requested:
                 raise ActionError(
-                    "pyrun.update.markdown_disagreement",
+                    "pyrun.policy.markdown_disagreement",
                     f"edit only the Markdown {field} policy before updating state",
                 )
             identity = execution_id(recipe)
             recorded = state.executions.get(identity)
             if recorded is None or recorded.recipe != recipe:
                 raise ActionError(
-                    "pyrun.update.recipe_disagreement",
+                    "pyrun.policy.recipe_disagreement",
                     f"current Markdown recipe does not match {identity}",
                 )
             if identity not in selected_ids:
@@ -140,10 +140,10 @@ def _update_policy(
                         project_root=project_root,
                     )
             except PyrunStateError as error:
-                raise ActionError("pyrun.update.failed", str(error)) from error
+                raise ActionError("pyrun.policy.failed", str(error)) from error
     relative = (entry.root / PYRUN_FILENAME).relative_to(project_root).as_posix()
     return ActionResult(
-        "pyrun.update",
+        "pyrun.set-" + field.replace("_", "-"),
         "updated" if changed else "unchanged",
         (f"pyrun.{field}.updated" if changed else f"pyrun.{field}.unchanged"),
         changed,
@@ -151,7 +151,7 @@ def _update_policy(
     )
 
 
-def _entry_invocations(
+def entry_invocations(
     entry: EntryContext, *, project_root: Path
 ) -> tuple[Invocation, ...]:
     """Discover every eligible current invocation in one selected entry."""
@@ -183,7 +183,7 @@ def _entry_invocations(
         if discovered.failures:
             failure = discovered.failures[0]
             raise ActionError(
-                "pyrun.update.command_invalid",
+                "pyrun.policy.command_invalid",
                 f"{document}: fence {failure.fence}, command {failure.ordinal}: "
                 f"{failure.error}",
             )

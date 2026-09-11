@@ -93,23 +93,23 @@ def _recipe(output: str, *, case: str | None = None) -> ExecutionRecipe:
 
 
 class LogPyrunPolicyTests(unittest.TestCase):
-    def test_help_exposes_only_the_narrow_update_surface(self) -> None:
-        top = run_log(Path.cwd(), "--help")
+    def test_help_exposes_policy_setters_and_rejects_update(self) -> None:
         family = run_log(Path.cwd(), "pyrun", "--help")
-        action = run_log(Path.cwd(), "pyrun", "update", "--help")
-
-        self.assertEqual(top.returncode, 0, top.stderr)
-        self.assertIn("pyrun", top.stdout)
         self.assertEqual(family.returncode, 0, family.stderr)
-        self.assertIn("update", family.stdout)
-        self.assertNotIn("migrate-exclusivity", family.stdout)
-        self.assertEqual(action.returncode, 0, action.stderr)
-        self.assertIn("--execution-id", action.stdout)
-        self.assertIn("--auto-reproduce", action.stdout)
-        self.assertIn("--exclusive", action.stdout)
-        self.assertNotIn("--slow", action.stdout)
+        self.assertNotIn("update", family.stdout)
+        for name in ("set-auto-reproduce", "set-exclusive"):
+            with self.subTest(name=name):
+                self.assertIn(name, family.stdout)
+                action = run_log(Path.cwd(), "pyrun", name, "--help")
+                self.assertEqual(action.returncode, 0, action.stderr)
+                self.assertIn("--execution-id", action.stdout)
+                self.assertIn("--value {true,false}", action.stdout)
+                self.assertNotIn("--auto-reproduce", action.stdout)
+                self.assertNotIn("--exclusive", action.stdout)
+        removed = run_log(Path.cwd(), "pyrun", "update", "--help")
+        self.assertEqual(removed.returncode, 2)
 
-    def test_markdown_first_update_changes_only_auto_reproduce(self) -> None:
+    def test_markdown_first_setter_changes_only_auto_reproduce(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
@@ -130,14 +130,14 @@ class LogPyrunPolicyTests(unittest.TestCase):
             result = run_log(
                 root,
                 "pyrun",
-                "update",
+                "set-auto-reproduce",
                 "--path",
                 str(base),
                 "--entry",
                 "e001",
                 "--execution-id",
                 identity,
-                "--auto-reproduce",
+                "--value",
                 "false",
             )
 
@@ -148,7 +148,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             self.assertEqual(after, before)
             self.assertEqual(validation.read_bytes(), before_validation)
 
-    def test_markdown_first_update_changes_only_exclusive(self) -> None:
+    def test_markdown_first_setter_changes_only_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
@@ -162,14 +162,14 @@ class LogPyrunPolicyTests(unittest.TestCase):
             result = run_log(
                 root,
                 "pyrun",
-                "update",
+                "set-exclusive",
                 "--path",
                 str(base),
                 "--entry",
                 "e001",
                 "--execution-id",
                 identity,
-                "--exclusive",
+                "--value",
                 "true",
             )
 
@@ -178,7 +178,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             self.assertTrue(state["executions"][identity]["exclusive"])
             self.assertEqual(state["schema"], "research-log-pyrun/v4")
 
-    def test_static_loop_update_changes_every_distinct_execution(self) -> None:
+    def test_static_loop_setter_changes_every_distinct_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
@@ -201,14 +201,14 @@ class LogPyrunPolicyTests(unittest.TestCase):
             result = run_log(
                 root,
                 "pyrun",
-                "update",
+                "set-auto-reproduce",
                 "--path",
                 str(base),
                 "--entry",
                 "e001",
                 "--execution-id",
                 execution_id(recipes[0]),
-                "--auto-reproduce",
+                "--value",
                 "false",
             )
 
@@ -217,7 +217,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             self.assertEqual(set(state), {execution_id(item) for item in recipes})
             self.assertTrue(all(not item["auto_reproduce"] for item in state.values()))
 
-    def test_update_refuses_policy_recipe_and_argument_disagreement(self) -> None:
+    def test_setter_refuses_policy_recipe_and_argument_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
@@ -229,7 +229,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             before = (entry / "pyrun.json").read_bytes()
             common = (
                 "pyrun",
-                "update",
+                "set-auto-reproduce",
                 "--path",
                 str(base),
                 "--entry",
@@ -238,18 +238,18 @@ class LogPyrunPolicyTests(unittest.TestCase):
                 identity,
             )
 
-            wrong_policy = run_log(root, *common, "--auto-reproduce", "false")
+            wrong_policy = run_log(root, *common, "--value", "false")
             self.assertEqual(wrong_policy.returncode, 2)
-            self.assertIn("pyrun.update.markdown_disagreement", wrong_policy.stderr)
+            self.assertIn("pyrun.policy.markdown_disagreement", wrong_policy.stderr)
 
             document = entry / "e001.md"
             document.write_text(
                 document.read_text().replace("data/result.csv", "data/other.csv"),
                 encoding="utf-8",
             )
-            wrong_recipe = run_log(root, *common, "--auto-reproduce", "true")
+            wrong_recipe = run_log(root, *common, "--value", "true")
             self.assertEqual(wrong_recipe.returncode, 2)
-            self.assertIn("pyrun.update.command_unresolved", wrong_recipe.stderr)
+            self.assertIn("pyrun.policy.command_unresolved", wrong_recipe.stderr)
 
             invalid = run_log(root, *common)
             self.assertEqual(invalid.returncode, 2)

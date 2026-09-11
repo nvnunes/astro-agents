@@ -577,8 +577,9 @@ Use `./pyrun --exclusive -- ...` when managed reproduction must run the command
 alone across all active reproduction runs in the project. Exclusivity is a
 scheduling policy, not part of the recipe identity, and it does not change
 ordinary direct execution or reserve unrelated host processes. For a later
-policy-only change, edit Markdown first and run `log pyrun update` with exactly
-one of `--auto-reproduce true|false` or `--exclusive true|false`. Current
+policy-only change, edit Markdown first and run `log pyrun set-auto-reproduce`
+or `log pyrun set-exclusive`, with `--path`, `--entry`, `--execution-id`, and
+`--value true|false`. Current
 execution state must use `research-log-pyrun/v4`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
@@ -588,6 +589,11 @@ current output record. Output available only in an agent's temporary context
 is not evidence. This is original research execution, not validation or
 reproduction; do not rerun an unchanged command solely to test reproducibility
 or Provenance.
+
+For corrections to a recorded command, edit its Markdown first, then use the
+corresponding [command-correction action](../skills/research-logging/references/file-entry-commands.md#correct-a-recorded-command)
+to update the execution record. The CLI verifies your edit without changing
+Markdown or retained files, and marks the corrected command as needing reproduction.
 
 ### Input registry
 

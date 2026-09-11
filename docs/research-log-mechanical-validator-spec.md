@@ -2878,14 +2878,16 @@ The suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
 candidate only; it never assigns direction.
 
 `pyrun` accepts runner-visible role declarations before its required `--`
-separator. `--other-inputs <selectors>` and
-`--other-outputs <selectors>` each accept one comma-separated list of script
+separator. `--other-inputs <selectors>`, `--other-outputs <selectors>`, and
+`--other-parameters <selectors>` each accept one comma-separated list of script
 option names without leading hyphens or one-based positional selectors written
 as `@N`. Each declaration may occur once. Lists reject empty or whitespace
 items, duplicate selectors, selectors without a matching valued argument, and
-selectors declared in both directions. A selector applies to every occurrence
+selectors declared in conflicting roles. A selector applies to every occurrence
 of its option. An explicit declaration overrides automatic role inference from
-the option name.
+the option name. `--other-parameters` declares ordinary literal values: it
+suppresses material inference and token expansion for those values in both
+discovery and execution.
 
 The same runner-option prefix accepts `--auto-reproduce=false` and the
 flag-only `--exclusive`. Each may occur at most once. Omitting `--exclusive`

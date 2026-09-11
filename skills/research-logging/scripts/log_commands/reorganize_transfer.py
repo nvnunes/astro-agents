@@ -36,11 +36,7 @@ from validation.presentation import (
     index_entry_presentations_all,
     require_artifact_source_association,
 )
-from validation.pyrun_outputs import (
-    load_pyrun_outputs,
-    output_target_path,
-    without_output_support,
-)
+from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PYRUN_FILENAME,
     PyrunFile,
@@ -524,71 +520,18 @@ def _retired_support(
 ) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
     if source == destination:
         return None, ()
-    path = source.root / "pyrun-outputs.json"
     current = source.root / PYRUN_FILENAME
-    if (path.exists() or path.is_symlink()) and (
-        current.exists() or current.is_symlink()
-    ):
-        raise ActionError(
-            "pyrun.state.conflict", f"both execution-state formats exist: {source.root}"
-        )
-    if (
-        not path.exists()
-        and not path.is_symlink()
-        and not current.exists()
-        and not current.is_symlink()
-    ):
+    if not current.exists() and not current.is_symlink():
         return None, ()
     project_root = resolve_project_root(source.log.root)
     selected_paths = _selected_transfer_paths(state, plan)
-    if current.exists() or current.is_symlink():
-        return _retired_execution_state(
-            source,
-            destination,
-            current,
-            selected_paths=selected_paths,
-            project_root=project_root,
-        )
-    support = load_pyrun_outputs(
-        path,
-        entry_root=source.root,
+    return _retired_execution_state(
+        source,
+        destination,
+        current,
+        selected_paths=selected_paths,
         project_root=project_root,
     )
-    retire = tuple(sorted(set(support.outputs) & selected_paths))
-    selected_targets = {
-        item.canonical_target
-        for item in (state.data.inputs if state.data is not None else ())
-        if item.name in plan.selections["data"]
-    }
-    shared = {
-        item.location
-        for item in (state.data.inputs if state.data is not None else ())
-        if item.name not in plan.selections["data"]
-        and item.canonical_target in selected_targets
-    }
-    if set(retire) & shared:
-        raise ActionError(
-            "reorganize.transfer.support_ambiguous", f"shared outputs: {sorted(shared)}"
-        )
-    for output in retire:
-        if (source.root / output).exists():
-            raise ActionError("reorganize.transfer.support_still_current", output)
-    if not retire:
-        return None, ()
-    result = without_output_support(
-        source.root,
-        retire,
-        project_root=project_root,
-    )
-    reruns: tuple[dict[str, object], ...] = tuple(
-        {
-            "entry": destination.id,
-            "parameters": list(support.outputs[output].parameters),
-            "script": support.outputs[output].script.path,
-        }
-        for output in retire
-    )
-    return _SupportUpdate(result.path, result.serialized()), reruns
 
 
 def _selected_transfer_paths(

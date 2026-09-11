@@ -6,10 +6,6 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence, cast
 
-LEGACY_PLAN_SCHEMA = "research-log-reproduction-plan/2"
-PRECONTINUATION_PLAN_SCHEMA = "research-log-reproduction-plan/3"
-PRETIMEOUT_PLAN_SCHEMA = "research-log-reproduction-plan/4"
-PREEXECUTION_PLAN_SCHEMA = "research-log-reproduction-plan/5"
 PLAN_SCHEMA = "research-log-reproduction-plan/6"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
@@ -51,9 +47,9 @@ def valid_reproduction_target(value: object) -> bool:
 
 
 def successful_checkpoint_state(state: object) -> bool:
-    """Return whether a checkpoint is successful in either supported schema."""
+    """Return whether one current checkpoint completed successfully."""
 
-    return state in {"complete", "succeeded"}
+    return state == "succeeded"
 
 
 @dataclass(frozen=True)

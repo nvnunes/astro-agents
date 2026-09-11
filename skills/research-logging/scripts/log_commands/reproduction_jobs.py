@@ -39,12 +39,8 @@ from .reproduction_comparison import (
 )
 from .reproduction_contract import (
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-    LEGACY_PLAN_SCHEMA,
     MAX_EXECUTION_TIMEOUT_SECONDS,
     PLAN_SCHEMA,
-    PRECONTINUATION_PLAN_SCHEMA,
-    PREEXECUTION_PLAN_SCHEMA,
-    PRETIMEOUT_PLAN_SCHEMA,
     ReproductionPlan,
     ReproductionRuntime,
     is_repair_verification,
@@ -84,15 +80,7 @@ from .reproduction_publication import (
 from .reproduction_results import OUTCOMES
 from .storage import atomic_write_text
 
-LEGACY_RUN_SCHEMA = "research-log-reproduction-run/2"
-PRECONTINUATION_RUN_SCHEMA = "research-log-reproduction-run/3"
-PRETIMEOUT_RUN_SCHEMA = "research-log-reproduction-run/4"
-PREEXECUTION_RUN_SCHEMA = "research-log-reproduction-run/5"
 RUN_SCHEMA = "research-log-reproduction-run/6"
-LEGACY_STATUS_SCHEMA = "research-log-reproduction-status/2"
-PRECONTINUATION_STATUS_SCHEMA = "research-log-reproduction-status/3"
-PRETIMEOUT_STATUS_SCHEMA = "research-log-reproduction-status/4"
-PREEXECUTION_STATUS_SCHEMA = "research-log-reproduction-status/5"
 STATUS_SCHEMA = "research-log-reproduction-status/6"
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
@@ -118,31 +106,6 @@ FRESH_RUN = "fresh"
 STOPPED_RESUME = "stopped"
 PUBLICATION_RETRY = "publication"
 CONTINUATION = "continuation"
-LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE = (
-    "unsupported artifact reason: 'validation_blocked'"
-)
-LEGACY_RUN_INVALID_PUBLICATION_FAILURE = (
-    "unsupported artifact reason: 'reproduction.run.invalid'"
-)
-
-
-def _parallel_run(record: Mapping[str, object]) -> bool:
-    return record.get("schema") in {
-        PRECONTINUATION_RUN_SCHEMA,
-        PRETIMEOUT_RUN_SCHEMA,
-        PREEXECUTION_RUN_SCHEMA,
-        RUN_SCHEMA,
-    }
-
-
-def _continuation_run(record: Mapping[str, object]) -> bool:
-    return record.get("schema") in {
-        PRETIMEOUT_RUN_SCHEMA,
-        PREEXECUTION_RUN_SCHEMA,
-        RUN_SCHEMA,
-    }
-
-
 @dataclass(frozen=True)
 class _FailureContext:
     now: str | None = None
@@ -430,7 +393,7 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
 def _resume_context(root: Path, record: Mapping[str, object]) -> _ResumeContext:
     state = cast(Mapping[str, object], record["state"])
     publication_retry = _is_publication_retry(record)
-    continuing = _continuation_run(record) and not publication_retry
+    continuing = not publication_retry
     if continuing and (
         state["status"] not in TERMINAL_STATUSES
         or state["status"] == "complete"
@@ -518,7 +481,7 @@ def _install_resume_state(
         current_publication_retry = _is_publication_retry(updated)
         if context.continuing:
             if (
-                not _continuation_run(updated)
+                updated.get("schema") != RUN_SCHEMA
                 or updated_state["status"] != context.state["status"]
                 or current_publication_retry
             ):
@@ -574,8 +537,6 @@ def _begin_continuation_attempt(
     cast(list[object], record["attempts"]).append(archived)
     plan_value = plan.as_dict()
     plan_value.pop("schema")
-    if record.get("schema") == PRETIMEOUT_RUN_SCHEMA:
-        plan_value.pop("execution_timeout_seconds")
     record.update(
         {
             "attempt": attempt + 1,
@@ -654,30 +615,21 @@ def _continuation_prior_commands(
 
 
 def _is_publication_retry(record: Mapping[str, object]) -> bool:
-    """Recognize canonical and one exact legacy terminal publication failure."""
+    """Recognize a terminal current-format publication failure."""
 
     state = cast(Mapping[str, object], record["state"])
     timestamps = cast(Mapping[str, object], record["timestamps"])
-    current_schema = _parallel_run(record)
-    inactive = (
-        state.get("active_executions") == []
-        if current_schema
-        else state.get("current_execution") is None
-    )
-    terminal_checkpoints = (
-        {"succeeded", "failed"} if current_schema else {"complete", "partial"}
-    )
     terminal = (
         state.get("status") == "failed"
         and state.get("phase") is None
         and isinstance(timestamps.get("finished_at"), str)
-        and inactive
+        and state.get("active_executions") == []
         and all(
             item.get("state") == "exited"
             for item in cast(Sequence[Mapping[str, object]], record["workers"])
         )
         and all(
-            item.get("state") in terminal_checkpoints
+            item.get("state") in {"succeeded", "failed"}
             for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
         )
     )
@@ -688,17 +640,7 @@ def _is_publication_retry(record: Mapping[str, object]) -> bool:
         return False
     if operational.get("code") == "reproduction.publication.failed":
         return True
-    return (
-        _parallel_run(record)
-        and operational.get("code") == "reproduction.job.failed"
-        and operational.get("message")
-        in {
-            LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
-            LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
-        }
-        and operational.get("entry") is None
-        and operational.get("execution_id") is None
-    )
+    return False
 
 
 def supervise_reproduction(
@@ -746,7 +688,6 @@ def supervise_reproduction(
             log,
             plan,
             workspace,
-            legacy=record.get("schema") == LEGACY_RUN_SCHEMA,
         ):
             key = (attempt.entry, attempt.execution_id)
             if key not in comparisons:
@@ -788,7 +729,6 @@ def supervise_reproduction(
                 confinement=confinement,
                 prior_attempts=prior_attempts,
                 prior_failures=prior_failures,
-                legacy=record.get("schema") == LEGACY_RUN_SCHEMA,
                 attempt_completed=completed,
                 progress=lambda event, entry, identity, attempt: _execution_progress(
                     run_state, event, (entry, identity), attempt
@@ -853,44 +793,19 @@ def _resumable_execution_references(
 ) -> frozenset[str]:
     if mode != STOPPED_RESUME:
         return frozenset()
-    if record.get("schema") != LEGACY_RUN_SCHEMA:
-        return frozenset(
-            f"{item['entry']}:{item['execution_id']}"
-            for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
-            if item["state"] == "stopped"
-        )
-    reference = _legacy_resumable_execution_reference(record)
-    return frozenset((reference,)) if reference is not None else frozenset()
+    return frozenset(
+        f"{item['entry']}:{item['execution_id']}"
+        for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
+        if item["state"] == "stopped"
+    )
 
 
 def _failed_checkpoint_references(record: Mapping[str, object]) -> frozenset[str]:
-    if record.get("schema") == LEGACY_RUN_SCHEMA:
-        return frozenset()
     return frozenset(
         f"{item['entry']}:{item['execution_id']}"
         for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
         if item["state"] == "failed"
     )
-
-
-def _legacy_resumable_execution_reference(record: Mapping[str, object]) -> str | None:
-    diagnostic = cast(Mapping[str, object], record["state"]).get(
-        "latest_execution_diagnostic"
-    )
-    if not isinstance(diagnostic, Mapping):
-        return None
-    execution_id = diagnostic.get("execution_id")
-    if not isinstance(execution_id, str):
-        return None
-    target = cast(Mapping[str, object], record["target"])
-    entry = target.get("entry")
-    if isinstance(entry, str):
-        return f"{entry}:{execution_id}"
-    stored_plan = cast(Mapping[str, object], record["plan"])
-    for planned in cast(Sequence[Mapping[str, object]], stored_plan["executions"]):
-        if planned.get("execution_id") == execution_id:
-            return f"{planned['entry']}:{execution_id}"
-    return None
 
 
 def _validate_reproduced_log(log: LogContext) -> None:
@@ -1135,7 +1050,7 @@ def _execution_progress(
                 ),
             )
             record["checkpoints"] = _checkpoint_dicts(
-                run.root, legacy=record.get("schema") == LEGACY_RUN_SCHEMA
+                run.root, legacy=False
             )
             if attempt.failure_code is not None:
                 state["latest_execution_diagnostic"] = _failure(
@@ -1167,7 +1082,7 @@ def _execution_workers(
     """Persist the current complete worker history for one active execution."""
 
     with _locked_run(run) as record:
-        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        legacy = False
         retained = [
             item
             for item in cast(Sequence[Mapping[str, object]], record["workers"])
@@ -1269,7 +1184,7 @@ def _finish_stopped(
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
-        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        legacy = False
         if legacy:
             for worker in observed_survivors:
                 cast(dict[str, object], worker).pop("entry", None)
@@ -1306,7 +1221,7 @@ def _finish_stopped(
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
-        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        legacy = False
         workers = _combined_attempt_workers(
             attempts,
             legacy=legacy,
@@ -1458,7 +1373,7 @@ def _finish_complete(
         timestamps = cast(dict[str, object], record["timestamps"])
         timestamps.update({"finished_at": finished, "updated_at": finished})
         record["checkpoints"] = _checkpoint_dicts(
-            run_root, legacy=record.get("schema") == LEGACY_RUN_SCHEMA
+            run_root, legacy=False
         )
         _write_run(run_root, record)
 
@@ -1494,7 +1409,7 @@ def _continue_failed_cleanup(log: LogContext, run_root: Path, run_id: str) -> bo
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
-        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        legacy = False
         if legacy:
             for worker in survivors:
                 cast(dict[str, object], worker).pop("entry", None)
@@ -1564,9 +1479,6 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> 
         _continue_failed_cleanup(log, run_root, run_id)
         return
     survivors = _stop_workers_and_clean_scratch(run_root, run_id)
-    if record.get("schema") == LEGACY_RUN_SCHEMA:
-        for worker in survivors:
-            cast(dict[str, object], worker).pop("entry", None)
     with _run_state_lock(log, run_id):
         record = _load_run(run_root / "run.json")
         _require_run_identity(record, run_id)
@@ -1574,7 +1486,7 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> 
         if state["status"] is not None:
             return
         now = _utc_now()
-        legacy = record.get("schema") == LEGACY_RUN_SCHEMA
+        legacy = False
         workers = _reconciled_worker_history(
             cast(Sequence[Mapping[str, object]], record["workers"]),
             survivors,
@@ -1795,19 +1707,7 @@ def _accepted_record(
 
 
 def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
-    legacy = record.get("schema") == LEGACY_RUN_SCHEMA
-    schema = (
-        LEGACY_PLAN_SCHEMA
-        if legacy
-        else PRECONTINUATION_PLAN_SCHEMA
-        if record.get("schema") == PRECONTINUATION_RUN_SCHEMA
-        else PRETIMEOUT_PLAN_SCHEMA
-        if record.get("schema") == PRETIMEOUT_RUN_SCHEMA
-        else PREEXECUTION_PLAN_SCHEMA
-        if record.get("schema") == PREEXECUTION_RUN_SCHEMA
-        else PLAN_SCHEMA
-    )
-    value = {"schema": schema, **cast(Mapping[str, object], record["plan"])}
+    value = {"schema": PLAN_SCHEMA, **cast(Mapping[str, object], record["plan"])}
     if (
         value.get("source_snapshot") != record["source_snapshot"]
         or value.get("validation_snapshot") != record["validation_snapshot"]
@@ -1819,19 +1719,15 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         "executions",
         "failures",
         "include_all",
-        *(() if legacy else ("jobs",)),
-        *(
-            ("execution_timeout_seconds",)
-            if schema in {PREEXECUTION_PLAN_SCHEMA, PLAN_SCHEMA}
-            else ()
-        ),
+        "jobs",
+        "execution_timeout_seconds",
         "schema",
         "source_snapshot",
         "summary",
         "target",
         "validation_snapshot",
     }
-    if set(value) != fields or value["schema"] != schema:
+    if set(value) != fields or value["schema"] != PLAN_SCHEMA:
         raise ActionError("reproduction.run.invalid", "stored plan fields are invalid")
     plan = ReproductionPlan(
         cast(str, value["summary"]),
@@ -1840,28 +1736,17 @@ def _plan_from_record(record: Mapping[str, object]) -> ReproductionPlan:
         cast(Mapping[str, object], value["validation_snapshot"]),
         cast(Mapping[str, object], value["source_snapshot"]),
         tuple(cast(Sequence[Mapping[str, object]], value["cases"])),
-        tuple(
-            {**item, "exclusive": True} if legacy else item
-            for item in cast(Sequence[Mapping[str, object]], value["executions"])
-        ),
+        tuple(cast(Sequence[Mapping[str, object]], value["executions"])),
         tuple(cast(Sequence[Mapping[str, object]], value["boundaries"])),
         tuple(cast(Sequence[Mapping[str, object]], value["failures"])),
-        cast(int, value.get("jobs", 1)),
-        cast(
-            int,
-            value.get("execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS),
-        ),
+        cast(int, value["jobs"]),
+        cast(int, value["execution_timeout_seconds"]),
     )
-    if {**plan.as_dict(), "schema": schema} != value and record.get("schema") in {
-        PREEXECUTION_RUN_SCHEMA,
-        RUN_SCHEMA,
-    }:
+    if {**plan.as_dict(), "schema": PLAN_SCHEMA} != value:
         raise ActionError("reproduction.run.invalid", "stored plan is not canonical")
-    if _parallel_run(record) and record.get("jobs") != plan.jobs:
+    if record.get("jobs") != plan.jobs:
         raise ActionError("reproduction.run.invalid", "accepted jobs value changed")
-    if record.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA} and (
-        record.get("execution_timeout_seconds") != plan.execution_timeout_seconds
-    ):
+    if record.get("execution_timeout_seconds") != plan.execution_timeout_seconds:
         raise ActionError(
             "reproduction.run.invalid", "accepted execution timeout changed"
         )
@@ -1874,27 +1759,6 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
     progress = cast(Mapping[str, object], record["progress"])
     workers = cast(Sequence[Mapping[str, object]], record["workers"])
     checkpoints = cast(Sequence[Mapping[str, object]], record["checkpoints"])
-    if record.get("schema") == LEGACY_RUN_SCHEMA:
-        return _bounded_status(
-            {
-                "artifact_outcomes": progress["artifact_outcomes"],
-                "completed_executions": progress["completed_executions"],
-                "current_execution": state["current_execution"],
-                "execution_timings": _execution_timings(checkpoints, legacy=True),
-                "include_all": record["include_all"],
-                "latest_execution_diagnostic": state["latest_execution_diagnostic"],
-                "operational_failure": state["operational_failure"],
-                "phase": state["phase"],
-                "run_id": record["run_id"],
-                "schema": LEGACY_STATUS_SCHEMA,
-                "status": state["status"],
-                "summary": record["summary"],
-                "surviving_workers": _running_workers(workers),
-                "target": record["target"],
-                "timestamps": record["timestamps"],
-                "total_executions": progress["total_executions"],
-            }
-        )
     active = cast(Sequence[Mapping[str, object]], state["active_executions"])
     active_references = {(item["entry"], item["execution_id"]) for item in active}
     projection = {
@@ -1907,11 +1771,7 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
             and (item.get("entry"), item.get("execution_id")) in active_references
         ],
         "completed_executions": progress["completed_executions"],
-        **(
-            {"execution_timeout_seconds": record["execution_timeout_seconds"]}
-            if record.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
-            else {}
-        ),
+        "execution_timeout_seconds": record["execution_timeout_seconds"],
         "execution_timings": _execution_timings(checkpoints),
         "include_all": record["include_all"],
         "jobs": record["jobs"],
@@ -1919,15 +1779,7 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
         "operational_failure": state["operational_failure"],
         "phase": state["phase"],
         "run_id": record["run_id"],
-        "schema": (
-            STATUS_SCHEMA
-            if record.get("schema") == RUN_SCHEMA
-            else PREEXECUTION_STATUS_SCHEMA
-            if record.get("schema") == PREEXECUTION_RUN_SCHEMA
-            else PRETIMEOUT_STATUS_SCHEMA
-            if record.get("schema") == PRETIMEOUT_RUN_SCHEMA
-            else PRECONTINUATION_STATUS_SCHEMA
-        ),
+        "schema": STATUS_SCHEMA,
         "status": state["status"],
         "summary": record["summary"],
         "surviving_workers": _running_workers(workers),
@@ -1935,18 +1787,17 @@ def _status_projection(record: Mapping[str, object]) -> Mapping[str, object]:
         "timestamps": record["timestamps"],
         "total_executions": progress["total_executions"],
     }
-    if _continuation_run(record):
-        resolved = _logical_queue_resolved(record)
-        projection.update(
-            {
-                "attempt": record["attempt"],
-                "attempts": record["attempt"],
-                "resolved": resolved,
-                "resumable": state["status"] in {"failed", "stopped"}
-                or state["status"] == "complete"
-                and not resolved,
-            }
-        )
+    resolved = _logical_queue_resolved(record)
+    projection.update(
+        {
+            "attempt": record["attempt"],
+            "attempts": record["attempt"],
+            "resolved": resolved,
+            "resumable": state["status"] in {"failed", "stopped"}
+            or state["status"] == "complete"
+            and not resolved,
+        }
+    )
     return _bounded_status(projection)
 
 
@@ -2053,62 +1904,31 @@ def _load_run(path: Path) -> dict[str, object]:
         "validation_snapshot",
         "workers",
     }
-    schema = value.get("schema") if isinstance(value, dict) else None
-    parallel = schema in {
-        PRECONTINUATION_RUN_SCHEMA,
-        PRETIMEOUT_RUN_SCHEMA,
-        PREEXECUTION_RUN_SCHEMA,
-        RUN_SCHEMA,
+    fields = common_fields | {
+        "attempt",
+        "attempts",
+        "execution_timeout_seconds",
+        "jobs",
+        "queue",
     }
-    fields = (
-        common_fields
-        | ({"jobs"} if parallel else set())
-        | (
-            {"attempt", "attempts", "queue"}
-            if schema in {PRETIMEOUT_RUN_SCHEMA, PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
-            else set()
+    if not isinstance(value, dict) or value.get("schema") != RUN_SCHEMA:
+        raise ActionError(
+            "reproduction.run.unsupported",
+            "this historical reproduction job cannot resume; start a new current-format run",
         )
-        | (
-            {"execution_timeout_seconds"}
-            if schema in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA}
-            else set()
-        )
-    )
-    if (
-        not isinstance(value, dict)
-        or set(value) != fields
-        or schema
-        not in {
-            LEGACY_RUN_SCHEMA,
-            PRECONTINUATION_RUN_SCHEMA,
-            PRETIMEOUT_RUN_SCHEMA,
-            PREEXECUTION_RUN_SCHEMA,
-            RUN_SCHEMA,
-        }
-    ):
+    if set(value) != fields:
         raise ActionError("reproduction.run.invalid", "run record fields are invalid")
     if RUN_ID_RE.fullmatch(str(value.get("run_id"))) is None:
         raise ActionError("reproduction.run.invalid", "run ID is invalid")
     state = value.get("state")
     current_state_fields = {
-        "active_executions" if parallel else "current_execution",
+        "active_executions",
         "latest_execution_diagnostic",
         "operational_failure",
         "phase",
         "status",
     }
-    legacy_state_fields = {
-        "current_execution",
-        "latest_failure",
-        "phase",
-        "status",
-    }
-    allowed_state_fields = (
-        {frozenset(current_state_fields)}
-        if parallel
-        else {frozenset(current_state_fields), frozenset(legacy_state_fields)}
-    )
-    if not isinstance(state, dict) or frozenset(state) not in allowed_state_fields:
+    if not isinstance(state, dict) or frozenset(state) != frozenset(current_state_fields):
         raise ActionError("reproduction.run.invalid", "run state is invalid")
     status = state["status"]
     phase = state["phase"]
@@ -2121,10 +1941,6 @@ def _load_run(path: Path) -> dict[str, object]:
     canonical = _canonical(value).encode("utf-8")
     if raw != canonical:
         raise ActionError("reproduction.run.invalid", "run record is not canonical")
-    if "latest_failure" in state:
-        failure = state.pop("latest_failure")
-        state["latest_execution_diagnostic"] = None if status == "failed" else failure
-        state["operational_failure"] = failure if status == "failed" else None
     return cast(dict[str, object], value)
 
 
@@ -2157,16 +1973,11 @@ def _validate_run_members(value: Mapping[str, object]) -> None:
     _validate_paths(value)
     state = cast(Mapping[str, object], value["state"])
     _validate_active_state(value, state)
-    legacy = value.get("schema") == LEGACY_RUN_SCHEMA
-    if "latest_failure" in state:
-        _validate_failure(state.get("latest_failure"), legacy=True)
-    else:
-        _validate_failure(state.get("latest_execution_diagnostic"), legacy=legacy)
-        _validate_failure(state.get("operational_failure"), legacy=legacy)
-    _validate_workers(value.get("workers"), legacy=legacy)
-    _validate_checkpoints(value.get("checkpoints"), legacy=legacy)
-    if _continuation_run(value):
-        _validate_continuation_state(value)
+    _validate_failure(state.get("latest_execution_diagnostic"), legacy=False)
+    _validate_failure(state.get("operational_failure"), legacy=False)
+    _validate_workers(value.get("workers"), legacy=False)
+    _validate_checkpoints(value.get("checkpoints"), legacy=False)
+    _validate_continuation_state(value)
     _validate_execution_target_scope(value)
 
 
@@ -2176,10 +1987,6 @@ def _validate_execution_target_scope(value: Mapping[str, object]) -> None:
     target = cast(Mapping[str, object], value["target"])
     if target.get("kind") != "execution":
         return
-    if value.get("schema") != RUN_SCHEMA:
-        raise ActionError(
-            "reproduction.run.invalid", "legacy run cannot target an execution"
-        )
     key = (target["entry"], target["execution_id"])
     queue = cast(Sequence[Mapping[str, object]], value["queue"])
     plan = value.get("plan")
@@ -2257,14 +2064,14 @@ def _validate_run_target(value: Mapping[str, object]) -> None:
         raise ActionError("reproduction.run.invalid", "run target is invalid")
     if not isinstance(value.get("include_all"), bool):
         raise ActionError("reproduction.run.invalid", "selection policy is invalid")
-    if _parallel_run(value) and (
+    if (
         not isinstance(value.get("jobs"), int)
         or isinstance(value.get("jobs"), bool)
         or cast(int, value["jobs"]) <= 0
     ):
         raise ActionError("reproduction.run.invalid", "jobs value is invalid")
     timeout = value.get("execution_timeout_seconds")
-    if value.get("schema") in {PREEXECUTION_RUN_SCHEMA, RUN_SCHEMA} and (
+    if (
         not isinstance(timeout, int)
         or isinstance(timeout, bool)
         or not 1 <= timeout <= MAX_EXECUTION_TIMEOUT_SECONDS
@@ -2275,50 +2082,33 @@ def _validate_run_target(value: Mapping[str, object]) -> None:
 def _validate_active_state(
     value: Mapping[str, object], state: Mapping[str, object]
 ) -> None:
-    if _parallel_run(value):
-        active = state.get("active_executions")
-        jobs = cast(int, value["jobs"])
-        if (
-            not isinstance(active, list)
-            or len(active) > jobs
-            or any(
-                not isinstance(item, Mapping)
-                or set(item) != {"entry", "execution_id"}
-                or not isinstance(item.get("entry"), str)
-                or not isinstance(item.get("execution_id"), str)
-                or EXECUTION_ID_RE.fullmatch(cast(str, item.get("execution_id")))
-                is None
-                for item in active
-            )
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "active executions are invalid"
-            )
-        typed = cast(Sequence[Mapping[str, object]], active)
-        keys = [
-            (cast(str, item["entry"]), cast(str, item["execution_id"]))
-            for item in typed
-        ]
-        if (
-            len(keys) != len(set(keys))
-            or list(typed) != sorted(typed, key=lambda item: _plan_order(value, item))
-            or any(_plan_order(value, item) == 2**31 for item in typed)
-            or len(typed) > 1
-            and any(_plan_item(value, item).get("exclusive") is True for item in typed)
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "active execution order is invalid"
-            )
-    else:
-        current = state.get("current_execution")
-        if current is not None and (
-            not isinstance(current, str) or EXECUTION_ID_RE.fullmatch(current) is None
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "current execution is invalid"
-            )
-
-
+    active = state.get("active_executions")
+    jobs = cast(int, value["jobs"])
+    if (
+        not isinstance(active, list)
+        or len(active) > jobs
+        or any(
+            not isinstance(item, Mapping)
+            or set(item) != {"entry", "execution_id"}
+            or not isinstance(item.get("entry"), str)
+            or not isinstance(item.get("execution_id"), str)
+            or EXECUTION_ID_RE.fullmatch(cast(str, item.get("execution_id"))) is None
+            for item in active
+        )
+    ):
+        raise ActionError("reproduction.run.invalid", "active executions are invalid")
+    typed = cast(Sequence[Mapping[str, object]], active)
+    keys = [(cast(str, item["entry"]), cast(str, item["execution_id"])) for item in typed]
+    if (
+        len(keys) != len(set(keys))
+        or list(typed) != sorted(typed, key=lambda item: _plan_order(value, item))
+        or any(_plan_order(value, item) == 2**31 for item in typed)
+        or len(typed) > 1
+        and any(_plan_item(value, item).get("exclusive") is True for item in typed)
+    ):
+        raise ActionError(
+            "reproduction.run.invalid", "active execution order is invalid"
+        )
 def _validate_progress(value: object) -> None:
     progress = value
     if not isinstance(progress, Mapping) or set(progress) != {
@@ -2698,7 +2488,7 @@ def _require_no_active_legacy_run(project: Path) -> None:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             continue
-        if not isinstance(value, Mapping) or value.get("schema") != LEGACY_RUN_SCHEMA:
+        if not isinstance(value, Mapping) or value.get("schema") != RUN_SCHEMA:
             continue
         state = value.get("state")
         if not isinstance(state, Mapping) or state.get("status") is not None:
@@ -2806,7 +2596,7 @@ def _validate_checkpoint_membership(
 
 def _verify_checkpoint_inventory(run_root: Path, record: Mapping[str, object]) -> None:
     observed = _checkpoint_dicts(
-        run_root, legacy=record.get("schema") == LEGACY_RUN_SCHEMA
+        run_root, legacy=False
     )
     if observed != record["checkpoints"]:
         raise ActionError(

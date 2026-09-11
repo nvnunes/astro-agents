@@ -2269,29 +2269,11 @@ no surviving worker. If those conditions cannot be proved, admission fails with
 `reproduction.scheduler.reconciliation_required` instead of waiting indefinitely;
 the owner run must be inspected or recovered before retrying.
 
-Existing `research-log-reproduction-run/2` jobs are never rewritten. Their
-original serial supervisor, status/2 projection, stop, resume, recovery, and
-publication semantics remain available through a version-dispatched
-compatibility path. Before accepting the first managed parallel run, and before
-every later v3 or v4 launch while v2 state exists, the CLI performs a bounded
-project run scan.
-An active v2 run with its pre-upgrade supervisor or any unreconciled worker
-blocks acceptance with `reproduction.scheduler.legacy_active`; the CLI does
-not attempt retroactive enrollment. A v2 run started or explicitly resumed by
-the new implementation acquires one conservative project-wide exclusive permit
-for each remaining execution so it cannot overlap managed work.
-
-A stopped v2 run remains resumable only while its original source snapshot
-still matches byte-for-byte under the v2 decoder. Exclusivity migration changes
-that snapshot and therefore makes such a resume stale; it refuses normally
-rather than projecting v3 state back into v2. Status, stop, recovery, report,
-and retained diagnostics remain readable after migration.
-Entry-local `research-log-pyrun/v3` and earlier execution state is no longer
-readable after the one-time field migration. It fails precisely as unsupported
-schema before direct execution, validation, policy update, planning, or
-reproduction can interpret it. This does not alter
-the separately versioned compatibility path above for immutable historical
-reproduction-run records.
+Historical reproduction jobs are never rewritten, migrated, or deleted. The
+current runtime accepts only `research-log-reproduction-run/6`; status, stop,
+resume, recovery, and publication reject older job records with
+`reproduction.run.unsupported` and direct the caller to start a new current
+run. An unsupported job never blocks current-format admission or scheduling.
 
 ### Shared Publication
 
@@ -2597,17 +2579,11 @@ and Reproduce require `pyrun.json`; neither executes legacy
 legacy validation Reproduction section is not a current report surface.
 
 Parallel scheduling uses `research-log-pyrun/v5`; current reproduction plan,
-run, and status writes use version 6. Version 2 execution records are
-unsupported. Accepted reproduction runs at versions 2 through 5 retain their
-bounded historical compatibility paths; version 5 retains entry/log targets,
-and version 6 adds execution targets. No accepted run is upgraded in place,
-and no consumer may decode an older object with current-schema defaults. The maintained-corpus
-execution-state cutover is complete.
-
-Because version 4 accepted runs predate the persisted runtime-limit field,
-their historical execution path applies the code-owned 300-second safety limit;
-they cannot supply or retain an override. Versions 5 and 6 retain an accepted
-researcher-selected runtime limit.
+run, and status use version 6. Older accepted reproduction job formats are
+unsupported immutable historical files: no current consumer decodes them with
+defaults, resumes them, or transfers their execution provenance. Start a new
+version-6 run instead. The maintained-corpus execution-state cutover is
+complete.
 
 The result reader accepts `research-log-reproduction-result/10` and the
 compatible `research-log-reproduction-result/9` shape. Result/9 contains only

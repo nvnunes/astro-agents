@@ -205,7 +205,6 @@ class ExecutionControl:
     source: _ExecutionSource | None = None
     prior_attempts: frozenset[str] = frozenset()
     prior_failures: frozenset[str] = frozenset()
-    legacy: bool = False
     attempt_completed: Callable[[ExecutionAttempt], None] = lambda _attempt: None
     progress: Callable[[str, str, str, ExecutionAttempt | None], None] = (
         lambda _event, _entry, _execution_id, _attempt: None
@@ -257,7 +256,6 @@ class _PreparedExecution:
     stdout: Path
     stderr: Path
     checkpoint: Path
-    legacy: bool
 
 
 @dataclass(frozen=True)
@@ -271,7 +269,6 @@ class _ExecutionSource:
 @dataclass(frozen=True)
 class _PreparationOptions:
     source: _ExecutionSource | None = None
-    legacy: bool = False
 
 
 @dataclass(frozen=True)
@@ -289,7 +286,6 @@ class _PlanExecutionContext:
 class _AttemptFailure:
     error: BaseException
     prior: ExecutionCheckpoint | None
-    legacy: bool
 
 
 @dataclass(frozen=True)
@@ -297,7 +293,6 @@ class _CheckpointLoadContext:
     workspace: ReproductionWorkspace
     entry: str
     execution_id: str
-    legacy: bool
 
 
 @dataclass(frozen=True)
@@ -526,7 +521,7 @@ def execute_planned_recipe(
         planned,
         workspace,
         generated,
-        _PreparationOptions(source, control.legacy),
+        _PreparationOptions(source),
     )
     _preflight_output_paths(prepared.output_paths.values(), prepared.run_root)
     if not control.resume:
@@ -536,7 +531,6 @@ def execute_planned_recipe(
             workspace,
             prepared.entry,
             prepared.execution_id,
-            legacy=control.legacy,
         )
         if control.resume
         else None
@@ -554,7 +548,6 @@ def execute_planned_recipe(
                 started_at=prior_started_at or started_at,
                 elapsed_seconds=prior_elapsed,
             ),
-            legacy=control.legacy,
         )
 
     outcome, launched_at, active_elapsed = _run_with_scratch(
@@ -579,7 +572,6 @@ def execute_planned_recipe(
         outcome,
         len(outputs),
         len(prepared.output_paths),
-        legacy=control.legacy,
     )
     finished_at = None if outcome.stopped or launched_at is None else _utc_now()
     checkpoint = ExecutionCheckpoint(
@@ -606,8 +598,8 @@ def execute_planned_recipe(
             }
         ),
     )
-    _write_checkpoint(prepared.checkpoint, checkpoint, legacy=control.legacy)
-    if successful_checkpoint_state(state) and not control.legacy:
+    _write_checkpoint(prepared.checkpoint, checkpoint)
+    if successful_checkpoint_state(state):
         try:
             _materialize_outputs(prepared, workspace, source)
         except (OSError, ValueError) as error:
@@ -629,7 +621,7 @@ def execute_planned_recipe(
                     "recorded_at": _utc_now(),
                 },
             )
-            _write_checkpoint(prepared.checkpoint, checkpoint, legacy=False)
+            _write_checkpoint(prepared.checkpoint, checkpoint)
     return ExecutionAttempt(
         prepared.entry,
         prepared.execution_id,
@@ -740,21 +732,9 @@ def _prepare_execution(
             "reproduction.execution.missing",
             f"accepted execution is no longer present: {entry_id}:{execution_id}",
         )
-    attempt_root = (
-        workspace.work_project
-        if options.legacy
-        else _attempt_root(workspace, entry_id, execution_id)
-    )
-    runtime_root = (
-        workspace.runtime_root / execution_id.rsplit(":", 1)[-1]
-        if options.legacy
-        else _attempt_runtime_root(workspace, entry_id, execution_id)
-    )
-    diagnostics_root = (
-        workspace.diagnostics_root
-        if options.legacy
-        else workspace.diagnostics_root / entry_id / execution_id.rsplit(":", 1)[-1]
-    )
+    attempt_root = _attempt_root(workspace, entry_id, execution_id)
+    runtime_root = _attempt_runtime_root(workspace, entry_id, execution_id)
+    diagnostics_root = workspace.diagnostics_root / entry_id / execution_id.rsplit(":", 1)[-1]
     relative_entry = source_entry.root.resolve().relative_to(
         workspace.source_project.resolve()
     )
@@ -773,7 +753,7 @@ def _prepare_execution(
         generated=generated,
     )
     stdout_path, stderr_path = _diagnostic_paths(
-        workspace, entry_id, execution_id, legacy=options.legacy
+        workspace, entry_id, execution_id
     )
     checkpoint_path = _checkpoint_path(workspace, entry_id, execution_id)
     return _PreparedExecution(
@@ -787,13 +767,12 @@ def _prepare_execution(
         output_paths,
         tuple(command),
         _execution_environment(
-            execution, workspace, entry_id, execution_id, legacy=options.legacy
+            execution, workspace, entry_id, execution_id
         ),
         captures,
         stdout_path,
         stderr_path,
         checkpoint_path,
-        options.legacy,
     )
 
 
@@ -828,16 +807,8 @@ def _confined_command(
     readonly = _readonly_boundaries(plan, workspace)
     return backend.command(
         command,
-        writable_roots=(Path(prepared.environment["TMPDIR"]),)
-        + (
-            (workspace.work_project, workspace.runtime_root)
-            if prepared.legacy
-            else (
-                prepared.run_root,
-                prepared.runtime_root,
-                prepared.diagnostics_root,
-            )
-        ),
+        writable_roots=(Path(prepared.environment["TMPDIR"]), prepared.run_root,
+                        prepared.runtime_root, prepared.diagnostics_root),
         readonly_paths=readonly,
     )
 
@@ -1094,23 +1065,18 @@ def _attempt_state(
     outcome: _ProcessOutcome,
     observed_outputs: int,
     declared_outputs: int,
-    *,
-    legacy: bool = False,
 ) -> tuple[str, str | None, str | None]:
-    incomplete = "partial" if legacy else "failed"
-    stopped = "partial" if legacy else "stopped"
-    success = "complete" if legacy else "succeeded"
     if outcome.stopped:
         return (
-            stopped,
+            "stopped",
             outcome.failure_code or "stop_requested",
             outcome.failure_message or "Reproduction was stopped by request.",
         )
     if outcome.failure_code is not None:
-        return incomplete, outcome.failure_code, outcome.failure_message
+        return "failed", outcome.failure_code, outcome.failure_message
     if outcome.returncode != 0:
         return (
-            incomplete,
+            "failed",
             "execution_failed",
             f"execution exited with status {outcome.returncode}",
         )
@@ -1120,7 +1086,7 @@ def _attempt_state(
             "output_missing",
             "one or more declared outputs were not generated",
         )
-    return success, None, None
+    return "succeeded", None, None
 
 
 def execute_reproduction_plan(
@@ -1225,12 +1191,11 @@ def _execute_scheduled_recipe(
 
     control = context.control
     workspace = context.workspace
-    scheduled = {**planned, "exclusive": True} if control.legacy else planned
     permit = acquire_scheduling_permit(
         workspace.source_project,
         workspace.run_root,
         workspace.run_id,
-        scheduled,
+        planned,
         stop_requested=control.stop_requested,
     )
     if permit is None:
@@ -1240,7 +1205,7 @@ def _execute_scheduled_recipe(
     checkpoint: ExecutionCheckpoint | None = None
     try:
         checkpoint = _load_checkpoint_control_plane(
-            workspace, entry_id, identity, legacy=control.legacy
+            workspace, entry_id, identity
         )
         _control_plane_call(control.progress, "started", entry_id, identity, None)
         attempt = execute_planned_recipe(
@@ -1255,7 +1220,6 @@ def _execute_scheduled_recipe(
                 confinement=context.backend,
                 generated_paths=context.generated,
                 source=context.sources[entry_id],
-                legacy=control.legacy,
                 progress=control.progress,
                 worker_progress=control.worker_progress,
             ),
@@ -1269,7 +1233,7 @@ def _execute_scheduled_recipe(
             workspace,
             entry_id,
             identity,
-            _AttemptFailure(error, checkpoint, control.legacy),
+            _AttemptFailure(error, checkpoint),
         )
     if not any(worker.state == "running" for worker in attempt.workers):
         release_scheduling_permit(permit)
@@ -1289,27 +1253,20 @@ def _exception_attempt(
     code = cast(str, getattr(error, "code", "execution_exception"))
     message = str(error) or type(error).__name__
     path = _checkpoint_path(workspace, entry, execution_id)
-    state = "partial" if failure.legacy else "failed"
     checkpoint = ExecutionCheckpoint(
         entry,
         execution_id,
-        state,
+        "failed",
         path.relative_to(workspace.run_root).as_posix(),
         None,
         prior.outputs if prior is not None else (),
         prior.started_at if prior is not None else None,
         prior.finished_at if prior is not None else None,
         prior.elapsed_seconds if prior is not None else None,
-        (
-            None
-            if failure.legacy
-            else {"code": code, "message": message, "recorded_at": _utc_now()}
-        ),
+        {"code": code, "message": message, "recorded_at": _utc_now()},
     )
-    _write_checkpoint(path, checkpoint, legacy=failure.legacy)
-    stdout, stderr = _diagnostic_relative_paths(
-        workspace, entry, execution_id, legacy=failure.legacy
-    )
+    _write_checkpoint(path, checkpoint)
+    stdout, stderr = _diagnostic_relative_paths(workspace, entry, execution_id)
     return ExecutionAttempt(
         entry,
         execution_id,
@@ -1360,12 +1317,12 @@ def _resolve_pending(
             progress_made = True
             continue
         checkpoint = _load_checkpoint_control_plane(
-            workspace, entry_id, identity, legacy=control.legacy
+            workspace, entry_id, identity
         )
         if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
             continue
         if not control.resume or not _checkpoint_outputs_current(
-            checkpoint, sources[entry_id], workspace, identity, legacy=control.legacy
+            checkpoint, sources[entry_id], workspace, identity
         ):
             raise ReproductionControlPlaneError(
                 ActionError(
@@ -1375,15 +1332,14 @@ def _resolve_pending(
             )
         schedule.reused.append(reference)
         schedule.complete.add(reference)
-        if not control.legacy:
-            prepared = _prepare_execution(
-                sources[entry_id].entry.log,
-                planned,
-                workspace,
-                {},
-                _PreparationOptions(sources[entry_id]),
-            )
-            _materialize_outputs(prepared, workspace, sources[entry_id])
+        prepared = _prepare_execution(
+            sources[entry_id].entry.log,
+            planned,
+            workspace,
+            {},
+            _PreparationOptions(sources[entry_id]),
+        )
+        _materialize_outputs(prepared, workspace, sources[entry_id])
         _control_plane_call(control.progress, "reused", entry_id, identity, None)
         schedule.pending.remove(planned)
         progress_made = True
@@ -1474,8 +1430,6 @@ def completed_execution_attempts(
     log: LogContext,
     plan: ReproductionPlan,
     workspace: ReproductionWorkspace,
-    *,
-    legacy: bool = False,
 ) -> tuple[ExecutionAttempt, ...]:
     """Load every complete planned checkpoint as a comparison-ready attempt."""
 
@@ -1485,7 +1439,7 @@ def completed_execution_attempts(
     for planned in sorted(plan.executions, key=_execution_order):
         entry_id = _required_string(planned, "entry")
         identity = _required_string(planned, "execution_id")
-        checkpoint = _load_checkpoint(workspace, entry_id, identity, legacy=legacy)
+        checkpoint = _load_checkpoint(workspace, entry_id, identity)
         if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
             continue
         if not _checkpoint_outputs_current(
@@ -1493,7 +1447,6 @@ def completed_execution_attempts(
             _execution_source(log, workspace, entry_id, sources),
             workspace,
             identity,
-            legacy=legacy,
         ):
             raise ActionError(
                 "reproduction.checkpoint.changed",
@@ -1504,10 +1457,7 @@ def completed_execution_attempts(
             planned,
             workspace,
             generated,
-            _PreparationOptions(
-                _execution_source(log, workspace, entry_id, sources),
-                legacy,
-            ),
+            _PreparationOptions(_execution_source(log, workspace, entry_id, sources)),
         )
         if checkpoint.state == "succeeded":
             _materialize_outputs(
@@ -1579,8 +1529,6 @@ def _load_checkpoint(
     workspace: ReproductionWorkspace,
     entry: str,
     execution_id: str,
-    *,
-    legacy: bool,
 ) -> ExecutionCheckpoint | None:
     path = _checkpoint_path(workspace, entry, execution_id)
     if not path.exists() and not path.is_symlink():
@@ -1600,7 +1548,7 @@ def _load_checkpoint(
     value, state, completed_at, outputs, expected_path = _checkpoint_header(
         value,
         path,
-        _CheckpointLoadContext(workspace, entry, execution_id, legacy),
+        _CheckpointLoadContext(workspace, entry, execution_id),
     )
     if text != json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n":
         raise ActionError(
@@ -1639,8 +1587,7 @@ def _checkpoint_header(
         "started_at",
         "state",
     }
-    expected_fields = fields if context.legacy else fields | {"failure"}
-    if not isinstance(value, Mapping) or set(value) != expected_fields:
+    if not isinstance(value, Mapping) or set(value) != fields | {"failure"}:
         raise ActionError(
             "reproduction.checkpoint.invalid", "checkpoint fields are invalid"
         )
@@ -1652,12 +1599,7 @@ def _checkpoint_header(
         value.get("entry") != context.entry
         or value.get("execution_id") != context.execution_id
         or value.get("path") != expected_path
-        or state
-        not in (
-            {"active", "complete", "partial"}
-            if context.legacy
-            else {"active", "succeeded", "failed", "stopped"}
-        )
+        or state not in {"active", "succeeded", "failed", "stopped"}
         or completed_at is not None
         and not isinstance(completed_at, str)
         or not isinstance(outputs, list)
@@ -1791,18 +1733,12 @@ def _checkpoint_outputs_current(
     source: _ExecutionSource,
     workspace: ReproductionWorkspace,
     execution_id: str,
-    *,
-    legacy: bool = False,
 ) -> bool:
     entry = source.entry
     execution = source.state.executions.get(execution_id)
     if execution is None:
         return False
-    project_root = (
-        workspace.work_project
-        if legacy
-        else _attempt_root(workspace, entry.id, execution_id)
-    )
+    project_root = _attempt_root(workspace, entry.id, execution_id)
     paths = _output_paths(
         execution,
         entry_root=project_root
@@ -2000,16 +1936,10 @@ def _execution_environment(
     workspace: ReproductionWorkspace,
     entry: str,
     execution_id_value: str,
-    *,
-    legacy: bool = False,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(dict(execution.recipe.environment))
-    execution_root = (
-        workspace.runtime_root / execution_id_value.rsplit(":", 1)[-1]
-        if legacy
-        else _attempt_runtime_root(workspace, entry, execution_id_value)
-    )
+    execution_root = _attempt_runtime_root(workspace, entry, execution_id_value)
     execution_root.mkdir(parents=True, exist_ok=True)
     roots = {
         "MPLCONFIGDIR": execution_root / "matplotlib",
@@ -2020,11 +1950,7 @@ def _execution_environment(
         path.mkdir(exist_ok=True)
     environment.update({name: str(path) for name, path in roots.items()})
     identity = execution_id_value.rsplit(":", 1)[-1]
-    environment[RUNNER_MARKER] = (
-        f"{workspace.run_id}:{identity}"
-        if legacy
-        else f"{workspace.run_id}:{entry}:{identity}"
-    )
+    environment[RUNNER_MARKER] = f"{workspace.run_id}:{entry}:{identity}"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
 
@@ -2301,14 +2227,9 @@ def _diagnostic_paths(
     workspace: ReproductionWorkspace,
     entry: str,
     execution_id: str,
-    *,
-    legacy: bool = False,
 ) -> tuple[Path, Path]:
-    stdout, stderr = _diagnostic_relative_paths(
-        workspace, entry, execution_id, legacy=legacy
-    )
-    if not legacy:
-        stdout.parent.mkdir(parents=True, exist_ok=True)
+    stdout, stderr = _diagnostic_relative_paths(workspace, entry, execution_id)
+    stdout.parent.mkdir(parents=True, exist_ok=True)
     return stdout, stderr
 
 
@@ -2316,21 +2237,9 @@ def _diagnostic_relative_paths(
     workspace: ReproductionWorkspace,
     entry: str,
     execution_id: str,
-    *,
-    legacy: bool,
 ) -> tuple[Path, Path]:
-    if not legacy:
-        root = (
-            workspace.diagnostics_root
-            / entry
-            / execution_id.removeprefix("pyrun-exec/v1:")
-        )
-        return root / "stdout.log", root / "stderr.log"
-    stem = f"{entry}-{execution_id.removeprefix('pyrun-exec/v1:')}"
-    return (
-        workspace.diagnostics_root / f"{stem}.stdout.log",
-        workspace.diagnostics_root / f"{stem}.stderr.log",
-    )
+    root = workspace.diagnostics_root / entry / execution_id.removeprefix("pyrun-exec/v1:")
+    return root / "stdout.log", root / "stderr.log"
 
 
 def _attempt_root(
@@ -2419,13 +2328,9 @@ def _checkpoint_path(
     return workspace.run_root / "checkpoints" / f"{entry}-{digest}.json"
 
 
-def _write_checkpoint(
-    path: Path, checkpoint: ExecutionCheckpoint, *, legacy: bool = False
-) -> None:
+def _write_checkpoint(path: Path, checkpoint: ExecutionCheckpoint) -> None:
     try:
         value = checkpoint.as_dict()
-        if legacy:
-            value.pop("failure")
         payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         temporary = checkpoint_temporary_path(path, os.getpid())
         try:
@@ -2448,11 +2353,9 @@ def _load_checkpoint_control_plane(
     workspace: ReproductionWorkspace,
     entry: str,
     execution_id: str,
-    *,
-    legacy: bool,
 ) -> ExecutionCheckpoint | None:
     try:
-        return _load_checkpoint(workspace, entry, execution_id, legacy=legacy)
+        return _load_checkpoint(workspace, entry, execution_id)
     except ReproductionControlPlaneError:
         raise
     except BaseException as error:

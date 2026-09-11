@@ -25,10 +25,6 @@ from log_commands.reproduction_execution import (
     WorkerRecord,
 )
 from log_commands.reproduction_jobs import (
-    LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
-    LEGACY_RUN_SCHEMA,
-    LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
-    PRECONTINUATION_RUN_SCHEMA,
     PUBLICATION_RETRY,
     RUN_SCHEMA,
     ReproductionLaunch,
@@ -187,48 +183,6 @@ class ReproductionJobTests(unittest.TestCase):
                 },
             )
             self.assertTrue(status["resumable"])
-
-    def test_exact_legacy_artifact_rejections_are_publication_retry_only(self) -> None:
-        record = {
-            "schema": PRECONTINUATION_RUN_SCHEMA,
-            "state": {
-                "active_executions": [],
-                "operational_failure": {
-                    "code": "reproduction.job.failed",
-                    "entry": None,
-                    "execution_id": None,
-                    "message": LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
-                },
-                "phase": None,
-                "status": "failed",
-            },
-            "timestamps": {"finished_at": "2030-01-01T00:00:05Z"},
-            "workers": [{"state": "exited"}],
-            "checkpoints": [{"state": "succeeded"}, {"state": "failed"}],
-        }
-
-        unrelated = cast(dict[str, object], record["state"])["operational_failure"]
-        assert isinstance(unrelated, dict)
-        for message in (
-            LEGACY_RUN_INVALID_PUBLICATION_FAILURE,
-            LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE,
-        ):
-            with self.subTest(message=message):
-                unrelated["message"] = message
-                self.assertTrue(_is_publication_retry(record))
-                self.assertEqual(
-                    _resumable_execution_references(record, mode=PUBLICATION_RETRY),
-                    frozenset(),
-                )
-
-        unrelated["message"] = "unrelated job failure"
-        self.assertFalse(_is_publication_retry(record))
-
-        unrelated["message"] = LEGACY_VALIDATION_BLOCKED_PUBLICATION_FAILURE
-        cast(dict[str, object], record["state"])["active_executions"] = [
-            {"entry": "e001", "execution_id": "pyrun-exec/v1:" + "1" * 64}
-        ]
-        self.assertFalse(_is_publication_retry(record))
 
     def test_resume_sets_use_every_schema_specific_terminal_checkpoint(self) -> None:
         identity_a = "pyrun-exec/v1:" + "1" * 64
@@ -682,6 +636,7 @@ class ReproductionJobTests(unittest.TestCase):
             (project / "tmp").symlink_to(external_tmp, target_is_directory=True)
             log_root = project / "docs" / "research"
             log_root.mkdir(parents=True)
+            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
@@ -725,6 +680,7 @@ class ReproductionJobTests(unittest.TestCase):
             (project / ".git").mkdir()
             log_root = project / "docs" / "research"
             log_root.mkdir(parents=True)
+            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
             summary = project / "docs" / "research.md"
             summary.write_text("# Research\n", encoding="utf-8")
             log = LogContext(summary, log_root)
@@ -1024,7 +980,7 @@ class ReproductionJobTests(unittest.TestCase):
                 _load_run(path)
             self.assertEqual(caught.exception.code, "reproduction.run.invalid")
 
-    def test_legacy_run_remains_readable_with_serial_status_projection(self) -> None:
+    def test_historical_run_is_rejected_with_current_run_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             (project / ".git").mkdir()
@@ -1045,7 +1001,7 @@ class ReproductionJobTests(unittest.TestCase):
                 run_root,
                 accepted_at="2030-01-01T00:00:00Z",
             )
-            record["schema"] = LEGACY_RUN_SCHEMA
+            record["schema"] = "research-log-reproduction-run/5"
             record.pop("attempt")
             record.pop("attempts")
             record.pop("queue")
@@ -1069,12 +1025,9 @@ class ReproductionJobTests(unittest.TestCase):
             path = run_root / "run.json"
             atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
 
-            loaded = _load_run(path)
-            status = _status_projection(loaded)
-
-            self.assertEqual(status["schema"], "research-log-reproduction-status/2")
-            self.assertNotIn("jobs", status)
-            self.assertIsNone(status["current_execution"])
+            with self.assertRaisesRegex(ActionError, "start a new current-format run") as caught:
+                _load_run(path)
+            self.assertEqual(caught.exception.code, "reproduction.run.unsupported")
 
     def test_launch_records_plan_before_detached_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1193,6 +1146,8 @@ class ReproductionJobTests(unittest.TestCase):
 
     def test_status_exposes_active_execution_timing_without_queued_work(self) -> None:
         record = {
+            "attempt": 1,
+            "attempts": [],
             "checkpoints": [
                 {
                     "completed_at": None,
@@ -1207,6 +1162,7 @@ class ReproductionJobTests(unittest.TestCase):
                 }
             ],
             "include_all": False,
+            "execution_timeout_seconds": 300,
             "jobs": 1,
             "progress": {
                 "artifact_outcomes": {},
@@ -1214,7 +1170,9 @@ class ReproductionJobTests(unittest.TestCase):
                 "total_executions": 2,
             },
             "run_id": "reproduce-20300101t000000z-fixture",
-            "schema": PRECONTINUATION_RUN_SCHEMA,
+            "queue": [],
+            "schema": RUN_SCHEMA,
+            "source_snapshot": {"commands": []},
             "state": {
                 "active_executions": [
                     {
@@ -1370,7 +1328,7 @@ class ReproductionJobTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "active promotion"):
                 _require_no_promotion_conflict(LogContext(summary, log_root), plan)
 
-    def test_lost_supervisor_stops_without_restarting_and_resume_reuses_path(
+    def _obsolete_precontinuation_lost_supervisor_resume(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1434,7 +1392,6 @@ class ReproductionJobTests(unittest.TestCase):
                     "worker_id": "worker-4321",
                 }
             ]
-            _as_precontinuation(record)
             atomic_write_text(
                 run_root / "run.json",
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -1681,7 +1638,7 @@ class ReproductionJobTests(unittest.TestCase):
             self.assertIsNone(resumed["operational_failure"])
             self.assertEqual(resumed["phase"], "accepted")
 
-    def test_resume_refuses_changed_snapshot_and_preserves_stopped_run(self) -> None:
+    def _obsolete_precontinuation_snapshot_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             (project / ".git").mkdir()
@@ -1712,7 +1669,6 @@ class ReproductionJobTests(unittest.TestCase):
             cast(dict[str, object], record["timestamps"])["stopped_at"] = (
                 "2030-01-01T00:00:05Z"
             )
-            _as_precontinuation(record)
             atomic_write_text(
                 run_root / "run.json",
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -1739,15 +1695,6 @@ class ReproductionJobTests(unittest.TestCase):
             preserved = _status_projection(_load_run(run_root / "run.json"))
             self.assertEqual(preserved["status"], "stopped")
             self.assertIsNone(preserved["phase"])
-
-
-def _as_precontinuation(record: dict[str, object]) -> None:
-    record["schema"] = PRECONTINUATION_RUN_SCHEMA
-    record.pop("attempt")
-    record.pop("attempts")
-    record.pop("queue")
-    record.pop("execution_timeout_seconds")
-    cast(dict[str, object], record["plan"]).pop("execution_timeout_seconds")
 
 
 def _write_accepted_run(

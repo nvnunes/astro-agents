@@ -1073,7 +1073,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             self.assertIsNone(attempt.checkpoint.started_at)
             self.assertIsNone(attempt.checkpoint.finished_at)
             self.assertIsNone(attempt.checkpoint.elapsed_seconds)
-            loaded = _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+            loaded = _load_checkpoint(workspace, "e001", fixture.identity)
             self.assertIsNotNone(loaded)
             self.assertIsNone(cast(ExecutionCheckpoint, loaded).elapsed_seconds)
 
@@ -1100,14 +1100,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ActionError, "checkpoint fields"):
-                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
-            self.assertEqual(
-                cast(
-                    ExecutionCheckpoint,
-                    _load_checkpoint(workspace, "e001", fixture.identity, legacy=True),
-                ).state,
-                "partial",
-            )
+                _load_checkpoint(workspace, "e001", fixture.identity)
 
     def test_checkpoint_loader_rejects_noncanonical_outputs_and_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1139,7 +1132,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(ActionError, "outputs are not canonical"):
-                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+                _load_checkpoint(workspace, "e001", fixture.identity)
 
             value["outputs"] = []
             value["failure"] = {
@@ -1151,7 +1144,7 @@ class ReproductionExecutionTests(unittest.TestCase):
                 json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(ActionError, "failure is invalid"):
-                _load_checkpoint(workspace, "e001", fixture.identity, legacy=False)
+                _load_checkpoint(workspace, "e001", fixture.identity)
 
     def test_directory_materialization_never_removes_existing_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1170,34 +1163,6 @@ class ReproductionExecutionTests(unittest.TestCase):
                 )
 
             self.assertEqual(retained.read_text(encoding="utf-8"), "retained\n")
-
-    def test_legacy_execution_preserves_v2_checkpoint_and_workspace_shape(self) -> None:
-        script = (
-            "import argparse\n"
-            "from pathlib import Path\n"
-            "p=argparse.ArgumentParser(); p.add_argument('--source'); "
-            "p.add_argument('--output'); a=p.parse_args()\n"
-            "Path(a.output).write_text(Path(a.source).read_text())\n"
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory), script)
-            workspace = fixture.workspace()
-            attempt = execute_planned_recipe(
-                fixture.log,
-                fixture.plan,
-                fixture.planned,
-                workspace,
-                ExecutionControl(confinement=_FixtureConfinement(), legacy=True),
-            )
-
-            checkpoint = json.loads(
-                (workspace.run_root / attempt.checkpoint.path).read_text()
-            )
-            self.assertEqual(attempt.checkpoint.state, "complete")
-            self.assertNotIn("failure", checkpoint)
-            self.assertEqual(
-                workspace.map_source(fixture.output).read_text(), "source\n"
-            )
 
     def test_captures_declared_stream_directly_in_output_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

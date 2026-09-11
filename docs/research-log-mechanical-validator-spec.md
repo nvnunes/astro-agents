@@ -4147,6 +4147,17 @@ localized only to one physical entry, and `log` only when safe executable
 separation cannot be established below the log. Reproduction consumes these
 effects and identities directly; it does not reclassify scopes or error codes.
 
+For exact single-execution `--verify-repair`, the validator may exclude a chain
+finding from admission only when:
+
+- It is a failed `provenance.output.signature_mismatch` with only `code` changed.
+- Its output has one direct owner matching the observed producer.
+- That producer is provably outside the selected command and all its transitive
+  material prerequisites.
+
+Uncertain ownership or dependencies grant no exemption. All other admission
+rules still apply. Findings remain published; ordinary reproduction is unchanged.
+
 Add `repair_batches` separately. Every direct `fail` or `unavailable` finding
 has exactly one primary batch. Related views may reference that finding but
 must not count it as another pending item. Passing and `not_applicable` checks

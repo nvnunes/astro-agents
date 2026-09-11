@@ -904,6 +904,10 @@ reference with no association to evidence, registered data, execution state,
 or runnable material has effect `none`; its reporting does not block unrelated
 execution.
 
+For exact `--verify-repair`, reproduction applies the validator's
+[admission exemptions](research-log-mechanical-validator-spec.md#published-validation-and-repair-batches).
+The validator owns their classification.
+
 Projected chain and entry-scoped unresolved-group `entry` values are exact
 entry-document IDs. Reproduction resolves each through the canonical entry
 document grammar to its owning physical stable entry before matching selected

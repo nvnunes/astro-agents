@@ -34,6 +34,66 @@ from test_log_reproduction_planning import _admission, _Fixture, _seed_command_r
 
 
 class ExecutionSelectionTests(unittest.TestCase):
+    def test_repair_admission_ignores_only_independent_source_findings(self) -> None:
+        from test_reproduction_admission import command, finding
+
+        def path(name):
+            return str(self.entry.root / "data" / name)
+
+        projection = {
+            "chains": [
+                {
+                    "entry": "e001",
+                    "chain_id": "chain",
+                    "commands": [
+                        command("producer", [], [path("input.txt")]),
+                        command(
+                            "target",
+                            [path("input.txt")],
+                            [path("a.txt"), path("b.txt")],
+                        ),
+                        command("sibling", [], [path("sibling.txt")]),
+                        command(
+                            "downstream",
+                            [path("a.txt"), path("sibling.txt")],
+                            [path("table.txt")],
+                        ),
+                    ],
+                    "findings": [finding("sibling", path("sibling.txt"))],
+                }
+            ],
+            "unresolved": [],
+        }
+        with mock.patch(
+            "log_commands.reproduction_planner._admit_validation",
+            return_value=(self.admission, mock.sentinel.validation, projection),
+        ):
+            ordinary = self.plan(policy="recheck")
+            self.assertFalse(ordinary.executions)
+            self.assertEqual(
+                {item["reason"] for item in ordinary.failures}, {"validation_blocked"}
+            )
+            (self.entry.root / "scripts/target.py").write_text(
+                "# intentionally repaired\n"
+            )
+            self.admission.update(_admission(self.fixture))
+            repaired = self.plan(policy="recheck", verify_repair=True)
+            self.assertEqual(
+                [item["execution_id"] for item in repaired.executions], [self.target[0]]
+            )
+            self.assertEqual(len(repaired.cases), 2)
+            for identity, output in (("producer", "input.txt"), ("target", "a.txt")):
+                with self.subTest(blocked=identity):
+                    projection["chains"][0]["findings"] = [
+                        finding(identity, path(output))
+                    ]
+                    blocked = self.plan(policy="recheck", verify_repair=True)
+                    self.assertFalse(blocked.executions)
+                    self.assertEqual(
+                        {item["reason"] for item in blocked.failures},
+                        {"validation_blocked"},
+                    )
+
     def test_individual_report_has_complete_outputs_without_log_counts(self) -> None:
         from log_commands.reproduction_comparison import (
             ArtifactComparison,

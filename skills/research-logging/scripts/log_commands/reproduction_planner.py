@@ -1416,7 +1416,28 @@ def _apply_execution_admission(
     group = matches[0]
     batch_key = (owner.entry.context.id, str(group["chain_id"]))
     blockers = blocked.get(batch_key)
-    if blockers is None:
+    if (
+        blockers
+        and state.verify_repair is True
+        and state.execution_id == owner.execution_id
+    ):
+        from validation.reproduction_admission import (
+            repair_verification_exempt_findings,
+        )
+
+        exemptions = repair_verification_exempt_findings(
+            group,
+            outputs=targets,
+            retained_inputs={
+                identity
+                for (role, identity), owners in state.material_owners.items()
+                if role in {"input", "boundary"} and key in owners
+            },
+        )
+        blockers = tuple(
+            identity for identity in blockers if identity not in exemptions
+        )
+    if not blockers:
         state.admitted_batches.add(batch_key)
         return
     state.blocked.add(key)

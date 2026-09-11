@@ -147,7 +147,7 @@ from .transformation import (
     compare_presentation,
     evaluate_transformation,
 )
-from .validation_cache import CheckComparisonEntry, ValidationCache, check_dependency
+from .validation_cache import ValidationCache
 
 RULES_VERSION = "research-log-mechanical/parameter-roles-6"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
@@ -236,7 +236,6 @@ class _ScanState:
     project_root: Path
     fingerprint_cache: FingerprintCache | None = None
     validation_cache: ValidationCache | None = None
-    check_comparison: Mapping[str, CheckComparisonEntry] | None = None
     checks: list[MechanicalCheck] = field(default_factory=list)
     entries: list[_Entry] = field(default_factory=list)
     declared_entries: tuple[str, ...] = ()
@@ -347,7 +346,6 @@ def _scan(
         project_root(summary),
         request.fingerprint_cache,
         request.validation_cache,
-        request.check_comparison,
     )
     try:
         summary_text = _read_text(summary, state)
@@ -400,9 +398,7 @@ def _scan(
         _verify_provenance_stability(state)
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
         state.checks.append(_pass_check("conformance:log", CheckScope.CONFORMANCE))
-    checks, unchanged = _compare_checks(state.checks, state.check_comparison)
     metrics = {
-        "checks_unchanged": unchanged,
         "elapsed_seconds": time.perf_counter() - started,
         "graph_edges": len(state.graph.edges) if state.graph else 0,
         "graph_nodes": len(state.graph.nodes) if state.graph else 0,
@@ -447,7 +443,7 @@ def _scan(
         **(state.graph.metrics if state.graph else {}),
     }
     return {
-        "checks": checks,
+        "checks": tuple(state.checks),
         "entries": tuple(entry.id for entry in state.entries),
         "declared_entries": state.declared_entries,
         "verified_inputs": tuple(state.verified_inputs),
@@ -3169,32 +3165,6 @@ def _within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-# Cache validation, identity seeding, and exact check comparison.
-
-
-def _compare_checks(
-    checks: Sequence[MechanicalCheck], prior: Mapping[str, CheckComparisonEntry] | None
-) -> tuple[tuple[MechanicalCheck, ...], int]:
-    if not isinstance(prior, Mapping):
-        return tuple(checks), 0
-    result: list[MechanicalCheck] = []
-    unchanged = 0
-    for check in checks:
-        cached = prior.get(check.identity)
-        dependency = check_dependency(check, RULES_VERSION)
-        if (
-            check.status is CheckStatus.PASS
-            and check.dependencies
-            and isinstance(cached, CheckComparisonEntry)
-            and cached.dependency_projection == dependency
-            and cached.check == check
-            and cached.check.status is CheckStatus.PASS
-        ):
-            unchanged += 1
-        result.append(check)
-    return tuple(result), unchanged
 
 
 def _verify_source_stability(state: _ScanState) -> None:

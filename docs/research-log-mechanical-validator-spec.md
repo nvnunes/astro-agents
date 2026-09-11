@@ -77,7 +77,7 @@ or evolution requires it.
 | Inspection cache | `research-log-inspection-store/3` (SQLite user version 3) |
 | Cached result and view | `research-log-retained-result/1` and `research-log-result-view/1` |
 | Discovery results | `research-log-discovery-result/1` |
-| Per-log validation cache | SQLite schema 1; `check_comparison` and `evidence_selections` component version 1 |
+| Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
 
 The specification includes `evidence.json`, presentation-marker, locator,
@@ -3696,8 +3696,8 @@ The nearest enclosing non-symlink `.git` file or directory defines the project
 root for project-relative identities and the shared fingerprint cache. Missing
 Git worktree metadata is an operational error; directory names do not determine
 project ownership.
-`--recompute-validation` bypasses per-log check-comparison and
-evidence-selection reuse while retaining eligible project fingerprint reuse.
+`--recompute-validation` bypasses per-log evidence-selection reuse while
+retaining eligible project fingerprint reuse.
 `--recompute-fingerprints` bypasses project-level fingerprint reuse while
 retaining eligible per-log validation-cache reuse. The flags may be combined.
 `--recompute` is shorthand for both and preserves the complete
@@ -3978,14 +3978,9 @@ The record is canonical UTF-8 JSON with one trailing newline.
 
 `<log>/.cache/research-log-validation.sqlite3` is disposable per-log
 acceleration state using the schema and component versions listed in `Current
-Versions`. It has independent `check_comparison` and `evidence_selections`
-components.
-`check_comparison` retains only passing dependency-bearing checks, with the
-rules version, exact dependency projection, strict serialized check, and exact
-SHA-256 identity of the authoritative `.cache/validation/results.json` from which
-the baseline was built. `evidence_selections` retains strict serialized
-successful `SelectionResult` values keyed by strong source content identity,
-source profile, canonical locator identity, and locator-evaluator version.
+Versions`. It retains strict serialized successful `SelectionResult` values
+keyed by strong source content identity, source profile, canonical locator
+identity, and locator-evaluator version.
 
 Selections contain typed selected values, coordinates, identities, membership,
 shape, and dependency projection. They contain no source payload, parsed table
@@ -4007,14 +4002,6 @@ identity, aggregate fingerprint, hydration state, and deterministic member
 paths and kinds. Member files reuse the global file records. Repeated
 declarations, directory commands, overlapping trees, and different logs share
 one observation by canonical path.
-
-An evaluated check counts as unchanged only when the current authoritative
-mechanical-report bytes match the baseline report identity and the table
-contains the same passing check under the current rules version and exact
-dependency projection. This comparison happens after current evaluation and
-does not skip check computation. A different rules version invalidates only
-check comparison; it does not invalidate current project-level fingerprint
-observations or otherwise eligible evidence selections.
 
 Selection lookup happens after locator canonicalization and current strong
 source-identity observation but before full source loading. A hit reconstructs

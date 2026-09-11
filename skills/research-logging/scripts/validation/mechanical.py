@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Generic, Mapping, TypeVar
 
 from .fingerprint_cache import FingerprintCache
-from .validation_cache import CheckComparisonEntry, ValidationCache
+from .validation_cache import ValidationCache
 
 MechanicalScan = Mapping[str, Any]
 MechanicalMetrics = Mapping[str, Any]
@@ -27,7 +27,6 @@ class MechanicalEvaluationRequest:
     date: str
     fingerprint_cache: FingerprintCache | None = None
     validation_cache: ValidationCache | None = None
-    check_comparison: Mapping[str, CheckComparisonEntry] | None = None
     entry_ids: frozenset[str] | None = None
 
 

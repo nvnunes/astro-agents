@@ -599,7 +599,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_clear")
             self.assertTrue(result["published"])
             self.assertGreaterEqual(
-                result["metrics"]["validation_cache_sqlite_writes"], 4
+                result["metrics"]["validation_cache_sqlite_writes"], 3
             )
             self.assertEqual(record["schema"], "research-log-mechanical/1")
             self.assertTrue(cache_path.is_file())
@@ -608,7 +608,6 @@ class MechanicalControllerTests(unittest.TestCase):
                     connection.execute("PRAGMA user_version").fetchone()[0],
                     VALIDATION_CACHE.CACHE_SCHEMA_VERSION,
                 )
-            self.assertGreater(_cache_rows(cache_path, "check_comparison"), 0)
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
             self.assertIn("## Mechanical Validation", report)
             self.assertNotIn("## Reproduction", report)
@@ -756,7 +755,6 @@ class MechanicalControllerTests(unittest.TestCase):
 
             self.assertEqual(first["status"], "complete_clear")
             self.assertEqual(result["status"], "complete_clear")
-            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
             with closing(sqlite3.connect(cache_path)) as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
@@ -779,10 +777,9 @@ class MechanicalControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(result["status"], "complete_clear")
-            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
             self.assertEqual(cache_path.read_bytes(), before)
 
-    def test_unchanged_validation_reports_matching_checks_and_reuses_cache(
+    def test_unchanged_validation_reuses_selections_and_preserves_findings(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -817,7 +814,6 @@ class MechanicalControllerTests(unittest.TestCase):
             # The script, two data artifacts, and output-support file are each
             # hashed once; later consumers reuse those observations.
             self.assertEqual(first["metrics"]["fingerprint_cache_file_hashes"], 4)
-            self.assertGreater(second["metrics"]["checks_unchanged"], 0)
             self.assertGreater(second["metrics"]["input_fingerprints_reused"], 0)
             self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
             self.assertEqual(second["metrics"]["source_payload_reads"], 0)
@@ -920,28 +916,6 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_findings")
             self.assertEqual(_cache_rows(cache_path, "evidence_selections"), 0)
 
-    def test_rules_change_invalidates_checks_but_preserves_selection_reuse(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
-            CONTROLLER.validate(request)
-            cache_path = _cache_path(summary)
-            with closing(sqlite3.connect(cache_path)) as connection:
-                connection.execute(
-                    "UPDATE check_comparison SET rules_version = ?",
-                    ("superseded-rules",),
-                )
-                connection.commit()
-
-            rebuilt = CONTROLLER.validate(request)
-
-            self.assertEqual(rebuilt["metrics"]["checks_unchanged"], 0)
-            self.assertGreater(rebuilt["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(rebuilt["metrics"]["source_payload_reads"], 0)
-            self.assertGreater(rebuilt["metrics"]["input_fingerprints_reused"], 0)
-
     def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -976,7 +950,6 @@ class MechanicalControllerTests(unittest.TestCase):
             ordinary = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
             CONTROLLER.validate(ordinary)
             unchanged = CONTROLLER.validate(ordinary)
-            self.assertGreater(unchanged["metrics"]["checks_unchanged"], 0)
 
             recomputed = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(
@@ -989,7 +962,6 @@ class MechanicalControllerTests(unittest.TestCase):
             cache_path = _cache_path(summary)
             self.assertEqual(recomputed["status"], "complete_clear")
             self.assertTrue(recomputed["published"])
-            self.assertEqual(recomputed["metrics"]["checks_unchanged"], 0)
             self.assertEqual(recomputed["metrics"]["source_hashes_reused"], 0)
             self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
@@ -1010,7 +982,6 @@ class MechanicalControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(recomputed["status"], "complete_clear")
-            self.assertEqual(recomputed["metrics"]["checks_unchanged"], 0)
             self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
             self.assertGreater(
                 recomputed["metrics"]["fingerprint_cache_file_reuses"], 0
@@ -1032,7 +1003,6 @@ class MechanicalControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(recomputed["status"], "complete_clear")
-            self.assertGreater(recomputed["metrics"]["checks_unchanged"], 0)
             self.assertGreater(recomputed["metrics"]["selection_cache_hits"], 0)
             self.assertEqual(recomputed["metrics"]["fingerprint_cache_file_reuses"], 0)
             self.assertGreater(
@@ -1079,7 +1049,6 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_clear")
             self.assertFalse(result["published"])
             self.assertEqual(result["metrics"]["source_hashes_reused"], 0)
-            self.assertEqual(result["metrics"]["checks_unchanged"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
             self.assertEqual(project_cache.read_bytes(), b"not a sqlite database")
 

@@ -1,48 +1,32 @@
 """Per-log SQLite acceleration for mechanical validation.
 
-The cache owns disposable check-comparison and successful-selection state. It
-does not own filesystem identity, authored research metadata, or authoritative
-validation results.
+The cache owns disposable successful-selection state. It does not own
+filesystem identity, authored research metadata, or authoritative validation
+results.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import quote
 
-from .json_codec import V2JsonError, canonical_json, decode_json
-from .mechanical_results import CheckStatus, MechanicalCheck
 from .mechanical_values import SelectionResult
 from .selection_codec import SelectionCodecError, decode_selection, encode_selection
 from .sqlite_support import is_sqlite_corruption
 
 CACHE_FILENAME = "research-log-validation.sqlite3"
-CACHE_SCHEMA_VERSION = 1
-CHECK_COMPARISON_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 EVIDENCE_SELECTION_VERSION = 1
-MAX_CHECK_ROWS = 1_000_000
-MAX_CHECK_BYTES = 1024 * 1024
-MAX_CHECK_CACHE_BYTES = 64 * 1024 * 1024
 MAX_SELECTION_ROWS = 100_000
 MAX_SELECTION_BYTES = 256 * 1024
 MAX_SELECTION_CACHE_BYTES = 16 * 1024 * 1024
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CACHE_COMPANION_SUFFIXES = ("", "-journal", "-shm", "-wal")
 CACHE_TABLE_COLUMNS = {
     "cache_components": ("component", "version"),
     "cache_state": ("key", "value"),
-    "check_comparison": (
-        "identity",
-        "rules_version",
-        "dependency_projection",
-        "check_json",
-        "report_sha256",
-    ),
     "evidence_selections": (
         "source_identity",
         "source_profile",
@@ -61,14 +45,6 @@ class ValidationCacheError(RuntimeError):
 
 class CorruptValidationCacheError(ValidationCacheError):
     """Raised when generated validation-cache state is demonstrably corrupt."""
-
-
-@dataclass(frozen=True)
-class CheckComparisonEntry:
-    """One exact prior passing check and its dependency projection."""
-
-    check: MechanicalCheck
-    dependency_projection: str
 
 
 @dataclass
@@ -113,7 +89,6 @@ class ValidationCache:
         self.metrics = ValidationCacheMetrics()
         self._connection: sqlite3.Connection | None = None
         self._generation: int | None = None
-        self._checks_enabled = False
         self._selections_enabled = False
         self._used_selection_keys: set[tuple[str, str, str, str]] = set()
         self._selection_cache_rows: int | None = None
@@ -131,7 +106,6 @@ class ValidationCache:
             except (ValidationCacheError, sqlite3.DatabaseError, ValueError):
                 self._connection.close()
                 self._connection = None
-                self._checks_enabled = False
                 self._selections_enabled = False
         return self
 
@@ -141,57 +115,6 @@ class ValidationCache:
         if self._connection is not None:
             self._connection.close()
             self._connection = None
-
-    def load_check_comparison(
-        self, *, rules_version: str, report_sha256: str | None
-    ) -> Mapping[str, CheckComparisonEntry] | None:
-        """Load one complete baseline matching the authoritative report bytes."""
-
-        connection = self._connection
-        if (
-            not self.reuse
-            or not self._checks_enabled
-            or connection is None
-            or report_sha256 is None
-            or _SHA256_RE.fullmatch(report_sha256) is None
-        ):
-            return None
-        try:
-            count, total = connection.execute(
-                """
-                SELECT COUNT(*),
-                       COALESCE(SUM(
-                           length(identity) + length(rules_version) +
-                           length(dependency_projection) + length(check_json) +
-                           length(report_sha256)
-                       ), 0)
-                FROM check_comparison
-                """
-            ).fetchone()
-            self.metrics.sqlite_reads += 1
-            if (
-                _bounded_size(count) > MAX_CHECK_ROWS
-                or _bounded_size(total) > MAX_CHECK_CACHE_BYTES
-            ):
-                return None
-            rows = connection.execute(
-                """
-                SELECT identity, rules_version, dependency_projection,
-                       check_json, report_sha256
-                FROM check_comparison ORDER BY identity
-                """
-            )
-            self.metrics.sqlite_reads += 1
-            result: dict[str, CheckComparisonEntry] = {}
-            for row in rows:
-                entry = _decode_check_row(row, rules_version, report_sha256)
-                if entry.check.identity in result:
-                    return None
-                result[entry.check.identity] = entry
-            return result
-        except (ValidationCacheError, sqlite3.DatabaseError):
-            self._disable_checks()
-            return None
 
     def lookup_selection(
         self,
@@ -333,57 +256,11 @@ class ValidationCache:
                 connection.rollback()
             self._disable_selections()
 
-    def finish_published_run(
-        self,
-        checks: tuple[MechanicalCheck, ...],
-        *,
-        rules_version: str,
-        report_sha256: str,
-    ) -> bool:
-        """Promote one published baseline and remove obsolete selection rows."""
+    def finish_published_run(self) -> None:
+        """Remove selections not used by a successfully published evaluation."""
 
-        connection = self._connection
-        if not self.writable or connection is None:
-            return False
-        checks_promoted = self._promote_checks(
-            checks,
-            rules_version=rules_version,
-            report_sha256=report_sha256,
-        )
-        self._finish_selection_generation()
-        return checks_promoted
-
-    def _promote_checks(
-        self,
-        checks: tuple[MechanicalCheck, ...],
-        *,
-        rules_version: str,
-        report_sha256: str,
-    ) -> bool:
-        connection = self._connection
-        if not self._checks_enabled or connection is None:
-            return False
-        try:
-            rows = _check_rows(checks, rules_version, report_sha256)
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("DELETE FROM check_comparison")
-            connection.executemany(
-                """
-                INSERT INTO check_comparison (
-                    identity, rules_version, dependency_projection,
-                    check_json, report_sha256
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
-            connection.commit()
-            self.metrics.sqlite_writes += 1
-            return True
-        except (V2JsonError, sqlite3.DatabaseError):
-            if connection.in_transaction:
-                connection.rollback()
-            self._disable_checks()
-            return False
+        if self.writable:
+            self._finish_selection_generation()
 
     def _finish_selection_generation(self) -> None:
         connection = self._connection
@@ -458,6 +335,10 @@ class ValidationCache:
                         )
                     _create_schema(connection)
                     connection.commit()
+                elif version != CACHE_SCHEMA_VERSION:
+                    raise CorruptValidationCacheError(
+                        "validation cache schema is obsolete"
+                    )
                 _validate_schema(connection)
                 _require_integrity(connection)
                 _validate_cache_state(connection)
@@ -494,7 +375,7 @@ class ValidationCache:
                 self._connection.execute(
                     """
                     SELECT component, version FROM cache_components
-                    WHERE component IN ('check_comparison', 'evidence_selections')
+                    WHERE component = 'evidence_selections'
                     """
                 ).fetchall()
             )
@@ -502,11 +383,6 @@ class ValidationCache:
             self._connection.close()
             self._connection = None
             return
-        self._checks_enabled = self._configure_component(
-            rows.get("check_comparison"),
-            name="check_comparison",
-            expected=CHECK_COMPARISON_VERSION,
-        )
         self._selections_enabled = self._configure_component(
             rows.get("evidence_selections"),
             name="evidence_selections",
@@ -645,9 +521,6 @@ class ValidationCache:
                 connection.rollback()
             self._disable_selections()
 
-    def _disable_checks(self) -> None:
-        self._checks_enabled = False
-
     def _disable_selections(self) -> None:
         self._selections_enabled = False
 
@@ -656,19 +529,6 @@ class ValidationCache:
             self._selection_cache_rows = None
             self._selection_cache_bytes = None
             self._disable_selections()
-
-
-def check_dependency(check: MechanicalCheck, rules_version: str) -> str:
-    """Return the exact dependency projection used for check comparison."""
-
-    payload = {
-        "dependencies": [dict(item) for item in check.dependencies],
-        "identity": check.identity,
-        "rules_version": rules_version,
-        "scope": check.scope.value,
-        "subject": check.subject,
-    }
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _has_user_tables(connection: sqlite3.Connection) -> bool:
@@ -747,12 +607,9 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         "CREATE TABLE cache_components "
         "(component TEXT PRIMARY KEY, version INTEGER NOT NULL)"
     )
-    connection.executemany(
+    connection.execute(
         "INSERT INTO cache_components (component, version) VALUES (?, ?)",
-        (
-            ("check_comparison", CHECK_COMPARISON_VERSION),
-            ("evidence_selections", EVIDENCE_SELECTION_VERSION),
-        ),
+        ("evidence_selections", EVIDENCE_SELECTION_VERSION),
     )
     connection.execute(
         "CREATE TABLE cache_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -760,17 +617,6 @@ def _create_schema(connection: sqlite3.Connection) -> None:
     connection.executemany(
         "INSERT INTO cache_state (key, value) VALUES (?, ?)",
         (("completed_generation", "0"), ("next_generation", "1")),
-    )
-    connection.execute(
-        """
-        CREATE TABLE check_comparison (
-            identity TEXT PRIMARY KEY,
-            rules_version TEXT NOT NULL,
-            dependency_projection TEXT NOT NULL,
-            check_json BLOB NOT NULL,
-            report_sha256 TEXT NOT NULL
-        )
-        """
     )
     connection.execute(
         """
@@ -792,77 +638,6 @@ def _create_schema(connection: sqlite3.Connection) -> None:
     connection.execute(f"PRAGMA user_version={CACHE_SCHEMA_VERSION}")
 
 
-def _decode_check_row(
-    row: tuple[object, ...], rules_version: str, report_sha256: str
-) -> CheckComparisonEntry:
-    identity, stored_rules, dependency, payload, stored_report = row
-    if (
-        not isinstance(identity, str)
-        or stored_rules != rules_version
-        or stored_report != report_sha256
-        or not isinstance(dependency, str)
-        or _SHA256_RE.fullmatch(dependency) is None
-        or not isinstance(payload, (bytes, str))
-    ):
-        raise ValidationCacheError("check-comparison row is incompatible")
-    raw = payload.encode("utf-8") if isinstance(payload, str) else payload
-    if len(raw) > MAX_CHECK_BYTES:
-        raise ValidationCacheError("check-comparison row is oversized")
-    try:
-        value = decode_json(
-            raw.decode("utf-8"), maximum_bytes=MAX_CHECK_BYTES, subject="cached check"
-        )
-        check = MechanicalCheck.from_dict(value)
-    except (UnicodeError, V2JsonError, TypeError, ValueError) as error:
-        raise ValidationCacheError("check-comparison row is invalid") from error
-    if (
-        check.identity != identity
-        or check.status is not CheckStatus.PASS
-        or not check.dependencies
-        or check_dependency(check, rules_version) != dependency
-    ):
-        raise ValidationCacheError("check-comparison row does not match its key")
-    return CheckComparisonEntry(check, dependency)
-
-
-def _check_rows(
-    checks: tuple[MechanicalCheck, ...], rules_version: str, report_sha256: str
-) -> list[tuple[str, str, str, bytes, str]]:
-    if _SHA256_RE.fullmatch(report_sha256) is None:
-        raise V2JsonError("authoritative report identity is invalid")
-    result: list[tuple[str, str, str, bytes, str]] = []
-    total = 0
-    for check in checks:
-        if check.status is not CheckStatus.PASS or not check.dependencies:
-            continue
-        payload = canonical_json(check.as_dict()).encode("utf-8")
-        if len(payload) > MAX_CHECK_BYTES:
-            continue
-        row = (
-            check.identity,
-            rules_version,
-            check_dependency(check, rules_version),
-            payload,
-            report_sha256,
-        )
-        row_bytes = _check_row_bytes(row)
-        if len(result) >= MAX_CHECK_ROWS or total + row_bytes > MAX_CHECK_CACHE_BYTES:
-            raise V2JsonError("check-comparison cache exceeds its retained bound")
-        result.append(row)
-        total += row_bytes
-    return result
-
-
-def _check_row_bytes(row: tuple[str, str, str, bytes, str]) -> int:
-    """Return the SQLite payload bytes counted by the retained-cache bound."""
-
-    identity, rules_version, dependency, payload, report_sha256 = row
-    return sum(
-        len(value.encode("utf-8"))
-        for value in (identity, rules_version, dependency, report_sha256)
-    ) + len(payload)
-
-
 def _bounded_size(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValidationCacheError("cached serialized size is invalid")
@@ -872,12 +647,9 @@ def _bounded_size(value: object) -> int:
 __all__ = [
     "CACHE_FILENAME",
     "CACHE_SCHEMA_VERSION",
-    "CHECK_COMPARISON_VERSION",
     "EVIDENCE_SELECTION_VERSION",
     "MAX_SELECTION_BYTES",
     "MAX_SELECTION_CACHE_BYTES",
-    "CheckComparisonEntry",
     "ValidationCache",
     "ValidationCacheError",
-    "check_dependency",
 ]

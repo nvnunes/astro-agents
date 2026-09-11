@@ -18,7 +18,6 @@ ENGINE = importlib.import_module("validation.engine")
 MECHANICAL = importlib.import_module("validation.mechanical")
 RESULTS = importlib.import_module("validation.mechanical_results")
 LOCATOR = importlib.import_module("validation.locator")
-CACHE = importlib.import_module("validation.validation_cache")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 PRESENTATION = importlib.import_module("validation.presentation")
 HUMAN = importlib.import_module("validation.human_projection")
@@ -162,17 +161,6 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     return summary, entry
 
 
-def _comparison(evaluation: Any) -> dict[str, Any]:
-    return {
-        check.identity: CACHE.CheckComparisonEntry(
-            check,
-            CACHE.check_dependency(check, ENGINE.RULES_VERSION),
-        )
-        for check in evaluation.result.checks
-        if check.status is RESULTS.CheckStatus.PASS and check.dependencies
-    }
-
-
 def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...]) -> str:
     """Replace the legacy fixture registry with one current execution."""
 
@@ -239,11 +227,9 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
     return identity
 
 
-def _evaluate(summary: Path, *, check_comparison: dict[str, Any] | None = None) -> Any:
+def _evaluate(summary: Path) -> Any:
     return MECHANICAL.evaluate_mechanical(
-        MECHANICAL.MechanicalEvaluationRequest(
-            summary, "2026-08-29", check_comparison=check_comparison
-        ),
+        MECHANICAL.MechanicalEvaluationRequest(summary, "2026-08-29"),
         ENGINE.mechanical_policy(),
     )
 
@@ -3536,80 +3522,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertNotIn(f"from .{forbidden}", source)
 
         self.assertNotIn("from .discovery", source)
-
-    def test_unchanged_dependency_results_match_and_changed_script_reopens(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            first = _evaluate(summary)
-            comparison = _comparison(first)
-
-            unchanged = _evaluate(summary, check_comparison=comparison)
-            write(entry.parent / "scripts" / "model.py", "# changed identity\n")
-            changed = _evaluate(summary, check_comparison=comparison)
-
-            self.assertGreater(unchanged.metrics["checks_unchanged"], 0)
-            self.assertLess(
-                changed.metrics["checks_unchanged"],
-                unchanged.metrics["checks_unchanged"],
-            )
-            self.assertEqual(
-                changed.result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
-            )
-
-    def test_changed_code_reopens_an_unchanged_provenance_comparison(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, entry = _log(Path(directory))
-            helper = entry.parent / "scripts/helper.py"
-            write(helper, "VALUE = 1\n")
-            _set_code_support(
-                entry,
-                {
-                    "scripts/helper.py": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(helper.read_bytes()).hexdigest(),
-                    }
-                },
-            )
-            first = _evaluate(summary)
-            comparison = _comparison(first)
-
-            unchanged = _evaluate(summary, check_comparison=comparison)
-            write(helper, "VALUE = 2\n")
-            changed = _evaluate(summary, check_comparison=comparison)
-
-            self.assertGreater(unchanged.metrics["checks_unchanged"], 0)
-            self.assertLess(
-                changed.metrics["checks_unchanged"],
-                unchanged.metrics["checks_unchanged"],
-            )
-            self.assertEqual(
-                changed.result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
-            )
-
-    def test_unchanged_comparison_requires_exact_check_and_cache_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            first = _evaluate(summary)
-            comparison = _comparison(first)
-            identity, cached = next(iter(comparison.items()))
-            corrupted = dict(comparison)
-            corrupted[identity] = CACHE.CheckComparisonEntry(
-                replace(cached.check, subject="wrong subject"),
-                cached.dependency_projection,
-            )
-
-            result = _evaluate(summary, check_comparison=corrupted)
-
-            self.assertLess(
-                result.metrics["checks_unchanged"],
-                len(comparison),
-            )
-            self.assertEqual(
-                result.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

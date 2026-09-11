@@ -17,7 +17,7 @@ from research_log_paths import (
 )
 
 from .batch_projection import build_batch_projection
-from .engine import RULES_VERSION, mechanical_policy
+from .engine import mechanical_policy
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .human_projection import (
     ReportContext,
@@ -281,22 +281,12 @@ def _run_validation(
             writable=request.publish,
             reuse=not recompute_validation,
         ) as validation_cache:
-            report_identity = (
-                None
-                if recompute_validation
-                else _current_report_identity(log_root, fingerprint_cache)
-            )
-            prior_checks = validation_cache.load_check_comparison(
-                rules_version=RULES_VERSION,
-                report_sha256=report_identity,
-            )
             evaluation = evaluate_mechanical(
                 MechanicalEvaluationRequest(
                     summary,
                     result_date,
                     fingerprint_cache=fingerprint_cache,
                     validation_cache=validation_cache,
-                    check_comparison=prior_checks,
                 ),
                 mechanical_policy(),
             )
@@ -337,6 +327,7 @@ def _run_validation(
                     record, context=report_context, groups=finding_groups
                 ).encode(),
             }
+            report_identity = _current_report_identity(log_root, fingerprint_cache)
             mechanical_changed = report_identity != mechanical_digest
             if mechanical_changed:
                 outputs[VALIDATION_RESULTS] = mechanical
@@ -359,11 +350,7 @@ def _run_validation(
                     expected_size=len(mechanical),
                     expected_identity=published_identities[VALIDATION_RESULTS],
                 )
-            validation_cache.finish_published_run(
-                record.checks,
-                rules_version=RULES_VERSION,
-                report_sha256=mechanical_digest,
-            )
+            validation_cache.finish_published_run()
             metrics = {
                 **evaluation.metrics,
                 **fingerprint_cache.metrics.as_dict(),

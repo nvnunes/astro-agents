@@ -405,7 +405,6 @@ class RecordSurfaceTests(unittest.TestCase):
             (REFERENCES / "operation-validate-multilog-report.md").exists()
         )
         for implementation_detail in (
-            "check_comparison",
             "SelectionResult",
             "256 KiB",
             "100,000-candidate",

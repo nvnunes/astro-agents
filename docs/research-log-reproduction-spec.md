@@ -75,7 +75,7 @@ The initial implementation must use these versions:
 | Durable run state | `research-log-reproduction-run/6` |
 | Run status projection | `research-log-reproduction-status/6` |
 | Dry-run plan | `research-log-reproduction-plan/6` |
-| Command list | `research-log-reproduction-command-list/2` |
+| Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
 | Source snapshot | `research-log-reproduction-source-snapshot/8` (ordinary), `/9` (repair verification) |
@@ -2473,7 +2473,15 @@ returned, and omitted counts. Its public buckets are
 returns one exact entry-qualified execution, including its recorded recipe,
 working directory, automatic-reproduction policy, run selection, accounting
 reason, declared inputs and outputs, and any available planning detail. The
-text list prints a shell-safe `commands show` invocation for every returned
+list includes an `error` object for failed and unchanged-failed commands:
+`type`, a single-line `message` limited to 512 characters, `source`
+(`stderr`, `stdout`, `checkpoint`, or `unavailable`), and `truncated`.
+Other rows have `error: null`. Recognized exception and argument-error lines
+come from bounded retained log tails; otherwise the checkpoint failure is
+used. Missing diagnostics are explicit. These summaries describe recorded
+errors, not inferred root causes. The retained run is loaded once per listing.
+The text list displays the error type and message and prints a shell-safe
+`commands show` invocation for every returned
 row, preserving the caller's executable and log-path spelling.
 
 These queries use the same seven-category accounting projection that produced

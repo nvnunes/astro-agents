@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Mapping, cast
+from typing import Callable, Mapping, cast
 
 from research_log_paths import REPRODUCTION_RESULTS
 from validation.discovery import discover_summaries
@@ -41,7 +43,7 @@ from .reproduction_results import (
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
 ARTIFACT_SHOW_SCHEMA = "research-log-reproduction-artifact/1"
-COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/2"
+COMMAND_LIST_SCHEMA = "research-log-reproduction-command-list/3"
 COMMAND_SHOW_SCHEMA = "research-log-reproduction-command/3"
 SUMMARY_SCHEMA = "research-log-reproduction-summary/5"
 ROOT_SUMMARY_SCHEMA = "research-log-reproduction-root-summary/5"
@@ -480,11 +482,24 @@ def list_reproduction_commands(
     ]
     returned = selected[:50]
     matched = len(selected)
+    load_run = lru_cache(maxsize=1)(lambda: _retained_command_run(log, selected_run))
+    rows = []
+    for record in returned:
+        error = None
+        if record["bucket"] == "failed" or record["reason"] == "unchanged_failed":
+            diagnostics = _command_diagnostics(
+                log,
+                selected_run,
+                record,
+                load_run=load_run,
+            )
+            error = _failure_summary(diagnostics)
+        rows.append({**_command_list_record(record), "error": error})
     return {
         "filters": {"bucket": bucket, "entry": entry, "reason": reason},
         "matched": matched,
         "omitted": matched - len(returned),
-        "records": [_command_list_record(record) for record in returned],
+        "records": rows,
         "returned": len(returned),
         "run_id": selected_run.run_id,
         "schema": COMMAND_LIST_SCHEMA,
@@ -523,8 +538,6 @@ def show_reproduction_command(
             log,
             selected_run,
             selected[0],
-            entry=entry,
-            execution_id=execution_id,
         ),
         "run_id": selected_run.run_id,
         "schema": COMMAND_SHOW_SCHEMA,
@@ -549,11 +562,18 @@ def compose_reproduction_command_list(
         f"omitted {value['omitted']}.",
     ]
     for record in records:
+        error = record.get("error")
+        error_lines = (
+            (f"  Error: {error['type']}: {error['message']}",)
+            if isinstance(error, Mapping)
+            else ()
+        )
         lines.extend(
             (
                 "",
                 f"{record['entry']} {record['execution_id']}",
                 f"  {record['bucket']}: {record['reason']}",
+                *error_lines,
                 f"  {record['cwd']}$ {record['command']}",
                 "  Inspect: "
                 + _command_show_invocation(
@@ -687,38 +707,26 @@ def _command_diagnostics(
     run: RunResult,
     command: Mapping[str, object],
     *,
-    entry: str,
-    execution_id: str,
+    load_run: Callable[[], tuple[Path, Mapping[str, object]] | str] | None = None,
 ) -> dict[str, object]:
     """Project bounded retained diagnostics for one exact launched command."""
 
+    entry = cast(str, command["entry"])
+    execution_id = cast(str, command["execution_id"])
     unavailable = (
         "command_not_launched"
-        if command.get("run_selection") != "run"
+        if command.get("terminal_disposition") not in {"failed", "succeeded"}
+        and command.get("run_selection") != "run"
         else "run_directory_unavailable"
         if run.folder.availability != "available"
         else None
     )
     if unavailable is not None:
         return _unavailable_command_diagnostics(unavailable)
-    from .reproduction_jobs import _find_run, _load_run
-
-    try:
-        run_root = _find_run(log, run.run_id)
-        expected = (resolve_project_root(log.root) / run.folder.path).resolve()
-        if run_root != expected:
-            raise ActionError(
-                "reproduction.run.directory_changed",
-                "published run directory identity changed",
-            )
-        record = _load_run(run_root / "run.json")
-    except (ActionError, OSError) as error:
-        reason = (
-            error.code
-            if isinstance(error, ActionError)
-            else "run_directory_unavailable"
-        )
-        return _unavailable_command_diagnostics(reason)
+    retained = load_run() if load_run is not None else _retained_command_run(log, run)
+    if isinstance(retained, str):
+        return _unavailable_command_diagnostics(retained)
+    run_root, record = retained
     located = _locate_command_checkpoint(record, entry, execution_id)
     if located is None:
         return _unavailable_command_diagnostics("checkpoint_unavailable")
@@ -740,6 +748,71 @@ def _command_diagnostics(
             diagnostic_root / "stdout.log",
             published_root=run.folder.path,
         ),
+    }
+
+
+def _retained_command_run(
+    log: LogContext, run: RunResult
+) -> tuple[Path, Mapping[str, object]] | str:
+    """Load shared diagnostic authority once per query, including unavailable state."""
+
+    from .reproduction_jobs import _find_run, _load_run
+
+    try:
+        root = _find_run(log, run.run_id)
+        if root != (resolve_project_root(log.root) / run.folder.path).resolve():
+            return "reproduction.run.directory_changed"
+        return root, _load_run(root / "run.json")
+    except (ActionError, OSError) as error:
+        return (
+            error.code
+            if isinstance(error, ActionError)
+            else "run_directory_unavailable"
+        )
+
+
+def _failure_summary(diagnostics: Mapping[str, object]) -> dict[str, object]:
+    """Extract a diagnostic signature without claiming an inferred root cause."""
+
+    for name in ("stderr", "stdout"):
+        stream = diagnostics.get(name)
+        if not isinstance(stream, Mapping) or not stream.get("available"):
+            continue
+        excerpt = re.sub(
+            r"(?:\x1b|�)\[[0-?]*[ -/]*[@-~]", "",
+            str(stream.get("excerpt") or ""),
+        )
+        lines = excerpt.splitlines()
+        for line in reversed(lines):
+            match = re.search(
+                r"(?:^|\s)([\w.]*(?:Error|Exception)|StopIteration|SystemExit):?\s*(.*)$",
+                line,
+            )
+            argument = re.search(r": error:\s*(.+)$", line)
+            if match or argument:
+                kind = match[1] if match else "ArgumentError"
+                message = match[2] if match else cast(re.Match[str], argument)[1]
+                return _compact_error(kind, message, name)
+    checkpoint = diagnostics.get("checkpoint")
+    failure = checkpoint.get("failure") if isinstance(checkpoint, Mapping) else None
+    if isinstance(failure, Mapping):
+        return _compact_error(
+            str(failure["code"]), str(failure["message"]), "checkpoint"
+        )
+    return _compact_error(
+        "diagnostics_unavailable",
+        str(diagnostics.get("reason") or "No failure detail retained"),
+        "unavailable",
+    )
+
+
+def _compact_error(kind: str, message: str, source: str) -> dict[str, object]:
+    message = " ".join(_safe_diagnostic_text(message).split())
+    return {
+        "type": kind,
+        "message": message[:512],
+        "source": source,
+        "truncated": len(message) > 512,
     }
 
 

@@ -23,6 +23,7 @@ from log_commands.reproduction_planner import (
     ReproductionStateProjection,
 )
 from log_commands.reproduction_queries import (
+    _failure_summary,
     compose_reproduction_command,
     compose_reproduction_command_list,
     compose_root_reproduction_summary,
@@ -46,6 +47,50 @@ from research_log_data import Fingerprint
 
 
 class ReproductionQueryTests(unittest.TestCase):
+    def test_failure_summary_extracts_types_and_preserves_fallback(self) -> None:
+        for excerpt, kind, message in (
+            (
+                "Traceback:\nPermissionError: denied /data/config\n",
+                "PermissionError",
+                "denied /data/config",
+            ),
+            (
+                "tool.py: error: required --output-summary\n",
+                "ArgumentError",
+                "required --output-summary",
+            ),
+            (
+                "FileNotFoundError: missing results.pkl\n",
+                "FileNotFoundError",
+                "missing results.pkl",
+            ),
+            ("StopIteration\n", "StopIteration", ""),
+        ):
+            with self.subTest(kind=kind):
+                summary = _failure_summary(
+                    {
+                        "stderr": {"available": True, "excerpt": excerpt},
+                    }
+                )
+                self.assertEqual(summary["type"], kind)
+                self.assertEqual(summary["message"], message)
+                self.assertEqual(summary["source"], "stderr")
+        fallback = _failure_summary(
+            {
+                "checkpoint": {
+                    "failure": {
+                        "code": "execution_failed",
+                        "message": "execution exited with status 1",
+                    }
+                },
+            }
+        )
+        self.assertEqual(fallback["source"], "checkpoint")
+        self.assertEqual(
+            _failure_summary({"reason": "run_missing"})["type"],
+            "diagnostics_unavailable",
+        )
+
     def test_no_work_reconciliation_counts_commands_not_needing_reproduction(
         self,
     ) -> None:
@@ -789,9 +834,15 @@ class ReproductionQueryTests(unittest.TestCase):
             self.assertIn("Stderr:", text)
             self.assertIn("ValueError: broken", text)
 
-            with mock.patch(
-                "log_commands.reproduction_queries._published_results",
-                return_value=results,
+            with (
+                mock.patch(
+                    "log_commands.reproduction_queries._published_results",
+                    return_value=results,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_queries._retained_command_run",
+                    return_value=(run_root.resolve(), record),
+                ) as retained,
             ):
                 listed = list_reproduction_commands(
                     log,
@@ -800,11 +851,15 @@ class ReproductionQueryTests(unittest.TestCase):
                     reason=None,
                     run_id=run_id,
                 )
+            retained.assert_called_once()
+            self.assertEqual(listed["records"][0]["error"]["type"], "ValueError")
+            self.assertEqual(listed["records"][0]["error"]["message"], "broken")
             listing = compose_reproduction_command_list(
                 listed,
                 path=Path("/project/docs/research"),
                 program=Path("/skill/scripts/log"),
             )
+            self.assertIn("Error: ValueError: broken", listing)
             self.assertIn(
                 "/skill/scripts/log reproduce commands show "
                 "--path /project/docs/research --entry e003 "
@@ -834,9 +889,7 @@ class ReproductionQueryTests(unittest.TestCase):
                     execution_id=execution_id,
                     run_id=run_id,
                 )
-            self.assertEqual(
-                unavailable["diagnostics"]["availability"], "unavailable"
-            )
+            self.assertEqual(unavailable["diagnostics"]["availability"], "unavailable")
             self.assertEqual(
                 unavailable["diagnostics"]["reason"], "run_directory_unavailable"
             )

@@ -262,7 +262,10 @@ compact command count. The public list buckets are
 `blocked`. Omit `--run-id` for the latest completed run. Present text output
 unchanged unless a programmatic consumer needs JSON. Completed-run queries use
 the selected run's immutable historical records and never reinterpret them
-through current `pyrun.json`. Each text list row provides the exact
+through current `pyrun.json`. Failed-command listings include a concise error
+type and message for triage and grouping without individual drill-down calls.
+JSON rows expose the same summary in `error`, including its source and
+truncation flag. Each text list row provides the exact
 `commands show` invocation for that command. Use it to retrieve the retained
 checkpoint failure, timing, observed outputs, diagnostic paths, and bounded
 stderr and stdout tails. Command queries do not partially support a run whose

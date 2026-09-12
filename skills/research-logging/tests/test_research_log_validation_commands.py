@@ -15,7 +15,7 @@ from research_log_data import (
     data_file_from_inputs,
     observe_fingerprint,
 )
-from research_log_validation_test_support import unittest, write
+from research_log_validation_test_support import mock, unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
 
@@ -48,13 +48,138 @@ def _discover(body: str, context: object) -> object:
 
 
 class CommandRoleTests(unittest.TestCase):
+    def test_index_commands_does_not_observe_current_material(self) -> None:
+        """Declaration indexing remains usable before any current observation."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            declaration_context = COMMAND.CommandDeclarationContext(
+                context.log_id,
+                context.entry,
+                context.document,
+                context.entry_root,
+                context.log_root,
+                context.project_root,
+                context.data_file,
+                context.require_experimental_context,
+            )
+            text = (
+                "```bash\n./pyrun scripts/run.py --output-file data/result.csv\n```\n"
+            )
+
+            with (
+                mock.patch(
+                    "validation.commands.observe_fingerprint",
+                    side_effect=AssertionError("indexing must not fingerprint"),
+                ),
+                mock.patch(
+                    "validation.commands._observe_script",
+                    side_effect=AssertionError("indexing must not read scripts"),
+                ),
+                mock.patch(
+                    "validation.commands.bounded_descendants",
+                    side_effect=AssertionError(
+                        "indexing must not traverse directories"
+                    ),
+                ),
+                mock.patch.object(
+                    Path,
+                    "exists",
+                    side_effect=AssertionError("indexing must not stat outputs"),
+                ),
+                mock.patch.object(
+                    Path,
+                    "is_file",
+                    side_effect=AssertionError("indexing must not type-check outputs"),
+                ),
+                mock.patch.object(
+                    Path,
+                    "is_dir",
+                    side_effect=AssertionError("indexing must not type-check outputs"),
+                ),
+            ):
+                indexed = COMMAND.index_commands(text, declaration_context)
+
+            self.assertFalse(indexed.failures)
+            self.assertEqual(len(indexed.declarations), 1)
+            self.assertEqual(indexed.declarations[0].outputs[0][1], "unknown")
+
+    def test_index_commands_keeps_ordered_split_candidates_without_observation(
+        self,
+    ) -> None:
+        """Each split declaration retains scalar and directory candidates in order."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = root / "docs/log/entries/entry"
+            write(entry / "data/bundle/member.csv", "value\n1\n")
+            resources = (
+                build_local_input("file", "file", "data/file.csv", entry_root=entry),
+                build_local_input(
+                    "bundle", "directory", "data/bundle", entry_root=entry
+                ),
+            )
+            context = _context(root, resources)
+            declaration_context = COMMAND.CommandDeclarationContext(
+                context.log_id,
+                context.entry,
+                context.document,
+                context.entry_root,
+                context.log_root,
+                context.project_root,
+                context.data_file,
+                context.require_experimental_context,
+            )
+            indexed = COMMAND.index_commands(
+                "```bash\n./pyrun scripts/run.py --output-file '<file>'\n```\n"
+                "```bash\n./pyrun scripts/run.py --output-dir '<bundle>'\n```\n",
+                declaration_context,
+            )
+            self.assertEqual(
+                [declaration.outputs for declaration in indexed.declarations],
+                [
+                    (((entry / "data/file.csv").resolve().as_posix(), "file"),),
+                    (((entry / "data/bundle").resolve().as_posix(), "directory"),),
+                ],
+            )
+
+    def test_observe_commands_matches_legacy_composed_discovery(self) -> None:
+        """The explicit index/observe stages preserve normal discovery output."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            text = (
+                "```bash\n./pyrun scripts/run.py --output-file data/result.csv\n```\n"
+            )
+            declaration_context = COMMAND.CommandDeclarationContext(
+                context.log_id,
+                context.entry,
+                context.document,
+                context.entry_root,
+                context.log_root,
+                context.project_root,
+                context.data_file,
+                context.require_experimental_context,
+            )
+
+            staged = COMMAND.observe_commands(
+                COMMAND.index_commands(text, declaration_context), text, context
+            )
+
+            self.assertEqual(staged, COMMAND._legacy_discover_commands(text, context))
+
     def test_natural_and_explicit_roles_form_relationships(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "docs/log/entries/entry/data/source.csv"
             write(source, "value\n1\n")
             resource = build_local_input(
-                "source", "file", "data/source.csv", entry_root=source.parents[1],
+                "source",
+                "file",
+                "data/source.csv",
+                entry_root=source.parents[1],
                 origin=True,
             )
             context = _context(root, (resource,))
@@ -75,8 +200,12 @@ class CommandRoleTests(unittest.TestCase):
             self.assertEqual(
                 invocation.parameters,
                 (
-                    "--catalog", "<source>", "--results", "data/result.csv",
-                    "--output-image", "images/result.png",
+                    "--catalog",
+                    "<source>",
+                    "--results",
+                    "data/result.csv",
+                    "--output-image",
+                    "images/result.png",
                 ),
             )
 
@@ -111,8 +240,14 @@ class CommandRoleTests(unittest.TestCase):
             subprocess.run(["git", "add", "source.txt"], cwd=repository, check=True)
             subprocess.run(
                 [
-                    "git", "-c", "user.name=Tests", "-c",
-                    "user.email=tests@example.invalid", "commit", "-m", "fixture",
+                    "git",
+                    "-c",
+                    "user.name=Tests",
+                    "-c",
+                    "user.email=tests@example.invalid",
+                    "commit",
+                    "-m",
+                    "fixture",
                 ],
                 cwd=repository,
                 check=True,
@@ -223,6 +358,7 @@ class CommandRoleTests(unittest.TestCase):
                 hashlib.sha256(b"# fixture\n").hexdigest(),
             )
 
+
 class ClosedShellGrammarTests(unittest.TestCase):
     def test_multiple_direct_pyrun_calls_are_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -297,7 +433,7 @@ class ClosedShellGrammarTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = _discover(
                 "for value in alpha beta; do\n"
-                "  ./pyrun scripts/run.py --label \"$value\"\n"
+                '  ./pyrun scripts/run.py --label "$value"\n'
                 "done",
                 _context(Path(directory)),
             )
@@ -311,10 +447,10 @@ class ClosedShellGrammarTests(unittest.TestCase):
             result = _discover(
                 "outer_pixels=(28559 5219)\n"
                 "for device in cpu gpu; do\n"
-                "  for outer_pixel in \"${outer_pixels[@]}\"; do\n"
+                '  for outer_pixel in "${outer_pixels[@]}"; do\n'
                 "    for mode in fast exact; do\n"
-                "      ./pyrun scripts/run.py --device \"$device\" "
-                "--outer-pixel \"$outer_pixel\" --mode \"$mode\"\n"
+                '      ./pyrun scripts/run.py --device "$device" '
+                '--outer-pixel "$outer_pixel" --mode "$mode"\n'
                 "    done\n"
                 "  done\n"
                 "done",
@@ -327,16 +463,16 @@ class ClosedShellGrammarTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = _discover(
                 "for architecture in small large; do\n"
-                "  case \"$architecture\" in\n"
+                '  case "$architecture" in\n'
                 "    small) hidden=(64 32) ;;\n"
                 "    large) hidden=(128 128) ;;\n"
                 "  esac\n"
-                "  case \"$architecture\" in\n"
+                '  case "$architecture" in\n'
                 "    small) input_manifest=small-manifest ;;\n"
                 "    large) input_manifest=large-manifest ;;\n"
                 "  esac\n"
-                "  ./pyrun scripts/run.py --architecture \"$architecture\" "
-                "--hidden \"${hidden[@]}\" --manifest \"$input_manifest\"\n"
+                '  ./pyrun scripts/run.py --architecture "$architecture" '
+                '--hidden "${hidden[@]}" --manifest "$input_manifest"\n'
                 "done",
                 _context(Path(directory)),
             )
@@ -361,15 +497,11 @@ class ClosedShellGrammarTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             first = _discover(
-                "for value in alpha; do\n"
-                "./pyrun scripts/run.py --label fixed\n"
-                "done",
+                "for value in alpha; do\n./pyrun scripts/run.py --label fixed\ndone",
                 context,
             ).invocations[0]
             second = _discover(
-                "for value in beta; do\n"
-                "./pyrun scripts/run.py --label fixed\n"
-                "done",
+                "for value in beta; do\n./pyrun scripts/run.py --label fixed\ndone",
                 context,
             ).invocations[0]
             self.assertEqual(first.tokens, second.tokens)
@@ -383,7 +515,7 @@ class ClosedShellGrammarTests(unittest.TestCase):
             ):
                 _discover(
                     f"for value in {values}; do\n"
-                    "./pyrun scripts/run.py --value \"$value\"\n"
+                    './pyrun scripts/run.py --value "$value"\n'
                     "done",
                     _context(Path(directory)),
                 )

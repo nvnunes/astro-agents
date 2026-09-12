@@ -12,16 +12,8 @@ from research_log_data import DataContractError, parse_fingerprint
 from research_log_paths import (
     REPRODUCTION_REPORT,
     REPRODUCTION_RESULTS,
-    VALIDATION_RESULTS,
 )
-from validation.engine import RULES_VERSION
-from validation.human_projection import load_report_context, provenance_artifact_counts
-from validation.mechanical_results import (
-    CheckScope,
-    CheckStatus,
-    CompletionState,
-    MechanicalGeneratedRecord,
-)
+from validation.human_projection import load_report_context
 from validation.operation_state import OperationLockError, operation_lock
 
 from .context import LogContext, resolve_project_root
@@ -619,43 +611,6 @@ def _execution_timings(
         for key in ((str(planned["entry"]), str(planned["execution_id"])),)
         if key in observed
     )
-
-
-def _load_validation(log: LogContext) -> MechanicalGeneratedRecord:
-    path = log.root / VALIDATION_RESULTS
-    if path.is_symlink() or not path.is_file():
-        raise ActionError(
-            "reproduction.validation.missing",
-            f"missing cached validation result; run full validation: {path}",
-        )
-    try:
-        return MechanicalGeneratedRecord.from_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.validation.invalid", str(error)) from error
-
-
-def _require_admissible_validation(
-    log: LogContext, record: MechanicalGeneratedRecord
-) -> None:
-    if (
-        record.completion is CompletionState.INCOMPLETE
-        or Path(record.summary).resolve() != log.summary.resolve()
-        or record.rules_version != RULES_VERSION
-    ):
-        raise ActionError(
-            "reproduction.validation.stale", "validation identity is not admissible"
-        )
-    if (
-        any(
-            check.status in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}
-            for check in record.checks
-            if check.scope in {CheckScope.CONFORMANCE, CheckScope.EVIDENCE}
-        )
-        or provenance_artifact_counts(record)[CheckStatus.FAIL.value]
-    ):
-        raise ActionError(
-            "reproduction.validation.blocked", "validation contains blocking findings"
-        )
 
 
 def _fingerprint(value: object, subject: str):

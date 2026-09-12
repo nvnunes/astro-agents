@@ -9,11 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from research_log_paths import VALIDATION_BATCHES
-
 from .inspection_store import (
     ContentWriter,
-    InspectionError,
     connection,
     encode,
     unpack_view,
@@ -110,7 +107,7 @@ def _content(
     for check in _objects(record.get("checks")):
         _rejected_commands(writer, _finding(check))
         writer.entity("checks", str(check["identity"]), check)
-    # Batch reconciliation may return a related finding outside current chains.
+    # Current grouping may return a related finding outside a primary chain.
     for finding in _objects(outcome.get("findings")):
         exists = writer.db.execute(
             "SELECT 1 FROM entities WHERE result=? AND kind='findings' AND id=?",
@@ -124,8 +121,6 @@ def _content(
                 finding,
                 ("", "", str(finding.get("code", ""))),
             )
-    for index, overlap in enumerate(_objects(outcome.get("pending_batch_overlaps"))):
-        writer.entity("overlaps", str(index), overlap)
     for code, count in writer.db.execute(
         "SELECT code, count(*) FROM entities "
         "WHERE result=? AND kind='findings' GROUP BY code",
@@ -156,31 +151,33 @@ def _metadata(
         "rules_version": record.get("rules_version"),
         "source_schemas": [record.get("schema"), projection.get("schema")],
         "source_identity": (
-            projection.get("source_identity")
+            request.get("source_identity", projection.get("source_identity"))
             if outcome["status"] != "incomplete"
             else None
         ),
         "unavailable_reason": "evaluation_incomplete"
         if outcome["status"] == "incomplete"
         else None,
-        "validation_id": projection.get("validation_id"),
-        "origin_validation_id": request.get("validation"),
         "requested_entry": request.get("entry"),
         "requested_chain": request.get("chain"),
-        "requested_batch": request.get("batch"),
         "requested_entries": (
             json.loads(request["entries"]) if "entries" in request else None
+        ),
+        "dependency_entries": (
+            json.loads(request["dependencies"]) if "dependencies" in request else []
+        ),
+        "whole_log_limitations": (
+            json.loads(request["limitations"]) if "limitations" in request else []
         ),
         "evaluated_scope": outcome.get("coverage", {}).get(
             "entries", request.get("entry", "full log")
         ),
         "evaluated_checks": len(record.get("checks", [])),
         "returned_scope": (
-            "primary repair batch"
-            if "batch" in request
-            else "reconciled chains"
-            if kind == "batch"
-            else "full log"
+            "stable entry; scoped, non-authoritative"
+            if kind == "entry"
+            else
+            "current finding groups" if kind == "full" else "scoped result"
         ),
     }
     if kind == "diagnostic":
@@ -201,24 +198,14 @@ def save_result(
 ) -> str:
     """Atomically replace a scope's cached snapshot; propagate storage failures.
 
-    Full producers call under their existing operation lock. Batch producers
-    supply the accepted published-file stat identity, checked inside the write
-    transaction to prevent a late batch repopulating a superseded cycle.
+    Full producers call under their existing operation lock. Entry producers
+    use their scoped stable-entry slot; current finding groups are projections,
+    never retained historical certification state.
     """
     metadata = _metadata(summary, outcome, record, projection, request)
     kind, identity = metadata["kind"], metadata["result_id"]
-    slot = encode(
-        [kind, request.get("validation"), "repair_batch", request["batch"]]
-        if "batch" in request
-        else [
-            kind,
-            request.get("validation"),
-            request.get("entry"),
-            request.get("chain"),
-        ]
-    )
+    slot = encode([kind, request.get("entry"), request.get("chain")])
     with connection(summary.with_suffix(""), writable=True) as db:
-        _require_projection(summary, request)
         generation = db.execute("SELECT generation FROM state").fetchone()[0] + 1
         db.execute("UPDATE state SET generation=?", (generation,))
         if kind == "full" and outcome.get("published"):
@@ -227,7 +214,7 @@ def save_result(
             db.execute("DELETE FROM results WHERE slot=?", (slot,))
         metadata["sequence"] = generation
         db.execute(
-            "INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 identity,
                 generation,
@@ -235,7 +222,6 @@ def save_result(
                 kind,
                 request.get("entry", ""),
                 request.get("chain", ""),
-                request.get("validation", ""),
                 "{}",
             ),
         )
@@ -244,13 +230,10 @@ def save_result(
         from .inspection_batches import store_batches
 
         metadata["repair_batches"] = store_batches(writer, projection, outcome)
-        if "batch" in request:
-            for entry in metadata["requested_entries"] or [""]:
-                db.execute(
-                    "INSERT INTO batch_requests VALUES (?, ?, ?)",
-                    (identity, request["batch"], entry),
-                )
-        for field in ("requested_entries", "evaluated_scope"):
+        for field in (
+            "requested_entries", "evaluated_scope", "dependency_entries",
+            "whole_log_limitations",
+        ):
             metadata[field] = unpack_view(writer.pack(metadata[field]))
         metadata["counts"] = dict(
             db.execute(
@@ -275,23 +258,7 @@ def save_result(
         db.execute(
             "UPDATE results SET metadata=? WHERE id=?", (encode(metadata), identity)
         )
-        _require_projection(summary, request)
     return identity
-
-
-def _require_projection(summary: Path, request: dict[str, str]) -> None:
-    if "published_stat" not in request:
-        return
-    path = summary.with_suffix("") / VALIDATION_BATCHES
-    stat = path.stat()
-    actual = encode(
-        [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
-    )
-    if path.is_symlink() or actual != request["published_stat"]:
-        raise InspectionError(
-            "findings.validation_superseded",
-            "published validation changed during batch validation",
-        )
 
 
 def retain_result(

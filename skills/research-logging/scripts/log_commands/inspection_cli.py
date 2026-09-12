@@ -75,9 +75,8 @@ def _next_command(args: argparse.Namespace, result: dict[str, Any]) -> str:
 
 def _selectors(parser: argparse.ArgumentParser, action: str) -> None:
     if action in {"list", "show"}:
-        parser.add_argument("--kind", choices=("full", "batch", "diagnostic"))
-        for flag in ("entry", "validation"):
-            parser.add_argument("--" + flag)
+        parser.add_argument("--kind", choices=("full", "entry", "diagnostic"))
+        parser.add_argument("--entry")
         batch = parser.add_mutually_exclusive_group()
         batch.add_argument("--chain")
         batch.add_argument("--batch")

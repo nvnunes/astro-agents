@@ -40,7 +40,7 @@ inspect its returned result ID. These queries do not run validation.
 | Batch blocker and starting point | `log results batch --path <log> --id <result-id> --batch <batch-id>` |
 | Finding evidence | `log results finding --path <log> --id <result-id> --finding <check-id>` |
 | Commands and material relationships | `log results show --path <log> --id <result-id> --view commands --batch <batch-id>` |
-| Recover lost batch-check stdout | `log results list --path <log> --kind batch --validation <validation-id> --batch <batch-id>` |
+| Recover lost entry-check stdout | `log results list --path <log> --kind entry --entry <entry-id>` |
 
 Request omitted detail through the printed command; follow cursors only as needed.
 Use `--view chains` for provenance membership. For uncached published findings,
@@ -88,16 +88,13 @@ evidence-backed correction, never to recover stdout or bypass a precondition.
 
 | Coverage | Command |
 |---|---|
-| Published batch's current membership | `log validate-batch --path <log> --validation <validation-id> --batch <batch-id>`; use originating IDs. |
+| Current repair findings | Validate each affected stable entry with `log validate --path <log> --entry eNNN`, inspect its current groups, then run one final full validation. |
 | Full log and rebuilt report | `log validate --path <log>`; requires full-validation authorization. |
 
-Use focused checks while editing, including an owning postcondition or decoder/test
-for defects without a published batch. Group corrections needing full-log coverage
-at one authorized full-validation checkpoint. Skip preliminary batch checks when
-full validation is already needed.
-
-Batch `complete_clear` and `complete_findings` cover only reconciled membership.
-`coverage_incomplete` proves neither success nor failure: defer assessment to the
+Use focused checks while editing, including an owning postcondition or decoder/test.
+Group corrections needing full-log coverage at one authorized full-validation
+checkpoint. An entry result is bounded current inspection, not certification;
+defer complete-log assessment to the
 full-validation checkpoint. Do not try overlapping batches or repeat the batch/full
 cycle for each edit needing that coverage. Resolve other evaluation failures before
 judging the repair. Without full-validation authority, report the verification gap.

@@ -1101,9 +1101,9 @@ comparison-failed, skipped, and stale artifacts remain visible. Bounded
 `log reproduce artifacts list` and `show` commands provide exact machine
 details for diagnosis without requiring an agent to parse the generated files.
 
-After reproduction publication completes, the CLI runs ordinary validation for
-the affected log as a separate operation. Validation findings or an operational
-validation failure remain visible in validation's own report but do not change
+After reproduction publication completes, no validation runs automatically.
+Run Validate explicitly when current validation is needed. Validation findings
+or an operational validation failure remain visible in validation's own report but do not change
 the completed reproduction result or restore cleared reproduction requirements.
 
 Regenerated files remain together in the dated project `tmp/reproduction` run

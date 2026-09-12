@@ -35,7 +35,6 @@ FAMILIES = (
     "retention",
     "results",
     "validate",
-    "validate-batch",
 )
 AUTHORING_FAMILIES = frozenset(
     {"add", "data", "evidence", "init", "pyrun", "reorganize", "retention"}
@@ -72,7 +71,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "reproduce": _dispatch_reproduce,
             "results": _dispatch_results,
             "validate": _dispatch_validate,
-            "validate-batch": _dispatch_validate_batch,
         }
         if family in read_only_dispatch:
             return read_only_dispatch[family](arguments)
@@ -753,6 +751,7 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--path", type=Path)
     selection.add_argument("--root", type=Path)
+    parser.add_argument("--entry", help="stable physical entry ID")
     parser.add_argument("--date")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--recompute", action="store_true")
@@ -772,6 +771,7 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
             recompute_validation=(args.recompute or args.recompute_validation),
             recompute_fingerprints=(args.recompute or args.recompute_fingerprints),
         ),
+        entry=args.entry,
     )
 
 
@@ -940,24 +940,6 @@ def _validate_reproduction_arguments(
         parser.error("--verify-repair requires --entry, --execution-id, and --recheck")
     if args.summary and not args.dry_run:
         parser.error("--summary requires --dry-run")
-
-
-def _dispatch_validate_batch(arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="log validate-batch")
-    parser.add_argument("--path", required=True, type=Path)
-    parser.add_argument("--validation", required=True)
-    parser.add_argument("--batch", required=True)
-    parser.add_argument("--format", choices=("text", "json"), default="text")
-    args = parser.parse_args(arguments)
-    from .repair_validation import validate_repair_batch
-
-    value, complete = validate_repair_batch(
-        resolve_log(args.path), validation_id=args.validation, batch_id=args.batch
-    )
-    from .inspection_cli import print_producer
-
-    print_producer(value, args.path, args.format)
-    return 0 if complete else 2
 
 
 def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:

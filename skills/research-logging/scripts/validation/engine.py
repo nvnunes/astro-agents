@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping, NoReturn, Sequence, cast
 
 from research_log_data import (
     DataContractError,
+    DataDeclarationConflict,
     DataFile,
     Fingerprint,
     FingerprintObservation,
@@ -25,10 +26,16 @@ from research_log_data import (
 
 from .command_diagnostics import RejectedProducerIndex
 from .commands import (
+    MAX_INVOCATIONS_PER_LOG,
     CommandContext,
+    CommandDeclaration,
+    CommandDeclarationContext,
+    CommandDeclarationResult,
     Invocation,
     ScriptObservation,
     discover_commands,
+    index_commands,
+    observe_commands,
     order_invocations,
     output_arguments,
 )
@@ -84,10 +91,6 @@ from .material_graph import (
     MaterialGraphRequest,
     MaterialGraphResult,
     compose_material_graph,
-)
-from .mechanical import (
-    MechanicalEvaluationPolicy,
-    MechanicalEvaluationRequest,
 )
 from .mechanical_results import (
     CheckScope,
@@ -185,6 +188,42 @@ class _EntrySurface:
     data_file: DataFile | None
     data_failure: MechanicalCheck | None
     retention_file: RetentionFile | None
+
+
+@dataclass(frozen=True)
+class _EntryDeclaration:
+    """One index-only physical entry surface used by scoped evaluation."""
+
+    stable_id: str
+    root: Path
+    documents: tuple[Path, ...]
+    data: DataFile | None
+    commands: tuple[CommandDeclarationResult, ...]
+
+
+CommandFrontier = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _DeclarationCandidate:
+    """One output owner at its command-level source position."""
+
+    entry_id: str
+    path: str
+    kind: str
+    frontier: CommandFrontier
+
+
+@dataclass(frozen=True)
+class _LogDeclarationIndex:
+    """Complete declaration namespace; never a projection of observations."""
+
+    log_root: Path
+    entries: tuple[_EntryDeclaration, ...]
+    document_order: tuple[Path, ...]
+    producer_candidates: Mapping[str, tuple[_DeclarationCandidate, ...]]
+    rejected_candidates: Mapping[str, tuple[_DeclarationCandidate, ...]]
+    data_conflicts: tuple[DataDeclarationConflict, ...]
 
 
 @dataclass(frozen=True)
@@ -336,14 +375,90 @@ class _UnmatchedOutputs:
 # Top-level evaluation lifecycle.
 
 
-def mechanical_policy() -> MechanicalEvaluationPolicy[MechanicalGeneratedRecord]:
-    """Return the active policy for ``evaluate_mechanical``."""
+@dataclass(frozen=True)
+class FullEvaluationTarget:
+    """Request the complete maintained-log conclusion."""
 
-    return MechanicalEvaluationPolicy(scan=_scan, evaluate=_evaluate)
+
+@dataclass(frozen=True)
+class EntryEvaluationTarget:
+    """Request one resolved stable physical entry."""
+
+    entry_id: str
+    entry_root: Path
+
+
+EvaluationTarget = FullEvaluationTarget | EntryEvaluationTarget
+
+
+@dataclass(frozen=True)
+class EvaluationRequest:
+    """Inputs for one direct non-publishing mechanical evaluation."""
+
+    summary_path: Path
+    result_date: str
+    target: EvaluationTarget = FullEvaluationTarget()
+    fingerprint_cache: FingerprintCache | None = None
+    validation_cache: ValidationCache | None = None
+
+
+@dataclass(frozen=True)
+class EvaluationContext:
+    """The scanned context that explains an evaluation's coverage."""
+
+    target: EvaluationTarget
+    selected_documents: tuple[str, ...]
+    dependency_entries: tuple[str, ...]
+    invocations: tuple[Invocation, ...]
+    registries: tuple[tuple[str, DataFile], ...]
+    whole_log_conclusions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    """A direct mechanical record with its bounded scan context."""
+
+    record: MechanicalGeneratedRecord
+    context: EvaluationContext
+    metrics: Mapping[str, object]
+
+
+ENTRY_LIMITATIONS = (
+    "summary_evidence",
+    "summary_provenance",
+    "unselected_entry_conformance",
+    "complete_graph_output_reconciliation",
+    "whole_log_hygiene",
+    "whole_log_clearance",
+)
+
+
+def evaluate_mechanical(request: EvaluationRequest) -> EvaluationResult:
+    """Evaluate directly; publication and locks remain controller-owned."""
+
+    scan, metrics = _scan(request)
+    record = _evaluate(scan, request.result_date)
+    target = request.target
+    selected = tuple(scan["selected_documents"])
+    # Current provenance traversal can introduce upstream entries while resolving
+    # output support. Keep the selected physical documents explicit; all scanned
+    # entries remain available as dependency context.
+    dependencies = tuple(scan["dependency_entries"])
+    context = EvaluationContext(
+        target=target,
+        selected_documents=selected,
+        dependency_entries=dependencies,
+        invocations=tuple(scan["invocations"]),
+        registries=tuple(scan["registries"]),
+        whole_log_conclusions=(
+            () if isinstance(target, FullEvaluationTarget) else ENTRY_LIMITATIONS
+        ),
+    )
+    return EvaluationResult(record, context, metrics)
 
 
 def _scan(
-    request: MechanicalEvaluationRequest,
+    request: EvaluationRequest,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     started = time.perf_counter()
     summary = request.summary_path.resolve()
@@ -357,7 +472,38 @@ def _scan(
     try:
         summary_text = _read_text(summary, state)
         phase = time.perf_counter()
-        state.entries = _entries(summary_text, state, entry_ids=request.entry_ids)
+        target = request.target
+        document_roots = None
+        declaration_index: _LogDeclarationIndex | None = None
+        missing_entry_declaration = False
+        if isinstance(target, EntryEvaluationTarget):
+            document_roots = frozenset({target.entry_root.resolve()})
+            # Validate that the producer namespace is structurally indexable
+            # before any selected-entry current observation begins.
+            declaration_index = _index_log(summary_text, state)
+            missing_entry_declaration = not any(
+                document.parent.resolve() == target.entry_root.resolve()
+                for entry in declaration_index.entries
+                for document in entry.documents
+            )
+            if missing_entry_declaration:
+                state.checks.append(
+                    _error_check(
+                        f"entry:{target.entry_id}:declaration",
+                        CheckScope.PROVENANCE,
+                        EngineV2Error(
+                            "association.declaration_missing",
+                            target.entry_root.as_posix(),
+                            {"entry": target.entry_id},
+                            "Evidence File And Presentation Association",
+                        ),
+                    )
+                )
+        state.entries = (
+            []
+            if missing_entry_declaration
+            else _entries(summary_text, state, document_roots=document_roots)
+        )
         record_count = sum(
             len(evidence_file.records)
             for evidence_file in _unique_evidence_files(state.entries)
@@ -370,26 +516,22 @@ def _scan(
             )
         state.timings["evidence_file_parsing_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
-        state.invocations = _discover_invocations(state)
-        state.producer_index = build_producer_index(state.invocations)
-        state.complete_provenance_context = CompleteProvenanceContext(
-            state.producer_index,
-            producer_validator=lambda invocation, output: _validate_output_support(
-                invocation, output, state
-            ),
-            confirmed_record=lambda invocation, output: _has_confirmed_output_record(
-                invocation, output, state
-            ),
-        )
-        _load_output_support(state)
+        _prepare_command_context(state, summary_text, target, declaration_index)
         state.timings["command_inspection_seconds"] = time.perf_counter() - phase
     except MechanicalContractError as error:
         state.checks.append(
             _error_check("conformance:log", CheckScope.CONFORMANCE, error)
         )
     else:
-        _evaluate_entries(state)
-        if request.entry_ids is None:
+        _evaluate_entries(
+            state,
+            selected_roots=(
+                {request.target.entry_root.resolve()}
+                if isinstance(request.target, EntryEvaluationTarget)
+                else None
+            ),
+        )
+        if isinstance(request.target, FullEvaluationTarget):
             try:
                 _evaluate_summary(summary_text, state)
             except MechanicalContractError as error:
@@ -400,7 +542,11 @@ def _scan(
                         error,
                     )
                 )
-        _compose_graph(state)
+        # Graph reconciliation is a deliberately whole-log conclusion.  The
+        # declaration inventory used above is not an observed graph and must
+        # never make a scoped entry request perform whole-log hygiene work.
+        if isinstance(request.target, FullEvaluationTarget):
+            _compose_graph(state)
         _verify_source_stability(state)
         _verify_provenance_stability(state)
     if not any(check.scope is CheckScope.CONFORMANCE for check in state.checks):
@@ -462,7 +608,525 @@ def _scan(
             if entry.data_file is not None
         ),
         "summary": summary.as_posix(),
+        "selected_documents": _selected_documents(state, request.target),
+        "dependency_entries": _dependency_entries(state, request.target),
     }, metrics
+
+
+def _closure_wanted(
+    index: _LogDeclarationIndex,
+    invocations: Sequence[Invocation],
+    roots: Sequence[tuple[str, str | None]],
+) -> list[tuple[str, CommandFrontier | None]]:
+    """Combine ordered command consumers with orderless evidence/origin roots."""
+
+    wanted: list[tuple[str, CommandFrontier | None]] = [
+        (relationship.path, _invocation_frontier(index, invocation))
+        for invocation in invocations
+        for relationship in invocation.inputs
+    ]
+    wanted.extend((path, None) for path, _ in roots)
+    return wanted
+
+
+def _candidate_dependency_ids(
+    index: _LogDeclarationIndex,
+    invocations: Sequence[Invocation],
+    materialized: set[CommandFrontier],
+    roots: Sequence[tuple[str, str | None]] = (),
+) -> frozenset[str]:
+    """Return earlier unobserved owners whose declarations can reach a frontier.
+
+    This is deliberately the declaration equivalent of ``ProducerIndex.lookup``:
+    an output can only satisfy a command that occurs later in complete summary
+    source order.  ``unknown`` is conservatively both a scalar and directory
+    declaration until materialization determines its actual collection shape.
+    """
+
+    wanted = _closure_wanted(index, invocations, roots)
+    indexed_owners = _indexed_candidate_owners(index, wanted)
+    owners: set[str] = set()
+    for entry in index.entries:
+        if entry.stable_id not in indexed_owners:
+            continue
+        for source_document, document in zip(entry.documents, entry.commands):
+            for declaration in document.declarations:
+                frontier = _declaration_frontier(index, source_document, declaration)
+                if frontier in materialized:
+                    continue
+                if _reached_declaration_admitted(
+                    index,
+                    entry,
+                    source_document,
+                    declaration,
+                    wanted,
+                ):
+                    owners.add(entry.stable_id)
+            if any(
+                _rejected_failure_admitted(
+                    failure, wanted, _rejected_frontier(index, source_document, failure)
+                )
+                and _rejected_frontier(index, source_document, failure)
+                not in materialized
+                for failure in document.failures
+            ) or (
+                _outputs_admitted(
+                    document.rejected_outputs,
+                    wanted,
+                    _rejected_frontier(index, source_document, None),
+                )
+                and _rejected_frontier(index, source_document, None) not in materialized
+            ):
+                owners.add(entry.stable_id)
+    return frozenset(owners)
+
+
+def _indexed_candidate_owners(
+    index: _LogDeclarationIndex,
+    wanted: Sequence[tuple[str, CommandFrontier | None]],
+) -> frozenset[str]:
+    """Resolve exact and both nested-directory directions without observation."""
+
+    owners: set[str] = set()
+    for candidates in (index.producer_candidates, index.rejected_candidates):
+        for output_owners in candidates.values():
+            for candidate in output_owners:
+                if _outputs_admitted(
+                    ((candidate.path, candidate.kind),), wanted, candidate.frontier
+                ):
+                    owners.add(candidate.entry_id)
+    return frozenset(owners)
+
+
+def _prepare_command_context(
+    state: _ScanState,
+    summary_text: str,
+    target: EvaluationTarget,
+    declaration_index: _LogDeclarationIndex | None,
+) -> None:
+    indexed = _indexed_documents(declaration_index)
+    if declaration_index is not None:
+        _record_indexed_data_conflicts(declaration_index, state)
+    state.invocations = _discover_invocations(state, indexed_documents=indexed)
+    if declaration_index is not None:
+        assert isinstance(target, EntryEvaluationTarget)
+        state.invocations = _observe_producer_closure(
+            state, summary_text, target, declaration_index, indexed
+        )
+        _record_indexed_data_conflicts(declaration_index, state)
+    state.producer_index = build_producer_index(state.invocations)
+    state.complete_provenance_context = CompleteProvenanceContext(
+        state.producer_index,
+        producer_validator=lambda invocation, output: _validate_output_support(
+            invocation, output, state
+        ),
+        confirmed_record=lambda invocation, output: _has_confirmed_output_record(
+            invocation, output, state
+        ),
+    )
+    _load_output_support(state)
+
+
+def _indexed_documents(
+    index: _LogDeclarationIndex | None,
+) -> Mapping[Path, CommandDeclarationResult] | None:
+    if index is None:
+        return None
+    return {
+        document: commands
+        for entry in index.entries
+        for document, commands in zip(entry.documents, entry.commands)
+    }
+
+
+def _observe_producer_closure(
+    state: _ScanState,
+    summary_text: str,
+    target: EntryEvaluationTarget,
+    index: _LogDeclarationIndex,
+    indexed: Mapping[Path, CommandDeclarationResult] | None,
+) -> tuple[Invocation, ...]:
+    selected_documents = {entry.document.resolve() for entry in state.entries}
+    materialized = {
+        _declaration_frontier(index, document, declaration)
+        for entry in index.entries
+        for document, declarations in zip(entry.documents, entry.commands)
+        if document.resolve() in selected_documents
+        for declaration in declarations.declarations
+    }
+    materialized.update(
+        _rejected_frontier(index, document, failure)
+        for entry in index.entries
+        for document, declarations in zip(entry.documents, entry.commands)
+        if document.resolve() in selected_documents
+        for failure in declarations.failures
+    )
+    materialized.update(
+        _rejected_frontier(index, document, None)
+        for entry in index.entries
+        for document, declarations in zip(entry.documents, entry.commands)
+        if document.resolve() in selected_documents
+        if declarations.rejected_outputs
+    )
+    invocations = list(state.invocations)
+    roots = _selected_material_roots(state, target)
+    while dependencies := _candidate_dependency_ids(
+        index, invocations, materialized, roots
+    ):
+        dependency_documents = _candidate_dependency_documents(
+            index, invocations, roots, materialized
+        )
+        entries = _entries(
+            summary_text,
+            state,
+            document_roots=frozenset(
+                entry.root for entry in index.entries if entry.stable_id in dependencies
+            ),
+            document_paths=dependency_documents,
+            declaration_only_surfaces=True,
+        )
+        state.entries.extend(entries)
+        _record_indexed_data_conflicts(index, state)
+        reached = _reached_command_declarations(
+            index, dependency_documents, invocations, roots, materialized
+        )
+        invocations.extend(
+            _discover_invocations(state, entries, indexed_documents=reached)
+        )
+        materialized.update(
+            _declaration_frontier(index, document, declaration)
+            for document, declarations in reached.items()
+            for declaration in declarations.declarations
+        )
+        materialized.update(
+            _rejected_frontier(index, document, failure)
+            for document, declarations in reached.items()
+            for failure in declarations.failures
+        )
+        materialized.update(
+            _rejected_frontier(index, document, None)
+            for document, declarations in reached.items()
+            if declarations.rejected_outputs
+        )
+    return _order_closure_invocations(index, invocations)
+
+
+def _candidate_dependency_documents(
+    index: _LogDeclarationIndex,
+    invocations: Sequence[Invocation],
+    roots: Sequence[tuple[str, str | None]],
+    materialized: set[CommandFrontier],
+) -> frozenset[Path]:
+    """Select only dependency documents declaring a reached candidate material."""
+
+    wanted = _closure_wanted(index, invocations, roots)
+    result: set[Path] = set()
+    for entry in index.entries:
+        for document, declarations in zip(entry.documents, entry.commands):
+            if (
+                _outputs_admitted(
+                    tuple(
+                        output
+                        for declaration in declarations.declarations
+                        if _declaration_frontier(index, document, declaration)
+                        not in materialized
+                        for output in declaration.outputs
+                    )
+                    + declarations.rejected_outputs,
+                    wanted,
+                    _document_frontier(index, document),
+                )
+                or any(
+                    _rejected_failure_admitted(
+                        failure, wanted, _rejected_frontier(index, document, failure)
+                    )
+                    and _rejected_frontier(index, document, failure) not in materialized
+                    for failure in declarations.failures
+                )
+                or (
+                    _outputs_admitted(
+                        declarations.rejected_outputs,
+                        wanted,
+                        _rejected_frontier(index, document, None),
+                    )
+                    and _rejected_frontier(index, document, None) not in materialized
+                )
+            ):
+                result.add(document.resolve())
+    return frozenset(result)
+
+
+def _reached_command_declarations(
+    index: _LogDeclarationIndex,
+    documents: frozenset[Path],
+    invocations: Sequence[Invocation],
+    roots: Sequence[tuple[str, str | None]],
+    materialized: set[CommandFrontier],
+) -> Mapping[Path, CommandDeclarationResult]:
+    """Retain only commands that can explain the current closure frontier."""
+
+    wanted = _closure_wanted(index, invocations, roots)
+    result: dict[Path, CommandDeclarationResult] = {}
+    for entry in index.entries:
+        for document, declarations in zip(entry.documents, entry.commands):
+            if document.resolve() not in documents:
+                continue
+            retained = tuple(
+                declaration
+                for declaration in declarations.declarations
+                if _declaration_frontier(index, document, declaration)
+                not in materialized
+                if _reached_declaration_admitted(
+                    index,
+                    entry,
+                    document,
+                    declaration,
+                    wanted,
+                )
+            )
+            failures = tuple(
+                failure
+                for failure in declarations.failures
+                if _rejected_frontier(index, document, failure) not in materialized
+                if _rejected_failure_admitted(
+                    failure,
+                    wanted,
+                    _rejected_frontier(index, document, failure),
+                )
+            )
+            result[document.resolve()] = CommandDeclarationResult(
+                retained,
+                failures,
+                tuple(
+                    output
+                    for output in declarations.rejected_outputs
+                    if _outputs_admitted(
+                        (output,),
+                        wanted,
+                        _rejected_frontier(index, document, None),
+                    )
+                ),
+            )
+    return result
+
+
+def _reached_declaration_admitted(
+    index: _LogDeclarationIndex,
+    entry: _EntryDeclaration,
+    document: Path,
+    declaration: CommandDeclaration,
+    wanted: Sequence[tuple[str, CommandFrontier | None]],
+) -> bool:
+    """Admit a declaration by command order or its entry's first root owner."""
+
+    frontier = _declaration_frontier(index, document, declaration)
+    ordered_wanted = tuple(item for item in wanted if item[1] is not None)
+    root_wanted = tuple(item for item in wanted if item[1] is None)
+    if _outputs_admitted(declaration.outputs, ordered_wanted, frontier):
+        return True
+    if not _outputs_admitted(declaration.outputs, root_wanted, frontier):
+        return False
+    first = min(
+        (
+            _declaration_frontier(index, candidate_document, candidate)
+            for candidate_document, declarations in zip(entry.documents, entry.commands)
+            for candidate in declarations.declarations
+            if _outputs_admitted(
+                candidate.outputs,
+                root_wanted,
+                _declaration_frontier(index, candidate_document, candidate),
+            )
+        ),
+        default=None,
+    )
+    return frontier == first
+
+
+def _document_frontier(index: _LogDeclarationIndex, document: Path) -> CommandFrontier:
+    """Return the first command position for one summary-listed document."""
+
+    resolved = document.resolve()
+    return next(
+        (position, 0, 0)
+        for position, listed in enumerate(index.document_order)
+        if listed.resolve() == resolved
+    )
+
+
+def _declaration_frontier(
+    index: _LogDeclarationIndex, document: Path, declaration: CommandDeclaration
+) -> CommandFrontier:
+    """Return the global source order of one successfully indexed command."""
+
+    position, _, _ = _document_frontier(index, document)
+    return position, declaration.fence, declaration.ordinal
+
+
+def _rejected_frontier(
+    index: _LogDeclarationIndex, document: Path, failure: object | None
+) -> CommandFrontier:
+    """Return a stable command position for one rejected-command sentinel."""
+
+    position, _, _ = _document_frontier(index, document)
+    return position, getattr(failure, "fence", 0), getattr(failure, "ordinal", 0)
+
+
+def _invocation_frontier(
+    index: _LogDeclarationIndex, invocation: Invocation
+) -> CommandFrontier:
+    """Map an observed command back to its declaration-level source order."""
+
+    position, _, _ = _document_frontier(index, index.log_root / invocation.document)
+    return position, invocation.fence, invocation.ordinal
+
+
+def _declaration_reaches(outputs: Sequence[tuple[str, str]], wanted: set[str]) -> bool:
+    return any(
+        output == path
+        or output.startswith(path.rstrip("/") + "/")
+        or path.startswith(output.rstrip("/") + "/")
+        for output, _ in outputs
+        for path in wanted
+    )
+
+
+def _rejected_failure_admitted(
+    failure: object,
+    wanted: Sequence[tuple[str, CommandFrontier | None]],
+    producer_frontier: CommandFrontier,
+) -> bool:
+    """Match one rejected candidate to the specific eligible frontier root."""
+
+    error = getattr(failure, "error", None)
+    observed = getattr(error, "observed", None)
+    command = (
+        observed.get("rejected_command") if isinstance(observed, Mapping) else None
+    )
+    if not isinstance(command, Mapping):
+        return False
+    outputs = command.get("declared_outputs", ())
+    return any(
+        isinstance(output, Mapping)
+        and isinstance(output.get("path"), str)
+        and _outputs_admitted(((output["path"], "unknown"),), wanted, producer_frontier)
+        for output in outputs
+    )
+
+
+def _outputs_admitted(
+    outputs: Sequence[tuple[str, str]],
+    wanted: Sequence[tuple[str, CommandFrontier | None]],
+    producer_frontier: CommandFrontier,
+) -> bool:
+    """Apply material matching and before-consumer order as one predicate."""
+
+    return any(
+        (consumer_frontier is None or producer_frontier < consumer_frontier)
+        and _declaration_reaches(((output, kind),), {path})
+        for output, kind in outputs
+        for path, consumer_frontier in wanted
+    )
+
+
+def _selected_material_roots(
+    state: _ScanState, target: EntryEvaluationTarget
+) -> tuple[tuple[str, str | None], ...]:
+    """Collect selected evidence, origin, and comparison roots without reading them.
+
+    Evidence parsing is already target-owned surface work.  Resolving its input
+    tokens here seeds producer materialization before lazy locator observation,
+    so a locally matching consumer cannot hide an upstream stale producer.
+    """
+
+    roots: set[tuple[str, str | None]] = set()
+    for entry in state.entries:
+        if entry.root != target.entry_root.resolve() or entry.data_file is None:
+            continue
+        for resource in entry.data_file.inputs:
+            if resource.origin or resource.comparison is not None:
+                roots.add((resource.material_identity, None))
+        roots.update(_entry_evidence_material_roots(entry, state))
+    return tuple(sorted(roots))
+
+
+def _entry_evidence_material_roots(
+    entry: _Entry, state: _ScanState
+) -> frozenset[tuple[str, None]]:
+    """Resolve only the selected document's declared evidence inputs."""
+
+    if entry.evidence_file is None:
+        return frozenset()
+    document = entry.document.relative_to(state.log_root).as_posix()
+    roots: set[tuple[str, None]] = set()
+    for record in entry.evidence_file.records:
+        if not isinstance(record, PresentationRecord) or record.document != document:
+            continue
+        for source in record.sources:
+            try:
+                resolved = _resolve_source(source, entry, state)
+            except MechanicalContractError:
+                continue
+            roots.add((resolved.path.as_posix(), None))
+    return frozenset(roots)
+
+
+def _selected_documents(state: _ScanState, target: EvaluationTarget) -> tuple[str, ...]:
+    if isinstance(target, FullEvaluationTarget):
+        return tuple(entry.id for entry in state.entries)
+    root = target.entry_root.resolve()
+    return tuple(entry.id for entry in state.entries if entry.root == root)
+
+
+def _dependency_entries(state: _ScanState, target: EvaluationTarget) -> tuple[str, ...]:
+    if isinstance(target, FullEvaluationTarget):
+        return ()
+    root = target.entry_root.resolve()
+    return tuple(
+        sorted(
+            {
+                _stable_entry_id(entry.document)
+                for entry in state.entries
+                if entry.root != root
+            }
+        )
+    )
+
+
+def _order_closure_invocations(
+    index: _LogDeclarationIndex, invocations: Sequence[Invocation]
+) -> tuple[Invocation, ...]:
+    """Order a lazily materialized closure as if its documents were scanned.
+
+    The declaration inventory carries the summary order without projecting any
+    observations.  Reusing it here preserves the existing before-consumer
+    producer rule for a target whose upstream producer occurs earlier.
+    """
+
+    document_order = {
+        document.relative_to(index.log_root).as_posix(): position
+        for position, document in enumerate(
+            document for document in index.document_order
+        )
+    }
+    ordered = sorted(
+        invocations,
+        key=lambda invocation: (
+            document_order.get(invocation.document, len(document_order)),
+            invocation.fence,
+            invocation.ordinal,
+            invocation.identity,
+        ),
+    )
+    if len(ordered) > MAX_INVOCATIONS_PER_LOG:
+        _fail(
+            "provenance.resource.too_large",
+            "command log",
+            {"invocations": len(ordered), "limit": MAX_INVOCATIONS_PER_LOG},
+        )
+    return tuple(
+        replace(invocation, sequence=sequence)
+        for sequence, invocation in enumerate(ordered)
+    )
 
 
 def _evaluate(scan: Mapping[str, Any], date: str) -> MechanicalGeneratedRecord:
@@ -480,22 +1144,68 @@ def _entries(
     summary_text: str,
     state: _ScanState,
     *,
-    entry_ids: frozenset[str] | None = None,
+    document_roots: frozenset[Path] | None = None,
+    document_paths: frozenset[Path] | None = None,
+    declaration_only_surfaces: bool = False,
 ) -> list[_Entry]:
-    listed = _listed_entry_documents(summary_text, state)
-    state.declared_entries = tuple(document.stem for document in listed)
-    if entry_ids is not None:
-        listed = tuple(document for document in listed if document.stem in entry_ids)
+    listed = _entry_documents(summary_text, state, document_roots, document_paths)
     if not listed:
         _fail("association.declaration_missing", str(state.summary), {"entries": 0})
-    _validate_surface_placement(listed, state, scoped=entry_ids is not None)
+    _validate_surface_placement(listed, state, scoped=document_roots is not None)
+    entries = _observe_entries(listed, state, declaration_only_surfaces)
+    _record_data_conflicts(entries, state)
+    return entries
+
+
+def _entry_documents(
+    summary_text: str,
+    state: _ScanState,
+    document_roots: frozenset[Path] | None,
+    document_paths: frozenset[Path] | None = None,
+) -> tuple[Path, ...]:
+    listed = _listed_entry_documents(summary_text, state)
+    state.declared_entries = tuple(document.stem for document in listed)
+    if document_roots is None:
+        return listed
+    selected = tuple(
+        document for document in listed if document.parent.resolve() in document_roots
+    )
+    if document_paths is None:
+        return selected
+    return tuple(
+        document for document in selected if document.resolve() in document_paths
+    )
+
+
+def _stable_entry_id(document: Path) -> str:
+    match = re.fullmatch(r"(e[0-9]+)[a-z]?", document.stem, re.IGNORECASE)
+    return match.group(1).lower() if match is not None else document.stem
+
+
+def _observe_entries(
+    listed: Sequence[Path],
+    state: _ScanState,
+    declaration_only_surfaces: bool,
+) -> list[_Entry]:
     entries: list[_Entry] = []
     surfaces: dict[Path, _EntrySurface] = {}
     surface_errors: dict[Path, MechanicalContractError] = {}
     for document in listed:
-        surface = _load_entry_surface(
-            document, state, surfaces=surfaces, errors=surface_errors
-        )
+        surface: _EntrySurface | None
+        if declaration_only_surfaces:
+            root = document.parent.resolve()
+            if root not in surfaces:
+                data_file, data_failure = _read_entry_declaration_data(
+                    document.stem, root, state
+                )
+                surfaces[root] = _EntrySurface(
+                    None, None, data_file, data_failure, None
+                )
+            surface = surfaces[root]
+        else:
+            surface = _load_entry_surface(
+                document, state, surfaces=surfaces, errors=surface_errors
+            )
         if surface is None:
             continue
         root = document.parent.resolve()
@@ -511,6 +1221,10 @@ def _entries(
                 data_failure=surface.data_failure,
             )
         )
+    return entries
+
+
+def _record_data_conflicts(entries: Sequence[_Entry], state: _ScanState) -> None:
     data_files = tuple(
         {
             entry.data_file.path: entry.data_file
@@ -533,7 +1247,180 @@ def _entries(
             for resource in entry.data_file.inputs:
                 if resource.material_identity == conflict.canonical_target:
                     _add_input_prerequisite(entry, resource, check, state)
-    return entries
+
+
+def _record_indexed_data_conflicts(
+    index: _LogDeclarationIndex, state: _ScanState
+) -> None:
+    """Project indexed conflicts only when they affect the observed closure."""
+
+    relevant = {
+        resource.material_identity
+        for entry in state.entries
+        if entry.data_file is not None
+        for resource in entry.data_file.inputs
+    }
+    recorded = {check.identity: check for check in state.checks}
+    for conflict in index.data_conflicts:
+        if conflict.canonical_target not in relevant:
+            continue
+        identity = hashlib.sha256(conflict.canonical_target.encode("utf-8")).hexdigest()
+        check_id = f"conformance:data-conflict:{identity}"
+        check = recorded.get(check_id)
+        if check is None:
+            check = _error_check(check_id, CheckScope.CONFORMANCE, conflict.error)
+            state.checks.append(check)
+            recorded[check_id] = check
+        for entry in state.entries:
+            if entry.data_file is None:
+                continue
+            for resource in entry.data_file.inputs:
+                if resource.material_identity == conflict.canonical_target:
+                    _add_input_prerequisite(entry, resource, check, state)
+
+
+def _index_log(summary_text: str, state: _ScanState) -> _LogDeclarationIndex:
+    """Build the complete command namespace without observing current material.
+
+    The scoped path uses this inventory only to choose producer owners.  It is
+    intentionally separate from `_entries`, whose surface loader includes
+    evidence and retention observations needed only by materialized entries.
+    """
+
+    grouped: dict[Path, list[Path]] = {}
+    for document in _listed_entry_documents(summary_text, state):
+        grouped.setdefault(document.parent.resolve(), []).append(document)
+    indexed: list[_EntryDeclaration] = []
+    for root, documents in grouped.items():
+        ordered = tuple(sorted(documents))
+        stable = re.fullmatch(r"(e[0-9]+)[a-z]?", ordered[0].stem, re.I)
+        stable_id = stable.group(1).lower() if stable is not None else ordered[0].stem
+        try:
+            data_path = root / "data.json"
+            data = (
+                load_data_file(data_path, entry_root=root)
+                if data_path.is_file()
+                else None
+            )
+            commands = tuple(
+                index_commands(
+                    _read_text(document, state),
+                    CommandDeclarationContext(
+                        state.log_root.as_posix(),
+                        stable_id,
+                        document.relative_to(state.log_root).as_posix(),
+                        root,
+                        state.log_root,
+                        state.project_root,
+                        data,
+                    ),
+                )
+                for document in ordered
+            )
+        except (
+            OSError,
+            UnicodeError,
+            DataContractError,
+            MechanicalContractError,
+        ) as error:
+            raise EngineV2Error(
+                "association.document_unavailable",
+                str(root),
+                {"error": str(error)},
+                "Recorded-Command Provenance And Material Graph",
+                outcome="unavailable",
+            ) from error
+        indexed.append(_EntryDeclaration(stable_id, root, ordered, data, commands))
+    document_order = tuple(_listed_entry_documents(summary_text, state))
+    producers, rejected = _declaration_candidate_indexes(indexed, document_order)
+    conflicts = find_log_consistency_conflicts(
+        tuple(entry.data for entry in indexed if entry.data is not None)
+    )
+    return _LogDeclarationIndex(
+        state.log_root,
+        tuple(indexed),
+        tuple(document.resolve() for document in document_order),
+        producers,
+        rejected,
+        tuple(conflicts),
+    )
+
+
+def _declaration_candidate_indexes(
+    entries: Sequence[_EntryDeclaration],
+    document_order: Sequence[Path],
+) -> tuple[
+    Mapping[str, tuple[_DeclarationCandidate, ...]],
+    Mapping[str, tuple[_DeclarationCandidate, ...]],
+]:
+    """Build private valid and rejected producer ownership lookups."""
+
+    positions = {
+        document.resolve(): position for position, document in enumerate(document_order)
+    }
+    producers: dict[str, list[_DeclarationCandidate]] = defaultdict(list)
+    rejected: dict[str, list[_DeclarationCandidate]] = defaultdict(list)
+    for entry in entries:
+        for document, declaration_result in zip(entry.documents, entry.commands):
+            for declaration in declaration_result.declarations:
+                frontier = (
+                    positions[document.resolve()],
+                    declaration.fence,
+                    declaration.ordinal,
+                )
+                for output, kind in declaration.outputs:
+                    producers[output].append(
+                        _DeclarationCandidate(entry.stable_id, output, kind, frontier)
+                    )
+            _add_rejected_declaration_candidates(
+                declaration_result,
+                entry.stable_id,
+                positions[document.resolve()],
+                rejected,
+            )
+    return (
+        {
+            path: tuple(sorted(candidates, key=_candidate_sort_key))
+            for path, candidates in producers.items()
+        },
+        {
+            path: tuple(sorted(candidates, key=_candidate_sort_key))
+            for path, candidates in rejected.items()
+        },
+    )
+
+
+def _add_rejected_declaration_candidates(
+    declarations: CommandDeclarationResult,
+    owner: str,
+    document_position: int,
+    rejected: dict[str, list[_DeclarationCandidate]],
+) -> None:
+    """Retain parseable rejected output candidates for relevant diagnostics."""
+
+    for failure in declarations.failures:
+        observed = failure.error.observed
+        if not isinstance(observed, Mapping):
+            continue
+        command = observed.get("rejected_command")
+        if not isinstance(command, Mapping):
+            continue
+        for output in command.get("declared_outputs", ()):
+            if isinstance(output, Mapping) and isinstance(output.get("path"), str):
+                rejected[output["path"]].append(
+                    _DeclarationCandidate(
+                        owner,
+                        output["path"],
+                        str(output.get("kind", "unknown")),
+                        (document_position, failure.fence, failure.ordinal),
+                    )
+                )
+
+
+def _candidate_sort_key(candidate: _DeclarationCandidate) -> tuple[object, ...]:
+    """Keep indexed candidate traversal deterministic and source ordered."""
+
+    return candidate.frontier, candidate.entry_id, candidate.path, candidate.kind
 
 
 def _validate_surface_placement(
@@ -726,6 +1613,21 @@ def _read_entry_data(
     return data_file, None
 
 
+def _read_entry_declaration_data(
+    entry_id: str, root: Path, state: _ScanState
+) -> tuple[DataFile | None, MechanicalCheck | None]:
+    """Load dependency declaration syntax without observing every input byte."""
+
+    try:
+        data_path = root / "data.json"
+        data_file = (
+            load_data_file(data_path, entry_root=root) if data_path.is_file() else None
+        )
+    except MechanicalContractError as error:
+        return None, _record_entry_surface_error(entry_id, "data", error, state)
+    return data_file, None
+
+
 def _record_entry_surface_error(
     entry_id: str, component: str, error: MechanicalContractError, state: _ScanState
 ) -> MechanicalCheck:
@@ -782,13 +1684,17 @@ def _add_input_prerequisite_for_root(
 ) -> None:
     owner = root.relative_to(state.log_root).as_posix()
     key = _input_declaration_key(owner, resource)
-    state.input_prerequisite_checks.setdefault(key, []).append(check)
+    prerequisites = state.input_prerequisite_checks.setdefault(key, [])
+    if check not in prerequisites:
+        prerequisites.append(check)
     targets = (
         state.input_prerequisite_directories
         if resource.kind == "directory"
         else state.input_prerequisite_files
     )
-    targets.setdefault(resource.material_identity, []).append(check)
+    material_prerequisites = targets.setdefault(resource.material_identity, [])
+    if check not in material_prerequisites:
+        material_prerequisites.append(check)
 
 
 def _observe_script_identity(path: Path, state: _ScanState) -> ScriptObservation:
@@ -829,9 +1735,14 @@ def _listed_entry_documents(text: str, state: _ScanState) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(result))
 
 
-def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
+def _discover_invocations(
+    state: _ScanState,
+    entries: Sequence[_Entry] | None = None,
+    *,
+    indexed_documents: Mapping[Path, CommandDeclarationResult] | None = None,
+) -> tuple[Invocation, ...]:
     documents: list[tuple[Invocation, ...]] = []
-    for entry in state.entries:
+    for entry in entries if entries is not None else state.entries:
         try:
             document = entry.document
             text = _read_text(document, state)
@@ -854,7 +1765,16 @@ def _discover_invocations(state: _ScanState) -> tuple[Invocation, ...]:
                     else None
                 ),
             )
-            discovery = discover_commands(text, context)
+            declaration = (
+                indexed_documents.get(document.resolve())
+                if indexed_documents is not None
+                else None
+            )
+            discovery = (
+                observe_commands(declaration, text, context)
+                if declaration is not None
+                else discover_commands(text, context)
+            )
             valid_invocations: list[Invocation] = []
             for invocation in discovery.invocations:
                 _record_raw_output_findings(invocation, state)
@@ -1406,9 +2326,7 @@ def _evaluate_output_support(
             association=association,
             owners=state.execution_output_owners[invocation.material_owner],
         )
-        current_output = _observe_output_path(
-            invocation, execution_output.path, state
-        )
+        current_output = _observe_output_path(invocation, execution_output.path, state)
         execution = (
             execution_output.association.execution
             if execution_output.association
@@ -1552,9 +2470,14 @@ def _observe_provenance_path(path: Path, state: _ScanState) -> Fingerprint:
 # Evidence, presentations, and provenance evaluation.
 
 
-def _evaluate_entries(state: _ScanState) -> None:
-    _record_unowned_evidence(state)
+def _evaluate_entries(
+    state: _ScanState, *, selected_roots: set[Path] | None = None
+) -> None:
+    if selected_roots is None:
+        _record_unowned_evidence(state)
     for entry in state.entries:
+        if selected_roots is not None and entry.root not in selected_roots:
+            continue
         _evaluate_reproduction_comparisons(entry, state)
         try:
             presentations = _entry_presentations(entry, state)
@@ -2063,16 +2986,20 @@ def _record_provenance(
                 )
                 continue
             material_identity = material.path.as_posix()
-            result = state.provenance_results.get(material_identity)
+            invocations, context = _material_provenance_context(entry, material, state)
+            cacheable = context is state.complete_provenance_context
+            result = (
+                state.provenance_results.get(material_identity) if cacheable else None
+            )
             if result is None:
                 state.provenance_traversals += 1
-                assert state.complete_provenance_context is not None
                 result = evaluate_complete_provenance(
                     material.path,
-                    state.invocations,
-                    context=state.complete_provenance_context,
+                    invocations,
+                    context=context,
                 )
-                state.provenance_results[material_identity] = result
+                if cacheable:
+                    state.provenance_results[material_identity] = result
             else:
                 state.provenance_traversals_reused += 1
             findings.extend(result.findings)
@@ -2118,6 +3045,38 @@ def _record_provenance(
             error,
             dependencies=(artifact_dependency,),
         )
+
+
+def _material_provenance_context(
+    entry: _Entry, material: _ResolvedSource, state: _ScanState
+) -> tuple[tuple[Invocation, ...], CompleteProvenanceContext]:
+    """Restrict evidence material to commands preceding its local consumer."""
+
+    consumers = [
+        invocation
+        for invocation in state.invocations
+        if invocation.entry == entry.id
+        if any(
+            relationship.input_resource == material.resource
+            for relationship in invocation.inputs
+        )
+    ]
+    if not consumers:
+        assert state.complete_provenance_context is not None
+        return state.invocations, state.complete_provenance_context
+    boundary = min(invocation.sequence for invocation in consumers)
+    invocations = tuple(
+        invocation for invocation in state.invocations if invocation.sequence < boundary
+    )
+    return invocations, CompleteProvenanceContext(
+        build_producer_index(invocations),
+        producer_validator=lambda invocation, output: _validate_output_support(
+            invocation, output, state
+        ),
+        confirmed_record=lambda invocation, output: _has_confirmed_output_record(
+            invocation, output, state
+        ),
+    )
 
 
 def _ordered_provenance_findings(
@@ -2441,7 +3400,8 @@ def _execution_code_inputs(
                     association=association,
                     owners=owners,
                 )
-            ).association is not None
+            ).association
+            is not None
         ),
         None,
     )

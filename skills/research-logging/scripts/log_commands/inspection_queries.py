@@ -34,8 +34,6 @@ LIST_FIELDS = (
     "status",
     "requested_entry",
     "requested_chain",
-    "origin_validation_id",
-    "validation_id",
 )
 VIEWS = (
     "summary",
@@ -63,7 +61,6 @@ class Query:
     chain: str | None = None
     batch: str | None = None
     code: str | None = None
-    validation: str | None = None
     entity: str | None = None
     limit: int = 20
     cursor: str | None = None
@@ -86,7 +83,6 @@ def _where(query: Query, *, listing: bool) -> tuple[str, list[Any]]:
             "kind": query.kind,
             "entry": query.entry,
             "chain": query.chain,
-            "validation": query.validation,
         }
         if listing
         else {"entry": query.entry, "chain": query.chain, "code": query.code}
@@ -130,9 +126,7 @@ def _token(binding: Any, offset: int, total: int, after: str | int) -> str:
 
 def _metadata(db: sqlite3.Connection, query: Query) -> dict[str, Any]:
     if query.latest:
-        where, values = _where(
-            Query(kind=query.kind, validation=query.validation), listing=True
-        )
+        where, values = _where(Query(kind=query.kind), listing=True)
         row = db.execute(
             "SELECT metadata FROM results WHERE 1=1"
             + where
@@ -209,7 +203,7 @@ def _page(
         if query.action == "list":
             item = {
                 key: item.get(key)
-                for key in (*LIST_FIELDS, "requested_batch", "requested_entries")
+                for key in (*LIST_FIELDS, "requested_entries")
             }
 
         candidate = {**result, "items": [*result["items"], item]}
@@ -240,15 +234,12 @@ def _listing(
     selector = replace(query, entry=None)
     where, values = _where(selector, listing=True)
     if query.entry is not None:
-        where += (
-            " AND (entry=? OR EXISTS (SELECT 1 FROM batch_requests b "
-            "WHERE b.result=results.id AND b.entry=?))"
-        )
-        values.extend((query.entry, query.entry))
+        where += " AND entry=?"
+        values.append(query.entry)
     if query.batch is not None:
         where += (
-            " AND EXISTS (SELECT 1 FROM batch_requests b "
-            "WHERE b.result=results.id AND b.batch=?)"
+            " AND EXISTS (SELECT 1 FROM batch_links b "
+            "WHERE b.result=results.id AND b.kind='batches' AND b.batch=?)"
         )
         values.append(query.batch)
     binding = ["list", generation, where, values]
@@ -394,17 +385,16 @@ def _summary(db: sqlite3.Connection, metadata: dict[str, Any]) -> dict[str, Any]
         "finished_at",
         "kind",
         "reason",
-        "validation_id",
-        "origin_validation_id",
         "evaluated_scope",
         "evaluated_checks",
+        "dependency_entries",
+        "whole_log_limitations",
         "returned_scope",
         "finding_count",
         "counts",
         "codes",
         "code_groups",
         "repair_batches",
-        "requested_batch",
     )
     summary = {key: metadata.get(key) for key in fields}
     if metadata.get("repair_batches") is not None:
@@ -457,7 +447,12 @@ def inspect_result(log_root: Path, query: Query) -> dict[str, Any]:
 
 def _export(db: sqlite3.Connection, metadata: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {**metadata, "entities": {}}
-    for field in ("requested_entries", "evaluated_scope"):
+    for field in (
+        "requested_entries",
+        "evaluated_scope",
+        "dependency_entries",
+        "whole_log_limitations",
+    ):
         value = metadata.get(field)
         if isinstance(value, dict) and value.get("type") in {"collection", "value"}:
             result[field] = expand(db, metadata["result_id"], value)

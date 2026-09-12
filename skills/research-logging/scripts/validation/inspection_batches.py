@@ -19,12 +19,6 @@ CREATE TABLE batch_links (
  PRIMARY KEY(result, kind, id, entry, batch, code)
 );
 CREATE INDEX batch_selection ON batch_links(result, kind, batch, entry, code, id);
-CREATE TABLE batch_requests (
- result TEXT REFERENCES results(id) ON DELETE CASCADE,
- batch TEXT NOT NULL, entry TEXT NOT NULL,
- PRIMARY KEY(result, batch, entry)
-);
-CREATE INDEX batch_request_selection ON batch_requests(batch, entry, result);
 """
 
 
@@ -44,9 +38,6 @@ def store_batches(
     }
     findings.update({f["identity"]: f for f in objects(outcome.get("findings"))})
     batches = objects(projection["repair_batches"])
-    requested = outcome.get("requested_repair_batch")
-    if isinstance(requested, dict):
-        batches = [requested]
     commands = _command_index(projection)
     reasons: dict[str, int] = {}
     sizes = []
@@ -54,11 +45,7 @@ def store_batches(
     for batch in batches:
         identity = batch["batch_id"]
         members = batch["primary_finding_ids"]
-        selected = (
-            sorted(f["identity"] for f in objects(outcome.get("findings")))
-            if requested
-            else members
-        )
+        selected = members
         compact = {**batch, "primary_finding_count": len(selected)}
         if selected:
             compact["starting_finding"] = next(
@@ -68,13 +55,6 @@ def store_batches(
                     if "rejected_command" in findings.get(i, {}).get("observed", {})
                 ),
                 selected[0],
-            )
-        if requested:
-            compact.update(
-                {
-                    key: outcome[key]
-                    for key in ("coverage", "reconciliation", "current_membership")
-                }
             )
         writer.entity("batches", identity, compact)
         reasons[batch["grouping_reason"]] = reasons.get(batch["grouping_reason"], 0) + 1

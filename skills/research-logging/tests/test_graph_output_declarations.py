@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -14,7 +13,6 @@ from research_log_cli_test_support import run_log
 # isort: split
 # The CLI test helper adds the scripts directory before importing its modules.
 from log_commands.inspection_queries import Query, inspect_result
-from log_commands.repair_reconciliation import ReconciliationIndex
 from research_log_data import build_local_input
 from research_log_validation_test_support import mechanical_log, write
 from test_research_log_validation_material_graph import _bundle_surface, _request
@@ -257,7 +255,7 @@ class OutputArgumentTests(unittest.TestCase):
                 named.invocations[0].collections,
             )
 
-    def test_output_batch_inspection_and_reconciliation_survive_token_migration(self):
+    def test_output_group_inspection_survives_token_migration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             summary, entry = mechanical_log(root)
@@ -277,7 +275,6 @@ class OutputArgumentTests(unittest.TestCase):
             logical = summary.with_suffix("")
             current = inspect_result(logical, Query(action="list", kind="full"))
             result_id = current["items"][0]["result_id"]
-            metadata = inspect_result(logical, Query(result_id=result_id))["metadata"]
             batches = inspect_result(
                 logical, Query(result_id=result_id, view="batches")
             )["items"]
@@ -301,127 +298,3 @@ class OutputArgumentTests(unittest.TestCase):
                 batch["anchors"][0]["path"],
                 {artifact["path"] for artifact in artifact_view["items"]},
             )
-            unchanged = run_log(
-                root,
-                "validate-batch",
-                "--path",
-                str(logical),
-                "--validation",
-                metadata["validation_id"],
-                "--batch",
-                batch["batch_id"],
-                "--format",
-                "json",
-            )
-            self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
-            pending = json.loads(unchanged.stdout)
-            self.assertEqual(pending["status"], "complete_findings")
-            member = pending["reconciliation"][0]
-            self.assertEqual(member["status"], "remaining")
-            self.assertEqual(
-                member["current_finding_ids"],
-                [finding["identity"] for finding in pending["findings"]],
-            )
-            successors = {
-                item["batch_id"]
-                for item in pending["current_membership"]
-                if member["check_id"] in item.get("primary_finding_ids", [])
-            }
-            self.assertTrue(successors)
-            self.assertEqual(set(member["successor_batch_ids"]), successors)
-            entry.write_text(named)
-            checked = run_log(
-                root,
-                "validate-batch",
-                "--path",
-                str(logical),
-                "--validation",
-                metadata["validation_id"],
-                "--batch",
-                batch["batch_id"],
-                "--format",
-                "json",
-            )
-            self.assertEqual(checked.returncode, 0, checked.stderr + checked.stdout)
-            result = json.loads(checked.stdout)
-            self.assertEqual(result["status"], "complete_clear", result)
-            self.assertEqual(result["reconciliation"][0]["current_finding_ids"], [])
-            checked_id = inspect_result(logical, Query(action="list", kind="batch"))[
-                "items"
-            ][0]["result_id"]
-            cleared = inspect_result(
-                logical,
-                Query(action="batch", result_id=checked_id, entity=batch["batch_id"]),
-            )["items"][0]
-            self.assertEqual(
-                cleared["primary_finding_ids"], batch["primary_finding_ids"]
-            )
-            self.assertEqual(cleared["primary_finding_count"], 0)
-            self.assertNotIn("starting_finding", cleared)
-            self.assertEqual(
-                inspect_result(
-                    logical,
-                    Query(
-                        result_id=checked_id, view="findings", batch=batch["batch_id"]
-                    ),
-                )["total"],
-                0,
-            )
-
-    def test_different_argument_or_missing_check_cannot_clear(self):
-        anchor = {
-            "kind": "output_argument",
-            "entry": "e001",
-            "document": "e001.md",
-            "fence": 1,
-            "ordinal": 1,
-            "target": "output",
-            "path": "/result.csv",
-        }
-        original = {
-            "identity": "old",
-            "scope": "conformance",
-            "subject": "e001.md",
-            "observed": {"output_argument": anchor},
-        }
-        for changed in (
-            {**anchor, "path": "/other.csv"},
-            {**anchor, "target": "other-output"},
-        ):
-            index = ReconciliationIndex(
-                {
-                    "checks": [
-                        {
-                            "identity": "old",
-                            "status": "pass",
-                            "dependencies": [{"output_argument": changed}],
-                        }
-                    ]
-                },
-                {"chains": []},
-                {},
-            )
-            self.assertEqual(index.reconcile(original)["status"], "incomplete")
-
-    def test_output_argument_retains_current_chain_membership(self):
-        command = {
-            "identity": "producer",
-            "entry": "e001",
-            "document": "e001.md",
-            "fence": 1,
-            "ordinal": 1,
-            "inputs": [],
-            "outputs": [],
-        }
-        index = ReconciliationIndex(
-            {"checks": []},
-            {"chains": [{"chain_id": "chain", "entry": "e002", "commands": [command]}]},
-            {},
-        )
-        anchor = {
-            "kind": "output_argument",
-            **{k: command[k] for k in ("entry", "document", "fence", "ordinal")},
-            "target": "output",
-            "path": "/result.csv",
-        }
-        self.assertEqual(index.current_chains([anchor])[0]["chain_id"], "chain")

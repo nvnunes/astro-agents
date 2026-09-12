@@ -17,17 +17,20 @@ from research_log_paths import (
 )
 
 from .batch_projection import build_batch_projection
-from .engine import mechanical_policy
+from .engine import (
+    RULES_VERSION,
+    EntryEvaluationTarget,
+    EvaluationContext,
+    EvaluationRequest,
+    EvaluationResult,
+    FullEvaluationTarget,
+    evaluate_mechanical,
+)
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .human_projection import (
     ReportContext,
     load_report_context,
     project_findings,
-)
-from .mechanical import (
-    MechanicalEvaluation,
-    MechanicalEvaluationRequest,
-    evaluate_mechanical,
 )
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
 from .operation_state import (
@@ -217,43 +220,147 @@ def evaluate_current_record(
     return MechanicalGeneratedRecord.from_dict(raw)
 
 
-def evaluate_entries_record(
-    summary: Path, *, result_date: str, entry_ids: frozenset[str]
-) -> MechanicalEvaluation[MechanicalGeneratedRecord]:
-    """Evaluate a nonempty entry set once with shared read-only observations.
+@dataclass(frozen=True)
+class EntryValidationRequest:
+    """One non-authoritative stable-entry inspection evaluation."""
 
-    The caller owns coverage and source reconciliation. This function does not
-    publish, acquire an operation lock, or write evaluation caches.
-    """
-    if not entry_ids:
-        raise ValidationControllerError("a bounded entry set is required")
+    summary: Path
+    entry_id: str
+    entry_root: Path
+    result_date: str | None = None
+    dry_run: bool = False
+    recompute_validation: bool = False
+    recompute_fingerprints: bool = False
 
-    summary = summary.resolve()
+
+@dataclass(frozen=True)
+class EntryValidationResult:
+    """One scoped evaluation and its best-effort retained inspection identity."""
+
+    evaluation: EvaluationResult
+    inspection_id: str | None = None
+
+    @property
+    def record(self) -> MechanicalGeneratedRecord:
+        return self.evaluation.record
+
+    @property
+    def context(self):
+        return self.evaluation.context
+
+    @property
+    def metrics(self):
+        return self.evaluation.metrics
+
+
+def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
+    """Evaluate exactly one entry under the normal log lock without publishing."""
+
+    summary = request.summary.resolve()
     _validate_request(summary)
-    unsupported = _unsupported_metadata_state(summary)
-    if unsupported is not None:
-        raise ValidationControllerError(
-            "generated metadata requires Repair before batch evaluation"
-        )
-    with FingerprintCache(
-        project_root(summary), writable=False, reuse=True
-    ) as fingerprints:
-        with ValidationCache(
-            summary.with_suffix(""), writable=False, reuse=True
-        ) as checks:
-            evaluation = evaluate_mechanical(
-                MechanicalEvaluationRequest(
-                    summary,
-                    _result_date(result_date),
-                    fingerprint_cache=fingerprints,
-                    validation_cache=checks,
-                    entry_ids=entry_ids,
-                ),
-                mechanical_policy(),
+    from .inspection import retain_result, timestamp
+
+    starting_snapshot = research_snapshot(summary)
+    with operation_lock(summary.with_suffix(""), "log.lock", mode="exclusive"):
+        if research_snapshot(summary) != starting_snapshot:
+            return _source_changed_entry_result(request, "before_entry_evaluation")
+        with FingerprintCache(
+            project_root(summary),
+            writable=False,
+            reuse=not request.recompute_fingerprints,
+        ) as fingerprints:
+            with ValidationCache(
+                summary.with_suffix(""),
+                writable=False,
+                reuse=not request.recompute_validation,
+            ) as checks:
+                result = evaluate_mechanical(
+                    EvaluationRequest(
+                        summary,
+                        _result_date(request.result_date),
+                        EntryEvaluationTarget(request.entry_id, request.entry_root),
+                        fingerprints,
+                        checks,
+                    )
+                )
+        if research_snapshot(summary) != starting_snapshot:
+            return _source_changed_entry_result(request, "during_entry_evaluation")
+        inspection_id = None
+        if not request.dry_run:
+            # The controller owns scoped retention because it owns the lock and
+            # the source-stability decision.  A cache write is best effort and
+            # never changes the evaluation outcome.
+            projection = build_batch_projection(
+                result.record,
+                invocations=result.context.invocations,
+                registries=result.context.registries,
+                source_identity=_value_digest(starting_snapshot),
             )
-    if not isinstance(evaluation.result, MechanicalGeneratedRecord):
-        raise ValidationControllerError("mechanical batch evaluation did not complete")
-    return evaluation
+            inspection_id = retain_result(
+                summary,
+                {
+                    "status": result.record.completion.value,
+                    "published": False,
+                    "coverage": {
+                        "entries": list(result.context.selected_documents),
+                        "dependencies": list(result.context.dependency_entries),
+                        "limitations": list(result.context.whole_log_conclusions),
+                    },
+                },
+                result.record.as_dict(),
+                dict(projection),
+                {
+                    "kind": "entry",
+                    "entry": request.entry_id,
+                    "started_at": timestamp(),
+                    "source_identity": _value_digest(starting_snapshot),
+                    "dependencies": json.dumps(result.context.dependency_entries),
+                    "limitations": json.dumps(result.context.whole_log_conclusions),
+                },
+            )
+    return EntryValidationResult(result, inspection_id)
+
+
+def _source_changed_entry_result(
+    request: EntryValidationRequest, phase: str
+) -> EntryValidationResult:
+    """Return a scoped incomplete record instead of recasting drift as an error."""
+
+    from .engine import ENTRY_LIMITATIONS
+    from .mechanical_results import (
+        CheckScope,
+        CheckStatus,
+        FailurePayload,
+        MechanicalCheck,
+    )
+
+    record = MechanicalGeneratedRecord.build(
+        request.summary.resolve().as_posix(),
+        RULES_VERSION,
+        _result_date(request.result_date),
+        (
+            MechanicalCheck(
+                f"entry:{request.entry_id}:source_changed",
+                CheckScope.CONFORMANCE,
+                CheckStatus.UNAVAILABLE,
+                request.summary.resolve().as_posix(),
+                failure=FailurePayload(
+                    "source_changed",
+                    request.summary.resolve().as_posix(),
+                    {"phase": phase},
+                    "Stable Source Observation",
+                ),
+            ),
+        ),
+    )
+    target = EntryEvaluationTarget(request.entry_id, request.entry_root)
+    return EntryValidationResult(
+        EvaluationResult(
+            record,
+            EvaluationContext(target, (), (), (), (), ENTRY_LIMITATIONS),
+            {},
+        )
+    )
 
 
 def _run_validation(
@@ -282,23 +389,19 @@ def _run_validation(
             reuse=not recompute_validation,
         ) as validation_cache:
             evaluation = evaluate_mechanical(
-                MechanicalEvaluationRequest(
+                EvaluationRequest(
                     summary,
                     result_date,
-                    fingerprint_cache=fingerprint_cache,
-                    validation_cache=validation_cache,
-                ),
-                mechanical_policy(),
-            )
-            record = evaluation.result
-            if not isinstance(record, MechanicalGeneratedRecord):
-                raise ValidationControllerError(
-                    "mechanical engine returned an invalid record"
+                    FullEvaluationTarget(),
+                    fingerprint_cache,
+                    validation_cache,
                 )
+            )
+            record = evaluation.record
             projection = build_batch_projection(
                 record,
-                invocations=evaluation.scan["invocations"],
-                registries=evaluation.scan["registries"],
+                invocations=evaluation.context.invocations,
+                registries=evaluation.context.registries,
                 source_identity=_value_digest(starting_snapshot),
             )
             if not request.publish or record.completion is CompletionState.INCOMPLETE:

@@ -18,7 +18,7 @@ from research_log_cli_test_support import run_log
 from research_log_data import build_local_input
 from research_log_validation_test_support import mechanical_log
 from test_log_data import scaffold
-from test_validation_inspection import sample
+from test_validation_inspection import _result
 from validation.command_diagnostics import (
     RejectedProducerIndex,
     rejected_producer_message,
@@ -30,9 +30,9 @@ from validation.inspection_store import InspectionError
 class RejectedProducerTests(unittest.TestCase):
     def test_large_error_is_text_only_with_read_only_paged_detail(self):
         with tempfile.TemporaryDirectory() as directory:
-            arguments = sample(Path(directory))
+            arguments = _result(Path(directory), entry="e001")
             logical = arguments[0].with_suffix("")
-            batch_id = save_result(*arguments)
+            entry_id = save_result(*arguments)
             commands = tuple({
                 "identity": f"entry:e001:command:1:{i}", "entry": "e001",
                 "document": "entries/e001/e001.md", "fence": 1, "ordinal": i,
@@ -88,7 +88,7 @@ class RejectedProducerTests(unittest.TestCase):
             summary = inspect_result(logical, Query(result_id=result_id))["metadata"]
             self.assertIsNone(summary["evaluated_checks"])
             self.assertEqual(summary["kind"], "diagnostic")
-            # One latest diagnostic; full/batch observations remain available.
+            # One latest diagnostic; the scoped entry observation remains available.
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 _report_failure("data", "data.add-generated", error)
             self.assertEqual(len(inspect_result(
@@ -96,9 +96,9 @@ class RejectedProducerTests(unittest.TestCase):
             )["items"]), 1)
             with self.assertRaises(InspectionError):
                 inspect_result(logical, Query(result_id=result_id))
-            self.assertEqual(inspect_result(logical, Query(result_id=batch_id))[
+            self.assertEqual(inspect_result(logical, Query(result_id=entry_id))[
                 "metadata"
-            ]["kind"], "batch")
+            ]["kind"], "entry")
 
     def test_failed_cache_write_never_falls_back_to_json(self):
         error = ActionError("producer.missing", "No admitted producer", records=(),
@@ -116,7 +116,7 @@ class RejectedProducerTests(unittest.TestCase):
 
     def test_unrelated_scalar_observations_still_cache(self):
         with tempfile.TemporaryDirectory() as directory:
-            arguments = sample(Path(directory))
+            arguments = _result(Path(directory), entry="e001")
             arguments[1]["findings"][0]["observed"] = "unavailable"
             result_id = save_result(*arguments)
             view = inspect_result(

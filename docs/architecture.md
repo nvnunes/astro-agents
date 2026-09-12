@@ -265,8 +265,7 @@ Future validation changes must preserve these invariants:
   and automatic-reproduction policy. One shell loop produces one execution identity per
   child `pyrun` invocation. Validation reads this state but does not write it;
   Reproduction executes it directly without using Markdown as authority. The
-  separate read-only legacy output-record compatibility and temporary
-  targeted-refresh adapter are defined by
+  separate read-only legacy output-record compatibility is defined by
   `docs/research-log-reproduction-spec.md`; neither supplies data/evidence
   conversion or reproduction authority.
 - **Split Reorganize ownership:** agents own semantic partitioning, Markdown,

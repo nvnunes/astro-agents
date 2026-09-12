@@ -24,7 +24,7 @@ repair batches, including inspection groups without an established common
 cause. Both are disposable and a full validation rebuilds them. Ordinary
 diagnosis and Repair use `log results` and `log findings`; they do not parse
 generated files directly. Missing current machine state requires a full
-validation before findings queries or reproduction admission.
+validation before findings queries.
 
 `validation.md` is the concise, source-controlled human projection. Validate
 and Repair do not parse it as machine authority. Reproduction is a separate
@@ -38,13 +38,14 @@ contains no internal failure codes, check identities, raw observed state,
 dependency mappings, passing totals, or repair instructions. A clear completed
 result says `No mechanical findings.`
 
-The inspection cache keeps the latest full observation and latest result per
-batch. A new check replaces that batch's result; a completed full validation
-replaces the full result and clears prior batches. Batch checking writes this
-cache only, preserving published validation and research-owned state.
+The inspection cache keeps the latest full observation and the latest scoped
+result for each stable entry. A new entry validation replaces only that entry's
+result; a completed full validation replaces the full result and clears prior
+scoped results. Entry validation writes only this cache, preserving published
+validation and research-owned state.
 Failed authoring commands may also retain the latest `diagnostic` snapshot per
 log in this cache. Its rejected-command details are not validation evidence.
-New diagnostics preserve full and batch results; full publication clears old
+New diagnostics preserve full and entry results; full publication clears old
 diagnostics. Use the printed text-inspection command for omitted details.
 Inspection never evaluates research files. Cache-write failure warns without
 discarding the validation outcome and supplies no new result ID.
@@ -84,7 +85,8 @@ report its supplied owner metadata once and stop; do not retry or poll.
 
 The machine bundle is local cache state; `validation.md` is its durable human
 summary. Removing the cache does not alter the committed report, but machine
-queries and reproduction admission require validation to rebuild current state.
+queries require validation to rebuild current state. Reproduction planning has
+its own state and does not read or require the validation bundle.
 The former `validation/results.json` and `validation/batches.json` locations are
 unsupported after the one-time path migration and are never read as fallbacks.
 

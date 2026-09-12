@@ -7,9 +7,8 @@ and executes from JSON authority, retains regenerated outputs in a project-local
 run folder, compares them with retained artifacts, and publishes generated
 reproduction state. Outside repair-verification mode, completed executions also
 clear their reproduction requirement. After successful publication, the CLI
-invokes ordinary log validation as a separate operation. It reads verified
-scripts, code, inputs, and comparison baselines in place; it does not copy the
-project into the run folder.
+does not invoke validation. Run Validate explicitly when a current validation
+result is required; reproduction does not copy the project into the run folder.
 
 Read `references/file-reproduction-records.md` before launching or reporting a
 run.
@@ -20,9 +19,8 @@ run.
   `data.json`, `evidence.json`, `retention.json`, and authored prose as
   read-only. Reproduce writes its generated job, result, and report paths and
   may change only `requires_reproduction: true` to `requires_reproduction:
-  false` for a completed execution in `pyrun.json`. The separate post-run
-  validation owns its own
-  generated files.
+  false` for a completed execution in `pyrun.json`. A later explicit
+  validation owns its own generated files.
 - Do not interpret Markdown as execution authority, select commands, repair a
   recipe, judge scientific meaning, or decide whether a changed artifact should
   replace retained research material.
@@ -244,9 +242,8 @@ detail, retrieve the complete report instead:
 
 Never hide or soften `changed`, `failed`, `comparison_failed`, `skipped`, or
 stale artifact results in that detail. Run status describes operational
-completion and is independent of artifact outcomes. Treat the subsequent
-validation outcome separately: its findings or failure do not invalidate
-completed reproduction work.
+completion and is independent of artifact outcomes. A later explicit validation
+finding or failure does not invalidate completed reproduction work.
 
 An evidence-scoped artifact may report `matched` even when its complete file
 fingerprint differs. In that case, use the bounded artifact `show` result when

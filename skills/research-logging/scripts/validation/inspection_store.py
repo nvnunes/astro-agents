@@ -1,6 +1,6 @@
 """Disposable, transactional storage for selectively inspected validation results.
 
-Each log owns one SQLite cache. Replacing a batch deletes only that batch's
+Each log owns one SQLite cache. Replacing an entry deletes only that entry's
 previous result; publishing a full result clears the preceding cycle. Reads
 never evaluate research sources or repair the store. Large arrays and strings
 are stored separately so fetching an entity does not decode its membership.
@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-STORE_VERSION = 3
+STORE_VERSION = 4
 STORE_NAME = "research-log-inspection.sqlite3"
 CHUNK_CHARACTERS = 1024  # At most 4096 UTF-8 bytes.
 MAX_NODE_BYTES = 8 * 1024
@@ -27,9 +27,9 @@ INSERT INTO state VALUES (0);
 CREATE TABLE results (
  id TEXT PRIMARY KEY, sequence INTEGER UNIQUE NOT NULL, slot TEXT UNIQUE NOT NULL,
  kind TEXT NOT NULL, entry TEXT NOT NULL, chain TEXT NOT NULL,
- validation TEXT NOT NULL, metadata TEXT NOT NULL
+ metadata TEXT NOT NULL
 );
-CREATE INDEX result_selection ON results(kind, entry, chain, validation, sequence);
+CREATE INDEX result_selection ON results(kind, entry, chain, sequence);
 CREATE TABLE entities (
  result TEXT REFERENCES results(id) ON DELETE CASCADE,
  kind TEXT NOT NULL, id TEXT NOT NULL, entry TEXT NOT NULL, chain TEXT NOT NULL,
@@ -98,7 +98,7 @@ def _open(path: Path, writable: bool) -> sqlite3.Connection:
         db.execute("PRAGMA journal_mode=DELETE")
         db.execute("PRAGMA synchronous=FULL")
     version = db.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, 1, 2, STORE_VERSION) or (
+    if version not in (0, STORE_VERSION) or (
         not writable and version != STORE_VERSION
     ):
         db.close()
@@ -106,6 +106,8 @@ def _open(path: Path, writable: bool) -> sqlite3.Connection:
             "results.schema.unsupported",
             f"store version {version}; run full validation to rebuild results",
         )
+    # The inspection cache is disposable; do not preserve legacy batch-origin
+    # state through a compatibility migration.
     if writable and version < STORE_VERSION:
         from .inspection_batches import BATCH_DDL
 
@@ -116,7 +118,6 @@ def _open(path: Path, writable: bool) -> sqlite3.Connection:
                     f"DROP TABLE IF EXISTS {table};"
                     for table in (
                         "batch_links",
-                        "batch_requests",
                         "pieces",
                         "links",
                         "entities",

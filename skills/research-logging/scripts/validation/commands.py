@@ -100,6 +100,238 @@ class CommandV2Error(MechanicalContractError):
 
 
 @dataclass(frozen=True)
+class CommandDeclarationContext:
+    """Declaration-only context for one command-bearing entry document.
+
+    This type deliberately has no cache or observer hooks.  `index_commands`
+    may parse recorded syntax and normalize lexical paths, but it must not turn
+    a declaration inventory into an observation of current research material.
+    """
+
+    log_id: str
+    entry: str
+    document: str
+    entry_root: Path
+    log_root: Path
+    project_root: Path
+    data_file: DataFile | None
+    require_experimental_context: bool = True
+
+
+@dataclass(frozen=True)
+class CommandDeclaration:
+    """One parsed command and its conservative potential-output surface."""
+
+    fence: int
+    ordinal: int
+    tokens: tuple[str, ...]
+    owner: str
+    outputs: tuple[tuple[str, str], ...]
+    parsed: _ParsedCommand
+
+
+@dataclass(frozen=True)
+class CommandDeclarationResult:
+    """Bounded structural parsing result, without current observations."""
+
+    declarations: tuple[CommandDeclaration, ...]
+    failures: tuple[CommandDiscoveryFailure, ...]
+    rejected_outputs: tuple[tuple[str, str], ...] = ()
+
+
+def index_commands(
+    text: str, context: CommandDeclarationContext
+) -> CommandDeclarationResult:
+    """Index command syntax without opening scripts, state, or material paths."""
+
+    declarations: list[CommandDeclaration] = []
+    failures: list[CommandDiscoveryFailure] = []
+    rejected_outputs: list[tuple[str, str]] = []
+    for fence_number, (body, eligible, _) in enumerate(_command_fences(text), 1):
+        parsed, parse_failures = _parse_fence(body)
+        if parse_failures:
+            recovered = _recover_rejected_outputs(body, context)
+            rejected_outputs.extend(recovered)
+            failures.append(CommandDiscoveryFailure(
+                fence_number, 1,
+                CommandV2Error("invocation.command.unsupported",
+                    f"{context.document}:fence-{fence_number}",
+                    {
+                        "reason": parse_failures[0],
+                        "rejected_command": _structural_rejected_command(
+                            context, fence_number, recovered
+                        ),
+                    },
+                    "Recorded-Command Provenance And Material Graph"),
+            ))
+            continue
+        if context.require_experimental_context and not eligible:
+            continue
+        ordinal = 0
+        for command in parsed:
+            if command is None:
+                continue
+            ordinal += 1
+            # Output-role declarations are intentionally conservative here.
+            # Observation later resolves named resources and directory members.
+            values = [value for _, value in command.capture_outputs]
+            values.extend(
+                item.value
+                for item in command.options
+                if command.runner_roles.get(
+                    item.name, automatic_option_role(item.name)
+                ) == "output"
+            )
+            values.extend(
+                value
+                for number, value in enumerate(command.positionals, 1)
+                if command.runner_roles.get(f"@{number}") == "output"
+            )
+            outputs: list[tuple[str, str]] = []
+            for value in values:
+                candidate = _declaration_output(value, context)
+                if candidate is not None:
+                    outputs.append(candidate)
+            declarations.append(CommandDeclaration(
+                fence_number, ordinal, command.tokens,
+                _declaration_owner(context), tuple(sorted(set(outputs))), command,
+            ))
+    return CommandDeclarationResult(
+        tuple(declarations), tuple(failures), tuple(sorted(set(rejected_outputs)))
+    )
+
+
+def observe_commands(
+    declarations: CommandDeclarationResult,
+    text: str,
+    context: CommandContext,
+) -> DiscoveryResult:
+    """Materialize a previously indexed physical document using current state.
+
+    The declaration result is deliberately an audit boundary; `discover_commands`
+    remains the complete compatibility composition for full evaluation.
+    """
+
+    del text
+    context = CommandContext(
+        context.log_id, context.entry, context.document, context.entry_root.resolve(),
+        context.log_root.resolve(), context.project_root.resolve(), context.data_file,
+        context.require_experimental_context, context.input_fingerprint_verifier,
+        context.script_identity_cache, context.script_identity_observer,
+    )
+    invocations: list[Invocation] = []
+    failures = list(declarations.failures)
+    duplicates: dict[str, int] = {}
+    for declaration in declarations.declarations:
+        command = declaration.parsed
+        canonical_value: object = list(command.tokens)
+        if command.static_projection:
+            canonical_value = [canonical_value, list(command.static_projection)]
+        canonical = canonical_json(canonical_value)
+        duplicate = duplicates.get(canonical, 0)
+        try:
+            invocation = _build_invocation(
+                command, context,
+                _InvocationPosition(declaration.fence, declaration.ordinal,
+                                    len(invocations), duplicate),
+            )
+        except CommandV2Error as error:
+            failures.append(CommandDiscoveryFailure(
+                declaration.fence, declaration.ordinal, error
+            ))
+            continue
+        duplicates[canonical] = duplicate + 1
+        invocations.append(invocation)
+    return DiscoveryResult(tuple(invocations), tuple(failures))
+
+
+def _declaration_owner(context: CommandDeclarationContext) -> str:
+    return context.entry_root.resolve().relative_to(
+        context.log_root.resolve()
+    ).as_posix()
+
+
+def _declaration_output(
+    value: str, context: CommandDeclarationContext
+) -> tuple[str, str] | None:
+    """Return one lexical output path and its declared kind when known."""
+
+    named = re.fullmatch(r"<([A-Za-z][A-Za-z0-9_-]*)>", value)
+    if named is not None and context.data_file is not None:
+        resource = next(
+            (item for item in context.data_file.inputs if item.name == named.group(1)),
+            None,
+        )
+        if resource is not None:
+            kind = "directory" if resource.kind == "directory" else "file"
+            return resource.material_identity, kind
+    if len(value.encode("utf-8")) > MAX_PATH_BYTES or any(
+        char in value for char in "$`*?[]{}"
+    ):
+        return None
+    expanded = value.replace("<project>", context.project_root.as_posix()).replace(
+        "<log>", context.log_root.as_posix()
+    )
+    if re.search(r"<[A-Za-z0-9_-]+>", expanded):
+        return None
+    path = Path(expanded)
+    return ((path if path.is_absolute() else context.entry_root / path)
+            .absolute().as_posix(), "unknown")
+
+
+def _recover_rejected_outputs(
+    body: str, context: CommandDeclarationContext
+) -> tuple[tuple[str, str], ...]:
+    """Retain simple static output options when the surrounding shell rejects.
+
+    This recovery is intentionally narrow: it records only literal option
+    values already recognizable as output roles, never expands shell syntax.
+    """
+
+    values = re.findall(
+        r"(--[A-Za-z0-9-]+)(?:=|\s+)([^\s]+)", body
+    )
+    return tuple(
+        candidate
+        for option, value in values
+        if automatic_option_role(option) == "output"
+        and _literal_output_token(value)
+        and (candidate := _declaration_output(value.strip("'\""), context)) is not None
+    )
+
+
+def _literal_output_token(value: str) -> bool:
+    """Accept a literal shell token, rejecting shell grammar and punctuation."""
+
+    if re.fullmatch(r"'?<[A-Za-z][A-Za-z0-9_-]*>'?", value):
+        return True
+    return not any(character in value for character in "$`*?[]{};|&()<>")
+
+
+def _structural_rejected_command(
+    context: CommandDeclarationContext,
+    fence: int,
+    outputs: Sequence[tuple[str, str]],
+) -> dict[str, object]:
+    """Build the diagnostic projection retained for a structural rejection."""
+
+    return {
+        "identity": f"entry:{context.entry}:command:{fence}:1",
+        "entry": context.entry,
+        "document": context.document,
+        "fence": fence,
+        "ordinal": 1,
+        "status": "rejected",
+        "code": "invocation.command.unsupported",
+        "arguments": [],
+        "declared_outputs": [
+            {"path": path, "kind": kind} for path, kind in outputs
+        ],
+        "script": None,
+    }
+
+
+@dataclass(frozen=True)
 class MaterialRelationship:
     """One mechanically proved command-material direction."""
 
@@ -252,6 +484,28 @@ def discover_commands(
     context: CommandContext,
 ) -> DiscoveryResult:
     """Discover bounded visible invocation relationships in one Markdown file."""
+
+    declaration = index_commands(
+        text,
+        CommandDeclarationContext(
+            context.log_id,
+            context.entry,
+            context.document,
+            context.entry_root,
+            context.log_root,
+            context.project_root,
+            context.data_file,
+            context.require_experimental_context,
+        ),
+    )
+    return observe_commands(declaration, text, context)
+
+
+def _legacy_discover_commands(
+    text: str,
+    context: CommandContext,
+) -> DiscoveryResult:
+    """Materialize parsed commands; retained as the observation implementation."""
 
     context = CommandContext(
         context.log_id,

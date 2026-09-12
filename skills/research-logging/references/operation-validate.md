@@ -161,9 +161,10 @@ Diagnosis is read-only. Do not apply a correction or choose among plausible
 repairs. Begin Repair only after the researcher explicitly asks to correct the
 finding.
 
-`log findings batch` and `log validate-batch` belong to an authorized Repair
-campaign. Do not use them to turn diagnosis into correction or to substitute a
-partial check for a researcher-requested full validation.
+Entry validation is a bounded inspection operation. Use
+`log validate --path <log> --entry eNNN` to assess an affected stable entry,
+then run full validation when complete-log clearance is required. It never
+publishes a full validation bundle or substitutes for full validation.
 
 Mechanical validation does not continue into semantic review or reproduction.
 Those are separate workflows with separate ownership.

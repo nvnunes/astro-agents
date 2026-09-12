@@ -24,9 +24,6 @@ from .pyrun_contract import (
     recipe_script_parameters,
 )
 from .pyrun_outputs import (
-    OutputSupport,
-    PyrunOutputsFile,
-    ScriptSupport,
     code_target_path,
     output_target_path,
     portable_code_path,
@@ -471,48 +468,6 @@ def validated_pyrun_serialization(
     """
 
     return _validated_serialization(state, project_root=project_root)
-
-
-def legacy_output_projection(
-    state: PyrunFile,
-    invocations: tuple[Invocation, ...],
-    *,
-    project_root: Path,
-) -> PyrunOutputsFile:
-    """Project v1 execution state for pre-cutover validation consumers.
-
-    This adapter exists only while the maintained corpus still contains legacy
-    output support. Phase 4 removes it when every consumer reads executions
-    directly.
-    """
-
-    current_parameters: dict[str, tuple[str, ...]] = {}
-    for invocation in invocations:
-        try:
-            recipe = recipe_from_invocation(
-                invocation,
-                entry_root=state.entry_root,
-                project_root=project_root,
-            )
-        except PyrunStateError:
-            continue
-        current_parameters.setdefault(execution_id(recipe), invocation.parameters)
-    outputs: dict[str, OutputSupport] = {}
-    for identity, execution in state.executions.items():
-        parameters = current_parameters.get(
-            identity, ("<pyrun-state-recipe-mismatch>",)
-        )
-        observed_outputs = dict(execution.observed.outputs)
-        for output, _ in execution.recipe.outputs:
-            outputs[output] = OutputSupport(
-                not execution.requires_reproduction,
-                observed_outputs[output],
-                ScriptSupport(execution.recipe.script, execution.observed.script),
-                parameters,
-                execution.observed.inputs,
-                execution.observed.code,
-            )
-    return PyrunOutputsFile(state.path, state.entry_root, outputs)
 
 
 def load_pyrun_state(

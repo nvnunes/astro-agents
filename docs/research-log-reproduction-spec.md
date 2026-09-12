@@ -38,7 +38,7 @@ requirements.
   the relationship among Markdown, JSON state, validation, and reproduction.
 - [`pyrun.json`](#pyrunjson) defines executable state, identity, observation,
   policy, publication, and lifecycle operations.
-- [Cutover And Temporary Targeted Refresh](#cutover-and-temporary-targeted-refresh)
+- [Current Contract Cutover](#current-contract-cutover)
   distinguishes the one-time data/evidence conversion from retained
   execution-state compatibility and the bounded promotion adapter.
 - [Discovery And Planning](#discovery-and-planning) defines targets, admission,
@@ -267,8 +267,8 @@ state, and publication. An agent must not select cases, infer dependencies,
 judge equivalence, orchestrate child processes, or edit the machine records.
 
 Reproduction may change only its generated state and the reproduction-
-requirement field in `pyrun.json`. After a completed run, it invokes ordinary validation as a
-separate operation; validation alone owns its generated state. Reproduction
+requirement field in `pyrun.json`. After a completed run, it does not invoke
+validation; validation alone owns its generated state when separately requested. Reproduction
 must not edit research prose, Markdown commands, evidence presentation,
 `data.json` declarations, retained artifacts, or other human-authored log
 content. Promotion is the separate researcher-directed exception for replacing
@@ -697,7 +697,7 @@ maintained evidence or downstream generated-data dependency requires any
 output without another valid producer. Retirement must be explicit and
 researcher-approved; no migration or cleanup path may infer it.
 
-## Cutover And Temporary Targeted Refresh
+## Current Contract Cutover
 
 The current data and evidence readers accept only `research-log-data/v5` and
 `research-log-evidence/v4`. Their conversion from data/v3-v4 and evidence/v3 is
@@ -716,14 +716,9 @@ execution or conversion authority. A current observation may not be copied
 into retained execution state as proof of an old run, and no action
 reconstructs historical locator or classification state.
 
-The bounded `legacy_output_projection` adapter remains through Phase 2 until
-its planned Phase 3 removal with automatic targeted refresh. It projects
-current direct execution association for
-the exact promoted artifact scope. It does not decode old declarations, accept
-new evidence bytes, rewrite execution observations, or broaden into general
-validation. Fresh execution, reproduction, and promotion all preserve the
-distinction between current observation, retained execution baseline, and
-evidence presentation baseline.
+There is no legacy output projection or targeted-refresh evaluator. Fresh
+execution, reproduction, and promotion preserve the distinction between current
+observation, retained execution baseline, and evidence presentation baseline.
 
 ## Discovery And Planning
 
@@ -2098,10 +2093,9 @@ manually deleted staging material fails inspection or promotion clearly but
 does not invalidate an already published reproduction result.
 
 Promotion is a researcher-directed research mutation. It atomically updates
-retained outputs and the related `pyrun.json`, reproduction state, and only the
-required bounded targeted-refresh projection. It must not change `data.json`
-declarations, evidence records or their artifact baselines, or rerun validation
-generally. It leaves the staging bundle intact.
+retained outputs, the related `pyrun.json`, and reproduction state. It must not
+change `data.json` declarations, evidence records or their artifact baselines,
+or run validation. It leaves the staging bundle intact.
 
 ## Locking And Publication
 
@@ -2247,20 +2241,12 @@ is independent and durable; no later execution or publication outcome restores
 the requirement.
 
 After reproduction-result publication succeeds and the run becomes complete,
-the supervisor releases its reproduction scope lock and invokes ordinary
-mechanical validation for that log as a separate operation. Validation owns
-and publishes `.cache/validation/results.json`, `.cache/validation/batches.json`, and
-`validation.md`; reproduction never
-performs a targeted reproduction-requirement refresh. Validation findings or an
-operational validation failure do not change the complete reproduction status,
+the supervisor releases its reproduction scope lock without invoking validation.
+Validation owns `.cache/validation/results.json`,
+`.cache/validation/batches.json`, and `validation.md` only when explicitly
+requested. Reproduction performs neither targeted refresh nor full validation.
+A later validation outcome does not change the completed reproduction status,
 reproduction requirements, or reproduction results.
-
-Distinct overlapping entry runs share the log lock and may finish close
-together. Ordinary validation uses the existing exclusive log-operation lock:
-earlier finishers defer when another reproduction still holds a shared log
-lock, and the last finisher performs the single validation run after all such
-reproduction work has ended. Reproduction and validation outcomes remain
-separately visible.
 
 ### Promotion Conflicts
 
@@ -2558,11 +2544,9 @@ this recovery; incremental, partial, policy-skipped, and blocked no-work targets
 do not gain unsupported-state replacement authority.
 
 Mechanical validation uses direct execution association and an output-owner
-index for current execution state. `legacy_output_projection` remains only as
-the bounded temporary targeted-refresh adapter; it has no public caller beyond
-that promotion path and is removed with its evaluator. It does not authorize
-legacy declaration or execution-state decoding, recording, reproduction, or
-baseline transfer.
+index for current execution state. It has no legacy output projection or
+targeted-refresh adapter. This does not authorize legacy declaration or
+execution-state decoding, recording, reproduction, or baseline transfer.
 
 The following changes require explicit version review:
 
@@ -2587,13 +2571,12 @@ safety, run-local execution, exact and evidence-scoped artifact comparison,
 durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
 control, immutable completed-run command inspection, fresh-attempt continuation
-resume, publication retry, lost-supervisor reconciliation, ordinary
+resume, publication retry, lost-supervisor reconciliation, explicit
 post-reproduction validation, and whole-execution copy-based promotion are
 implemented. The maintained-corpus exclusivity cutover is complete, and earlier
 execution-state schemas are rejected.
-Promotion retains its own approved targeted Evidence and
-Provenance refresh without running general validation; reproduction has no
-targeted-validation path. Maintained-corpus initialization and the bounded
+Promotion has no validation refresh; reproduction has no targeted-validation
+path. Maintained-corpus initialization and the bounded
 entry-level cutover evaluation are complete. Full maintained-corpus
 reproduction remains gated by the reproduction plan. The frozen result and
 status fixtures remain the compatibility boundary.

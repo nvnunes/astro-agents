@@ -10,6 +10,7 @@ from unittest import mock
 from log_commands.reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from log_commands.reproduction_jobs import _accepted_record
 from log_commands.reproduction_promotion import promote_execution
+from log_commands.reproduction_results import empty_reproduction_results
 from research_log_data import Fingerprint
 from test_log_reproduction_execution import _Fixture
 from validation.pyrun_state import load_pyrun_state
@@ -21,14 +22,29 @@ class ReproductionPromotionTests(unittest.TestCase):
             fixture = _Fixture(Path(directory), "print('unused')\n")
             run_id, staged = _staged_run(fixture, content=b"changed\n")
             staged_before = staged.read_bytes()
+            validation_bundle = {
+                fixture.log.root / ".cache/validation/results.json": b"old results\n",
+                fixture.log.root / ".cache/validation/batches.json": b"old batches\n",
+                fixture.log.root / "validation.md": b"old report\n",
+            }
+            for path, content in validation_bundle.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            reproduction_results = fixture.log.root / ".cache/reproduction/results.json"
+            reproduction_results.parent.mkdir(parents=True, exist_ok=True)
+            reproduction_results.write_text(
+                empty_reproduction_results(
+                    fixture.log.summary.resolve()
+                    .relative_to(fixture.project.resolve())
+                    .as_posix(),
+                    updated_at="2030-01-01T00:00:00Z",
+                ).serialized(),
+                encoding="utf-8",
+            )
 
             with (
                 mock.patch(
                     "log_commands.reproduction_promotion.verify_reproduction_snapshot"
-                ),
-                mock.patch(
-                    "log_commands.reproduction_promotion._report_candidates",
-                    return_value={},
                 ),
             ):
                 result = promote_execution(
@@ -40,6 +56,12 @@ class ReproductionPromotionTests(unittest.TestCase):
             self.assertEqual(result.outputs, ("data/result.txt",))
             self.assertEqual(fixture.output.read_bytes(), b"changed\n")
             self.assertEqual(staged.read_bytes(), staged_before)
+            self.assertEqual(
+                {path: path.read_bytes() for path in validation_bundle},
+                validation_bundle,
+            )
+            self.assertTrue(reproduction_results.is_file())
+            self.assertTrue((fixture.log.root / "reproduction.md").is_file())
             state = load_pyrun_state(
                 fixture.entry_root / "pyrun.json",
                 entry_root=fixture.entry_root,

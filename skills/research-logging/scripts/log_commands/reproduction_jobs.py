@@ -766,7 +766,6 @@ def supervise_reproduction(
         run = next(item for item in published.results.runs if item.run_id == run_id)
         _finish_complete(log, run_root, run_id, run.artifact_outcomes, finished)
         _close_fds(inherited_locks)
-        _validate_reproduced_log(log)
     except BaseException as error:
         _finish_failed(log, run_root, run_id, error)
 
@@ -805,17 +804,6 @@ def _failed_checkpoint_references(record: Mapping[str, object]) -> frozenset[str
         for item in cast(Sequence[Mapping[str, object]], record["checkpoints"])
         if item["state"] == "failed"
     )
-
-
-def _validate_reproduced_log(log: LogContext) -> None:
-    """Run ordinary validation after reproduction releases its scope lock."""
-
-    from .validation_adapter import evaluate_validation
-
-    try:
-        evaluate_validation(log.summary)
-    except Exception as error:
-        print(f"Post-reproduction validation did not complete: {error}")
 
 
 def supervisor_main(arguments: Sequence[str]) -> int:

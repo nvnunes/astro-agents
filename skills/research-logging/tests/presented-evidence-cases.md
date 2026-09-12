@@ -320,7 +320,7 @@ Given a published raw-output-path class with two independent command chains,
 Repair uses the supplied result ID, or selects the cached full-result ID when
 none was supplied, lists the class once, and retrieves only needed command
 detail. It may group the established named-output corrections at one checkpoint.
-When bounded coverage suffices, it uses `validate-batch`; when full-log coverage
+When bounded coverage suffices, it uses explicit entry validation; when full-log coverage
 is needed and authorized, it runs full validation once at that checkpoint.
 Batch boundaries do not require separate editing or note-taking cycles.
 
@@ -345,23 +345,23 @@ decision, and continues with the independent chain. If another chain has an
 unresolved projection or a lock owner conflict, it reports the precise blocker
 once and stops only that affected case without polling or broadening scope.
 
-Given a batch validation completed but its producer stdout was lost, Repair
-uses `results list` with the original projection, entry, and chain, matches
-the evaluation time to the invocation, then requests only missing detail from
-the matched ID. An uncertain match leaves the invocation's outcome unknown;
-an older result surviving a failed run is not evidence of that run's outcome.
-Repair does not repeat validation, copy the payload into a note, or parse JSON
-to reconstruct a report.
+Given an entry validation completed but its stdout was lost, Repair uses
+`results list --kind entry --entry eNNN`, matches the evaluation time to the
+invocation, then requests only missing detail from the matched ID. An uncertain
+match leaves the invocation's outcome unknown; an older result surviving a
+failed run is not evidence of that run's outcome. Repair does not repeat
+validation, copy the payload into a note, or parse JSON to reconstruct a report.
 
 Given a command owns a large collection, its ordinary view shows the member
 count and a query reference. Repair requests a member page only when the next
 action needs those members. Scripts may explicitly request JSON; the agent
 uses the default text views.
 
-Given batch A is checked twice, only A's latest cached result remains; batch B
-is preserved. A new full validation clears previous batches. Previously reported
-outcomes remain in the conversation; the agent does not assume old result IDs
-will still resolve or maintain a separate history merely to copy those results.
+Given entry e001 is checked twice, only its latest cached result remains; an
+entry e002 result is preserved. A new full validation clears previous scoped
+results. Previously reported outcomes remain in the conversation; the agent
+does not assume old result IDs will still resolve or maintain a separate history
+merely to copy those results.
 
 ## Replace Boundary
 

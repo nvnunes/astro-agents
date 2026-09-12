@@ -12,7 +12,6 @@ from research_log_validation_test_support import mechanical_log, write
 from validation.repair_batches import build_repair_batches
 
 RESULTS = importlib.import_module("validation.mechanical_results")
-REPAIR_VALIDATION = importlib.import_module("log_commands.repair_validation")
 OPERATION_STATE = importlib.import_module("validation.operation_state")
 
 
@@ -322,79 +321,6 @@ class FindingsCliTests(unittest.TestCase):
         registry = projection["chains"][0]["registry"]
         self.assertEqual(registry[0]["from_entry"], "e001")
         self.assertIs(registry[0]["read_only"], True)
-
-    def test_batch_snapshot_includes_external_directory_descendants(self) -> None:
-        from log_commands.context import LogContext
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _ = mechanical_log(root)
-            external = root / "external"
-            external.mkdir()
-            source = external / "source.txt"
-            source.write_text("before")
-            log = LogContext(summary, summary.with_suffix(""))
-            before = REPAIR_VALIDATION._snapshot(log, {"e001"}, {str(external)})
-            source.write_text("after!")
-            after = REPAIR_VALIDATION._snapshot(log, {"e001"}, {str(external)})
-            self.assertNotEqual(before, after)
-
-    def test_validate_batch_accepts_split_entry_document_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, entry = mechanical_log(root)
-            split_entry = entry.with_name("e001a.md")
-            entry.rename(split_entry)
-            summary.write_text(
-                summary.read_text(encoding="utf-8").replace("e001.md", "e001a.md"),
-                encoding="utf-8",
-            )
-            evidence = entry.parent / "evidence.json"
-            evidence.write_text(
-                evidence.read_text(encoding="utf-8").replace("e001.md", "e001a.md"),
-                encoding="utf-8",
-            )
-            original = split_entry.read_text()
-            split_entry.write_text(original.replace("--input-catalog", "--catalog"))
-            completed = run_log(
-                root,
-                "validate",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            projection = json.loads(
-                (
-                    summary.with_suffix("") / ".cache" / "validation" / "batches.json"
-                ).read_text(encoding="utf-8")
-            )
-            selected = next(
-                value
-                for value in projection["repair_batches"]
-                if value["entries"] == ["e001a"]
-                and value["grouping_reason"] == "rejected_command"
-            )
-
-            split_entry.write_text(original)
-            checked = run_log(
-                root,
-                "validate-batch",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-                "--validation",
-                projection["validation_id"],
-                "--batch",
-                selected["batch_id"],
-            )
-
-            self.assertEqual(checked.returncode, 0, checked.stderr)
-            payload = json.loads(checked.stdout)
-            self.assertEqual(payload["status"], "complete_clear")
-            self.assertEqual(payload["coverage"]["entries"], ["e001a"])
 
     def test_list_and_show_read_one_published_finding_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

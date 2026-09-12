@@ -13,12 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
 from research_log_data import Fingerprint, parse_fingerprint
-from research_log_paths import (
-    REPRODUCTION_REPORT,
-    REPRODUCTION_RESULTS,
-    VALIDATION_REPORT,
-    VALIDATION_RESULTS,
-)
+from research_log_paths import REPRODUCTION_REPORT, REPRODUCTION_RESULTS
 from validation.human_projection import load_report_context
 from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
@@ -28,11 +23,6 @@ from validation.pyrun_state import (
     PyrunFile,
     load_pyrun_state,
     validated_pyrun_serialization,
-)
-from validation.report import compose_validation_report
-from validation.targeted_refresh import (
-    TargetedRefreshError,
-    refresh_promoted_provenance,
 )
 
 from .context import (
@@ -50,7 +40,6 @@ from .reproduction_planner import (
     project_reproduction_state,
     verify_reproduction_snapshot,
 )
-from .reproduction_publication import _load_validation, _require_admissible_validation
 from .reproduction_results import (
     compose_reproduction_report,
     load_reproduction_results,
@@ -441,19 +430,6 @@ def _metadata_candidates(
 def _report_candidates(
     log: LogContext, outputs: Sequence[_PromotedOutput]
 ) -> Mapping[Path, str]:
-    validation = _load_validation(log)
-    _require_admissible_validation(log, validation)
-    try:
-        validation = refresh_promoted_provenance(
-            log.summary,
-            validation,
-            [item.destination for item in outputs],
-            result_date=_utc_now()[:10],
-        )
-    except TargetedRefreshError as error:
-        raise ActionError(
-            "reproduction.validation.refresh_failed", str(error)
-        ) from error
     project = resolve_project_root(log.root)
     result_path = log.root / REPRODUCTION_RESULTS
     results = reconcile_run_folders(
@@ -471,10 +447,6 @@ def _report_candidates(
             context=context,
             currentness=currentness,
             folder_links_from=log.root,
-        ),
-        log.root / VALIDATION_RESULTS: validation.canonical_json() + "\n",
-        log.root / VALIDATION_REPORT: compose_validation_report(
-            validation, context=context
         ),
     }
 

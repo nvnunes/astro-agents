@@ -1295,7 +1295,7 @@ class ReproductionJobTests(unittest.TestCase):
                 1,
             )
             self.assertIsNone(status["operational_failure"])
-            validate.assert_called_once_with(summary)
+            validate.assert_not_called()
 
     def test_active_promotion_output_rejects_intersecting_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import research_log_data as DATA
@@ -15,13 +16,14 @@ from research_log_cli_test_support import fixture_parameter_roles
 from research_log_validation_test_support import mock, unittest, write
 
 ENGINE = importlib.import_module("validation.engine")
-MECHANICAL = importlib.import_module("validation.mechanical")
 RESULTS = importlib.import_module("validation.mechanical_results")
 LOCATOR = importlib.import_module("validation.locator")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 PRESENTATION = importlib.import_module("validation.presentation")
 HUMAN = importlib.import_module("validation.human_projection")
 PROVENANCE = importlib.import_module("validation.provenance")
+REPORT = importlib.import_module("validation.report")
+COMMANDS = importlib.import_module("validation.commands")
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -222,9 +224,16 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
 
 
 def _evaluate(summary: Path) -> Any:
-    return MECHANICAL.evaluate_mechanical(
-        MECHANICAL.MechanicalEvaluationRequest(summary, "2026-08-29"),
-        ENGINE.mechanical_policy(),
+    evaluation = ENGINE.evaluate_mechanical(
+        ENGINE.EvaluationRequest(summary, "2026-08-29")
+    )
+    return SimpleNamespace(
+        result=evaluation.record,
+        scan={
+            "invocations": evaluation.context.invocations,
+            "registries": evaluation.context.registries,
+        },
+        metrics=evaluation.metrics,
     )
 
 
@@ -275,9 +284,7 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
     data_path = entry_root / "data.json"
     data = json.loads(data_path.read_text())
-    data["inputs"] = [
-        item for item in data["inputs"] if item["name"] != "results"
-    ]
+    data["inputs"] = [item for item in data["inputs"] if item["name"] != "results"]
     resource = DATA.build_local_input(
         "results",
         "directory",
@@ -320,6 +327,174 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_entry_declaration_index_selects_exact_overlap_and_rejected_competitors(
+        self,
+    ) -> None:
+        """Closure selection retains every declaration that can compete for a root."""
+
+        index = ENGINE._LogDeclarationIndex(
+            Path("/log"),
+            (),
+            (),
+            {
+                "/project/data/exact.csv": (
+                    ENGINE._DeclarationCandidate(
+                        "e001", "/project/data/exact.csv", "file", (0, 1, 1)
+                    ),
+                ),
+                "/project/data/tree": (
+                    ENGINE._DeclarationCandidate(
+                        "e002", "/project/data/tree", "directory", (1, 1, 1)
+                    ),
+                ),
+                "/project/data/tree/member.csv": (
+                    ENGINE._DeclarationCandidate(
+                        "e003", "/project/data/tree/member.csv", "file", (2, 1, 1)
+                    ),
+                ),
+            },
+            {
+                "/project/data/tree/rejected.csv": (
+                    ENGINE._DeclarationCandidate(
+                        "e004", "/project/data/tree/rejected.csv", "unknown", (3, 1, 1)
+                    ),
+                ),
+            },
+            (),
+        )
+        owners = ENGINE._indexed_candidate_owners(
+            index, (("/project/data/exact.csv", None), ("/project/data/tree", None))
+        )
+        self.assertEqual(owners, frozenset({"e001", "e002", "e003", "e004"}))
+
+    def test_declaration_candidates_use_command_frontiers_not_document_order(self):
+        """A prior fence can feed its document, but a later fence cannot."""
+
+        candidate = ENGINE._DeclarationCandidate(
+            "e001", "/project/data/shared.csv", "file", (0, 1, 1)
+        )
+        index = ENGINE._LogDeclarationIndex(
+            Path("/log"), (), (), {candidate.path: (candidate,)}, {}, ()
+        )
+        self.assertEqual(
+            ENGINE._indexed_candidate_owners(index, ((candidate.path, (0, 2, 1)),)),
+            frozenset({"e001"}),
+        )
+        self.assertEqual(
+            ENGINE._indexed_candidate_owners(index, ((candidate.path, (0, 1, 1)),)),
+            frozenset(),
+        )
+
+    def test_selected_named_rejection_is_seeded_once_in_source_order(self):
+        """Selected structural rejections do not re-enter producer closure."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "./pyrun scripts/model.py", "python scripts/model.py"
+                ),
+            )
+            result = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e001", entry.parent),
+                )
+            )
+            rejected = [
+                check
+                for check in result.record.checks
+                if check.identity == "entry:e001:command:1:1"
+            ]
+            self.assertEqual(len(rejected), 1)
+            self.assertEqual(rejected[0].failure.code, "invocation.command.unsupported")
+
+    def test_entry_unreadable_declaration_index_is_incomplete_then_recovers(
+        self,
+    ) -> None:
+        """An unavailable declaration read is scoped incomplete and retryable."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = ENGINE.EvaluationRequest(
+                summary,
+                "2026-08-29",
+                ENGINE.EntryEvaluationTarget("e001", entry.parent),
+            )
+            original = ENGINE._read_text
+            with mock.patch.object(
+                ENGINE,
+                "_read_text",
+                side_effect=lambda path, state: (
+                    (_ for _ in ()).throw(OSError("denied"))
+                    if path.name == "e001.md"
+                    else original(path, state)
+                ),
+            ):
+                incomplete = ENGINE.evaluate_mechanical(request)
+            self.assertEqual(
+                incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
+            )
+            self.assertEqual(
+                ENGINE.evaluate_mechanical(request).record.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+
+    def test_entry_over_bound_declaration_index_is_incomplete_then_recovers(
+        self,
+    ) -> None:
+        """A bounded declaration-index failure is retryable scoped incompleteness."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            request = ENGINE.EvaluationRequest(
+                summary,
+                "2026-08-29",
+                ENGINE.EntryEvaluationTarget("e001", entry.parent),
+            )
+            with mock.patch.object(
+                ENGINE,
+                "_index_log",
+                side_effect=ENGINE.EngineV2Error(
+                    "association.resource.too_large",
+                    "index",
+                    {"limit": 1},
+                    "Recorded-Command Provenance And Material Graph",
+                    outcome="unavailable",
+                ),
+            ):
+                incomplete = ENGINE.evaluate_mechanical(request)
+            self.assertEqual(
+                incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
+            )
+            self.assertEqual(
+                ENGINE.evaluate_mechanical(request).record.completion,
+                RESULTS.CompletionState.COMPLETE_CLEAR,
+            )
+
+    def test_command_declaration_index_never_loads_execution_state(self) -> None:
+        """Namespace indexing is structural even when an entry has state to load."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            state = ENGINE._ScanState(summary, summary.with_suffix(""), root)
+            with mock.patch.object(
+                ENGINE,
+                "load_pyrun_state",
+                side_effect=AssertionError("indexing must not load execution state"),
+            ):
+                index = ENGINE._index_log(summary.read_text(encoding="utf-8"), state)
+            self.assertEqual(
+                tuple(entry.stable_id for entry in index.entries), ("e001",)
+            )
+
     def test_pyrun_policy_mismatch_is_structure_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -334,9 +509,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 path, entry_root=entry, project_root=root
             )
             changed = dict(state.executions)
-            changed[identity] = replace(
-                changed[identity], auto_reproduce=False
-            )
+            changed[identity] = replace(changed[identity], auto_reproduce=False)
             write(path, PYRUN_STATE.PyrunFile(path, entry, changed).serialized())
 
             evaluation = _evaluate(summary)
@@ -447,9 +620,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            evidence["records"][0]["sources"][0]["locator"] = {
-                "select": [["missing"]]
-            }
+            evidence["records"][0]["sources"][0]["locator"] = {"select": [["missing"]]}
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             incompatible = _evaluate(summary)
             self.assertTrue(
@@ -503,8 +674,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ),
         )
         for parameters, reason in cases:
-            with tempfile.TemporaryDirectory() as directory, self.subTest(
-                reason=reason
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                self.subTest(reason=reason),
             ):
                 summary, entry = _log(Path(directory))
                 identity = _replace_with_pyrun_state(entry, parameters)
@@ -715,9 +887,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.identity == "provenance:e001:success-rate"
             )
             self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
-            self.assertEqual(
-                provenance.failure.observed["reason"], "not_regular_file"
-            )
+            self.assertEqual(provenance.failure.observed["reason"], "not_regular_file")
 
     def test_unmatched_code_support_does_not_connect_helper(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -777,9 +947,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             base = support.outputs["data/results.csv"]
             direct = replace(base, code=(("<log>/shared/helper.py", fingerprint),))
             alias = replace(base, code=(("scripts/linked/helper.py", fingerprint),))
-            state = ENGINE._ScanState(
-                summary, summary.with_suffix(""), root.resolve()
-            )
+            state = ENGINE._ScanState(summary, summary.with_suffix(""), root.resolve())
 
             with ENGINE.FingerprintCache(root, writable=False, reuse=False) as cache:
                 state.fingerprint_cache = cache
@@ -889,7 +1057,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 any(
                     check.failure is not None
                     and check.failure.code == "orphan.material.unused"
-                    and check.subject in {
+                    and check.subject
+                    in {
                         member.resolve().as_posix(),
                         sibling.resolve().as_posix(),
                     }
@@ -1028,9 +1197,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support_path = entry_root / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             record = dict(support["outputs"]["data/results.csv"])
-            record["fingerprint"] = (
-                DATA.observe_fingerprint(resource).fingerprint.as_dict()
-            )
+            record["fingerprint"] = DATA.observe_fingerprint(
+                resource
+            ).fingerprint.as_dict()
             support["outputs"]["data/stale"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
 
@@ -1059,9 +1228,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             (entry_root / "data/results.csv").replace(project_output)
             data_path = entry_root / "data.json"
             data = json.loads(data_path.read_text())
-            results = next(
-                item for item in data["inputs"] if item["name"] == "results"
-            )
+            results = next(item for item in data["inputs"] if item["name"] == "results")
             results["location"] = os.path.relpath(project_output, entry_root)
             write(data_path, json.dumps(data, indent=2) + "\n")
             write(
@@ -1190,13 +1357,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             encoder = ENGINE.canonical_json
 
-            with mock.patch.object(
-                ENGINE, "canonical_json", wraps=encoder
-            ) as canonical, mock.patch.object(
-                ENGINE,
-                "_indexed_command_blockers",
-                wraps=ENGINE._indexed_command_blockers,
-            ) as blocker_index:
+            with (
+                mock.patch.object(ENGINE, "canonical_json", wraps=encoder) as canonical,
+                mock.patch.object(
+                    ENGINE,
+                    "_indexed_command_blockers",
+                    wraps=ENGINE._indexed_command_blockers,
+                ) as blocker_index,
+            ):
                 prepared = ENGINE._ordered_provenance_findings(findings, state)
                 self.assertEqual(
                     ENGINE._command_blockers(subject, state),
@@ -1519,9 +1687,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 and check.failure is not None
             ]
             self.assertEqual(len(stale_findings), 1)
-            self.assertEqual(
-                stale_findings[0].failure.code, "hygiene.output.unmatched"
-            )
+            self.assertEqual(stale_findings[0].failure.code, "hygiene.output.unmatched")
 
     def test_input_verification_dependencies_include_the_entry_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1560,9 +1726,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     ("entry:e001:command:1:1",),
                 ),
             )
-            state.owner_surface_prerequisite_checks[
-                "entries/2026-08-29-e001-study"
-            ] = (exact_check,)
+            state.owner_surface_prerequisite_checks["entries/2026-08-29-e001-study"] = (
+                exact_check,
+            )
 
             with mock.patch.object(
                 Path,
@@ -1926,12 +2092,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertTrue(orphan_checks)
             for check in orphan_checks:
                 self.assertEqual(check.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-                self.assertIn(
-                    {"dependency": declaration.identity}, check.dependencies
-                )
-            self.assertFalse(
-                any(check.failure is not None for check in orphan_checks)
-            )
+                self.assertIn({"dependency": declaration.identity}, check.dependencies)
+            self.assertFalse(any(check.failure is not None for check in orphan_checks))
 
     def test_conflicted_input_blocks_consumers_without_undeclared_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1977,8 +2139,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             write(
                 summary,
-                summary.read_text(encoding="utf-8")
-                + "\n- [Conflict]"
+                summary.read_text(encoding="utf-8") + "\n- [Conflict]"
                 "(study/entries/2026-08-30-e002-conflict/e002.md)\n",
             )
 
@@ -2049,9 +2210,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                 {
                                     "name": f"safe-{entry_id}",
                                     "kind": "file",
-                                    "location": (
-                                        f"data/{entry_id}.csv"
-                                    ),
+                                    "location": (f"data/{entry_id}.csv"),
                                     "identity": {"algorithm": "sha256"},
                                     "origin": True,
                                 },
@@ -2342,8 +2501,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             write(
                 entry,
-                entry.read_text(encoding="utf-8")
-                + "\nThe copied rate was `67.6%`"
+                entry.read_text(encoding="utf-8") + "\nThe copied rate was `67.6%`"
                 "<!-- eid:success-rate-copy -->.\n",
             )
 
@@ -2374,9 +2532,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evidence = checks["evidence:e001:success-rate"]
             provenance = checks["provenance:e001:success-rate"]
             self.assertEqual(command.status, RESULTS.CheckStatus.FAIL)
-            self.assertEqual(
-                command.failure.code, "data.output.declaration_invalid"
-            )
+            self.assertEqual(command.failure.code, "data.output.declaration_invalid")
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
 
@@ -2924,9 +3080,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "id": "historical-report",
                     "document": "entries/2026-08-29-e001-study/e001.md",
                     "kind": "artifact",
-                    "sources": [
-                        {"source": "<historical_report>", "locator": None}
-                    ],
+                    "sources": [{"source": "<historical_report>", "locator": None}],
                     "transformation": None,
                     "artifact_fingerprint": {
                         "algorithm": "sha256",
@@ -3049,9 +3203,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertEqual(check.status, RESULTS.CheckStatus.FAIL)
             assert check.failure is not None
-            self.assertEqual(
-                check.failure.code, "association.artifact.source_mismatch"
-            )
+            self.assertEqual(check.failure.code, "association.artifact.source_mismatch")
 
     def test_inline_artifact_source_obeys_the_presentation_byte_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3353,16 +3505,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 if check.scope is RESULTS.CheckScope.PROVENANCE
             ]
             self.assertTrue(
-                all(
-                    status is RESULTS.CheckStatus.PASS
-                    for status in first_provenance
-                )
+                all(status is RESULTS.CheckStatus.PASS for status in first_provenance)
             )
             self.assertTrue(
-                any(
-                    status is RESULTS.CheckStatus.FAIL
-                    for status in second_provenance
-                )
+                any(status is RESULTS.CheckStatus.FAIL for status in second_provenance)
             )
 
     def test_input_changed_during_validation_is_unavailable_without_cache(
@@ -3538,6 +3684,1136 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 failure.rule, "Recorded-Command Provenance And Material Graph"
             )
 
+    def test_entry_evaluation_does_not_observe_unrelated_entry_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            unrelated_root = root / "docs/study/entries/2026-08-30-e002-unrelated"
+            unrelated = unrelated_root / "e002.md"
+            write(unrelated_root / "scripts/unrelated.py", "# must stay unopened\n")
+            write(unrelated_root / "data/input.csv", "unrelated\n")
+            write(
+                unrelated_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "input",
+                                "kind": "file",
+                                "location": "data/input.csv",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": True,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                unrelated,
+                "# Unrelated\n\n## Build\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/unrelated.py --input-data '<input>' "
+                "--output-data data/unrelated.csv\n```\n",
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                + "- [Unrelated](study/entries/2026-08-30-e002-unrelated/e002.md)\n",
+            )
+
+            with mock.patch.object(
+                ENGINE,
+                "_observe_script_identity",
+                wraps=ENGINE._observe_script_identity,
+            ) as observe:
+                result = ENGINE.evaluate_mechanical(
+                    ENGINE.EvaluationRequest(
+                        summary,
+                        "2026-08-29",
+                        ENGINE.EntryEvaluationTarget("e001", entry.parent),
+                    )
+                )
+
+            self.assertEqual(result.context.selected_documents, ("e001",))
+            self.assertEqual(result.context.dependency_entries, ())
+            self.assertEqual(
+                tuple(invocation.entry for invocation in result.context.invocations),
+                ("e001",),
+            )
+            self.assertFalse(
+                any(
+                    "unrelated.py" in str(call.args[0])
+                    for call in observe.call_args_list
+                )
+            )
+
+    def test_entry_checks_match_the_full_evaluation_for_its_selected_entry(
+        self,
+    ) -> None:
+        """A scoped evaluation preserves all applicable selected-entry checks."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            scoped = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e001", entry.parent),
+                )
+            )
+
+            full_checks = {
+                check.identity: check
+                for check in full.record.checks
+                if check.identity
+                not in {
+                    "evidence:summary:5",
+                    "orphan:log",
+                    "provenance:summary:5",
+                }
+            }
+            self.assertEqual(
+                {check.identity: check for check in scoped.record.checks},
+                full_checks,
+            )
+
+    def test_fixed_clock_full_record_metrics_projection_and_report_are_invariant(
+        self,
+    ) -> None:
+        """Fixed time leaves the complete full-validation result reproducible."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, _ = _log(Path(directory))
+            request = ENGINE.EvaluationRequest(summary, "2026-08-29")
+            with mock.patch("validation.engine.time.perf_counter", return_value=1.0):
+                first = ENGINE.evaluate_mechanical(request)
+                second = ENGINE.evaluate_mechanical(request)
+            first_projection = HUMAN.project_findings(
+                first.record, HUMAN.load_report_context(summary)
+            )
+            second_projection = HUMAN.project_findings(
+                second.record, HUMAN.load_report_context(summary)
+            )
+            self.assertEqual(first.record, second.record)
+            self.assertEqual(first.metrics, second.metrics)
+            self.assertEqual(first_projection, second_projection)
+            self.assertEqual(
+                REPORT.compose_validation_report(first.record),
+                REPORT.compose_validation_report(second.record),
+            )
+
+    def test_entry_closure_reaches_a_producer_listed_after_its_presentation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, target = _log(root)
+            producer_root = target.parent
+            shared = root / "shared.csv"
+            write(shared, "value\n1\n")
+            write(
+                producer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": str(shared),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                target,
+                "# Producer\n\n## Build\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/model.py --output-data '<shared>'\n```\n\n"
+                "`Results:`\n\nDone.\n",
+            )
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            consumer = consumer_root / "e002.md"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": str(shared),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared-value",
+                                "document": "entries/2026-08-30-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<shared>",
+                                        "locator": {"select": [["value"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "number",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer,
+                "# Consumer\n\n## Build\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/result.csv\n```\n\n`Results:`\n\n"
+                "Value `1`<!-- eid:shared-value -->.\n",
+            )
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
+                "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n",
+            )
+
+            result = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                )
+            )
+
+            self.assertEqual(result.context.selected_documents, ("e002",))
+            self.assertEqual(result.context.dependency_entries, ("e001",))
+            self.assertEqual(
+                tuple(invocation.entry for invocation in result.context.invocations),
+                ("e002", "e001"),
+            )
+
+    def test_entry_exposes_stale_producer_after_evidence_passes(
+        self,
+    ) -> None:
+        """A matching consumer presentation cannot certify its stale producer."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, producer = _log(root)
+            producer_root = producer.parent
+            shared = producer_root / "data/results.csv"
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared",
+                                "document": "entries/2026-08-30-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<shared>",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/local.csv\n"
+                "```\n\n`Results:`\n\nValue `67.6%`<!-- eid:shared -->.\n",
+            )
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
+                "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
+            )
+            # Keep the producer output and evidence byte intact, but invalidate its
+            # recorded input fingerprint after its support record was written.
+            write(producer_root / "data/catalog.csv", "id\n2\n")
+
+            result = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                )
+            )
+            checks = {check.identity: check for check in result.record.checks}
+            self.assertEqual(
+                checks["evidence:e002:shared"].status, RESULTS.CheckStatus.PASS
+            )
+            self.assertEqual(result.context.dependency_entries, ("e001",))
+            self.assertIn(
+                "provenance.output.signature_mismatch",
+                [check.failure.code for check in result.record.checks if check.failure],
+            )
+
+    def test_entry_data_conflict_prerequisites_match_full_when_relevant_only(
+        self,
+    ) -> None:
+        """Scoped conflict checks include only conflicts touching the selected entry."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, selected = _log(root)
+            selected_root = selected.parent
+            shared = root / "shared.csv"
+            unrelated = root / "unrelated.csv"
+            write(shared, "shared\n")
+            write(unrelated, "unrelated\n")
+            selected_data = json.loads((selected_root / "data.json").read_text())
+            catalog = next(
+                item for item in selected_data["inputs"] if item["name"] == "catalog"
+            )
+            catalog["location"] = shared.as_posix()
+            write(
+                selected_root / "data.json", json.dumps(selected_data, indent=2) + "\n"
+            )
+            links = []
+            for entry_id, path, comparison in (
+                ("e002", shared, "comparison/a"),
+                ("e003", unrelated, "comparison/b"),
+                ("e004", unrelated, "comparison/c"),
+            ):
+                entry_root = (
+                    root
+                    / f"docs/study/entries/2026-08-3{int(entry_id[-1]) - 1}-{entry_id}"
+                )
+                write(entry_root / f"{entry_id}.md", f"# {entry_id}\n")
+                write(
+                    entry_root / "data.json",
+                    json.dumps(
+                        {
+                            "schema": "research-log-data/v5",
+                            "inputs": [
+                                {
+                                    "name": "input",
+                                    "kind": "file",
+                                    "location": path.as_posix(),
+                                    "identity": {"algorithm": "sha256"},
+                                    "origin": entry_id == "e003",
+                                }
+                            ],
+                        }
+                    )
+                    + "\n",
+                )
+                links.append(
+                    f"- [{entry_id}](study/entries/{entry_root.name}/{entry_id}.md)"
+                )
+            write(summary, summary.read_text() + "\n" + "\n".join(links) + "\n")
+
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            scoped = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e001", selected_root),
+                )
+            )
+            full_conflicts = {
+                check.identity
+                for check in full.record.checks
+                if check.identity.startswith("conformance:data-conflict:")
+            }
+            scoped_conflicts = {
+                check.identity
+                for check in scoped.record.checks
+                if check.identity.startswith("conformance:data-conflict:")
+            }
+            self.assertTrue(scoped_conflicts <= full_conflicts)
+            self.assertEqual(len(scoped_conflicts), 1)
+            self.assertEqual(len(full_conflicts), 2)
+            full_checks = {check.identity: check for check in full.record.checks}
+            scoped_checks = {check.identity: check for check in scoped.record.checks}
+            conflict_id = next(iter(scoped_conflicts))
+            self.assertEqual(scoped_checks[conflict_id], full_checks[conflict_id])
+            selected_prerequisites = {
+                check.identity
+                for check in scoped.record.checks
+                if check.identity.startswith("evidence:e001:")
+            }
+            self.assertIn("evidence:e001:success-rate", selected_prerequisites)
+            for identity in selected_prerequisites:
+                self.assertEqual(
+                    scoped_checks[identity].dependencies,
+                    full_checks[identity].dependencies,
+                )
+
+    def test_reached_conflict_prerequisite_matches_full_producer_blocking(self):
+        """A later reached owner receives an already-emitted conflict prerequisite."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, producer = _log(root)
+            producer_root = producer.parent
+            shared = root / "shared.csv"
+            write(shared, "id\n1\n")
+            producer_data = json.loads((producer_root / "data.json").read_text())
+            catalog = next(
+                item for item in producer_data["inputs"] if item["name"] == "catalog"
+            )
+            catalog["location"] = shared.as_posix()
+            write(
+                producer_root / "data.json",
+                json.dumps(producer_data, indent=2) + "\n",
+            )
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            results = producer_root / "data/results.csv"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "catalog",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                                "comparison": {
+                                    "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
+                                    "profile": "evidence",
+                                },
+                            },
+                            {
+                                "name": "results",
+                                "kind": "file",
+                                "location": results.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            },
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<results>' "
+                "--output-data data/local.csv\n```\n\n`Results:`\n\n"
+                "Value `67.6%`<!-- eid:shared -->.\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared",
+                                "document": "entries/2026-08-30-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<results>",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
+                "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
+            )
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            scoped = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                )
+            )
+            full_checks = {check.identity: check for check in full.record.checks}
+            scoped_checks = {check.identity: check for check in scoped.record.checks}
+            producer_command = "entry:e001:command:1:1"
+            self.assertEqual(
+                scoped_checks[producer_command], full_checks[producer_command]
+            )
+            self.assertEqual(
+                scoped_checks[producer_command].status,
+                RESULTS.CheckStatus.NOT_APPLICABLE,
+            )
+            self.assertEqual(
+                scoped_checks["provenance:e002:shared"],
+                full_checks["provenance:e002:shared"],
+            )
+
+    def test_entry_competing_producers_match_full_relevant_ambiguity(self) -> None:
+        """Exact and overlapping owners stay in scoped closure and match full output."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, first = _log(root)
+            shared = first.parent / "data/results.csv"
+            third_root = root / "docs/study/entries/2026-08-30-e003-third"
+            write(third_root / "scripts/model.py", "# producer\n")
+            write(shared.parent / "catalog.csv", "id\n1\n")
+            write(
+                third_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            DATA.build_declared_generated(
+                                "bundle",
+                                "directory",
+                                shared.parent.as_posix(),
+                                entry_root=third_root,
+                                identity=("catalog.csv",),
+                            ).as_dict(),
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                third_root / "e003.md",
+                "# Second\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/model.py --output-dir '<bundle>'\n"
+                "```\n\n`Results:`\n\nDone.\n",
+            )
+            consumer_root = root / "docs/study/entries/2026-08-31-e002-consumer"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared",
+                                "document": "entries/2026-08-31-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<shared>",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/local.csv\n```\n\n`Results:`\n\n"
+                "Value `67.6%`<!-- eid:shared -->.\n",
+            )
+            fourth_root = root / "docs/study/entries/2026-08-30-e004-fourth"
+            write(fourth_root / "scripts/model.py", "# producer\n")
+            write(
+                fourth_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            DATA.build_local_input(
+                                "results",
+                                "file",
+                                shared.as_posix(),
+                                entry_root=fourth_root,
+                                origin=False,
+                            ).as_dict(),
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                fourth_root / "e004.md",
+                "# Third\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/model.py --output-data '<results>'\n"
+                "```\n\n`Results:`\n\nDone.\n",
+            )
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [First](study/entries/2026-08-29-e001-study/e001.md)\n"
+                "- [Third](study/entries/2026-08-30-e003-third/e003.md)\n"
+                "- [Fourth](study/entries/2026-08-30-e004-fourth/e004.md)\n"
+                "- [Consumer](study/entries/2026-08-31-e002-consumer/e002.md)\n",
+            )
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            scoped = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                )
+            )
+            self.assertEqual(
+                scoped.context.dependency_entries, ("e001", "e003", "e004")
+            )
+            full_check = next(
+                check
+                for check in full.record.checks
+                if check.identity == "provenance:e002:shared"
+            )
+            scoped_check = next(
+                check
+                for check in scoped.record.checks
+                if check.identity == "provenance:e002:shared"
+            )
+            self.assertEqual(scoped_check, full_check)
+            self.assertEqual(scoped_check.failure.code, "producer.ambiguous")
+            producer_entries = {
+                item.identity: item.entry for item in scoped.context.invocations
+            }
+            ambiguous_producers = scoped_check.failure.observed["producers"]
+            self.assertEqual(
+                [producer_entries[item] for item in ambiguous_producers],
+                ["e001", "e004"],
+            )
+            self.assertTrue(
+                any(item.entry == "e003" for item in scoped.context.invocations)
+            )
+            self.assertFalse(
+                any(
+                    check.failure is not None
+                    and check.failure.code == "directory.producer.conflict"
+                    for check in scoped.record.checks
+                )
+            )
+
+    def test_index_log_preserves_summary_order_across_split_documents(self) -> None:
+        """Declaration order follows summary order, not physical-root order."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            first = entry.with_name("e001a.md")
+            second = entry.with_name("e001b.md")
+            write(first, "# First\n")
+            write(second, "# Second\n")
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n"
+                "- [Main](study/entries/2026-08-29-e001-study/e001.md)\n"
+                "- [First](study/entries/2026-08-29-e001-study/e001a.md)\n",
+            )
+            state = ENGINE._ScanState(summary, summary.with_suffix(""), root)
+            index = ENGINE._index_log(summary.read_text(encoding="utf-8"), state)
+            self.assertEqual(
+                tuple(path.name for path in index.document_order),
+                ("e001b.md", "e001.md", "e001a.md"),
+            )
+
+    def test_interleaved_split_producer_admits_only_earlier_document(self) -> None:
+        """A later split producer cannot enter a consumer's scoped frontier."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, producer = _log(root)
+            producer_root = producer.parent
+            earlier = producer.with_name("e001a.md")
+            later = producer.with_name("e001b.md")
+            producer.replace(earlier)
+            write(later, earlier.read_text(encoding="utf-8"))
+            shared = producer_root / "data/results.csv"
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared",
+                                "document": "entries/2026-08-30-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<shared>",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/local.csv\n```\n\n`Results:`\n\n"
+                "Value `67.6%`<!-- eid:shared -->.\n",
+            )
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Earlier](study/entries/2026-08-29-e001-study/e001a.md)\n"
+                "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
+                "- [Later](study/entries/2026-08-29-e001-study/e001b.md)\n",
+            )
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            scoped = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    "2026-08-29",
+                    ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                )
+            )
+            self.assertEqual(scoped.context.dependency_entries, ("e001",))
+            self.assertEqual(
+                tuple(
+                    item.document.rsplit("/", 1)[-1]
+                    for item in scoped.context.invocations
+                ),
+                ("e001a.md", "e002.md"),
+            )
+            self.assertEqual(
+                tuple(
+                    item.document.rsplit("/", 1)[-1]
+                    for item in full.context.invocations
+                ),
+                ("e001a.md", "e002.md", "e001b.md"),
+            )
+            full_check = next(
+                check
+                for check in full.record.checks
+                if check.identity == "provenance:e002:shared"
+            )
+            scoped_check = next(
+                check
+                for check in scoped.record.checks
+                if check.identity == "provenance:e002:shared"
+            )
+            self.assertEqual(scoped_check, full_check)
+
+    def test_reached_dependency_document_omits_unrelated_broken_command(
+        self,
+    ) -> None:
+        """Closure observation excludes an unrelated command in a reached document."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, producer = _log(root)
+            producer_root = producer.parent
+            shared = producer_root / "data/results.csv"
+            write(producer_root / "scripts/unrelated.py", "# must remain unopened\n")
+            producer.write_text(
+                producer.read_text() + "\n```bash\n"
+                "./pyrun scripts/unrelated.py --input-data data/missing.csv "
+                "--output-data data/unrelated.csv\n```\n",
+                encoding="utf-8",
+            )
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": shared.as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/local.csv\n```\n\n`Results:`\n\n"
+                "Value `67.6%`<!-- eid:shared -->.\n",
+            )
+            write(
+                consumer_root / "evidence.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "id": "shared",
+                                "document": "entries/2026-08-30-e002-consumer/e002.md",
+                                "kind": "statistic",
+                                "sources": [
+                                    {
+                                        "source": "<shared>",
+                                        "locator": {"select": [["success_rate"]]},
+                                    }
+                                ],
+                                "transformation": {
+                                    "form": "percentage",
+                                    "source": {"input": 0, "item": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            unrelated_root = root / "docs/study/entries/2026-08-31-e003-unrelated"
+            write(
+                unrelated_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "missing",
+                                "kind": "file",
+                                "location": "data/missing.csv",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": True,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                unrelated_root / "e003.md",
+                "# Unrelated\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/missing.py --input-data '<missing>' "
+                "--output-data data/unrelated.csv\n```\n\n`Results:`\n\n"
+                "Broken `1`<!-- eid:broken -->.\n",
+            )
+            write(unrelated_root / "evidence.json", "{ broken evidence\n")
+            write(unrelated_root / "retention.json", "{ broken retention\n")
+            write(unrelated_root / "pyrun.json", "{ broken state\n")
+            write(
+                summary,
+                "# Study\n\n## Entries\n\n"
+                "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
+                "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
+                "- [Unrelated](study/entries/2026-08-31-e003-unrelated/e003.md)\n",
+            )
+            full = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+            with (
+                mock.patch.object(
+                    ENGINE,
+                    "_observe_script_identity",
+                    wraps=ENGINE._observe_script_identity,
+                ) as observe,
+                mock.patch.object(
+                    ENGINE, "load_evidence_file", wraps=ENGINE.load_evidence_file
+                ) as evidence_loader,
+                mock.patch.object(
+                    ENGINE, "load_retention_file", wraps=ENGINE.load_retention_file
+                ) as retention_loader,
+                mock.patch.object(
+                    ENGINE, "load_pyrun_state", wraps=ENGINE.load_pyrun_state
+                ) as state_loader,
+                mock.patch.object(
+                    COMMANDS, "_observe_script", wraps=COMMANDS._observe_script
+                ) as command_script,
+                mock.patch.object(
+                    ENGINE, "observe_fingerprint", wraps=ENGINE.observe_fingerprint
+                ) as fingerprint,
+                mock.patch.object(
+                    ENGINE, "_entry_presentations", wraps=ENGINE._entry_presentations
+                ) as presentations,
+            ):
+                result = ENGINE.evaluate_mechanical(
+                    ENGINE.EvaluationRequest(
+                        summary,
+                        "2026-08-29",
+                        ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                    )
+                )
+            self.assertFalse(
+                any(
+                    "unrelated.py" in str(call.args[0])
+                    for call in observe.call_args_list
+                )
+            )
+            self.assertFalse(
+                any("unrelated" in check.identity for check in result.record.checks)
+            )
+            self.assertEqual(result.context.selected_documents, ("e002",))
+            self.assertEqual(result.context.dependency_entries, ("e001",))
+            full_check = next(
+                check
+                for check in full.record.checks
+                if check.identity == "evidence:e002:shared"
+            )
+            scoped_check = next(
+                check
+                for check in result.record.checks
+                if check.identity == "evidence:e002:shared"
+            )
+            self.assertEqual(scoped_check, full_check)
+            for name, loader in (
+                ("evidence", evidence_loader),
+                ("retention", retention_loader),
+                ("state", state_loader),
+                ("command", command_script),
+                ("fingerprint", fingerprint),
+                ("presentations", presentations),
+            ):
+                calls = loader.call_args_list
+                if name == "presentations":
+                    self.assertFalse(
+                        any(call.args[0].root == unrelated_root for call in calls),
+                        name,
+                    )
+                    continue
+                self.assertFalse(
+                    any(unrelated_root.as_posix() in str(call.args) for call in calls),
+                    name,
+                )
+            self.assertEqual(
+                tuple(item.entry for item in result.context.invocations),
+                ("e001", "e002"),
+            )
+            self.assertEqual(
+                tuple(entry for entry, _ in result.context.registries),
+                ("e002", "e001"),
+            )
+            self.assertEqual(
+                next(
+                    check
+                    for check in result.record.checks
+                    if check.identity == "provenance:e002:shared"
+                ),
+                next(
+                    check
+                    for check in full.record.checks
+                    if check.identity == "provenance:e002:shared"
+                ),
+            )
+
+    def test_entry_producer_closure_covers_exact_reverse_and_rejected_declarations(
+        self,
+    ) -> None:
+        """Entry closure admits each declaration shape without full evaluation."""
+
+        for shape in ("exact", "reverse", "rejected"):
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                summary, producer = _log(root)
+                producer_root = producer.parent
+                if shape == "reverse":
+                    member = producer_root / "data/bundle/member.csv"
+                    write(member, "value\n1\n")
+                    producer.write_text(
+                        producer.read_text(encoding="utf-8").replace(
+                            "--output-data '<results>'", "--output-dir data/bundle"
+                        ),
+                        encoding="utf-8",
+                    )
+                    material = member
+                else:
+                    material = producer_root / "data/results.csv"
+                if shape == "rejected":
+                    producer.write_text(
+                        producer.read_text(encoding="utf-8").replace(
+                            "./pyrun scripts/model.py", "python scripts/model.py"
+                        ),
+                        encoding="utf-8",
+                    )
+                consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+                write(consumer_root / "scripts/use.py", "# consumer\n")
+                write(
+                    consumer_root / "data.json",
+                    json.dumps(
+                        {
+                            "schema": "research-log-data/v5",
+                            "inputs": [
+                                {
+                                    "name": "shared",
+                                    "kind": "file",
+                                    "location": material.as_posix(),
+                                    "identity": {"algorithm": "sha256"},
+                                    "origin": False,
+                                }
+                            ],
+                        }
+                    )
+                    + "\n",
+                )
+                write(
+                    consumer_root / "e002.md",
+                    "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                    "./pyrun scripts/use.py --input-data '<shared>' "
+                    "--output-data data/local.csv\n"
+                    "```\n\n`Results:`\n\nDone.\n",
+                )
+                write(
+                    summary,
+                    "# Study\n\n## Entries\n\n"
+                    "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
+                    "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
+                )
+
+                if shape == "rejected":
+                    state = ENGINE._ScanState(summary, summary.with_suffix(""), root)
+                    index = ENGINE._index_log(
+                        summary.read_text(encoding="utf-8"), state
+                    )
+                    self.assertIn(
+                        material.resolve().as_posix(), index.rejected_candidates
+                    )
+
+                result = ENGINE.evaluate_mechanical(
+                    ENGINE.EvaluationRequest(
+                        summary,
+                        "2026-08-29",
+                        ENGINE.EntryEvaluationTarget("e002", consumer_root),
+                    )
+                )
+
+                self.assertEqual(result.context.dependency_entries, ("e001",))
+                if shape == "rejected":
+                    self.assertIn(
+                        "invocation.command.unsupported",
+                        [
+                            check.failure.code
+                            for check in result.record.checks
+                            if check.failure
+                        ],
+                    )
+                else:
+                    self.assertTrue(
+                        any(
+                            invocation.entry == "e001"
+                            for invocation in result.context.invocations
+                        )
+                    )
+
     def test_engine_has_no_semantic_review_or_reproduction_import(self) -> None:
         source = Path(ENGINE.__file__).read_text(encoding="utf-8")
         for forbidden in (
@@ -3552,6 +4828,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertNotIn(f"from .{forbidden}", source)
 
         self.assertNotIn("from .discovery", source)
+
 
 if __name__ == "__main__":
     unittest.main()

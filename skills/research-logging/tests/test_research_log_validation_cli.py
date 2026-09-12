@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from research_log_cli_test_support import run_log as run_log_in_process
 from research_log_validation_test_support import mechanical_log, write
@@ -15,6 +16,137 @@ def run_log(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 class ValidationCliTests(unittest.TestCase):
+    def test_entry_selector_requires_one_path_and_a_resolved_stable_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            log = summary.with_suffix("")
+            for arguments, code in (
+                (("validate", "--entry", "e001"), "validation.entry.path_required"),
+                (
+                    ("validate", "--root", str(root), "--entry", "e001"),
+                    "validation.entry.path_required",
+                ),
+                (
+                    ("validate", "--path", str(log), "--entry", "not-an-entry"),
+                    "entry.id.invalid",
+                ),
+                (
+                    ("validate", "--path", str(log), "--entry", "e999"),
+                    "entry.identity.unresolved",
+                ),
+            ):
+                with self.subTest(arguments=arguments):
+                    result = run_log(root, *arguments)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(code, result.stderr)
+
+    def test_entry_json_statuses_dry_run_and_retention_are_scoped(self) -> None:
+        for output_option, expected_status in (
+            ("output-data", "complete_clear"),
+            ("results", "complete_findings"),
+        ):
+            with (
+                self.subTest(status=expected_status),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                summary, _ = mechanical_log(root, output_option=output_option)
+                log = summary.with_suffix("")
+                dry = run_log(
+                    root,
+                    "validate",
+                    "--path",
+                    str(log),
+                    "--entry",
+                    "e001",
+                    "--dry-run",
+                    "--format",
+                    "json",
+                )
+                self.assertEqual(dry.returncode, 0, dry.stderr)
+                dry_result = json.loads(dry.stdout)
+                self.assertEqual(
+                    dry_result["schema"],
+                    "research-log-entry-validation-cli-result/1",
+                )
+                self.assertEqual(dry_result["status"], expected_status)
+                self.assertEqual(dry_result["entry"], "e001")
+                self.assertFalse(dry_result["published"])
+                self.assertIn("record", dry_result)
+                self.assertNotIn("result_id", dry_result)
+
+                retained = run_log(
+                    root,
+                    "validate",
+                    "--path",
+                    str(log),
+                    "--entry",
+                    "e001",
+                    "--format",
+                    "json",
+                )
+                self.assertEqual(retained.returncode, 0, retained.stderr)
+                retained_result = json.loads(retained.stdout)
+                self.assertNotIn("record", retained_result)
+                self.assertTrue(retained_result["result_id"])
+                listed = run_log(
+                    root,
+                    "results",
+                    "list",
+                    "--path",
+                    str(log),
+                    "--kind",
+                    "entry",
+                    "--entry",
+                    "e001",
+                    "--format",
+                    "json",
+                )
+                self.assertEqual(listed.returncode, 0, listed.stderr)
+                self.assertEqual(json.loads(listed.stdout)["total"], 1)
+
+    def test_entry_selector_evaluates_all_split_documents_but_rejects_a_split_id(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = mechanical_log(root)
+            split = entry.with_name("e001a.md")
+            write(split, "# Continuation\n\nNo additional command.\n")
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                + "- [Continuation](study/entries/2026-08-29-e001-study/e001a.md)\n",
+            )
+            log = summary.with_suffix("")
+            selected = run_log(
+                root,
+                "validate",
+                "--path",
+                str(log),
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+                "--dry-run",
+            )
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertEqual(
+                json.loads(selected.stdout)["scope"]["selected_documents"],
+                ["e001", "e001a"],
+            )
+            split_selector = run_log(
+                root,
+                "validate",
+                "--path",
+                str(log),
+                "--entry",
+                "e001a",
+            )
+            self.assertEqual(split_selector.returncode, 2)
+            self.assertIn("entry.id.invalid", split_selector.stderr)
+
     def test_discovery_uses_summary_contract_not_filename_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -157,6 +289,179 @@ class ValidationCliTests(unittest.TestCase):
             self.assertFalse(result["published"])
             self.assertIn("record", result)
 
+    def test_entry_validation_preserves_the_published_full_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            log = summary.with_suffix("")
+            full = run_log(root, "validate", "--path", str(log))
+            self.assertEqual(full.returncode, 0, full.stderr)
+            bundle = tuple(
+                path.read_bytes()
+                for path in (
+                    log / ".cache/validation/results.json",
+                    log / ".cache/validation/batches.json",
+                    log / "validation.md",
+                )
+            )
+
+            entry = run_log(
+                root,
+                "validate",
+                "--path",
+                str(log),
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(entry.returncode, 0, entry.stderr)
+            self.assertFalse(json.loads(entry.stdout)["published"])
+            self.assertEqual(
+                bundle,
+                tuple(
+                    path.read_bytes()
+                    for path in (
+                        log / ".cache/validation/results.json",
+                        log / ".cache/validation/batches.json",
+                        log / "validation.md",
+                    )
+                ),
+            )
+
+    def test_entry_finding_dry_run_and_failure_preserve_full_bundle(self) -> None:
+        """Every non-publishing entry outcome leaves the authoritative bundle intact."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry_document = mechanical_log(root)
+            log = summary.with_suffix("")
+            published = run_log(root, "validate", "--path", str(log))
+            self.assertEqual(published.returncode, 0, published.stderr)
+            paths = (
+                log / ".cache/validation/results.json",
+                log / ".cache/validation/batches.json",
+                log / "validation.md",
+            )
+            original = {path: (path.stat().st_ino, path.read_bytes()) for path in paths}
+
+            # A genuine entry finding must not publish or replace full-result files.
+            entry_document.write_text(
+                entry_document.read_text(encoding="utf-8").replace(
+                    "--output-data '<results>'", "--results '<results>'"
+                ),
+                encoding="utf-8",
+            )
+            finding = run_log(
+                root,
+                "validate",
+                "--path",
+                str(log),
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+                "--dry-run",
+            )
+            self.assertEqual(finding.returncode, 0, finding.stderr)
+            self.assertEqual(json.loads(finding.stdout)["status"], "complete_findings")
+            self.assertEqual(
+                {path: (path.stat().st_ino, path.read_bytes()) for path in paths},
+                original,
+            )
+
+    def test_entry_operational_error_preserves_a_published_full_bundle(self) -> None:
+        """An entry exit-2 error cannot replace authoritative full output."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            log = summary.with_suffix("")
+            published = run_log(root, "validate", "--path", str(log))
+            self.assertEqual(published.returncode, 0, published.stderr)
+            paths = (
+                log / ".cache/validation/results.json",
+                log / ".cache/validation/batches.json",
+                log / "validation.md",
+            )
+            before = {path: (path.stat().st_ino, path.read_bytes()) for path in paths}
+            with mock.patch(
+                "validation.engine._read_text", side_effect=OSError("fixture denied")
+            ):
+                failed = run_log(
+                    root,
+                    "validate",
+                    "--path",
+                    str(log),
+                    "--entry",
+                    "e001",
+                    "--format",
+                    "json",
+                )
+            self.assertEqual(failed.returncode, 2, failed.stderr)
+            self.assertIn("fixture denied", failed.stderr)
+            self.assertEqual(
+                {path: (path.stat().st_ino, path.read_bytes()) for path in paths},
+                before,
+            )
+
+            # A source-stability operational outcome is likewise non-publishing.
+            with mock.patch(
+                "validation.controller.research_snapshot",
+                side_effect=[(("first", (1,)),), (("changed", (2,)),)],
+            ):
+                failed = run_log(
+                    root,
+                    "validate",
+                    "--path",
+                    str(log),
+                    "--entry",
+                    "e001",
+                    "--format",
+                    "json",
+                )
+            self.assertEqual(failed.returncode, 3, failed.stderr)
+            self.assertFalse(json.loads(failed.stdout)["published"])
+            self.assertEqual(
+                {path: (path.stat().st_ino, path.read_bytes()) for path in paths},
+                before,
+            )
+
+    def test_entry_source_change_is_incomplete_without_replacing_full_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            log = summary.with_suffix("")
+            bundle = {
+                log / ".cache/validation/results.json": b"full results\n",
+                log / ".cache/validation/batches.json": b"full batches\n",
+                log / "validation.md": b"full report\n",
+            }
+            for path, content in bundle.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            with mock.patch(
+                "validation.controller.research_snapshot",
+                side_effect=[(("first", (1,)),), (("changed", (2,)),)],
+            ):
+                result = run_log(
+                    root,
+                    "validate",
+                    "--path",
+                    str(log),
+                    "--entry",
+                    "e001",
+                    "--format",
+                    "json",
+                )
+
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertFalse(json.loads(result.stdout)["published"])
+            self.assertEqual({path: path.read_bytes() for path in bundle}, bundle)
+
     def test_root_validation_reports_failures_and_continues_in_both_orders(
         self,
     ) -> None:
@@ -173,7 +478,9 @@ class ValidationCliTests(unittest.TestCase):
                     good_summary, _ = mechanical_log(root / good_name)
                     (root / bad_name / ".git").rmdir()
                     arguments = [
-                        "validate", "--format", "json",
+                        "validate",
+                        "--format",
+                        "json",
                         "--root",
                         str(root),
                         "--date",

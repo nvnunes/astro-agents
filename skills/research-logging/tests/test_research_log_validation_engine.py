@@ -4814,6 +4814,22 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         )
                     )
 
+    def test_evaluation_exposes_loaded_entry_material_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+
+            result = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary, "2026-08-29")
+            )
+
+            self.assertEqual(len(result.context.materials), 1)
+            material = result.context.materials[0]
+            self.assertEqual(material.entry_id, "e001")
+            self.assertEqual(material.entry_root, entry.parent.resolve())
+            self.assertEqual(material.document, entry.resolve())
+            self.assertIsNotNone(material.data)
+            self.assertIsNotNone(material.evidence)
+
     def test_engine_has_no_semantic_review_or_reproduction_import(self) -> None:
         source = Path(ENGINE.__file__).read_text(encoding="utf-8")
         for forbidden in (

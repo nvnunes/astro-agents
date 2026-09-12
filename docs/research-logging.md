@@ -964,7 +964,9 @@ The date is organizational only. Status, stop, resume, inspection, and
 promotion continue to select a run by its immutable run ID without requiring a
 date.
 
-Preview one exact scope without writing anything:
+Preview one exact scope without durable run state. It acquires the ordinary log
+lock, evaluates and prepares once, then releases the lock; lock infrastructure
+is its only filesystem side effect:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry-id> [--execution-id <full-id>]] \
@@ -976,10 +978,7 @@ Launch it by omitting `--dry-run`. The command prints a durable run ID and
 returns immediately while the CLI-owned background job continues. By default,
 selection is incremental. A current execution with
 `requires_reproduction: false` needs no execution and does not depend on the
-reproduction cache. An unchanged cached failure or block also prevents a
-pointless retry. Two unchanged incremental runs in a row therefore select zero
-commands on the second run. A changed command selects only its affected
-downstream closure. Add `--recheck` when you deliberately want
+reproduction cache. Add `--recheck` when you deliberately want
 every currently runnable eligible execution in the selected evidence-relevant
 scope to run again. Recheck does not bypass a planning blocker.
 
@@ -1038,10 +1037,12 @@ training cost:
 A dry run may now be a valid partial plan: an attributable pre-existing source,
 input, boundary, or baseline problem fails only the affected execution and
 skips its dependants, while independent eligible work remains runnable.
-Summary-only validation findings that have no executable association remain
-visible without blocking reproduction. A whole-log refusal is reserved for
-validation or graph authority that cannot be localized safely, unsafe
-confinement or ownership, or runnable material that changes after acceptance.
+Fresh preparation evaluates the current log once under the ordinary log lock;
+it does not admit work through an earlier published validation bundle.
+Summary-only findings that have no executable association remain visible
+without blocking reproduction. A whole-log refusal is reserved for validation
+or graph authority that cannot be localized safely, unsafe confinement or
+ownership, or runnable material that changes after acceptance.
 
 All-execution inclusion is independent from recheck selection. `--recheck`
 alone still excludes non-automatic executions; use both flags only when both
@@ -1060,7 +1061,11 @@ Inspect or control an accepted run with its immutable ID:
 ```
 
 `stop` preserves the same retained run folder and completed checkpoints for
-a guarded resume. An optional scheduled monitor may use `status --json` to
+resume. Resume reloads exactly the accepted plan: it neither replans nor adopts
+source edits. It runs only never-started work and work stopped before a durable
+terminal outcome; completed and failed work remains final for that run. A
+source change after acceptance requires a new run, and an unnoticed edit can
+invalidate conclusions and requires reassessment. An optional scheduled monitor may use `status --json` to
 report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
 

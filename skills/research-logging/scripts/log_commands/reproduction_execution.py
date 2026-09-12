@@ -34,9 +34,9 @@ from research_log_data import (
     DataContractError,
     DataFile,
     Fingerprint,
+    ResolvedInputToken,
     compose_directory_fingerprint,
     input_token_parts,
-    load_data_file,
     observe_directory_tree,
     observe_file_content,
     observe_fingerprint,
@@ -44,11 +44,9 @@ from research_log_data import (
     resolve_input_token,
 )
 from validation.output_bindings import OutputBindingError, project_output_bindings
-from validation.pyrun_outputs import output_target_path
+from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
-    PyrunFile,
-    load_pyrun_state,
     script_target_path,
 )
 
@@ -56,7 +54,9 @@ from .context import EntryContext, LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import (
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    AcceptedInvocation,
     ReproductionPlan,
+    accepted_invocation,
     successful_checkpoint_state,
 )
 from .reproduction_paths import canonical_run_root, checkpoint_temporary_path
@@ -206,7 +206,7 @@ class ExecutionControl:
     source: _ExecutionSource | None = None
     prior_attempts: frozenset[str] = frozenset()
     prior_failures: frozenset[str] = frozenset()
-    attempt_completed: Callable[[ExecutionAttempt], None] = lambda _attempt: None
+    attempt_completed: Callable[[ExecutionAttempt], bool] = lambda _attempt: True
     progress: Callable[[str, str, str, ExecutionAttempt | None], None] = (
         lambda _event, _entry, _execution_id, _attempt: None
     )
@@ -261,15 +261,39 @@ class _PreparedExecution:
 
 @dataclass(frozen=True)
 class _ExecutionSource:
-    """One entry and its validated pyrun authority for a reproduction pass."""
+    """One entry and its immutable accepted invocations for a reproduction pass."""
 
     entry: EntryContext
-    state: PyrunFile
+    invocations: Mapping[str, AcceptedInvocation]
+
+    def invocation(self, execution_id: str) -> AcceptedInvocation:
+        """Return the sole execution admitted for this fixed run."""
+
+        try:
+            return self.invocations[execution_id]
+        except KeyError as error:
+            raise ActionError(
+                "reproduction.execution.missing",
+                "execution is absent from the accepted plan: "
+                f"{self.entry.id}:{execution_id}",
+            ) from error
 
 
 @dataclass(frozen=True)
 class _PreparationOptions:
     source: _ExecutionSource | None = None
+
+
+@dataclass(frozen=True)
+class _CommandContext:
+    """Accepted declarations and workspace paths for one recipe expansion."""
+
+    data: DataFile | None
+    source_entry: Path
+    workspace: ReproductionWorkspace
+    output_paths: Mapping[str, Path]
+    generated: Mapping[Path, tuple[Path, str]]
+    expected_inputs: Mapping[str, Fingerprint]
 
 
 @dataclass(frozen=True)
@@ -422,13 +446,12 @@ def populate_output_workspace(
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is invalid"
         ) from error
-    allowed = {"attempts", "run.json", "supervisor.json", "supervisor.log"}
+    # Acceptance installs the immutable plan before the small mutable run record.
+    # A resumed workspace must retain those two records, but no attempt archive
+    # exists in the fixed-plan lifecycle.
+    allowed = {"plan.json", "run.json", "supervisor.json", "supervisor.log"}
     entries = tuple(root.iterdir())
-    attempts = root / "attempts"
-    invalid_attempts = attempts.is_symlink() or (
-        attempts.exists() and not attempts.is_dir()
-    )
-    if any(path.name not in allowed for path in entries) or invalid_attempts:
+    if any(path.name not in allowed for path in entries):
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is not pristine"
         )
@@ -516,7 +539,8 @@ def execute_planned_recipe(
     if generated is None:
         generated = _generated_output_paths(log, plan, workspace, sources=sources)
     entry_id = _required_string(planned, "entry")
-    source = _execution_source(log, workspace, entry_id, sources)
+    source = _execution_source(log, plan, workspace, entry_id, sources)
+    accepted = source.invocation(_required_string(planned, "execution_id"))
     prepared = _prepare_execution(
         log,
         planned,
@@ -524,9 +548,8 @@ def execute_planned_recipe(
         generated,
         _PreparationOptions(source),
     )
+    _verify_accepted_source_observations(prepared, source.entry.root, workspace)
     _preflight_output_paths(prepared.output_paths.values(), prepared.run_root)
-    if not control.resume:
-        _clear_outputs(prepared.output_paths.values())
     prior = (
         _load_checkpoint_control_plane(
             workspace,
@@ -536,6 +559,8 @@ def execute_planned_recipe(
         if control.resume
         else None
     )
+    if prior is None or prior.state == "stopped":
+        _clear_outputs(prepared.output_paths.values())
     prior_started_at = prior.started_at if prior is not None else None
     prior_elapsed = prior.elapsed_seconds or 0.0 if prior is not None else 0.0
     backend = control.confinement or DarwinSeatbelt()
@@ -602,6 +627,8 @@ def execute_planned_recipe(
     _write_checkpoint(prepared.checkpoint, checkpoint)
     if successful_checkpoint_state(state):
         try:
+            _verify_accepted_source_observations(prepared, source.entry.root, workspace)
+            _verify_accepted_input_observations(accepted, generated)
             _materialize_outputs(prepared, workspace, source)
         except (OSError, ValueError) as error:
             failure_code = "output_materialization_failed"
@@ -635,6 +662,56 @@ def execute_planned_recipe(
         prepared.stdout.relative_to(workspace.run_root).as_posix(),
         prepared.stderr.relative_to(workspace.run_root).as_posix(),
     )
+
+
+def _verify_accepted_source_observations(
+    prepared: _PreparedExecution, entry_root: Path, workspace: ReproductionWorkspace
+) -> None:
+    """Require retained script and helper bytes to match this invocation's plan."""
+
+    script = script_target_path(
+        prepared.execution.recipe.script,
+        entry_root=entry_root,
+        project_root=workspace.source_project,
+    )
+    observed = prepared.execution.observed
+    try:
+        if script.is_symlink() or _fingerprint(script, "file") != observed.script:
+            raise ValueError("script observation changed")
+        for name, fingerprint in observed.code:
+            helper = code_target_path(name, entry_root=entry_root)
+            if helper.is_symlink() or _fingerprint(helper, "file") != fingerprint:
+                raise ValueError(f"helper observation changed: {name}")
+    except (OSError, ValueError) as error:
+        raise ActionError("reproduction.source.changed", str(error)) from error
+
+
+def _verify_accepted_input_observations(
+    accepted: AcceptedInvocation, generated: Mapping[Path, tuple[Path, str]]
+) -> None:
+    """Require accepted direct inputs to remain stable after child execution."""
+
+    if accepted.data is None:
+        return
+    expected = dict(accepted.execution.observed.inputs)
+    for name in accepted.execution.recipe.inputs:
+        resource = accepted.data.by_name.get(name)
+        if resource is None:
+            raise ActionError(
+                "reproduction.input.invalid", f"accepted input is missing: {name}"
+            )
+        source = Path(resource.canonical_target)
+        if _regenerated_input_path(source.resolve(), generated) is not None:
+            continue
+        try:
+            observed = observe_fingerprint(resource).fingerprint
+        except (DataContractError, OSError, ValueError) as error:
+            raise ActionError("reproduction.input.unavailable", str(error)) from error
+        if expected.get(name) != observed:
+            raise ActionError(
+                "reproduction.input.observation_mismatch",
+                f"accepted input changed after execution: {name}",
+            )
 
 
 def cleanup_reproduction_scratch(run_root: Path) -> None:
@@ -725,14 +802,15 @@ def _prepare_execution(
 ) -> _PreparedExecution:
     entry_id = _required_string(planned, "entry")
     execution_id = _required_string(planned, "execution_id")
-    loaded = options.source or _execution_source(log, workspace, entry_id, {})
-    source_entry = loaded.entry
-    execution = loaded.state.executions.get(execution_id)
-    if execution is None:
+    if options.source is None:
         raise ActionError(
-            "reproduction.execution.missing",
-            f"accepted execution is no longer present: {entry_id}:{execution_id}",
+            "reproduction.execution.invalid",
+            "execution requires an accepted invocation source",
         )
+    loaded = options.source
+    source_entry = loaded.entry
+    accepted = loaded.invocation(execution_id)
+    execution = accepted.execution
     attempt_root = _attempt_root(workspace, entry_id, execution_id)
     runtime_root = _attempt_runtime_root(workspace, entry_id, execution_id)
     diagnostics_root = (
@@ -750,14 +828,18 @@ def _prepare_execution(
     )
     command, captures = _execution_command(
         execution,
-        source_entry=source_entry.root,
-        workspace=workspace,
-        output_paths=output_paths,
-        generated=generated,
+        _CommandContext(
+            None
+            if accepted.data is None
+            else replace(accepted.data, entry_root=source_entry.root),
+            source_entry.root,
+            workspace,
+            output_paths,
+            generated,
+            dict(execution.observed.inputs),
+        ),
     )
-    stdout_path, stderr_path = _diagnostic_paths(
-        workspace, entry_id, execution_id
-    )
+    stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, execution_id)
     checkpoint_path = _checkpoint_path(workspace, entry_id, execution_id)
     return _PreparedExecution(
         entry_id,
@@ -769,9 +851,7 @@ def _prepare_execution(
         work_entry,
         output_paths,
         tuple(command),
-        _execution_environment(
-            execution, workspace, entry_id, execution_id
-        ),
+        _execution_environment(execution, workspace, entry_id, execution_id),
         captures,
         stdout_path,
         stderr_path,
@@ -810,8 +890,12 @@ def _confined_command(
     readonly = _readonly_boundaries(plan, workspace)
     return backend.command(
         command,
-        writable_roots=(Path(prepared.environment["TMPDIR"]), prepared.run_root,
-                        prepared.runtime_root, prepared.diagnostics_root),
+        writable_roots=(
+            Path(prepared.environment["TMPDIR"]),
+            prepared.run_root,
+            prepared.runtime_root,
+            prepared.diagnostics_root,
+        ),
         readonly_paths=readonly,
     )
 
@@ -834,9 +918,7 @@ def _run_prepared(
             launched = _launch_process(prepared, command, stack)
             started_at = _utc_now()
             started_monotonic = time.monotonic()
-            deadline = (
-                started_monotonic + callbacks.execution_timeout_seconds
-            )
+            deadline = started_monotonic + callbacks.execution_timeout_seconds
             _control_plane_call(callbacks.on_launch, started_at)
             _control_plane_call(registry.register_root, launched.process.pid)
             _control_plane_call(
@@ -980,9 +1062,7 @@ def _monitor_process(
     failure_message: str | None = None
     while process.poll() is None:
         _control_plane_call(registry.refresh)
-        _control_plane_call(
-            callbacks.on_workers, _control_plane_call(registry.records)
-        )
+        _control_plane_call(callbacks.on_workers, _control_plane_call(registry.records))
         if callbacks.stop_requested():
             stopped = True
             survivors = _control_plane_call(registry.stop_all)
@@ -1100,9 +1180,6 @@ def execute_reproduction_plan(
 ) -> ExecutionBatch:
     """Execute every runnable component without crossing dependency failures."""
 
-    from .reproduction_planner import verify_reproduction_runtime_snapshot
-
-    verify_reproduction_runtime_snapshot(log, plan)
     ordered = sorted(plan.executions, key=_execution_order)
     _require_execution_order(ordered)
     schedule = _BatchSchedule(
@@ -1118,7 +1195,11 @@ def execute_reproduction_plan(
     sources: dict[str, _ExecutionSource] = {}
     generated = _generated_output_paths(log, plan, workspace, sources=sources)
     for planned in ordered:
-        _execution_source(log, workspace, _required_string(planned, "entry"), sources)
+        entry_id = _required_string(planned, "entry")
+        identity = _required_string(planned, "execution_id")
+        _execution_source(log, plan, workspace, entry_id, sources)
+        if control.resume:
+            _reset_stopped_execution_workspace(workspace, entry_id, identity)
 
     control_state = _ControlPlaneState()
     runtime_control = replace(
@@ -1184,6 +1265,22 @@ def execute_reproduction_plan(
     )
 
 
+def _reset_stopped_execution_workspace(
+    workspace: ReproductionWorkspace, entry: str, execution_id: str
+) -> None:
+    """Discard only a stopped invocation's non-durable private work on resume."""
+
+    checkpoint = _load_checkpoint(workspace, entry, execution_id)
+    if checkpoint is None or checkpoint.state != "stopped":
+        return
+    for path in (
+        _attempt_root(workspace, entry, execution_id),
+        _attempt_runtime_root(workspace, entry, execution_id),
+    ):
+        if path.exists() and not path.is_symlink():
+            shutil.rmtree(path)
+
+
 def _execute_scheduled_recipe(
     context: _PlanExecutionContext, planned: Mapping[str, object]
 ) -> ExecutionAttempt | None:
@@ -1207,9 +1304,7 @@ def _execute_scheduled_recipe(
     identity = _required_string(planned, "execution_id")
     checkpoint: ExecutionCheckpoint | None = None
     try:
-        checkpoint = _load_checkpoint_control_plane(
-            workspace, entry_id, identity
-        )
+        checkpoint = _load_checkpoint_control_plane(workspace, entry_id, identity)
         _control_plane_call(control.progress, "started", entry_id, identity, None)
         attempt = execute_planned_recipe(
             context.log,
@@ -1323,9 +1418,7 @@ def _resolve_pending(
             schedule.pending.remove(planned)
             progress_made = True
             continue
-        checkpoint = _load_checkpoint_control_plane(
-            workspace, entry_id, identity
-        )
+        checkpoint = _load_checkpoint_control_plane(workspace, entry_id, identity)
         if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
             continue
         if not control.resume or not _checkpoint_outputs_current(
@@ -1426,10 +1519,12 @@ def _collect_finished(
             control_state.record(error)
             schedule.stopped = True
             continue
-        control.attempt_completed(attempt)
+        comparison_succeeded = control.attempt_completed(attempt)
         if attempt.stopped:
             schedule.stopped = True
-        if not successful_checkpoint_state(attempt.checkpoint.state):
+        if not comparison_succeeded or not successful_checkpoint_state(
+            attempt.checkpoint.state
+        ):
             schedule.unavailable.add(reference)
 
 
@@ -1451,7 +1546,7 @@ def completed_execution_attempts(
             continue
         if not _checkpoint_outputs_current(
             checkpoint,
-            _execution_source(log, workspace, entry_id, sources),
+            _execution_source(log, plan, workspace, entry_id, sources),
             workspace,
             identity,
         ):
@@ -1464,13 +1559,15 @@ def completed_execution_attempts(
             planned,
             workspace,
             generated,
-            _PreparationOptions(_execution_source(log, workspace, entry_id, sources)),
+            _PreparationOptions(
+                _execution_source(log, plan, workspace, entry_id, sources)
+            ),
         )
         if checkpoint.state == "succeeded":
             _materialize_outputs(
                 prepared,
                 workspace,
-                _execution_source(log, workspace, entry_id, sources),
+                _execution_source(log, plan, workspace, entry_id, sources),
             )
         results.append(
             ExecutionAttempt(
@@ -1742,8 +1839,9 @@ def _checkpoint_outputs_current(
     execution_id: str,
 ) -> bool:
     entry = source.entry
-    execution = source.state.executions.get(execution_id)
-    if execution is None:
+    try:
+        execution = source.invocation(execution_id).execution
+    except ActionError:
         return False
     project_root = _attempt_root(workspace, entry.id, execution_id)
     paths = _output_paths(
@@ -1772,14 +1870,14 @@ def _checkpoint_outputs_current(
 
 def _execution_command(
     execution: PyrunExecution,
-    *,
-    source_entry: Path,
-    workspace: ReproductionWorkspace,
-    output_paths: Mapping[str, Path],
-    generated: Mapping[Path, tuple[Path, str]],
+    context: _CommandContext,
 ) -> tuple[list[str], Mapping[str, Path]]:
-    data = load_data_file(source_entry / "data.json", entry_root=source_entry)
-    interpreter_link = workspace.source_project / ".conda" / "bin" / "python"
+    if context.data is None and execution.recipe.inputs:
+        raise ActionError(
+            "reproduction.input.unavailable",
+            "accepted execution has no data declarations",
+        )
+    interpreter_link = context.workspace.source_project / ".conda" / "bin" / "python"
     interpreter = interpreter_link.resolve()
     if not interpreter.is_file():
         raise ActionError(
@@ -1788,8 +1886,8 @@ def _execution_command(
         )
     script = script_target_path(
         execution.recipe.script,
-        entry_root=source_entry,
-        project_root=workspace.source_project,
+        entry_root=context.source_entry,
+        project_root=context.workspace.source_project,
     )
     if script.is_symlink() or not script.is_file():
         raise ActionError(
@@ -1799,19 +1897,21 @@ def _execution_command(
         projection = project_output_bindings(
             execution.recipe.parameters,
             execution.recipe.outputs,
-            entry_root=source_entry,
-            project_root=workspace.source_project,
+            entry_root=context.source_entry,
+            project_root=context.workspace.source_project,
             subject=execution.recipe.script,
         )
     except OutputBindingError as error:
         raise ActionError("reproduction.output.binding_invalid", str(error)) from error
     captures = {
-        binding.option: output_paths[binding.output]
+        binding.option: context.output_paths[binding.output]
         for binding in projection.captures
         if binding.option is not None
     }
     bindings = {
-        binding.parameter_index: binding.substituted(output_paths[binding.output])
+        binding.parameter_index: binding.substituted(
+            context.output_paths[binding.output]
+        )
         for binding in projection.parameters
         if binding.parameter_index is not None
     }
@@ -1821,20 +1921,13 @@ def _execution_command(
         if binding is not None:
             arguments.append(binding)
             continue
-        arguments.append(
-            _resolve_parameter(
-                value,
-                data=data,
-                workspace=workspace,
-                generated=generated,
-                expected_inputs=dict(execution.observed.inputs),
-            )
-        )
+        arguments.append(_resolve_parameter(value, context))
     return [str(interpreter), str(script), *arguments], captures
 
 
 def _execution_source(
     log: LogContext,
+    plan: ReproductionPlan,
     workspace: ReproductionWorkspace,
     entry_id: str,
     sources: dict[str, _ExecutionSource],
@@ -1843,12 +1936,14 @@ def _execution_source(
     if source is not None:
         return source
     entry = resolve_entry(log, entry_id)
-    state = load_pyrun_state(
-        entry.root / "pyrun.json",
-        entry_root=entry.root,
-        project_root=workspace.source_project,
-    )
-    source = _ExecutionSource(entry, state)
+    invocations = {
+        _required_string(command, "execution_id"): accepted_invocation(
+            plan, entry_id, _required_string(command, "execution_id")
+        )
+        for command in plan.commands
+        if command.get("entry") == entry_id
+    }
+    source = _ExecutionSource(entry, invocations)
     sources[entry_id] = source
     return source
 
@@ -1866,13 +1961,11 @@ def _generated_output_paths(
     loaded_sources = sources if sources is not None else {}
     for planned in plan.executions:
         entry_id = _required_string(planned, "entry")
-        source = _execution_source(log, workspace, entry_id, loaded_sources)
+        source = _execution_source(log, plan, workspace, entry_id, loaded_sources)
         entry = source.entry
-        execution = source.state.executions.get(
+        execution = source.invocation(
             _required_string(planned, "execution_id")
-        )
-        if execution is None:
-            continue
+        ).execution
         work_entry = workspace.map_source(entry.root)
         for identity, kind in execution.recipe.outputs:
             retained = output_target_path(
@@ -1889,20 +1982,22 @@ def _generated_output_paths(
     return result
 
 
-def _resolve_parameter(
-    value: str,
-    *,
-    data: DataFile,
-    workspace: ReproductionWorkspace,
-    generated: Mapping[Path, tuple[Path, str]],
-    expected_inputs: Mapping[str, Fingerprint],
-) -> str:
-    value = value.replace("<project>", str(workspace.source_project)).replace(
-        "<log>", str(data.entry_root.parent.parent)
-    )
+def _resolve_parameter(value: str, context: _CommandContext) -> str:
+    """Expand one accepted child argument from its fixed invocation context."""
+
+    data = context.data
+    value = value.replace("<project>", str(context.workspace.source_project))
+    if data is not None:
+        value = value.replace("<log>", str(data.entry_root.parent.parent))
     parts = input_token_parts(value)
     if parts is None:
         return value
+    if data is None:
+        raise ActionError(
+            "reproduction.input.unavailable",
+            "accepted execution has no data declarations",
+        )
+    assert data is not None
     try:
         resolved = resolve_input_token(value, data)
     except DataContractError as error:
@@ -1910,43 +2005,86 @@ def _resolve_parameter(
     if resolved.projection == "commit":
         return resolved.value
     source = Path(resolved.value)
-    mapped = _regenerated_input_path(source.resolve(), generated)
+    mapped = _regenerated_input_path(source.resolve(), context.generated)
     if mapped is not None:
-        if not mapped.exists():
-            raise ActionError(
-                "reproduction.input.unavailable",
-                f"regenerated input is unavailable: {resolved.resource.name}",
-            )
-        expected = expected_inputs.get(resolved.resource.name)
-        staged_root = _regenerated_input_path(
-            Path(resolved.resource.canonical_target).resolve(), generated
+        return _resolve_staged_input(resolved, mapped, context)
+    return _resolve_retained_input(resolved, context)
+
+
+def _expected_input(
+    resolved: ResolvedInputToken, context: _CommandContext
+) -> Fingerprint:
+    """Return the recorded consumer observation for one resolved input."""
+
+    expected = context.expected_inputs.get(resolved.resource.name)
+    if expected is None:
+        raise ActionError(
+            "reproduction.input.observation_missing",
+            f"recorded input observation is unavailable: {resolved.resource.name}",
         )
-        if expected is None or staged_root is None:
-            raise ActionError(
-                "reproduction.input.observation_missing",
-                f"recorded input observation is unavailable: {resolved.resource.name}",
-            )
-        try:
-            observed = observe_fingerprint(
-                replace(
-                    resolved.resource,
-                    location=staged_root.as_posix(),
-                    canonical_target=staged_root.as_posix(),
-                )
-            ).fingerprint
-        except (DataContractError, OSError, ValueError) as error:
-            raise ActionError(
-                "reproduction.input.unavailable",
-                f"regenerated input is unavailable: {resolved.resource.name}: {error}",
-            ) from error
-        if observed != expected:
-            raise ActionError(
-                "reproduction.input.observation_mismatch",
-                "regenerated input does not match the consumer's recorded "
-                f"observation: {resolved.resource.name}",
-            )
-        return str(mapped)
+    return expected
+
+
+def _resolve_retained_input(
+    resolved: ResolvedInputToken, context: _CommandContext
+) -> str:
+    """Verify a retained source input before passing it to the child."""
+
+    expected = _expected_input(resolved, context)
+    try:
+        observed = observe_fingerprint(resolved.resource).fingerprint
+    except (DataContractError, OSError, ValueError) as error:
+        raise ActionError(
+            "reproduction.input.unavailable",
+            f"accepted input is unavailable: {resolved.resource.name}: {error}",
+        ) from error
+    if observed != expected:
+        raise ActionError(
+            "reproduction.input.observation_mismatch",
+            f"accepted input changed: {resolved.resource.name}",
+        )
     return resolved.value
+
+
+def _resolve_staged_input(
+    resolved: ResolvedInputToken, mapped: Path, context: _CommandContext
+) -> str:
+    """Verify a durable staged producer output against the consumer baseline."""
+
+    if not mapped.exists():
+        raise ActionError(
+            "reproduction.input.unavailable",
+            f"regenerated input is unavailable: {resolved.resource.name}",
+        )
+    expected = _expected_input(resolved, context)
+    staged_root = _regenerated_input_path(
+        Path(resolved.resource.canonical_target).resolve(), context.generated
+    )
+    if staged_root is None:
+        raise ActionError(
+            "reproduction.input.observation_missing",
+            f"recorded input observation is unavailable: {resolved.resource.name}",
+        )
+    try:
+        observed = observe_fingerprint(
+            replace(
+                resolved.resource,
+                location=staged_root.as_posix(),
+                canonical_target=staged_root.as_posix(),
+            )
+        ).fingerprint
+    except (DataContractError, OSError, ValueError) as error:
+        raise ActionError(
+            "reproduction.input.unavailable",
+            f"regenerated input is unavailable: {resolved.resource.name}: {error}",
+        ) from error
+    if observed != expected:
+        raise ActionError(
+            "reproduction.input.observation_mismatch",
+            "regenerated input does not match the consumer's recorded "
+            f"observation: {resolved.resource.name}",
+        )
+    return str(mapped)
 
 
 def _regenerated_input_path(
@@ -2071,7 +2209,9 @@ def _readonly_boundaries(
     plan: ReproductionPlan, workspace: ReproductionWorkspace
 ) -> tuple[tuple[Path, str], ...]:
     result: set[tuple[Path, str]] = set()
-    materials = cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"])
+    materials = cast(
+        Sequence[Mapping[str, object]], plan.comparison_context["materials"]
+    )
     for material in materials:
         if material.get("role") != "boundary":
             continue
@@ -2274,9 +2414,7 @@ def _diagnostic_relative_paths(
     execution_id: str,
 ) -> tuple[Path, Path]:
     root = (
-        workspace.diagnostics_root
-        / entry
-        / execution_id.removeprefix("pyrun-exec/v1:")
+        workspace.diagnostics_root / entry / execution_id.removeprefix("pyrun-exec/v1:")
     )
     return root / "stdout.log", root / "stderr.log"
 

@@ -1,1999 +1,1022 @@
+"""Accepted-plan job boundary coverage."""
+
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Mapping, Sequence, cast
 from unittest import mock
 
-from log_commands.context import LogContext
 from log_commands.model import ActionError
-from log_commands.reproduction_contract import (
-    ReproductionPlan,
-    ReproductionRuntime,
-    source_snapshot,
+from log_commands.reproduction_comparison import (
+    ExecutionComparison,
+    compare_execution_outputs,
+    load_recorded_comparisons,
 )
+from log_commands.reproduction_contract import ReproductionRuntime
 from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionBatch,
     ExecutionCheckpoint,
+    ExecutionControl,
     ReproductionControlPlaneError,
-    WorkerRecord,
+    ReproductionWorkspace,
+    _checkpoint_path,
+    _write_checkpoint,
+    cleanup_reproduction_scratch,
+    execute_reproduction_plan,
 )
 from log_commands.reproduction_jobs import (
+    ACTIVE_PHASES,
     RUN_SCHEMA,
-    ReproductionLaunch,
-    _accepted_record,
+    TERMINAL_STATUSES,
     _acquire_scope_locks,
-    _checkpoint_dicts,
-    _checkpoint_paths,
-    _close_fds,
-    _combined_attempt_workers,
-    _continue_failed_cleanup,
-    _execution_progress,
-    _execution_workers,
-    _failed_checkpoint_references,
-    _find_run,
-    _finish_failed,
+    _canonical,
+    _clear_recovery_guard,
     _load_run,
-    _marker_identity,
-    _reconcile_lost_supervisor,
-    _reconciled_worker_history,
-    _require_no_promotion_conflict,
-    _resumable_execution_references,
-    _RunStateContext,
+    _publication_retry_skips,
     _status_projection,
+    _verify_accepted_materials,
     _verify_checkpoint_inventory,
-    dry_run_reproduction,
-    format_reproduction_status,
     launch_reproduction,
-    reproduction_status,
+    load_accepted_plan,
     resume_reproduction,
     supervise_reproduction,
 )
-from log_commands.reproduction_planner import ReproductionSelection
-from log_commands.reproduction_results import RunFolder, RunResult
-from log_commands.reproduction_scheduler import (
-    acquire_scheduling_permit,
-    release_scheduling_permit,
-)
-from log_commands.storage import atomic_write_text
-from validation.operation_state import operation_directory
+from log_commands.reproduction_results import ReproductionResults
+from reproduction_fixed_plan_test_support import accepted_plan, accepted_run
+from research_log_data import InputResource, ResourceIdentity, observe_fingerprint
+from test_log_reproduction_planning import _Fixture
+from validation.operation_state import operation_lock
+from validation.pyrun_state import load_pyrun_state
 
 
 class ReproductionJobTests(unittest.TestCase):
-    def test_dead_terminal_owner_permit_is_reconciled(self) -> None:
+    def test_fixed_plan_stop_resume_preserves_completed_branches_and_waits_for_b(
+        self,
+    ) -> None:
+        """The fixed scheduler preserves A/C and gates consumer on B's comparison."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            fixture = _Fixture(project)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            outputs = {
+                name: entry.root / "data" / f"{name}.txt"
+                for name in ("a", "b", "c", "consumer")
+            }
+            raw.write_text("raw\n", encoding="utf-8")
+            for path in outputs.values():
+                path.write_text(f"{path.stem}\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [fixture.item(entry, "raw", raw, origin=True)]
+                + [
+                    fixture.item(entry, name, path, origin=False)
+                    for name, path in outputs.items()
+                ],
+            )
+            fixture.evidence(entry, *outputs)
+            a_id, a = fixture.execution(entry, "a", {"raw": raw}, {"a": outputs["a"]})
+            b_id, b = fixture.execution(
+                entry, "b", {"a": outputs["a"]}, {"b": outputs["b"]}
+            )
+            c_id, c = fixture.execution(entry, "c", {"raw": raw}, {"c": outputs["c"]})
+            consumer_id, consumer = fixture.execution(
+                entry,
+                "consumer",
+                {"b": outputs["b"]},
+                {"consumer": outputs["consumer"]},
+            )
+            fixture.write_pyrun(
+                entry, [(a_id, a), (b_id, b), (c_id, c), (consumer_id, consumer)]
+            )
+            from test_log_reproduction_planning import _plan
+
+            plan = _plan(fixture, entry, runtime=ReproductionRuntime(jobs=2))
+            root = project / "reproduce-fixed-plan"
+            workspace = ReproductionWorkspace(
+                "reproduce-fixed-plan",
+                root,
+                project,
+                root / "workspace",
+                root / "runtime",
+                root / "diagnostics",
+                root / "executions",
+            )
+            for path in (
+                workspace.work_project,
+                workspace.runtime_root,
+                workspace.diagnostics_root,
+                workspace.staging_root,
+                root / "checkpoints",
+            ):
+                path.mkdir(parents=True, exist_ok=True)
+            comparisons: dict[tuple[str, str], ExecutionComparison] = {}
+            launched: list[str] = []
+
+            def checkpoint(identity: str, state: str) -> ExecutionAttempt:
+                path = _checkpoint_path(workspace, entry.id, identity)
+                finished = "2030-01-01T00:00:01Z"
+                outputs = ()
+                if state == "succeeded":
+                    output = outputs_by_identity[identity]
+                    private = (
+                        workspace.staging_root
+                        / entry.id
+                        / identity.rsplit(":", 1)[-1]
+                        / entry.root.relative_to(project)
+                        / output.relative_to(entry.root)
+                    )
+                    private.parent.mkdir(parents=True, exist_ok=True)
+                    private.write_bytes(output.read_bytes())
+                    materialized = workspace.map_source(output)
+                    materialized.parent.mkdir(parents=True, exist_ok=True)
+                    materialized.write_bytes(output.read_bytes())
+                    outputs = (
+                        {
+                            "artifact": f"data/{output.name}",
+                            "fingerprint": dict(
+                                executions_by_identity[identity].observed.outputs
+                            )[f"data/{output.name}"].as_dict(),
+                        },
+                    )
+                value = ExecutionCheckpoint(
+                    entry.id,
+                    identity,
+                    state,
+                    path.relative_to(workspace.run_root).as_posix(),
+                    finished if state == "succeeded" else None,
+                    outputs,
+                    "2030-01-01T00:00:00Z",
+                    finished,
+                    1.0,
+                    (
+                        None
+                        if state == "succeeded"
+                        else {
+                            "code": "stop_requested",
+                            "message": "stopped",
+                            "recorded_at": finished,
+                        }
+                    ),
+                )
+                _write_checkpoint(path, value)
+                diagnostic = workspace.diagnostics_root / f"{identity[-8:]}.log"
+                diagnostic.write_text(f"{state}\n", encoding="utf-8")
+                return ExecutionAttempt(
+                    entry.id,
+                    identity,
+                    0 if state == "succeeded" else None,
+                    state == "stopped",
+                    "stop_requested" if state == "stopped" else None,
+                    "stopped" if state == "stopped" else None,
+                    value,
+                    (),
+                    diagnostic.relative_to(root).as_posix(),
+                    diagnostic.relative_to(root).as_posix(),
+                )
+
+            outputs_by_identity = {
+                a_id: outputs["a"],
+                b_id: outputs["b"],
+                c_id: outputs["c"],
+                consumer_id: outputs["consumer"],
+            }
+            executions_by_identity = {
+                a_id: a,
+                b_id: b,
+                c_id: c,
+                consumer_id: consumer,
+            }
+
+            def durable_comparison(attempt: ExecutionAttempt) -> bool:
+                value = compare_execution_outputs(
+                    fixture.log, plan, workspace, attempt
+                )
+                comparisons[(attempt.entry, attempt.execution_id)] = value
+                return value.matched
+
+            first_pass = True
+
+            def run_recipe(_context: object, planned: object) -> ExecutionAttempt:
+                assert isinstance(planned, dict)
+                identity = str(planned["execution_id"])
+                launched.append(identity)
+                if first_pass and identity == b_id:
+                    suffix = identity.rsplit(":", 1)[-1]
+                    incomplete = workspace.staging_root / entry.id / suffix
+                    incomplete.mkdir(parents=True)
+                    (incomplete / "partial.txt").write_text(
+                        "partial\n", encoding="utf-8"
+                    )
+                    scratch = Path(
+                        tempfile.mkdtemp(
+                            prefix="reproduction-scratch-", dir="/private/tmp"
+                        )
+                    )
+                    record = root / "scratch" / entry.id / f"{suffix}.json"
+                    record.parent.mkdir(parents=True, exist_ok=True)
+                    record.write_text(json.dumps(str(scratch)) + "\n", encoding="utf-8")
+                    return checkpoint(identity, "stopped")
+                return checkpoint(identity, "succeeded")
+
+            with mock.patch(
+                "log_commands.reproduction_execution._execute_scheduled_recipe",
+                side_effect=run_recipe,
+            ):
+                first = execute_reproduction_plan(
+                    fixture.log,
+                    plan,
+                    workspace,
+                    ExecutionControl(attempt_completed=durable_comparison),
+                )
+                self.assertTrue(first.stopped)
+                self.assertCountEqual(launched, [a_id, b_id, c_id])
+                self.assertNotIn(consumer_id, launched)
+                a_diagnostic = workspace.diagnostics_root / f"{a_id[-8:]}.log"
+                c_diagnostic = workspace.diagnostics_root / f"{c_id[-8:]}.log"
+                sentinels = (a_diagnostic.read_bytes(), c_diagnostic.read_bytes())
+                incomplete = workspace.staging_root / entry.id / b_id.rsplit(":", 1)[-1]
+                self.assertTrue(incomplete.exists())
+                cleanup_reproduction_scratch(root)
+                self.assertFalse(
+                    (
+                        root
+                        / "scratch"
+                        / entry.id
+                        / f"{b_id.rsplit(':', 1)[-1]}.json"
+                    ).exists()
+                )
+                first_pass = False
+                launched.clear()
+                prior_comparisons = load_recorded_comparisons(plan, workspace)
+                self.assertEqual(
+                    {(item.entry, item.execution_id) for item in prior_comparisons},
+                    {(entry.id, a_id), (entry.id, b_id), (entry.id, c_id)},
+                )
+                second = execute_reproduction_plan(
+                    fixture.log,
+                    plan,
+                    workspace,
+                    ExecutionControl(
+                        resume=True,
+                        prior_attempts=frozenset(
+                            f"{item.entry}:{item.execution_id}"
+                            for item in prior_comparisons
+                            if item.execution_id != b_id
+                        ),
+                        attempt_completed=durable_comparison,
+                    ),
+                )
+            self.assertFalse(second.stopped)
+            self.assertEqual(launched, [b_id, consumer_id])
+            self.assertTrue(comparisons[(entry.id, b_id)].matched)
+            self.assertFalse((incomplete / "partial.txt").exists())
+            self.assertEqual(
+                (a_diagnostic.read_bytes(), c_diagnostic.read_bytes()), sentinels
+            )
+
+    def test_publication_reobserves_selected_file_and_pattern_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "inputs"
+            root.mkdir()
+            selected = root / "selected.txt"
+            selected.write_text("selected\n", encoding="utf-8")
+            (root / "ignored.bin").write_bytes(b"ignored")
+            files = InputResource(
+                "files",
+                "directory",
+                str(root),
+                ResourceIdentity("identity-files-sha256-v1", files=("selected.txt",)),
+                True,
+                str(root),
+            )
+            patterns = InputResource(
+                "patterns",
+                "directory",
+                str(root),
+                ResourceIdentity("identity-patterns-sha256-v1", patterns=("*.txt",)),
+                True,
+                str(root),
+            )
+            materials = [
+                {
+                    "identity": str(root),
+                    "kind": "directory",
+                    "role": "input",
+                    "fingerprint": observe_fingerprint(resource).fingerprint.as_dict(),
+                }
+                for resource in (files, patterns)
+            ]
+            plan = replace(
+                accepted_plan(),
+                comparison_context={
+                    "schema": "research-log-reproduction-comparison-context/1",
+                    "comparisons": [],
+                    "materials": materials,
+                    "result_schema": "research-log-reproduction-result/10",
+                },
+            )
+            _verify_accepted_materials(plan)
+            (root / "ignored.bin").write_bytes(b"still ignored")
+            _verify_accepted_materials(plan)
+            selected.write_text("changed\n", encoding="utf-8")
+            with self.assertRaisesRegex(ActionError, "accepted material changed"):
+                _verify_accepted_materials(plan)
+
+    def test_publication_retry_requires_complete_terminal_accounting(self) -> None:
+        first = "pyrun-exec/v1:" + "1" * 64
+        second = "pyrun-exec/v1:" + "2" * 64
+        plan = replace(
+            accepted_plan(),
+            executions=(
+                {"entry": "e001", "execution_id": first, "depends_on": []},
+                {
+                    "entry": "e001",
+                    "execution_id": second,
+                    "depends_on": [f"e001:{first}"],
+                },
+            ),
+        )
+        failed = ExecutionComparison("e001", first, (), None, False)
+        self.assertEqual(
+            _publication_retry_skips(plan, {("e001", first): failed}),
+            (
+                {
+                    "depends_on": [f"e001:{first}"],
+                    "entry": "e001",
+                    "execution_id": second,
+                    "reason": "dependency_failed",
+                },
+            ),
+        )
+        with self.assertRaisesRegex(ActionError, "terminal accounting"):
+            _publication_retry_skips(accepted_plan(), {})
+
+    def test_recovery_guard_outlives_the_inspecting_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            _, run_root, run_id = _write_accepted_run(project)
-            planned = cast(Mapping[str, object], _plan().executions[0])
-            permit = acquire_scheduling_permit(
-                project,
-                run_root,
-                run_id,
-                planned,
-                stop_requested=lambda: False,
+            (project / ".git").mkdir()
+            log, _root = accepted_run(project)
+            run_id = "reproduce-20300101t000000z-survivor"
+            script = "\n".join(
+                (
+                    "from pathlib import Path",
+                    "from log_commands.context import LogContext",
+                    "from log_commands.reproduction_jobs import _write_recovery_guard",
+                    "args = __import__('sys').argv",
+                    "log = LogContext(Path(args[1]), Path(args[2]))",
+                    "_write_recovery_guard(log, args[3], None, [{'pid': 1}])",
+                )
             )
-            assert permit is not None
-            record = _load_run(run_root / "run.json")
-            cast(dict[str, object], record["state"]).update(
-                {"phase": None, "status": "stopped"}
+            environment = dict(os.environ)
+            scripts = str(Path.cwd() / "skills/research-logging/scripts")
+            environment["PYTHONPATH"] = os.pathsep.join(
+                (scripts, environment.get("PYTHONPATH", ""))
             )
-            cast(dict[str, object], record["timestamps"]).update(
-                {
-                    "stopped_at": "2030-01-01T00:00:01Z",
-                    "updated_at": "2030-01-01T00:00:01Z",
-                }
+            subprocess.run(
+                [sys.executable, "-c", script, str(log.summary), str(log.root), run_id],
+                check=True,
+                env=environment,
             )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-            scheduler = operation_directory(project) / "reproduction-scheduler.json"
-            state = json.loads(scheduler.read_text(encoding="utf-8"))
-            state["active"][0]["supervisor_pid"] = 2**30
-            atomic_write_text(
-                scheduler,
-                json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n",
-            )
-            candidate = dict(planned)
-            candidate.update(
-                {
-                    "exclusive": True,
-                    "execution_id": "pyrun-exec/v1:" + "2" * 64,
-                    "order": 2,
-                    "run_path": "<run>/executions/e003/" + "2" * 64,
-                }
-            )
+            try:
+                with self.assertRaisesRegex(ActionError, "orphaned worker cleanup"):
+                    _acquire_scope_locks(log, None)
+            finally:
+                _clear_recovery_guard(log, run_id)
 
-            recovered = acquire_scheduling_permit(
-                project,
-                run_root,
-                "reproduce-run-b",
-                candidate,
-                stop_requested=lambda: False,
-            )
+    def test_cleanup_error_preserves_its_scratch_record_for_recovery(self) -> None:
+        """A malformed owned scratch record blocks cleanup instead of being lost."""
 
-            assert recovered is not None
-            reconciled = json.loads(scheduler.read_text(encoding="utf-8"))
-            self.assertEqual(
-                [item["permit_id"] for item in reconciled["active"]],
-                [recovered.permit_id],
-            )
-            release_scheduling_permit(recovered)
-
-    def test_control_plane_failure_finishes_run_operationally(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            log, run_root, run_id = _write_accepted_run(
-                Path(directory),
-                run_id="reproduce-20300101t000000z-control",
+            root = Path(directory)
+            record = root / "scratch" / "e001" / f"{'a' * 64}.json"
+            record.parent.mkdir(parents=True)
+            record.write_text(
+                '"/private/tmp/not-a-reproduction-scratch"\n', encoding="utf-8"
             )
-            error = ReproductionControlPlaneError(
-                ActionError("fixture.persistence", "run-state write failed")
+
+            with self.assertRaises(ReproductionControlPlaneError) as raised:
+                cleanup_reproduction_scratch(root)
+
+            self.assertEqual(raised.exception.code, "scratch_cleanup_incomplete")
+            self.assertTrue(raised.exception.cleanup_incomplete)
+            self.assertTrue(record.is_file())
+
+    def test_scope_lock_rechecks_guard_installed_after_initial_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log, _root = accepted_run(project)
+            late_guard = ActionError(
+                "reproduction.recovery.active", "late survivor guard"
             )
+            with mock.patch(
+                "log_commands.reproduction_jobs._require_no_recovery_guard",
+                side_effect=(None, late_guard),
+            ):
+                with self.assertRaisesRegex(ActionError, "late survivor guard"):
+                    _acquire_scope_locks(log, None)
+            fds = _acquire_scope_locks(log, None)
+            for descriptor in fds:
+                os.close(descriptor)
+
+    def test_fixed_plan_has_no_mutable_run_members(self) -> None:
+        keys = set(accepted_plan().as_dict())
+        legacy = {
+            "attempt",
+            "attempts",
+            "checkpoints",
+            "queue",
+            "plan",
+            "source_snapshot",
+            "validation_snapshot",
+        }
+        self.assertFalse(keys & legacy)
+
+    def test_run_lifecycle_has_stopped_and_publication_terminal_states(self) -> None:
+        self.assertIn("publishing", ACTIVE_PHASES)
+        self.assertTrue({"complete", "stopped", "failed"} <= TERMINAL_STATUSES)
+        self.assertEqual(RUN_SCHEMA, "research-log-reproduction-run/7")
+
+    def test_plan_and_run_are_separate_strict_canonical_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, root = accepted_run(Path(directory))
+            self.assertEqual(load_accepted_plan(root), accepted_plan())
+            self.assertEqual(_load_run(root / "run.json")["schema"], RUN_SCHEMA)
+            record = json.loads((root / "run.json").read_text())
+            record["plan"] = {}
+            (root / "run.json").write_text(
+                _canonical(record),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ActionError, "fields are invalid"):
+                _load_run(root / "run.json")
+
+    def test_checkpoint_inventory_rejects_unowned_or_corrupt_recovery_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, root = accepted_run(Path(directory))
+            record = _load_run(root / "run.json")
+            _verify_checkpoint_inventory(root, record)
+            checkpoints = root / "checkpoints"
+            checkpoints.mkdir()
+            (checkpoints / "foreign.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ActionError, "checkpoint"):
+                _verify_checkpoint_inventory(root, record)
+
+    def test_launch_releases_preparation_lock_before_worker_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            root.mkdir()
+            (root / ".git").mkdir()
+            fixture = _Fixture(root)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            execution = fixture.execution(
+                entry, "build", {"raw": raw}, {"output": output}
+            )
+            fixture.write_pyrun(entry, [execution])
+            observed: list[bool] = []
+
+            def handoff(log: object, _root: Path, _fds: object, *, mode: str) -> None:
+                with operation_lock(getattr(log, "root"), "log.lock", mode="exclusive"):
+                    observed.append(mode == "fresh")
+
+            with mock.patch(
+                "log_commands.reproduction_jobs._spawn_supervisor", side_effect=handoff
+            ):
+                launched = launch_reproduction(
+                    fixture.log, entry=entry.id, include_all=False
+                )
+            self.assertIsNotNone(launched.run_id)
+            self.assertEqual(observed, [True])
+
+    def test_status_derives_totals_from_the_accepted_plan_not_run_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _log, root = accepted_run(Path(directory))
+            record = _load_run(root / "run.json")
+            status = _status_projection(record, accepted_plan(), root)
+            self.assertEqual(status["total_executions"], 0)
+            self.assertEqual(status["completed_executions"], 0)
+            self.assertNotIn("attempt", status)
+
+    def test_racing_resumes_install_one_supervisor_for_one_fixed_plan(self) -> None:
+        """The state lock, rather than a stale read, decides the resume winner."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log, root = accepted_run(project)
+            run_id = root.name
+            record = _load_run(root / "run.json")
+            state = record["state"]
+            assert isinstance(state, dict)
+            state.update({"phase": None, "status": "stopped"})
+            timestamps = record["timestamps"]
+            assert isinstance(timestamps, dict)
+            timestamps["stopped_at"] = "2030-01-01T00:00:01Z"
+            (root / "run.json").write_text(_canonical(record), encoding="utf-8")
+
+            started = threading.Barrier(2)
+            supervisors: list[str] = []
+            failures: list[BaseException] = []
+
+            def resume() -> None:
+                try:
+                    started.wait()
+                    resume_reproduction(log, run_id)
+                except BaseException as error:  # one caller must lose the race
+                    failures.append(error)
+
+            def spawn(_log: object, _root: Path, _fds: object, *, mode: str) -> None:
+                self.assertEqual(mode, "stopped")
+                supervisors.append(mode)
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._find_run", return_value=root
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._spawn_supervisor",
+                    side_effect=spawn,
+                ),
+            ):
+                threads = [threading.Thread(target=resume) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+            self.assertEqual(supervisors, ["stopped"])
+            self.assertEqual(len(failures), 1)
+            # Depending on which caller acquires the promotion mutex first, the
+            # loser sees either that contention or the rechecked run state.
+            self.assertIn(
+                getattr(failures[0], "code", ""),
+                {"operation.lock.conflict", "reproduction.resume.invalid_state"},
+            )
+            latest = _load_run(root / "run.json")
+            self.assertIsNone(latest["state"]["status"])
+            self.assertEqual(latest["state"]["phase"], "accepted")
+            self.assertEqual(
+                load_accepted_plan(root).serialized(), accepted_plan().serialized()
+            )
+
+    def test_failed_dependency_skips_only_its_descendant_while_independent_work_runs(
+        self,
+    ) -> None:
+        """A failed comparison blocks B but must not suppress independent C."""
+
+        identity_a = "pyrun-exec/v1:" + "a" * 64
+        identity_b = "pyrun-exec/v1:" + "b" * 64
+        identity_c = "pyrun-exec/v1:" + "c" * 64
+        executions = (
+            {"entry": "e001", "execution_id": identity_a, "depends_on": [], "order": 1},
+            {
+                "entry": "e001",
+                "execution_id": identity_b,
+                "depends_on": [f"e001:{identity_a}"],
+                "order": 2,
+            },
+            {"entry": "e002", "execution_id": identity_c, "depends_on": [], "order": 3},
+        )
+        plan = replace(accepted_plan(executions=executions), jobs=2)
+        workspace = ReproductionWorkspace(
+            "reproduce-fixed-plan",
+            Path("/private/tmp/run"),
+            Path("/private/tmp"),
+            Path("/private/tmp/work"),
+            Path("/private/tmp/runtime"),
+            Path("/private/tmp/diagnostics"),
+            Path("/private/tmp/executions"),
+        )
+        launched: list[str] = []
+
+        def attempt(planned: object) -> ExecutionAttempt:
+            assert isinstance(planned, dict)
+            identity = str(planned["execution_id"])
+            launched.append(identity)
+            checkpoint = ExecutionCheckpoint(
+                str(planned["entry"]),
+                identity,
+                "succeeded",
+                "checkpoints/x.json",
+                "2030-01-01T00:00:01Z",
+                (),
+            )
+            return ExecutionAttempt(
+                str(planned["entry"]),
+                identity,
+                0,
+                False,
+                None,
+                None,
+                checkpoint,
+                (),
+                "diagnostics/out",
+                "diagnostics/err",
+            )
+
+        with (
+            mock.patch(
+                "log_commands.reproduction_execution._generated_output_paths",
+                return_value={},
+            ),
+            mock.patch(
+                "log_commands.reproduction_execution._execution_source",
+                return_value=mock.sentinel.source,
+            ),
+            mock.patch(
+                "log_commands.reproduction_execution._execute_scheduled_recipe",
+                side_effect=lambda _runtime, planned: attempt(planned),
+            ),
+        ):
+            batch = execute_reproduction_plan(
+                mock.sentinel.log,
+                plan,
+                workspace,
+                ExecutionControl(
+                    attempt_completed=lambda item: item.execution_id != identity_a
+                ),
+            )
+
+        self.assertCountEqual(launched, [identity_a, identity_c])
+        self.assertEqual(
+            batch.dependency_skips,
+            (
+                {
+                    "depends_on": [f"e001:{identity_a}"],
+                    "entry": "e001",
+                    "execution_id": identity_b,
+                    "reason": "dependency_failed",
+                },
+            ),
+        )
+
+    def test_publication_retry_enters_no_executor_branch_with_same_run_identity(
+        self,
+    ) -> None:
+        """A retry is publication work, not a disguised second execution pass."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log, root = accepted_run(project)
+            seen: list[str] = []
+
+            def retry(
+                _log: object,
+                state: object,
+                _plan: object,
+                _comparisons: object,
+                _record: object,
+            ) -> None:
+                seen.append(getattr(state, "run_id"))
 
             with (
                 mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
                 mock.patch(
-                    "log_commands.reproduction_jobs.populate_output_workspace",
-                    return_value=object(),
+                    "log_commands.reproduction_jobs.open_existing_workspace",
+                    return_value=mock.sentinel.workspace,
                 ),
                 mock.patch(
                     "log_commands.reproduction_jobs.load_recorded_comparisons",
                     return_value=(),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_jobs.completed_execution_attempts",
-                    return_value=(),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs.execute_reproduction_plan",
-                    side_effect=error,
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs._terminate_marked_workers",
-                    return_value=[],
-                ),
-                mock.patch(
-                    "log_commands.reproduction_scheduler.release_run_scheduling"
-                ),
-            ):
-                supervise_reproduction(log, run_root, mode="fresh", inherited_locks=())
-
-            status = _status_projection(_load_run(run_root / "run.json"))
-            self.assertEqual(status["status"], "failed")
-            self.assertEqual(
-                cast(Mapping[str, object], status["operational_failure"])["code"],
-                "fixture.persistence",
-            )
-            self.assertEqual(
-                status["artifact_outcomes"],
-                {
-                    "changed": 0,
-                    "comparison_failed": 0,
-                    "failed": 0,
-                    "matched": 0,
-                    "skipped": 0,
-                },
-            )
-            self.assertTrue(status["resumable"])
-
-    def test_resume_sets_use_every_schema_specific_terminal_checkpoint(self) -> None:
-        identity_a = "pyrun-exec/v1:" + "1" * 64
-        identity_b = "pyrun-exec/v1:" + "2" * 64
-        identity_c = "pyrun-exec/v1:" + "3" * 64
-        record = {
-            "schema": RUN_SCHEMA,
-            "checkpoints": [
-                {"entry": "e001", "execution_id": identity_a, "state": "stopped"},
-                {"entry": "e002", "execution_id": identity_b, "state": "stopped"},
-                {"entry": "e003", "execution_id": identity_c, "state": "failed"},
-            ],
-        }
-
-        self.assertEqual(
-            _resumable_execution_references(record, mode="stopped"),
-            frozenset((f"e001:{identity_a}", f"e002:{identity_b}")),
-        )
-        self.assertEqual(
-            _failed_checkpoint_references(record),
-            frozenset((f"e003:{identity_c}",)),
-        )
-
-    def test_cleanup_retry_preserves_compound_worker_identity_and_history(
-        self,
-    ) -> None:
-        identity = "pyrun-exec/v1:" + "1" * 64
-        prior = {
-            "entry": "e003",
-            "execution_id": identity,
-            "last_observed_at": "2030-01-01T00:00:03Z",
-            "parent_worker_id": None,
-            "pid": 4321,
-            "registered_at": "2030-01-01T00:00:02Z",
-            "state": "running",
-            "worker_id": "worker-4321",
-        }
-        survivor = {
-            **prior,
-            "last_observed_at": "2030-01-01T00:00:04Z",
-            "registered_at": "2030-01-01T00:00:04Z",
-        }
-
-        workers = _reconciled_worker_history([prior], [survivor])
-
-        self.assertEqual(workers[0]["registered_at"], "2030-01-01T00:00:02Z")
-        self.assertEqual(workers[0]["last_observed_at"], "2030-01-01T00:00:04Z")
-        self.assertEqual(
-            _marker_identity("reproduce-fixture", "reproduce-fixture:e003:" + "1" * 64),
-            ("e003", identity),
-        )
-
-    def test_failed_cleanup_retry_retains_failed_intent_without_deadlock(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            log, run_root, run_id = _write_active_run(Path(directory))
-            identity = "pyrun-exec/v1:" + "1" * 64
-            survivor = {
-                "entry": "e003",
-                "execution_id": identity,
-                "last_observed_at": "2030-01-01T00:00:04Z",
-                "parent_worker_id": None,
-                "pid": 4321,
-                "registered_at": "2030-01-01T00:00:04Z",
-                "state": "running",
-                "worker_id": "worker-4321",
-            }
-
-            def retry(
-                retry_log: LogContext,
-                retry_root: Path,
-                retry_run_id: str,
-                *,
-                terminal_status: str,
-            ) -> None:
-                self.assertEqual(terminal_status, "failed")
-                self.assertEqual(retry_run_id, run_id)
-                self.assertTrue(
-                    _continue_failed_cleanup(retry_log, retry_root, retry_run_id)
-                )
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._terminate_marked_workers",
-                    side_effect=([survivor], []),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs._wait_for_cleanup_retry",
+                    "log_commands.reproduction_jobs._retry_publication",
                     side_effect=retry,
                 ),
                 mock.patch(
-                    "log_commands.reproduction_scheduler.release_run_scheduling"
-                ) as release,
+                    "log_commands.reproduction_jobs.execute_reproduction_plan"
+                ) as execute,
             ):
-                _finish_failed(
-                    log,
-                    run_root,
-                    run_id,
-                    ActionError("fixture.failed", "failed"),
+                supervise_reproduction(
+                    log, root, mode="publication", inherited_locks=()
                 )
 
-            record = _load_run(run_root / "run.json")
-            self.assertEqual(
-                cast(Mapping[str, object], record["state"])["status"], "failed"
-            )
-            self.assertEqual(
-                cast(Sequence[Mapping[str, object]], record["checkpoints"])[0]["state"],
-                "failed",
-            )
-            self.assertEqual(
-                cast(Sequence[Mapping[str, object]], record["workers"])[0][
-                    "registered_at"
+            self.assertEqual(seen, [root.name])
+            execute.assert_not_called()
+
+    def test_publication_retry_replays_terminal_fixed_plan_without_execution(
+        self,
+    ) -> None:
+        """A failed final transaction retries durable mixed outcomes only.
+
+        This deliberately uses the planner's accepted plan, canonical run
+        storage, checkpoint/staging codecs, and the real requirement update.
+        The executor is deterministic solely to make the terminal failure and
+        dependency skip reproducible; it is never entered by any retry.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            fixture = _Fixture(project)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            good_output = entry.root / "data" / "good.txt"
+            failed_output = entry.root / "data" / "failed.txt"
+            dependent_output = entry.root / "data" / "dependent.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            good_output.write_text("good\n", encoding="utf-8")
+            failed_output.write_text("failed\n", encoding="utf-8")
+            dependent_output.write_text("dependent\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [fixture.item(entry, "raw", raw, origin=True)]
+                + [
+                    fixture.item(entry, name, path, origin=False)
+                    for name, path in (
+                        ("good", good_output),
+                        ("failed", failed_output),
+                        ("dependent", dependent_output),
+                    )
                 ],
-                "2030-01-01T00:00:01Z",
             )
-            release.assert_called_once_with(Path(directory).resolve(), run_id)
-
-    def test_lost_supervisor_recovers_durable_failed_cleanup_intent(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            log, run_root, run_id = _write_active_run(
-                Path(directory), failure_intent=True
+            fixture.evidence(entry, "good", "failed", "dependent")
+            good_id, good = fixture.execution(
+                entry, "good", {"raw": raw}, {"good": good_output}
             )
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._terminate_marked_workers",
-                    return_value=[],
-                ),
-                mock.patch(
-                    "log_commands.reproduction_scheduler.release_run_scheduling"
-                ) as release,
-            ):
-                _reconcile_lost_supervisor(log, run_root, run_id)
+            failed_id, failed = fixture.execution(
+                entry, "failed", {"raw": raw}, {"failed": failed_output}
+            )
+            dependent_id, dependent = fixture.execution(
+                entry,
+                "dependent",
+                {"failed": failed_output},
+                {"dependent": dependent_output},
+            )
+            fixture.write_pyrun(
+                entry,
+                [(good_id, good), (failed_id, failed), (dependent_id, dependent)],
+            )
+            from log_commands.reproduction_jobs import _accepted_record, _new_run_root
+            from test_log_reproduction_planning import _plan
 
-            record = _load_run(run_root / "run.json")
-            state = cast(Mapping[str, object], record["state"])
-            self.assertEqual(state["status"], "failed")
-            self.assertIsNone(state["phase"])
+            plan = _plan(fixture, entry)
             self.assertEqual(
-                cast(Sequence[Mapping[str, object]], record["checkpoints"])[0]["state"],
-                "failed",
+                {(item["entry"], item["execution_id"]) for item in plan.executions},
+                {(entry.id, good_id), (entry.id, failed_id), (entry.id, dependent_id)},
             )
-            release.assert_called_once_with(Path(directory).resolve(), run_id)
-
-    def test_checkpoint_inventory_is_bounded_and_schema_validated(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            run_root = Path(directory)
-            checkpoints = run_root / "checkpoints"
-            checkpoints.mkdir()
-            (checkpoints / "foreign.json").write_text("{}\n", encoding="utf-8")
-            with self.assertRaisesRegex(ActionError, "checkpoint record"):
-                _checkpoint_dicts(run_root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            run_root = Path(directory)
-            checkpoints = run_root / "checkpoints"
-            checkpoints.mkdir()
-            for index in range(2_049):
-                (checkpoints / f"{index:04d}.json").touch()
-            with self.assertRaisesRegex(ActionError, "checkpoint bound"):
-                _checkpoint_dicts(run_root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_active_run(Path(directory))
-            identity = "pyrun-exec/v1:" + "2" * 64
-            foreign = {
-                "completed_at": None,
-                "elapsed_seconds": None,
-                "entry": "e999",
-                "execution_id": identity,
-                "failure": None,
-                "finished_at": None,
-                "outputs": [],
-                "path": "checkpoints/e999-" + "2" * 64 + ".json",
-                "started_at": None,
-                "state": "active",
-            }
-            atomic_write_text(
-                run_root / cast(str, foreign["path"]),
-                json.dumps(foreign, indent=2, sort_keys=True) + "\n",
-            )
-            with self.assertRaisesRegex(ActionError, "absent from the accepted plan"):
-                _checkpoint_dicts(run_root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_active_run(Path(directory))
-            checkpoint = next((run_root / "checkpoints").iterdir())
-            checkpoint.rename(checkpoint.with_name("foreign.json"))
-            with self.assertRaisesRegex(ActionError, "file location"):
-                _checkpoint_dicts(run_root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_active_run(Path(directory))
-            record = _load_run(run_root / "run.json")
-            checkpoint_path = next((run_root / "checkpoints").iterdir())
-            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-            checkpoint["state"] = "stopped"
-            checkpoint["failure"] = {
-                "code": "stop_requested",
-                "message": "stopped",
-                "recorded_at": "2030-01-01T00:00:03Z",
-            }
-            atomic_write_text(
-                checkpoint_path,
-                json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
-            )
-            with self.assertRaisesRegex(ActionError, "inventory changed"):
-                _verify_checkpoint_inventory(run_root, record)
-
-    def test_checkpoint_inventory_ignores_only_reserved_atomic_temporaries(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_active_run(Path(directory))
-            checkpoint = next((run_root / "checkpoints").glob("*.json"))
-            temporary = checkpoint.with_name(f".{checkpoint.name}.12345.tmp")
-            temporary.write_text("{\n", encoding="utf-8")
-
-            observed = _checkpoint_dicts(run_root)
-
-            self.assertEqual(len(observed), 1)
-            self.assertEqual(observed[0]["path"], f"checkpoints/{checkpoint.name}")
-
-        with tempfile.TemporaryDirectory() as directory:
-            checkpoints = Path(directory)
-            for index in range(2_048):
-                (checkpoints / f"e001-{index:064x}.json").touch()
-            temporary = checkpoints / (".e001-" + "0" * 64 + ".json.12345.tmp")
-            temporary.touch()
-
-            self.assertEqual(len(_checkpoint_paths(checkpoints)), 2_048)
-
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_active_run(Path(directory))
-            foreign = run_root / "checkpoints" / ".foreign.json.12345.tmp"
-            foreign.write_text("{\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ActionError, "invalid checkpoint path"):
-                _checkpoint_dicts(run_root)
-
-    def test_parallel_stop_retains_workers_from_every_attempt(self) -> None:
-        identity_a = "pyrun-exec/v1:" + "1" * 64
-        identity_b = "pyrun-exec/v1:" + "2" * 64
-
-        def attempt(
-            entry: str, identity: str, pid: int, state: str
-        ) -> ExecutionAttempt:
-            checkpoint = ExecutionCheckpoint(
-                entry, identity, "stopped", "checkpoint.json", None, ()
-            )
-            worker = WorkerRecord(
-                f"worker-{pid}",
-                None,
-                pid,
-                identity,
-                state,
-                "2030-01-01T00:00:01Z",
-                "2030-01-01T00:00:02Z",
-                entry,
-            )
-            return ExecutionAttempt(
-                entry,
-                identity,
-                None,
-                True,
-                "stop_requested",
-                "stopped",
-                checkpoint,
-                (worker,),
-                "",
-                "",
-            )
-
-        workers = _combined_attempt_workers(
-            (
-                attempt("e001", identity_a, 4001, "running"),
-                attempt("e002", identity_b, 4002, "exited"),
-            ),
-        )
-
-        self.assertEqual(
-            [(item["entry"], item["state"]) for item in workers],
-            [("e001", "running"), ("e002", "exited")],
-        )
-
-    def test_parallel_progress_uses_compound_identity_for_reversed_finishes(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs/research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs/research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-compound"
-            run_root = (
-                project / "tmp/reproduction/2030-01-01" / f"reproduce-research-{run_id}"
+            run_id = "reproduce-20300101t000000z-publication-retry"
+            run_root = _new_run_root(
+                project, fixture.log, entry.id, run_id, "2030-01-01T00:00:00Z"
             )
             run_root.mkdir(parents=True)
-            identity = "pyrun-exec/v1:" + "1" * 64
-            items = tuple(
-                {
-                    "depends_on": [],
-                    "entry": entry,
-                    "execution_id": identity,
-                    "order": order,
-                    "outputs": [f"data/{entry}.txt"],
-                    "auto_reproduce": True,
-                    "exclusive": False,
-                    "read_paths": [],
-                    "run_path": f"<run>/executions/{entry}/" + "1" * 64,
-                    "writable_paths": [
-                        f"<run>/diagnostics/{entry}/" + "1" * 64,
-                        f"<run>/runtime/{entry}/" + "1" * 64,
-                        f"<run>/workspace/data/{entry}.txt",
-                    ],
-                    "write_paths": [f"<run>/workspace/data/{entry}.txt"],
-                }
-                for order, entry in enumerate(("e001", "e002"), 1)
-            )
-            plan = replace(
-                _plan(),
-                target={"entry": None, "kind": "log"},
-                jobs=2,
-                executions=items,
-            )
-            record = _accepted_record(
-                log, plan, run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-
-            run_state = _RunStateContext(log, run_root, run_id)
-            _execution_progress(run_state, "started", ("e001", identity), None)
-            _execution_progress(run_state, "started", ("e002", identity), None)
-            _execution_progress(run_state, "finished", ("e002", identity), None)
-
-            state = cast(
-                Mapping[str, object], _load_run(run_root / "run.json")["state"]
-            )
-            self.assertEqual(
-                state["active_executions"],
-                [{"entry": "e001", "execution_id": identity}],
-            )
-            _execution_progress(run_state, "finished", ("e001", identity), None)
-            state = cast(
-                Mapping[str, object], _load_run(run_root / "run.json")["state"]
-            )
-            self.assertEqual(state["active_executions"], [])
-
-    def test_parallel_progress_workers_and_status_share_canonical_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs/research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs/research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-concurrent"
-            run_root = (
-                project / "tmp/reproduction/2030-01-01" / f"reproduce-research-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-            identity = "pyrun-exec/v1:" + "1" * 64
-            executions = tuple(
-                {
-                    "auto_reproduce": True,
-                    "depends_on": [],
-                    "entry": entry,
-                    "exclusive": False,
-                    "execution_id": identity,
-                    "order": order,
-                    "outputs": [f"data/{entry}.txt"],
-                    "read_paths": [],
-                    "run_path": f"<run>/executions/{entry}/" + "1" * 64,
-                    "writable_paths": [],
-                    "write_paths": [],
-                }
-                for order, entry in enumerate(("e001", "e002"), 1)
-            )
-            plan = replace(
-                _plan(),
-                target={"entry": None, "kind": "log"},
-                jobs=2,
-                executions=executions,
-            )
-            record = _accepted_record(
-                log, plan, run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-            barrier = threading.Barrier(3)
-            errors: list[BaseException] = []
-            run_state = _RunStateContext(log, run_root, run_id)
-
-            def update(entry: str, pid: int) -> None:
-                try:
-                    _execution_progress(run_state, "started", (entry, identity), None)
-                    worker = WorkerRecord(
-                        f"worker-{pid}",
-                        None,
-                        pid,
-                        identity,
-                        "exited",
-                        "2030-01-01T00:00:01Z",
-                        "2030-01-01T00:00:02Z",
-                        entry,
-                    )
-                    _execution_workers(run_state, entry, identity, (worker,))
-                    barrier.wait()
-                    _execution_progress(run_state, "finished", (entry, identity), None)
-                except BaseException as error:
-                    errors.append(error)
-
-            threads = [
-                threading.Thread(target=update, args=(entry, pid))
-                for entry, pid in (("e001", 4101), ("e002", 4102))
-            ]
-            for thread in threads:
-                thread.start()
-            barrier.wait()
-            while any(thread.is_alive() for thread in threads):
-                reproduction_status(log, run_id, reconcile=False)
-            for thread in threads:
-                thread.join()
-
-            self.assertEqual(errors, [])
-            loaded = _load_run(run_root / "run.json")
-            self.assertEqual(
-                cast(Mapping[str, object], loaded["state"])["active_executions"], []
-            )
-            self.assertEqual(
-                cast(Mapping[str, object], loaded["progress"])["completed_executions"],
-                2,
-            )
-
-    def test_status_finds_run_beneath_intentional_project_tmp_symlink(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            project = root / "project"
-            project.mkdir()
-            (project / ".git").mkdir()
-            external_tmp = root / "run-storage"
-            external_tmp.mkdir()
-            (project / "tmp").symlink_to(external_tmp, target_is_directory=True)
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-fixture"
-            logical_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            logical_root.mkdir(parents=True)
-            atomic_write_text(
-                logical_root / "run.json",
-                json.dumps(
+            plan_path = run_root / "plan.json"
+            plan_path.write_text(plan.serialized(), encoding="utf-8")
+            run_path = run_root / "run.json"
+            run_path.write_text(
+                _canonical(
                     _accepted_record(
-                        log,
-                        _plan(),
+                        fixture.log,
+                        plan,
                         run_id,
-                        logical_root,
-                        accepted_at="2030-01-01T00:00:00Z",
-                    ),
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-            )
-            unrelated = external_tmp / (
-                "reproduce-research-e003-reproduce-20300102t000000z-incompatible"
-            )
-            unrelated.mkdir()
-            (unrelated / "run.json").write_text(
-                '{"legacy_run_record": true}\n', encoding="utf-8"
-            )
-
-            self.assertEqual(_find_run(log, run_id), logical_root.resolve())
-
-    def test_run_lookup_rejects_duplicate_run_id_across_dates(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-fixture"
-            leaf = f"reproduce-research-e003-{run_id}"
-            for run_date in ("2030-01-01", "2030-01-02"):
-                run_root = project / "tmp" / "reproduction" / run_date / leaf
-                run_root.mkdir(parents=True)
-                record = _accepted_record(
-                    log,
-                    _plan(),
-                    run_id,
-                    run_root,
-                    accepted_at=f"{run_date}T00:00:00Z",
-                )
-                atomic_write_text(
-                    run_root / "run.json",
-                    json.dumps(record, indent=2, sort_keys=True) + "\n",
-                )
-
-            with self.assertRaisesRegex(ActionError, "expected one run, found 2"):
-                _find_run(log, run_id)
-
-    def test_scope_locks_allow_distinct_entries_and_reject_overlaps(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-
-            first = _acquire_scope_locks(log, "e001")
-            second: tuple[int, ...] = ()
-            try:
-                second = _acquire_scope_locks(log, "e002")
-                with self.assertRaisesRegex(Exception, "operation is active"):
-                    _acquire_scope_locks(log, "e001")
-                with self.assertRaisesRegex(Exception, "operation is active"):
-                    _acquire_scope_locks(log, None)
-            finally:
-                _close_fds(second)
-                _close_fds(first)
-
-            whole_log = _acquire_scope_locks(log, None)
-            try:
-                with self.assertRaisesRegex(Exception, "operation is active"):
-                    _acquire_scope_locks(log, "e001")
-            finally:
-                _close_fds(whole_log)
-
-    def test_dry_run_performs_final_recheck_without_writing_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            entry_root = log_root / "entries" / "2030-01-01-e003-example"
-            entry_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            before = tuple(
-                sorted(path.relative_to(project) for path in project.rglob("*"))
-            )
-            for include_all in (False, True):
-                plan = replace(_plan(), include_all=include_all)
-                with (
-                    mock.patch(
-                        "log_commands.reproduction_jobs.plan_reproduction",
-                        return_value=plan,
-                    ) as planner,
-                    mock.patch(
-                        "log_commands.reproduction_jobs.preflight_execution_safety"
-                    ) as safety,
-                    mock.patch(
-                        "log_commands.reproduction_jobs.verify_reproduction_snapshot"
-                    ) as verify,
-                ):
-                    observed = dry_run_reproduction(
-                        log,
-                        entry="e003",
-                        include_all=include_all,
-                        selection=ReproductionSelection("recheck"),
-                    )
-
-                self.assertEqual(observed, plan)
-                planner.assert_called_once_with(
-                    log,
-                    entry=mock.ANY,
-                    include_all=include_all,
-                    runtime=ReproductionRuntime(),
-                    selection=ReproductionSelection("recheck"),
-                )
-                safety.assert_called_once_with()
-                verify.assert_called_once_with(log, plan)
-                self.assertEqual(
-                    tuple(
-                        sorted(path.relative_to(project) for path in project.rglob("*"))
-                    ),
-                    before,
-                )
-
-    def test_accepted_run_projects_frozen_status_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            plan = replace(_plan(), execution_timeout_seconds=17)
-            run_id = "reproduce-20300101t000000z-fixture"
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-
-            with mock.patch(
-                "log_commands.reproduction_jobs._utc_now",
-                return_value="2030-01-01T00:00:00Z",
-            ):
-                record = _accepted_record(
-                    LogContext(summary, log_root),
-                    plan,
-                    run_id,
-                    run_root,
-                )
-
-            expected = _status_fixture("accepted")
-            expected["execution_timeout_seconds"] = 17
-            self.assertEqual(_status_projection(record), expected)
-
-    def test_frozen_status_fixtures_cover_active_and_terminal_lifecycle(self) -> None:
-        names = ("executing", "stopping", "stopped", "complete", "failed")
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / "reproduce-research-e003-reproduce-20300101t000000z-fixture"
-            )
-            run_root.mkdir(parents=True)
-            for name in names:
-                with self.subTest(name=name):
-                    expected = _status_fixture(name)
-                    record = _accepted_record(
-                        LogContext(summary, log_root),
-                        _plan(),
-                        cast(str, expected["run_id"]),
                         run_root,
-                        accepted_at="2030-01-01T00:00:00Z",
+                        accepted_at="2020-01-01T00:00:00Z",
                     )
-                    cast(dict[str, object], record["progress"]).update(
-                        {
-                            "artifact_outcomes": expected["artifact_outcomes"],
-                            "completed_executions": expected["completed_executions"],
-                            "total_executions": expected["total_executions"],
-                        }
-                    )
-                    cast(dict[str, object], record["state"]).update(
-                        {
-                            "active_executions": expected["active_executions"],
-                            "latest_execution_diagnostic": expected[
-                                "latest_execution_diagnostic"
-                            ],
-                            "operational_failure": expected["operational_failure"],
-                            "phase": expected["phase"],
-                            "status": expected["status"],
-                        }
-                    )
-                    record["timestamps"] = expected["timestamps"]
-                    record["workers"] = expected["surviving_workers"]
-                    record["checkpoints"] = [
-                        {
-                            "completed_at": (
-                                item["finished_at"]
-                                if item["state"] == "succeeded"
-                                else None
-                            ),
-                            "elapsed_seconds": item["elapsed_seconds"],
-                            "entry": item["entry"],
-                            "execution_id": item["execution_id"],
-                            "finished_at": item["finished_at"],
-                            "failure": item["failure"],
-                            "outputs": [],
-                            "path": (
-                                "checkpoints/"
-                                + item["entry"]
-                                + "-"
-                                + item["execution_id"].removeprefix("pyrun-exec/v1:")
-                                + ".json"
-                            ),
-                            "started_at": item["started_at"],
-                            "state": item["state"],
-                        }
-                        for item in cast(
-                            list[Mapping[str, object]], expected["execution_timings"]
-                        )
-                    ]
-                    path = run_root / "run.json"
-                    path.write_text(
-                        json.dumps(record, indent=2, sort_keys=True) + "\n",
-                        encoding="utf-8",
-                    )
-
-                    self.assertEqual(_status_projection(_load_run(path)), expected)
-
-    def test_run_loader_rejects_unknown_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / "reproduce-research-fixture"
-            )
-            run_root.mkdir(parents=True)
-            record = _accepted_record(
-                LogContext(summary, log_root),
-                _plan(),
-                "reproduce-20300101t000000z-fixture",
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            record["unknown"] = True
-            path = run_root / "run.json"
-            path.write_text(
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
+                ),
                 encoding="utf-8",
             )
-
-            with self.assertRaisesRegex(Exception, "fields are invalid"):
-                _load_run(path)
-
-    def test_run_loader_validates_one_snapshot_during_atomic_replacement(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_accepted_run(Path(directory))
-            path = run_root / "run.json"
-            original = path.read_text(encoding="utf-8")
-            replacement = json.loads(original)
-            cast(dict[str, object], replacement["timestamps"])["updated_at"] = (
-                "2030-01-01T00:00:01Z"
+            accepted_plan_bytes = plan_path.read_bytes()
+            publication_root = fixture.log.root / ".cache" / "reproduction"
+            published_results = publication_root / "results.json"
+            published_report = publication_root / "report.md"
+            published_results.parent.mkdir(parents=True)
+            # A valid earlier bundle exercises retry compatibility as well as
+            # byte preservation on repeated transaction failure.
+            published_results.write_text(
+                ReproductionResults(
+                    "docs/study.md", "2030-01-01T00:00:00Z", (), (), ()
+                ).serialized(),
+                encoding="utf-8",
             )
-            replacement_text = json.dumps(replacement, indent=2, sort_keys=True) + "\n"
-
-            real_canonical = json.dumps
-
-            def replace_at_former_second_read(value: Mapping[str, object]) -> str:
-                atomic_write_text(path, replacement_text)
-                return (
-                    real_canonical(value, ensure_ascii=False, indent=2, sort_keys=True)
-                    + "\n"
-                )
-
-            with mock.patch(
-                "log_commands.reproduction_jobs._canonical",
-                side_effect=replace_at_former_second_read,
-            ):
-                loaded = _load_run(path)
-
-            self.assertEqual(
-                cast(Mapping[str, object], loaded["timestamps"])["updated_at"],
-                "2030-01-01T00:00:00Z",
+            published_report.write_text("previous report\n", encoding="utf-8")
+            previous_bundle = (
+                published_results.read_bytes(),
+                published_report.read_bytes(),
             )
-            self.assertEqual(path.read_text(encoding="utf-8"), replacement_text)
-
-    def test_run_loader_rejects_stable_noncanonical_and_malformed_records(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            _log, run_root, _run_id = _write_accepted_run(Path(directory))
-            path = run_root / "run.json"
-            record = json.loads(path.read_text(encoding="utf-8"))
-            path.write_text(json.dumps(record), encoding="utf-8")
-            with self.assertRaisesRegex(ActionError, "not canonical"):
-                _load_run(path)
-            path.write_text("{malformed\n", encoding="utf-8")
-            with self.assertRaises(ActionError) as caught:
-                _load_run(path)
-            self.assertEqual(caught.exception.code, "reproduction.run.invalid")
-
-    def test_historical_run_is_rejected_with_current_run_guidance(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            run_root = (
-                project
-                / "tmp/reproduction/2030-01-01"
-                / "reproduce-research-e003-reproduce-20300101t000000z-fixture"
-            )
-            run_root.mkdir(parents=True)
-            record = _accepted_record(
-                LogContext(summary, log_root),
-                _plan(),
-                "reproduce-20300101t000000z-fixture",
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            record["schema"] = "research-log-reproduction-run/5"
-            record.pop("attempt")
-            record.pop("attempts")
-            record.pop("queue")
-            record.pop("execution_timeout_seconds")
-            record.pop("jobs")
-            plan = cast(dict[str, object], record["plan"])
-            plan.pop("execution_timeout_seconds")
-            plan.pop("jobs")
-            execution = cast(list[dict[str, object]], plan["executions"])[0]
-            for field in (
-                "exclusive",
-                "read_paths",
-                "run_path",
-                "writable_paths",
-                "write_paths",
-            ):
-                execution.pop(field)
-            state = cast(dict[str, object], record["state"])
-            state["current_execution"] = None
-            state.pop("active_executions")
-            path = run_root / "run.json"
-            atomic_write_text(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
-
-            with self.assertRaisesRegex(
-                ActionError, "start a new current-format run"
-            ) as caught:
-                _load_run(path)
-            self.assertEqual(caught.exception.code, "reproduction.run.unsupported")
-
-    def test_launch_records_plan_before_detached_supervisor(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            (project / "tmp").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            (log_root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs.plan_reproduction",
-                    return_value=_plan(),
-                ) as planner,
-                mock.patch(
-                    "log_commands.reproduction_jobs._new_run_id",
-                    return_value="reproduce-20300101t000000z-fixture",
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs._utc_now",
-                    return_value="2030-01-01T00:00:00Z",
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks",
-                    return_value=(),
-                ),
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                launch = launch_reproduction(
-                    log,
-                    entry="e003",
-                    include_all=False,
-                    selection=ReproductionSelection("recheck"),
-                )
-
-            run_id = cast(str, launch.run_id)
-
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            record = _load_run(run_root / "run.json")
-            self.assertEqual(record["schema"], RUN_SCHEMA)
-            self.assertEqual(
-                cast(Mapping[str, object], record["plan"])["executions"],
-                list(_plan().executions),
-            )
-            self.assertNotIn("recheck", record)
-            self.assertNotIn("recheck", cast(Mapping[str, object], record["plan"]))
-            planner.assert_called_once_with(
-                log,
-                entry=mock.ANY,
-                include_all=False,
-                runtime=ReproductionRuntime(),
-                selection=ReproductionSelection("recheck"),
-            )
-            spawn.assert_called_once()
-
-    def test_launch_returns_current_summary_without_creating_an_empty_run(
-        self,
-    ) -> None:
-        plan = replace(
-            _plan(),
-            executions=(),
-            failures=({"artifact": "data/blocked.txt"},),
-        )
-        with (
-            mock.patch(
-                "log_commands.reproduction_jobs.plan_reproduction",
-                return_value=plan,
-            ),
-            mock.patch(
-                "log_commands.reproduction_queries.reproduction_reconciliation_text",
-                return_value="# Reproduction Summary\n",
-            ) as summarize,
-            mock.patch("log_commands.reproduction_jobs._new_run_id") as new_run_id,
-            mock.patch(
-                "log_commands.reproduction_jobs._acquire_scope_locks"
-            ) as acquire,
-            mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-        ):
-            launch = launch_reproduction(
-                mock.sentinel.log,
-                entry=None,
-                include_all=False,
-            )
-
-        self.assertEqual(
-            launch,
-            ReproductionLaunch(summary="# Reproduction Summary\n"),
-        )
-        self.assertEqual(launch.render(), "# Reproduction Summary\n")
-        summarize.assert_called_once_with(
-            mock.sentinel.log,
-            plan,
-            generated_at=mock.ANY,
-        )
-        new_run_id.assert_not_called()
-        acquire.assert_not_called()
-        spawn.assert_not_called()
-
-    def test_human_status_exposes_failure(self) -> None:
-        fixture = _status_fixture("failed")
-
-        text = format_reproduction_status(fixture)
-
-        self.assertIn("failed", text)
-        self.assertIn("Operational failure:", text)
-
-    def test_status_exposes_active_execution_timing_without_queued_work(self) -> None:
-        record = {
-            "attempt": 1,
-            "attempts": [],
-            "checkpoints": [
-                {
-                    "completed_at": None,
-                    "elapsed_seconds": 12.5,
-                    "entry": "e003",
-                    "execution_id": "pyrun-exec/v1:" + "1" * 64,
-                    "finished_at": None,
-                    "outputs": [],
-                    "path": "executions/example/checkpoint.json",
-                    "started_at": "2030-01-01T00:00:01Z",
-                    "state": "active",
-                }
-            ],
-            "include_all": False,
-            "execution_timeout_seconds": 300,
-            "jobs": 1,
-            "progress": {
-                "artifact_outcomes": {},
-                "completed_executions": 0,
-                "total_executions": 2,
-            },
-            "run_id": "reproduce-20300101t000000z-fixture",
-            "queue": [],
-            "schema": RUN_SCHEMA,
-            "source_snapshot": {"commands": []},
-            "state": {
-                "active_executions": [
-                    {
-                        "entry": "e003",
-                        "execution_id": "pyrun-exec/v1:" + "1" * 64,
-                    }
-                ],
-                "latest_execution_diagnostic": None,
-                "operational_failure": None,
-                "phase": "executing",
-                "status": None,
-            },
-            "summary": "docs/research.md",
-            "target": {"entry": "e003", "kind": "entry"},
-            "timestamps": {},
-            "workers": [],
-        }
-
-        status = _status_projection(record)
-
-        self.assertEqual(len(cast(list[object], status["execution_timings"])), 1)
-        self.assertIn(
-            "Active execution time (e003): 12.5 seconds",
-            format_reproduction_status(status),
-        )
-
-    def test_supervisor_publishes_artifact_failures_as_complete_run(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            run_id = "reproduce-20300101t000000z-fixture"
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-            plan = _empty_plan()
-            record = _accepted_record(
-                LogContext(summary, log_root),
-                plan,
-                run_id,
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-            counts = {
-                "changed": 0,
-                "comparison_failed": 0,
-                "failed": 1,
-                "matched": 0,
-                "skipped": 0,
+            executor_calls: list[str] = []
+            output_observations = {
+                good_output: dict(good.observed.outputs)["data/good.txt"],
+                failed_output: dict(failed.observed.outputs)["data/failed.txt"],
             }
-            run = RunResult(
-                run_id,
-                plan.target,
-                False,
-                "complete",
-                cast(
-                    str,
-                    cast(Mapping[str, object], record["timestamps"])["accepted_at"],
-                ),
-                "2030-01-01T00:00:06Z",
-                counts,
-                RunFolder(run_root.relative_to(project).as_posix(), "available"),
-            )
 
+            def checkpoint(
+                workspace: ReproductionWorkspace,
+                identity: str,
+                state: str,
+                output: Path | None,
+            ) -> ExecutionAttempt:
+                checkpoint_path = _checkpoint_path(workspace, entry.id, identity)
+                finished = "2030-01-01T00:00:01Z"
+                outputs = ()
+                if output is not None:
+                    observed = output_observations[output]
+                    outputs = (
+                        {
+                            "artifact": f"data/{output.name}",
+                            "fingerprint": observed.as_dict(),
+                        },
+                    )
+                value = ExecutionCheckpoint(
+                    entry.id,
+                    identity,
+                    state,
+                    checkpoint_path.relative_to(workspace.run_root).as_posix(),
+                    finished if state == "succeeded" else None,
+                    outputs,
+                    "2030-01-01T00:00:00Z",
+                    finished,
+                    1.0,
+                    (
+                        None
+                        if state == "succeeded"
+                        else {
+                            "code": "execution_failed",
+                            "message": "failed",
+                            "recorded_at": finished,
+                        }
+                    ),
+                )
+                _write_checkpoint(checkpoint_path, value)
+                return ExecutionAttempt(
+                    entry.id,
+                    identity,
+                    0 if state == "succeeded" else 1,
+                    False,
+                    None if state == "succeeded" else "execution_failed",
+                    None if state == "succeeded" else "failed",
+                    value,
+                    (),
+                    "diagnostics/stdout.log",
+                    "diagnostics/stderr.log",
+                )
+
+            def execute_once(
+                _log: object,
+                _plan: object,
+                workspace: ReproductionWorkspace,
+                control: ExecutionControl,
+            ) -> ExecutionBatch:
+                executor_calls.append("fresh")
+                workspace.map_source(good_output).parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                workspace.map_source(good_output).write_bytes(good_output.read_bytes())
+                succeeded = checkpoint(workspace, good_id, "succeeded", good_output)
+                self.assertTrue(control.attempt_completed(succeeded))
+                workspace.map_source(failed_output).write_bytes(
+                    failed_output.read_bytes()
+                )
+                failed_attempt = checkpoint(
+                    workspace, failed_id, "failed", failed_output
+                )
+                self.assertFalse(control.attempt_completed(failed_attempt))
+                return ExecutionBatch(
+                    (succeeded, failed_attempt),
+                    (),
+                    (
+                        {
+                            "depends_on": [f"{entry.id}:{failed_id}"],
+                            "entry": entry.id,
+                            "execution_id": dependent_id,
+                            "reason": "dependency_failed",
+                        },
+                    ),
+                    False,
+                )
+
+            publication_failure = ActionError(
+                "reproduction.publication.failed", "fixture publication failure"
+            )
             with (
                 mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
                 mock.patch(
-                    "log_commands.reproduction_jobs.populate_output_workspace",
-                    return_value=object(),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs.load_recorded_comparisons",
-                    return_value=(),
-                ),
-                mock.patch(
                     "log_commands.reproduction_jobs.execute_reproduction_plan",
-                    return_value=ExecutionBatch((), (), (), False),
+                    side_effect=execute_once,
                 ),
                 mock.patch(
                     "log_commands.reproduction_jobs.completed_execution_attempts",
                     return_value=(),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_jobs."
-                    "verify_reproduction_runtime_snapshot"
+                    "log_commands.reproduction_jobs.publish_completed_reproduction",
+                    side_effect=publication_failure,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_jobs._stop_workers_and_clean_scratch",
+                    return_value=(),
+                ),
+            ):
+                supervise_reproduction(
+                    fixture.log, run_root, mode="fresh", inherited_locks=()
+                )
+            first_failure = _load_run(run_path)
+            self.assertEqual(first_failure["run_id"], run_id)
+            self.assertEqual(first_failure["state"]["status"], "failed")
+            self.assertEqual(
+                first_failure["state"]["operational_failure"]["code"],
+                "reproduction.publication.failed",
+                first_failure["state"]["operational_failure"],
+            )
+            self.assertEqual(plan_path.read_bytes(), accepted_plan_bytes)
+            self.assertEqual(executor_calls, ["fresh"])
+            current = load_pyrun_state(
+                entry.root / "pyrun.json", entry_root=entry.root, project_root=project
+            )
+            self.assertFalse(current.executions[good_id].requires_reproduction)
+
+            # The replay reaches the guarded requirement update again, but it
+            # is idempotent because the first durable completion cleared it.
+            requirement_replays: list[tuple[str, str]] = []
+            from log_commands.reproduction_comparison import (
+                clear_execution_reproduction_requirement_locked as clear_requirement,
+            )
+
+            def observe_requirement(*args: object, **kwargs: object) -> bool:
+                result = args[2]
+                requirement_replays.append((result.entry, result.execution_id))
+                return clear_requirement(*args, **kwargs)
+
+            with (
+                mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
+                mock.patch(
+                    "log_commands.reproduction_jobs.execute_reproduction_plan"
+                ) as execute_retry,
+                mock.patch(
+                    "log_commands.reproduction_jobs.clear_execution_reproduction_requirement_locked",
+                    side_effect=observe_requirement,
                 ),
                 mock.patch(
                     "log_commands.reproduction_jobs.publish_completed_reproduction",
-                    return_value=SimpleNamespace(results=SimpleNamespace(runs=(run,))),
+                    side_effect=publication_failure,
                 ),
                 mock.patch(
-                    "log_commands.validation_adapter.evaluate_validation",
-                    side_effect=ActionError(
-                        "validation.failed", "validation did not complete"
-                    ),
-                ) as validate,
-            ):
-                supervise_reproduction(
-                    LogContext(summary, log_root),
-                    run_root,
-                    mode="fresh",
-                    inherited_locks=(),
-                )
-
-            status = _status_projection(_load_run(run_root / "run.json"))
-            self.assertEqual(status["status"], "complete")
-            self.assertEqual(
-                cast(Mapping[str, int], status["artifact_outcomes"])["failed"],
-                1,
-            )
-            self.assertIsNone(status["operational_failure"])
-            validate.assert_not_called()
-
-    def test_active_promotion_output_rejects_intersecting_plan(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            material = project / "shared" / "result.csv"
-            plan = replace(
-                _plan(),
-                source_snapshot={
-                    "materials": [
-                        {
-                            "identity": material.resolve().as_posix(),
-                            "role": "boundary",
-                        }
-                    ]
-                },
-            )
-            directory_path = operation_directory(project)
-            directory_path.mkdir(parents=True)
-            (directory_path / "promotion-fixture.json").write_text(
-                json.dumps({"outputs": [material.resolve().as_posix()]}),
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(Exception, "active promotion"):
-                _require_no_promotion_conflict(LogContext(summary, log_root), plan)
-
-    def _obsolete_precontinuation_lost_supervisor_resume(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-fixture"
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-            identity = "pyrun-exec/v1:" + "1" * 64
-            checkpoint = {
-                "completed_at": None,
-                "elapsed_seconds": 2.0,
-                "entry": "e003",
-                "execution_id": identity,
-                "failure": None,
-                "finished_at": None,
-                "outputs": [],
-                "path": "checkpoints/e003-" + "1" * 64 + ".json",
-                "started_at": "2030-01-01T00:00:01Z",
-                "state": "active",
-            }
-            (run_root / "checkpoints").mkdir()
-            atomic_write_text(
-                run_root / cast(str, checkpoint["path"]),
-                json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
-            )
-            record = _accepted_record(
-                log,
-                _plan(),
-                run_id,
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            cast(dict[str, object], record["state"]).update(
-                {
-                    "active_executions": [{"entry": "e003", "execution_id": identity}],
-                    "phase": "executing",
-                }
-            )
-            record["checkpoints"] = [checkpoint]
-            record["workers"] = [
-                {
-                    "entry": "e003",
-                    "execution_id": identity,
-                    "last_observed_at": "2030-01-01T00:00:03Z",
-                    "parent_worker_id": None,
-                    "pid": 4321,
-                    "registered_at": "2030-01-01T00:00:02Z",
-                    "state": "exited",
-                    "worker_id": "worker-4321",
-                }
-            ]
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._terminate_marked_workers",
-                    return_value=[],
-                ) as terminate,
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                _reconcile_lost_supervisor(log, run_root, run_id)
-
-            stopped = _status_projection(_load_run(run_root / "run.json"))
-            self.assertEqual(stopped["status"], "stopped")
-            self.assertEqual(
-                cast(Mapping[str, object], stopped["latest_execution_diagnostic"])[
-                    "code"
-                ],
-                "supervisor_lost",
-            )
-            terminal = cast(
-                list[Mapping[str, object]],
-                _load_run(run_root / "run.json")["checkpoints"],
-            )
-            self.assertEqual(terminal[0]["state"], "stopped")
-            self.assertEqual(
-                cast(Mapping[str, object], terminal[0]["failure"])["code"],
-                "supervisor_lost",
-            )
-            self.assertEqual(
-                cast(
-                    list[Mapping[str, object]],
-                    _load_run(run_root / "run.json")["workers"],
-                )[0]["registered_at"],
-                "2030-01-01T00:00:02Z",
-            )
-            terminate.assert_called_once_with(run_id)
-            spawn.assert_not_called()
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks",
+                    "log_commands.reproduction_jobs._stop_workers_and_clean_scratch",
                     return_value=(),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_jobs."
-                    "verify_reproduction_runtime_snapshot"
-                ),
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                self.assertEqual(resume_reproduction(log, run_id), run_id)
-
-            spawn.assert_called_once_with(
-                log,
-                run_root.resolve(),
-                (),
-                mode="stopped",
-            )
-            resumed = _status_projection(_load_run(run_root / "run.json"))
-            self.assertEqual(resumed["phase"], "accepted")
-            self.assertIsNone(resumed["status"])
-
-    def test_completed_unresolved_run_starts_a_fresh_attempt_in_place(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            log, run_root, run_id = _write_accepted_run(project)
-            (log.root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            (run_root / "workspace").mkdir()
-            (run_root / "workspace" / "old.txt").write_text(
-                "old attempt\n", encoding="utf-8"
-            )
-            record = _load_run(run_root / "run.json")
-            cast(dict[str, object], record["state"]).update(
-                {"phase": None, "status": "complete"}
-            )
-            cast(dict[str, object], record["timestamps"])["finished_at"] = (
-                "2030-01-01T00:00:05Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs.plan_reproduction",
-                    return_value=_plan(),
-                ) as planner,
-                mock.patch(
-                    "log_commands.reproduction_jobs.verify_reproduction_snapshot"
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks",
-                    return_value=(),
-                ),
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                self.assertEqual(resume_reproduction(log, run_id), run_id)
-
-            kwargs = planner.call_args.kwargs
-            selection = kwargs["selection"]
-            self.assertEqual(selection.policy, "resume")
-            self.assertEqual(len(selection.command_queue), 1)
-            self.assertEqual(selection.command_queue, selection.command_scope)
-            spawn.assert_called_once_with(
-                log,
-                run_root.resolve(),
-                (),
-                mode="continuation",
-            )
-            resumed = _load_run(run_root / "run.json")
-            self.assertEqual(resumed["attempt"], 2)
-            self.assertEqual(len(cast(list[object], resumed["attempts"])), 1)
-            self.assertTrue(
-                (run_root / "attempts" / "0001" / "workspace" / "old.txt").is_file()
-            )
-            status = _status_projection(resumed)
-            self.assertEqual(status["attempt"], 2)
-            self.assertFalse(status["resolved"])
-
-    def test_unresolved_resume_with_no_action_returns_current_reconciliation(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            log, run_root, run_id = _write_accepted_run(project)
-            (log.root / "entries" / "2030-01-01-e003-example").mkdir(parents=True)
-            record = _load_run(run_root / "run.json")
-            cast(dict[str, object], record["state"]).update(
-                {"phase": None, "status": "complete"}
-            )
-            cast(dict[str, object], record["timestamps"])["finished_at"] = (
-                "2030-01-01T00:00:05Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-            no_action = replace(_plan(), executions=())
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs.plan_reproduction",
-                    return_value=no_action,
-                ),
-                mock.patch(
-                    "log_commands.reproduction_queries.reproduction_reconciliation_text",
-                    return_value="# Current reconciliation\n",
-                ) as summarize,
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks"
-                ) as acquire,
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                result = resume_reproduction(log, run_id)
-
-            self.assertEqual(result, "# Current reconciliation\n")
-            summarize.assert_called_once_with(log, no_action, generated_at=mock.ANY)
-            acquire.assert_not_called()
-            spawn.assert_not_called()
-            unchanged = _load_run(run_root / "run.json")
-            self.assertEqual(unchanged["attempt"], 1)
-            self.assertEqual(
-                cast(Mapping[str, object], unchanged["state"])["status"],
-                "complete",
-            )
-
-    def test_resume_retries_failed_publication_without_starting_a_new_run(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-fixture"
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-            record = _accepted_record(
-                log,
-                _plan(),
-                run_id,
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            state = cast(dict[str, object], record["state"])
-            state.update(
-                {
-                    "phase": None,
-                    "status": "failed",
-                    "operational_failure": {
-                        "code": "reproduction.publication.failed",
-                        "entry": None,
-                        "execution_id": None,
-                        "message": "publication failed",
-                        "recorded_at": "2030-01-01T00:00:05Z",
-                    },
-                }
-            )
-            cast(dict[str, object], record["timestamps"])["finished_at"] = (
-                "2030-01-01T00:00:05Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks",
-                    return_value=(),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs."
-                    "verify_reproduction_runtime_snapshot"
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs."
-                    "verify_publication_retry_compatibility"
-                ) as verify_compatibility,
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
-            ):
-                self.assertEqual(resume_reproduction(log, run_id), run_id)
-
-            verify_compatibility.assert_called_once_with(log, mock.ANY)
-            spawn.assert_called_once_with(
-                log,
-                run_root.resolve(),
-                (),
-                mode="publication",
-            )
-            resumed = _status_projection(_load_run(run_root / "run.json"))
-            self.assertIsNone(resumed["operational_failure"])
-            self.assertEqual(resumed["phase"], "accepted")
-
-    def _obsolete_precontinuation_snapshot_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / ".git").mkdir()
-            log_root = project / "docs" / "research"
-            log_root.mkdir(parents=True)
-            summary = project / "docs" / "research.md"
-            summary.write_text("# Research\n", encoding="utf-8")
-            log = LogContext(summary, log_root)
-            run_id = "reproduce-20300101t000000z-fixture"
-            run_root = (
-                project
-                / "tmp"
-                / "reproduction"
-                / "2030-01-01"
-                / f"reproduce-research-e003-{run_id}"
-            )
-            run_root.mkdir(parents=True)
-            record = _accepted_record(
-                log,
-                _plan(),
-                run_id,
-                run_root,
-                accepted_at="2030-01-01T00:00:00Z",
-            )
-            cast(dict[str, object], record["state"]).update(
-                {"phase": None, "status": "stopped"}
-            )
-            cast(dict[str, object], record["timestamps"])["stopped_at"] = (
-                "2030-01-01T00:00:05Z"
-            )
-            atomic_write_text(
-                run_root / "run.json",
-                json.dumps(record, indent=2, sort_keys=True) + "\n",
-            )
-
-            with (
-                mock.patch(
-                    "log_commands.reproduction_jobs._acquire_scope_locks",
-                    return_value=(),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_jobs."
-                    "verify_reproduction_runtime_snapshot",
-                    side_effect=ActionError(
-                        "reproduction.source.changed", "source changed"
+                    "log_commands.reproduction_jobs._spawn_supervisor",
+                    side_effect=lambda log, root, fds, *, mode: supervise_reproduction(
+                        log, root, mode=mode, inherited_locks=fds
                     ),
                 ),
-                mock.patch("log_commands.reproduction_jobs._spawn_supervisor") as spawn,
             ):
-                with self.assertRaisesRegex(ActionError, "source changed"):
-                    resume_reproduction(log, run_id)
+                self.assertEqual(resume_reproduction(fixture.log, run_id), run_id)
+            execute_retry.assert_not_called()
+            self.assertEqual(
+                requirement_replays,
+                [(entry.id, good_id), (entry.id, failed_id)],
+                _load_run(run_path)["state"].get("operational_failure"),
+            )
+            self.assertEqual(
+                (published_results.read_bytes(), published_report.read_bytes()),
+                previous_bundle,
+            )
+            self.assertEqual(plan_path.read_bytes(), accepted_plan_bytes)
+            self.assertEqual(_load_run(run_path)["state"]["status"], "failed")
 
-            spawn.assert_not_called()
-            preserved = _status_projection(_load_run(run_root / "run.json"))
-            self.assertEqual(preserved["status"], "stopped")
-            self.assertIsNone(preserved["phase"])
-
-
-def _write_accepted_run(
-    project: Path,
-    *,
-    run_id: str = "reproduce-20300101t000000z-fixture",
-) -> tuple[LogContext, Path, str]:
-    (project / ".git").mkdir()
-    log_root = project / "docs/research"
-    log_root.mkdir(parents=True)
-    summary = project / "docs/research.md"
-    summary.write_text("# Research\n", encoding="utf-8")
-    log = LogContext(summary, log_root)
-    run_root = (
-        project / "tmp/reproduction/2030-01-01" / f"reproduce-research-e003-{run_id}"
-    )
-    run_root.mkdir(parents=True)
-    record = _accepted_record(
-        log, _plan(), run_id, run_root, accepted_at="2030-01-01T00:00:00Z"
-    )
-    atomic_write_text(
-        run_root / "run.json",
-        json.dumps(record, indent=2, sort_keys=True) + "\n",
-    )
-    return log, run_root, run_id
-
-
-def _write_active_run(
-    project: Path, *, failure_intent: bool = False
-) -> tuple[LogContext, Path, str]:
-    (project / ".git").mkdir()
-    log_root = project / "docs" / "research"
-    log_root.mkdir(parents=True)
-    summary = project / "docs" / "research.md"
-    summary.write_text("# Research\n", encoding="utf-8")
-    log = LogContext(summary, log_root)
-    run_id = "reproduce-20300101t000000z-fixture"
-    run_root = (
-        project / "tmp/reproduction/2030-01-01" / f"reproduce-research-e003-{run_id}"
-    )
-    run_root.mkdir(parents=True)
-    identity = "pyrun-exec/v1:" + "1" * 64
-    checkpoint = {
-        "completed_at": None,
-        "elapsed_seconds": 2.0,
-        "entry": "e003",
-        "execution_id": identity,
-        "failure": None,
-        "finished_at": None,
-        "outputs": [],
-        "path": "checkpoints/e003-" + "1" * 64 + ".json",
-        "started_at": "2030-01-01T00:00:01Z",
-        "state": "active",
-    }
-    (run_root / "checkpoints").mkdir()
-    atomic_write_text(
-        run_root / cast(str, checkpoint["path"]),
-        json.dumps(checkpoint, indent=2, sort_keys=True) + "\n",
-    )
-    record = _accepted_record(
-        log,
-        _plan(),
-        run_id,
-        run_root,
-        accepted_at="2030-01-01T00:00:00Z",
-    )
-    state = cast(dict[str, object], record["state"])
-    state.update(
-        {
-            "active_executions": [{"entry": "e003", "execution_id": identity}],
-            "phase": "stopping" if failure_intent else "executing",
-        }
-    )
-    if failure_intent:
-        state["operational_failure"] = {
-            "code": "fixture.failed",
-            "entry": None,
-            "execution_id": None,
-            "message": "failed",
-            "recorded_at": "2030-01-01T00:00:02Z",
-        }
-    record["checkpoints"] = [checkpoint]
-    record["workers"] = [
-        {
-            "entry": "e003",
-            "execution_id": identity,
-            "last_observed_at": "2030-01-01T00:00:02Z",
-            "parent_worker_id": None,
-            "pid": 4321,
-            "registered_at": "2030-01-01T00:00:01Z",
-            "state": "running",
-            "worker_id": "worker-4321",
-        }
-    ]
-    atomic_write_text(
-        run_root / "run.json", json.dumps(record, indent=2, sort_keys=True) + "\n"
-    )
-    return log, run_root, run_id
-
-
-def _plan() -> ReproductionPlan:
-    execution = "pyrun-exec/v1:" + "1" * 64
-    return ReproductionPlan(
-        "docs/research.md",
-        {"entry": "e003", "kind": "entry"},
-        False,
-        {},
-        source_snapshot(
-            authority_files=(),
-            commands=(
-                {
-                    "auto_reproduce": True,
-                    "cwd": "docs/research/entries/2030-01-01-e003-example",
-                    "details": [],
-                    "entry": "e003",
-                    "execution_id": execution,
-                    "exclusive": False,
-                    "prior_disposition": None,
-                    "queued": True,
-                    "recipe": {
-                        "environment": {},
-                        "inputs": [],
-                        "outputs": {"data/result.txt": "file"},
-                        "parameters": [],
-                        "parameter_roles": {},
-                        "script": "scripts/build.py",
-                    },
-                    "requires_reproduction": True,
-                    "selection": "run",
-                    "source_digest": "1" * 64,
-                },
-            ),
-            executions=(),
-            materials=(),
-        ),
-        (),
-        (
-            {
-                "depends_on": [],
-                "entry": "e003",
-                "execution_id": execution,
-                "order": 1,
-                "outputs": ["data/result.txt"],
-                "auto_reproduce": True,
-                "exclusive": False,
-                "read_paths": [],
-                "run_path": "<run>/executions/e003/" + "1" * 64,
-                "writable_paths": [
-                    "<run>/diagnostics/e003/" + "1" * 64,
-                    "<run>/runtime/e003/" + "1" * 64,
-                    "<run>/workspace/data/result.txt",
-                ],
-                "write_paths": ["<run>/workspace/data/result.txt"],
-            },
-        ),
-        (),
-        (),
-    )
-
-
-def _status_fixture(name: str) -> dict[str, object]:
-    execution = "pyrun-exec/v1:" + "1" * 64
-    timestamps: dict[str, str | None] = {
-        "accepted_at": "2030-01-01T00:00:00Z",
-        "finished_at": None,
-        "resumed_at": None,
-        "started_at": None,
-        "stopped_at": None,
-        "updated_at": "2030-01-01T00:00:00Z",
-    }
-    value: dict[str, object] = {
-        "artifact_outcomes": {
-            "changed": 0,
-            "comparison_failed": 0,
-            "failed": 0,
-            "matched": 0,
-            "skipped": 0,
-        },
-        "completed_executions": 0,
-        "active_executions": [],
-        "active_workers": [],
-        "execution_timings": [],
-        "include_all": False,
-        "jobs": 1,
-        "latest_execution_diagnostic": None,
-        "operational_failure": None,
-        "phase": name,
-        "run_id": "reproduce-20300101t000000z-fixture",
-        "schema": "research-log-reproduction-status/6",
-        "execution_timeout_seconds": 300,
-        "status": None,
-        "summary": "docs/research.md",
-        "surviving_workers": [],
-        "target": {"entry": "e003", "kind": "entry"},
-        "timestamps": timestamps,
-        "total_executions": 1,
-        "attempt": 1,
-        "attempts": 1,
-        "resolved": False,
-        "resumable": False,
-    }
-    if name != "accepted":
-        timestamps["started_at"] = "2030-01-01T00:00:01Z"
-    updated = {
-        "planning": "01",
-        "preflight": "02",
-        "executing": "02",
-        "comparing": "04",
-        "stopping": "04",
-        "publishing": "05",
-        "stopped": "05",
-        "complete": "06",
-        "failed": "06",
-    }.get(name)
-    if updated is not None:
-        timestamps["updated_at"] = f"2030-01-01T00:00:{updated}Z"
-    if name in {"executing", "comparing", "publishing", "complete"}:
-        if name == "executing":
-            value["active_executions"] = [{"entry": "e003", "execution_id": execution}]
-        value["execution_timings"] = [
-            {
-                "elapsed_seconds": 12.5,
-                "entry": "e003",
-                "execution_id": execution,
-                "failure": None,
-                "finished_at": (
-                    "2030-01-01T00:00:02Z" if name != "executing" else None
+            with (
+                mock.patch("log_commands.reproduction_jobs.preflight_execution_safety"),
+                mock.patch(
+                    "log_commands.reproduction_jobs.execute_reproduction_plan"
+                ) as execute_retry,
+                mock.patch(
+                    "log_commands.reproduction_jobs._spawn_supervisor",
+                    side_effect=lambda log, root, fds, *, mode: supervise_reproduction(
+                        log, root, mode=mode, inherited_locks=fds
+                    ),
                 ),
-                "started_at": "2030-01-01T00:00:01Z",
-                "state": "active" if name == "executing" else "succeeded",
-            }
-        ]
-    if name in {"publishing", "complete"}:
-        value["completed_executions"] = 1
-        cast(dict[str, int], value["artifact_outcomes"])["matched"] = 1
-    if name == "stopping":
-        value["latest_execution_diagnostic"] = {
-            "code": "worker_cleanup_incomplete",
-            "entry": "e003",
-            "execution_id": execution,
-            "message": "One worker survived shutdown.",
-            "recorded_at": "2030-01-01T00:00:04Z",
-        }
-        value["surviving_workers"] = [
-            {
-                "entry": "e003",
-                "execution_id": execution,
-                "last_observed_at": "2030-01-01T00:00:04Z",
-                "parent_worker_id": None,
-                "pid": 4321,
-                "registered_at": "2030-01-01T00:00:02Z",
-                "state": "running",
-                "worker_id": "worker-4321",
-            }
-        ]
-        value["active_workers"] = value["surviving_workers"]
-        value["active_executions"] = [{"entry": "e003", "execution_id": execution}]
-    if name == "stopped":
-        value["phase"] = None
-        value["status"] = "stopped"
-        timestamps["stopped_at"] = "2030-01-01T00:00:05Z"
-        value["latest_execution_diagnostic"] = {
-            "code": "stop_requested",
-            "entry": "e003",
-            "execution_id": execution,
-            "message": "Reproduction was stopped by request.",
-            "recorded_at": "2030-01-01T00:00:05Z",
-        }
-        value["resumable"] = True
-    if name in {"complete", "failed"}:
-        value["phase"] = None
-        value["status"] = name
-        timestamps["finished_at"] = "2030-01-01T00:00:06Z"
-        value["resumable"] = name == "failed"
-    if name == "complete":
-        value["resolved"] = True
-    if name == "failed":
-        value["operational_failure"] = {
-            "code": "publication_failed",
-            "entry": None,
-            "execution_id": None,
-            "message": "Final publication failed.",
-            "recorded_at": "2030-01-01T00:00:06Z",
-        }
-    return value
-
-
-def _empty_plan() -> ReproductionPlan:
-    return ReproductionPlan(
-        "docs/research.md",
-        {"entry": None, "kind": "log"},
-        False,
-        {},
-        source_snapshot(authority_files=(), executions=(), materials=()),
-        (),
-        (),
-        (),
-        (),
-    )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            ):
+                self.assertEqual(resume_reproduction(fixture.log, run_id), run_id)
+            execute_retry.assert_not_called()
+            complete = _load_run(run_path)
+            self.assertEqual(complete["run_id"], run_id)
+            self.assertEqual(complete["state"]["status"], "complete")
+            self.assertEqual(plan_path.read_bytes(), accepted_plan_bytes)

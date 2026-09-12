@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence, cast
@@ -507,11 +507,6 @@ def merge_reproduction_results(
 ) -> ReproductionResults:
     """Replace published artifact and command cases and append one run."""
 
-    previous_run = next(
-        (item for item in current.runs if item.run_id == run.run_id), None
-    )
-    if previous_run is not None:
-        run = _merge_logical_run(previous_run, run)
     replacements = {(item.entry, item.artifact): item for item in artifacts}
     if len(replacements) != len(artifacts):
         raise ReproductionResultError("published artifacts are duplicated")
@@ -549,71 +544,6 @@ def merge_reproduction_results(
             )
         ),
         tuple(sorted(merged_commands.values(), key=_command_key)),
-    )
-
-
-def _merge_logical_run(previous: RunResult, current: RunResult) -> RunResult:
-    """Merge a later attempt into one persistent logical run result."""
-
-    if previous.command_records is None or current.command_records is None:
-        raise ReproductionResultError(
-            f"duplicate run ID without continuation records: {current.run_id}"
-        )
-    old = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
-        for item in previous.command_records
-    }
-    merged = dict(old)
-    for item in current.command_records:
-        key = (cast(str, item["entry"]), cast(str, item["execution_id"]))
-        prior = old.get(key)
-        if prior is not None and prior["queued"] is False:
-            continue
-        if prior is not None and (
-            item["run_selection"] == "not_needed"
-            and prior["terminal_disposition"] == "succeeded"
-            or item["run_selection"] == "unchanged"
-            and prior["terminal_disposition"] in {"failed", "blocked"}
-        ):
-            continue
-        if prior is not None:
-            item = {
-                **dict(item),
-                **{
-                    name: prior[name]
-                    for name in (
-                        "auto_reproduce",
-                        "cwd",
-                        "exclusive",
-                        "queued",
-                        "recipe",
-                        "requires_reproduction",
-                    )
-                },
-            }
-        merged[key] = item
-    records = tuple(
-        merged[key]
-        for key in sorted(merged, key=lambda key: (_entry_key(key[0]), key[1]))
-    )
-    counts = {name: 0 for name in COMMAND_OUTCOMES}
-    for item in records:
-        bucket = item["bucket"]
-        reason = cast(str, item["reason"])
-        leaf = (
-            cast(str, bucket)
-            if bucket in {"blocked", "failed", "succeeded"}
-            else "not_automatic"
-            if bucket == "skipped-by-policy"
-            else reason
-        )
-        counts[leaf] += 1
-    counts["total"] = len(records)
-    return replace(
-        current,
-        accepted_at=previous.accepted_at,
-        command_outcomes=counts,
-        command_records=records,
     )
 
 

@@ -32,14 +32,15 @@ from .context import (
 )
 from .model import ActionError
 from .reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
-from .reproduction_contract import is_repair_verification
-from .reproduction_execution import _fingerprint
-from .reproduction_jobs import _find_run, _load_run, _plan_from_record
-from .reproduction_paths import iter_canonical_run_roots
-from .reproduction_planner import (
-    project_reproduction_state,
-    verify_reproduction_snapshot,
+from .reproduction_contract import (
+    ReproductionPlan,
+    accepted_invocation,
+    is_repair_verification,
 )
+from .reproduction_execution import _fingerprint
+from .reproduction_jobs import _find_run, _load_run, load_accepted_plan
+from .reproduction_paths import iter_canonical_run_roots
+from .reproduction_planner import project_reproduction_state
 from .reproduction_results import (
     compose_reproduction_report,
     load_reproduction_results,
@@ -77,6 +78,7 @@ class _PromotedOutput:
     kind: str
     staged: Path
     destination: Path
+    baseline: Fingerprint
     fingerprint: Fingerprint
 
 
@@ -93,14 +95,27 @@ class _StagingBundle:
     schema: str
 
 
+@dataclass(frozen=True)
+class _PromotionResolution:
+    """Accepted run, entry, and staging inputs for one promotion resolution."""
+
+    project: Path
+    entry_root: Path
+    run_root: Path
+    plan: ReproductionPlan
+    entry_id: str
+    execution_id: str
+    bundle: _StagingBundle
+
+
 def promote_execution(
     log: LogContext, *, run_id: str, execution_id: str
 ) -> PromotionResult:
     """Promote one complete current staging bundle without changing its source."""
 
     run_root = _find_run(log, run_id)
-    run_record = _load_run(run_root / "run.json")
-    plan = _plan_from_record(run_record)
+    _load_run(run_root / "run.json")
+    plan = load_accepted_plan(run_root)
     if is_repair_verification(plan):
         raise ActionError(
             "reproduction.promotion.repair_verification",
@@ -111,19 +126,15 @@ def promote_execution(
     entry_id = _required_string(bundle.record, "entry")
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
-    outputs = _resolve_outputs(
-        project,
-        entry.root,
-        run_root,
-        execution_id,
-        bundle,
-    )
-    verify_reproduction_snapshot(log, plan)
     with entry_lock(entry):
-        verify_reproduction_snapshot(log, plan)
+        outputs = _resolve_outputs(
+            _PromotionResolution(
+                project, entry.root, run_root, plan, entry_id, execution_id, bundle
+            )
+        )
         marker = _begin_promotion(log, run_id, execution_id, outputs)
         try:
-            _publish_promotion(log, entry_id, execution_id, outputs)
+            _publish_promotion(log, plan, entry_id, execution_id, outputs)
         finally:
             _finish_promotion(log, marker)
     return PromotionResult(
@@ -193,36 +204,43 @@ def _load_bundle(run_root: Path, run_id: str, execution_id: str) -> _StagingBund
 
 
 def _resolve_outputs(
-    project: Path,
-    entry_root: Path,
-    run_root: Path,
-    execution_id: str,
-    bundle: _StagingBundle,
+    context: _PromotionResolution,
 ) -> tuple[_PromotedOutput, ...]:
+    accepted = accepted_invocation(context.plan, context.entry_id, context.execution_id)
     state = load_pyrun_state(
-        entry_root / "pyrun.json", entry_root=entry_root, project_root=project
+        context.entry_root / "pyrun.json",
+        entry_root=context.entry_root,
+        project_root=context.project,
     )
-    execution = state.executions.get(execution_id)
+    execution = state.executions.get(context.execution_id)
     if execution is None:
         raise ActionError(
             "reproduction.promotion.execution_changed", "execution is no longer current"
         )
-    raw_outputs = bundle.record.get("outputs")
-    bundle_path = bundle.record.get("path")
+    if (
+        execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
+        or execution.observed.as_dict() != accepted.execution.observed.as_dict()
+    ):
+        raise ActionError(
+            "reproduction.promotion.execution_changed",
+            "current execution no longer matches accepted promotion baseline",
+        )
+    raw_outputs = context.bundle.record.get("outputs")
+    bundle_path = context.bundle.record.get("path")
     if not isinstance(raw_outputs, list) or not isinstance(bundle_path, str):
         raise ActionError(
             "reproduction.promotion.staging_invalid", "invalid staged output list"
         )
-    records = _index_staged_outputs(raw_outputs, bundle.schema)
-    expected = dict(execution.recipe.outputs)
+    records = _index_staged_outputs(raw_outputs, context.bundle.schema)
+    expected = dict(accepted.execution.recipe.outputs)
     if set(records) != set(expected):
         raise ActionError(
             "reproduction.promotion.output_set_changed",
             "staged outputs do not equal the current execution output set",
         )
-    bundle_root = _safe_run_path(run_root, bundle_path)
+    bundle_root = _safe_run_path(context.run_root, bundle_path)
     results: list[_PromotedOutput] = []
-    for artifact, kind in execution.recipe.outputs:
+    for artifact, kind in accepted.execution.recipe.outputs:
         record = records[artifact]
         staged_path = record.get("staged")
         if (
@@ -237,8 +255,20 @@ def _resolve_outputs(
             )
         staged = _safe_run_path(bundle_root, staged_path)
         destination = output_target_path(
-            artifact, entry_root=entry_root, project_root=project
+            artifact, entry_root=context.entry_root, project_root=context.project
         )
+        baseline = dict(accepted.execution.observed.outputs).get(artifact)
+        if (
+            baseline is None
+            or not destination.exists()
+            or destination.is_symlink()
+            or _fingerprint(destination, kind) != baseline
+        ):
+            raise ActionError(
+                "reproduction.promotion.baseline_changed",
+                "promotion destination no longer matches accepted baseline: "
+                f"{artifact}",
+            )
         fingerprint = parse_fingerprint(record["regenerated"], f"promotion:{artifact}")
         if (
             staged.is_symlink()
@@ -250,7 +280,7 @@ def _resolve_outputs(
                 f"staged output changed or disappeared: {artifact}",
             )
         results.append(
-            _PromotedOutput(artifact, kind, staged, destination, fingerprint)
+            _PromotedOutput(artifact, kind, staged, destination, baseline, fingerprint)
         )
     return tuple(results)
 
@@ -294,8 +324,8 @@ def _begin_promotion(
     token = secrets.token_hex(12)
     project = resolve_project_root(log.root)
     marker = operation_directory(project) / f"promotion-{token}.json"
-    with operation_lock(log.root, "reproduction-publication.lock"):
-        with operation_lock(project, "reproduction-promotion-index.lock"):
+    with operation_lock(project, "reproduction-promotion-index.lock"):
+        with operation_lock(log.root, "reproduction-publication.lock"):
             _require_no_active_input_overlap(log, outputs)
             atomic_write_text(
                 marker,
@@ -314,10 +344,10 @@ def _begin_promotion(
 
 
 def _finish_promotion(log: LogContext, marker: Path) -> None:
-    with operation_lock(log.root, "reproduction-publication.lock"):
-        with operation_lock(
-            resolve_project_root(log.root), "reproduction-promotion-index.lock"
-        ):
+    with operation_lock(
+        resolve_project_root(log.root), "reproduction-promotion-index.lock"
+    ):
+        with operation_lock(log.root, "reproduction-publication.lock"):
             marker.unlink(missing_ok=True)
 
 
@@ -337,16 +367,16 @@ def _require_no_active_input_overlap(
         record = _load_run(path)
         if cast(Mapping[str, object], record["state"])["status"] is not None:
             continue
-        plan = _plan_from_record(record)
+        plan = load_accepted_plan(run_root)
         materials = cast(
-            Sequence[Mapping[str, object]], plan.source_snapshot["materials"]
+            Sequence[Mapping[str, object]], plan.comparison_context["materials"]
         )
         inputs = {
             Path(cast(str, item["identity"])).resolve()
             for item in materials
             if item.get("role") == "boundary" and isinstance(item.get("identity"), str)
         }
-        overlap = promoted & inputs
+        overlap = _overlapping_paths(promoted, inputs)
         if overlap:
             raise ActionError(
                 "reproduction.promotion.conflict",
@@ -354,15 +384,27 @@ def _require_no_active_input_overlap(
             )
 
 
+def _overlapping_paths(left: set[Path], right: set[Path]) -> set[Path]:
+    """Return paths that overlap directly or through a directory boundary."""
+
+    return {
+        source
+        for source in left
+        for target in right
+        if source == target or source in target.parents or target in source.parents
+    }
+
+
 def _publish_promotion(
     log: LogContext,
+    plan: ReproductionPlan,
     entry_id: str,
     execution_id: str,
     outputs: Sequence[_PromotedOutput],
 ) -> None:
     project = resolve_project_root(log.root)
     text_candidates, prior_text = _metadata_candidates(
-        log, entry_id, execution_id, outputs
+        log, plan, entry_id, execution_id, outputs
     )
     installed: tuple[_InstalledOutput, ...] = ()
     try:
@@ -388,6 +430,7 @@ def _publish_promotion(
 
 def _metadata_candidates(
     log: LogContext,
+    plan: ReproductionPlan,
     entry_id: str,
     execution_id: str,
     outputs: Sequence[_PromotedOutput],
@@ -398,6 +441,30 @@ def _metadata_candidates(
         entry.root / "pyrun.json", entry_root=entry.root, project_root=project
     )
     execution = state.executions[execution_id]
+    accepted = accepted_invocation(plan, entry_id, execution_id)
+    if (
+        execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
+        or execution.observed.as_dict() != accepted.execution.observed.as_dict()
+    ):
+        raise ActionError(
+            "reproduction.promotion.execution_changed",
+            "current execution no longer matches accepted promotion baseline",
+        )
+    recorded = dict(accepted.execution.observed.outputs)
+    for output in outputs:
+        if (
+            not output.destination.exists()
+            or output.destination.is_symlink()
+            or recorded.get(output.artifact) != output.baseline
+            or _fingerprint(output.destination, output.kind) != output.baseline
+            or output.staged.is_symlink()
+            or not output.staged.exists()
+            or _fingerprint(output.staged, output.kind) != output.fingerprint
+        ):
+            raise ActionError(
+                "reproduction.promotion.baseline_changed",
+                f"promotion destination changed before transaction: {output.artifact}",
+            )
     fingerprints = {item.artifact: item.fingerprint for item in outputs}
     candidate_execution = PyrunExecution(
         False,
@@ -468,6 +535,10 @@ def _install_outputs(
                 and not destination.is_file()
                 or item.kind == "directory"
                 and not destination.is_dir()
+                or _fingerprint(destination, item.kind) != item.baseline
+                or item.staged.is_symlink()
+                or not item.staged.exists()
+                or _fingerprint(item.staged, item.kind) != item.fingerprint
             ):
                 raise ActionError(
                     "reproduction.promotion.destination_changed", str(destination)
@@ -483,14 +554,17 @@ def _install_outputs(
                 )
             displaced = root / f"displaced-{index}"
             os.replace(destination, displaced)
-            try:
-                os.replace(replacement, destination)
-            except BaseException:
-                os.replace(displaced, destination)
-                raise
             installed.append(_InstalledOutput(destination, displaced, replacement))
+            os.replace(replacement, destination)
     except BaseException:
-        _rollback_outputs(tuple(installed))
+        rollback_errors = _rollback_outputs(tuple(installed))
+        if rollback_errors:
+            # Keep the private displaced tree intact: it is the only durable
+            # copy of an original that could not be restored.
+            raise ActionError(
+                "reproduction.promotion.rollback_failed",
+                "; ".join(rollback_errors),
+            )
         shutil.rmtree(root, ignore_errors=True)
         raise
     return tuple(installed)

@@ -118,6 +118,14 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 
 This focused command supplements rather than replaces the complete tool gate.
 
+The reproduction suite is migrating to fixed-plan fixtures. Its completion
+coverage must exercise locked fresh preparation, strict accepted plan/run
+decoding, stop and interruption recovery, dependency failure and independent
+progress, publication-only retry, source-change rejection and new-run
+preparation, comparison-baseline invariance, reservation/promotion overlap, and
+validation-bundle invariance. It must not restore continuation, whole-snapshot
+certification, or accepted-attempt lineage coverage.
+
 For reproduction execution and process-lifecycle development, run the focused
 controlled-fixture suite outside any enclosing process-observation sandbox:
 

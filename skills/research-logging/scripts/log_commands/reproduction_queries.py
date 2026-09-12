@@ -726,14 +726,14 @@ def _command_diagnostics(
     if isinstance(retained, str):
         return _unavailable_command_diagnostics(retained)
     run_root, record = retained
-    located = _locate_command_checkpoint(record, entry, execution_id)
+    located = _locate_command_checkpoint(run_root, entry, execution_id)
     if located is None:
         return _unavailable_command_diagnostics("checkpoint_unavailable")
-    attempt, prefix, checkpoint = located
+    checkpoint = located
     digest = execution_id.rsplit(":", 1)[-1]
-    diagnostic_root = prefix / "diagnostics" / entry / digest
+    diagnostic_root = Path("diagnostics") / entry / digest
     return {
-        "attempt": attempt,
+        "attempt": None,
         "availability": "available",
         "checkpoint": dict(checkpoint),
         "reason": None,
@@ -816,35 +816,19 @@ def _compact_error(kind: str, message: str, source: str) -> dict[str, object]:
 
 
 def _locate_command_checkpoint(
-    record: Mapping[str, object], entry: str, execution_id: str
-) -> tuple[int, Path, Mapping[str, object]] | None:
-    """Find the newest retained checkpoint for one compound command identity."""
+    run_root: Path, entry: str, execution_id: str
+) -> Mapping[str, object] | None:
+    """Find the one fixed-plan checkpoint for a compound command identity."""
 
-    current = cast(int, record["attempt"])
-    candidates: list[tuple[int, Path, Mapping[str, object]]] = [
-        (current, Path(), record)
+    from .reproduction_jobs import _checkpoint_dicts
+
+    matches = [
+        item for item in _checkpoint_dicts(run_root)
+        if item.get("entry") == entry
+        and item.get("execution_id") == execution_id
+        and item.get("state") != "active"
     ]
-    candidates.extend(
-        (
-            cast(int, archived["attempt"]),
-            Path("attempts") / f"{cast(int, archived['attempt']):04d}",
-            archived,
-        )
-        for archived in reversed(
-            cast(Sequence[Mapping[str, object]], record["attempts"])
-        )
-    )
-    for attempt, prefix, candidate in candidates:
-        matches = [
-            item
-            for item in cast(Sequence[Mapping[str, object]], candidate["checkpoints"])
-            if item.get("entry") == entry
-            and item.get("execution_id") == execution_id
-            and item.get("state") != "active"
-        ]
-        if len(matches) == 1:
-            return attempt, prefix, matches[0]
-    return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def _diagnostic_stream(

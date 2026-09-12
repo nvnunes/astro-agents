@@ -74,19 +74,18 @@ The initial implementation must use these versions:
 | Reproduction result | `research-log-reproduction-result/10` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run state | `research-log-reproduction-run/6` |
-| Run status projection | `research-log-reproduction-status/6` |
-| Dry-run plan | `research-log-reproduction-plan/6` |
+| Durable run state | `research-log-reproduction-run/7` |
+| Run status projection | `research-log-reproduction-status/7` |
+| Accepted plan | `research-log-reproduction-plan/8` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Source snapshot | `research-log-reproduction-source-snapshot/8` (ordinary), `/9` (repair verification) |
 | Run-output manifest | `research-log-reproduction-staging/2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
 
-Reproduction uses run/6, plan/6, status/6, and result/10. Older job files are
+Reproduction uses run/7, plan/8, status/7, and result/10. Older job files are
 immutable but unsupported: the CLI reports `reproduction.run.unsupported` and
 directs the caller to start a new current-format run.
 
@@ -684,10 +683,10 @@ writing. A request that leaves the recorded recipe unchanged is refused.
 ### Execution-Metadata Schema
 
 Entry-local execution state accepts only strict `research-log-pyrun/v5`.
-Historical command snapshots also require the complete `parameter_roles` map.
-Their execution IDs and source digests identify the original run; they are not
-execution authority for current state. Resuming a retained job requires its
-source snapshot to agree with current state.
+Current command records require the complete `parameter_roles` map. Their
+execution IDs and source digests support fresh incremental selection only; they
+are not execution authority for current state. Resume reloads the immutable
+accepted plan and performs only invocation-scoped observation checks.
 
 ### Retirement
 
@@ -784,8 +783,8 @@ launch. It permits intentional changes to the selected script and its recorded
 participating local Python source files. Ordinary reproduction retains its
 `script_changed` and `participating_code_changed` admission failures.
 
-The repair plan observes current bytes for those source files and snapshots
-both their recorded and accepted fingerprints. It retains the recorded recipe,
+The repair plan observes current bytes for those source files and retains both
+their recorded and accepted fingerprints in its immutable accepted plan. It retains the recorded recipe,
 execution ID, input/output declarations, original observation digest, and
 one-command scope. Missing source files still block. Inputs, producer
 boundaries, retained comparison baselines, policy, and validation admission use
@@ -795,16 +794,13 @@ separate supported recording/adoption route and cannot be smuggled through
 this source-only option. It neither discovers nor records a new participating
 code closure.
 
-Dry run is write-free and names the verification mode and the accepted versus
-historical source fingerprints. Before launch, execution, and publication of
-an attempt, the current source files must match that attempt's accepted snapshot
-and the recorded execution must retain its original digest. Further source
-edits invalidate reuse of that snapshot. Resuming a current `/6` stopped run
-creates a continuation that can accept repaired source with a fresh snapshot,
-subject to the ordinary continuation selection and admission checks. It keeps
-the explicit verification mode and original single-command scope. Publication
-retries retain the original attempt's snapshot and cannot accept further
-source edits.
+Dry run names the verification mode and the accepted versus historical source
+fingerprints. Before launch and execution, current source files must match the
+accepted observations and the recorded execution must retain its original
+digest. Further source edits require a new run. Resume keeps the explicit
+verification mode and original single-command scope but never accepts a fresh
+source observation; publication retry uses retained terminal evidence and never
+accepts source edits.
 
 Execution uses the ordinary confined run-output workspace and comparison
 machinery. Success verifies execution of the accepted repaired source; it does
@@ -820,10 +816,10 @@ ordinary execution history.
 
 ### Admission Gate
 
-Before accepting or previewing work, reproduction requires current completed
-`.cache/validation/results.json` and `.cache/validation/batches.json` for the exact source
-snapshot. Incomplete, malformed, unsupported, stale, or mutually inconsistent
-validation state blocks the plan. Current findings are admitted per connected
+Before accepting or previewing work, reproduction evaluates the current log
+once under the ordinary log lock. Incomplete evaluation or an unresolved global
+admission blocker rejects preparation. Published validation files are neither
+read nor freshness tokens. Current findings are admitted per connected
 same-entry command chain: Structure, Evidence, and failed Provenance findings
 exclude only their affected batches. Independent batches remain eligible, and
 ordinary dependency propagation prevents admitted downstream work from running
@@ -1027,10 +1023,10 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/6` projection with exactly
+deterministic `research-log-reproduction-plan/8` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`,
-`execution_timeout_seconds`, `validation_snapshot`,
-`source_snapshot`, `cases`, `executions`, `boundaries`, and `failures`.
+`execution_timeout_seconds`, `admission`, `commands`, `comparison_context`,
+`cases`, `executions`, `boundaries`, and `failures`.
 
 `--summary` is valid only with `--dry-run` and replaces the complete JSON
 projection on standard output with a bounded human projection. For log and
@@ -1067,79 +1063,47 @@ remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 `origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
-used by continuation and individual-execution planning when an input producer
+used by individual-execution planning when an input producer
 is outside the immutable command queue. Execution-target boundaries also have
 `producers`, a sorted list of known entry-qualified producer IDs (empty for
 origins or unknown producers). Fields inapplicable to a boundary kind are
 null rather than omitted. Failures are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
-The validation snapshot records `result_path`, `result_date`, `rules_version`,
-`result_digest`, `source_projection_digest`, `projection_path`,
-`projection_digest`, `validation_id`, and `batch_admission`. The admission
-projection uses `research-log-reproduction-batch-admission/2` and lists every
-admitted chain plus every excluded chain with its blocking finding IDs. The two
-file digests cover the exact completed result and batch projection;
-`source_projection_digest` covers the validation-owned complete research-source
-projection. Reproduction treats these values as immutable currentness tokens.
+`admission` records the fresh evaluation identity, rules version, operation
+date, and each admitted or excluded chain decision. It explains acceptance; it
+is not a live freshness token and names no published validation file. `commands`
+is the immutable selection and accounting inventory. Each compound `{entry,
+execution_id}` record retains its recipe, policy, selection reason, working
+directory, and accepted execution observations. `executions` references those
+command records and owns topological order, dependency references, complete
+output membership, and scheduling claims.
 
-The source snapshot uses
-`research-log-reproduction-source-snapshot/8` and has exactly `schema`,
-`authority_files`, `commands`, `executions`, `materials`, and `result_schema`.
-Repair verification instead uses source-snapshot/9 with the same fields plus
-`repair_verification: true`; only an execution target may carry that marker.
-Its script/code material records add `recorded_fingerprint`, while their
-ordinary `fingerprint` is the accepted current fingerprint. The historical
-fingerprints must exactly match the unchanged recorded source closure; all
-recorded source members must be snapshotted for a runnable target. Other
-material roles cannot use repair admission. Ordinary snapshots neither carry
-nor infer the marker. Both snapshot shapes retain exact readers.
+`comparison_context` freezes each comparison definition and separately
+identified evidence-only current observations. It is not an authority-file
+manifest. The plan retains no whole-log source snapshot or validation
+result/projection path or digest.
 
-`result_schema` binds the accepted plan to the exact cumulative-result schema it
-may publish. The compatible result/9 reader retains old entry/log runs while
-new writes use result/10; other schema cutovers require the documented rebuild.
-`authority_files` records the
-canonical path and SHA-256 bytes of every `evidence.json` and `data.json` loaded
-for the plan. `commands` records every command in the target. Each record has
-the entry, execution ID, recorded recipe and working directory, automatic and
-exclusive policy flags, whether the initial policy queued it, whether it
-required reproduction at acceptance, `run`, `not_needed`, `policy`,
-`unchanged`, or `blocked` selection, planning detail, nullable prior
-disposition, and nullable source-closure digest. Commands omitted by the
-automatic policy have `selection: "policy"`, `queued: false`, and no source
-digest. The prior
-disposition is `failed` or `blocked` exactly when selection is `unchanged` and
-is null otherwise. `executions` records each runnable execution ID and the SHA-256
-digest of its canonical execution record after omitting only the mutable
-`requires_reproduction` field. `materials` records every current script, participating code
-file, direct input, retained boundary, and comparison baseline required by
-runnable work or an accepted retained boundary, by canonical
-identity, role, kind, and closed fingerprint. All arrays are unique and
-canonically sorted.
+Before an invocation launches, the runner compares its script, helpers, and
+resolved inputs with its accepted observations. Before comparison it verifies
+retained output-baseline bytes against the recorded observations, then uses the
+frozen exact or evidence-scoped definition. Changed planned sources,
+declarations, inputs, helpers, or comparison definitions require a new run.
+There is no whole-log rescan, published-validation recheck, or snapshot
+certification during execution, resume, or publication.
 
-At acceptance, the CLI verifies the validation result, batch projection, and
-complete source snapshot. At execution and final publication boundaries it
-rechecks the active attempt's accepted validation files and source snapshot;
-comparison and reproduction-requirement updates remain inside the same
-accepted scope lock. Repair verification does not update the requirement. A continuation resume plans and accepts a fresh attempt
-snapshot before launching any command. This permits the run's own
-requirement-clearing writes and researcher corrections between attempts while
-still rejecting any within-attempt
-change to a recipe, observation, policy, input, script, code path, data
-declaration, evidence root, comparison baseline, or admitted batch decision.
-
-Dry run is completely write-free. It creates no run ID, lock, output workspace,
-staging directory, checkpoint, result, report, cache, or other state. Because
-it deliberately takes no scope lock, it records and rechecks the complete
-source snapshot immediately before returning. A changed snapshot is an
-operational failure, not a stale preview.
+Preview uses the same locked preparation as launch and releases the lock before
+returning. It writes no run, workspace, checkpoint, result, report, cache, or
+preview token; lock infrastructure is its only permitted side effect. Launch
+prepares independently and never accepts a preview as certification.
 
 ## Durable Reproduction Jobs
 
 ### Launch And Identity
 
 A non-dry launch with one or more selected executions creates one durable
-background job, persists its accepted scope and source snapshot, starts its
+background job, persists its immutable accepted plan and initial run state,
+then releases the preparation lock before it starts its
 supervisor, emits its run ID, and returns immediately. The job is independent
 of the invoking terminal and agent turn. There is no foreground mode.
 
@@ -1179,107 +1143,24 @@ They must reject `--entry`, `--include-all`, `--jobs`, and
 
 ### Durable State
 
-Each run directory contains one canonical `run.json` using
-`research-log-reproduction-run/6`. Its top-level object has exactly:
-
-```json
-{
-  "schema": "research-log-reproduction-run/6",
-  "run_id": "reproduce-...",
-  "attempt": 2,
-  "attempts": [
-    {
-      "attempt": 1,
-      "source_snapshot": {},
-      "validation_snapshot": {},
-      "plan": {},
-      "state": {},
-      "progress": {},
-      "timestamps": {},
-      "workers": [],
-      "checkpoints": []
-    }
-  ],
-  "summary": "docs/research.md",
-  "target": {"kind": "entry", "entry": "e003"},
-  "include_all": false,
-  "jobs": 2,
-  "execution_timeout_seconds": 300,
-  "queue": [],
-  "source_snapshot": {},
-  "validation_snapshot": {},
-  "plan": {},
-  "state": {
-    "status": null,
-    "phase": "executing",
-    "active_executions": [
-      {"entry": "e003", "execution_id": "pyrun-exec/v1:..."},
-      {"entry": "e004", "execution_id": "pyrun-exec/v1:..."}
-    ],
-    "latest_execution_diagnostic": null,
-    "operational_failure": null
-  },
-  "progress": {
-    "completed_executions": 2,
-    "total_executions": 5,
-    "artifact_outcomes": {
-      "matched": 2,
-      "changed": 0,
-      "failed": 0,
-      "comparison_failed": 0,
-      "skipped": 0
-    }
-  },
-  "timestamps": {
-    "accepted_at": "2030-01-01T00:00:00Z",
-    "started_at": "2030-01-01T00:00:01Z",
-    "updated_at": "2030-01-01T00:00:02Z",
-    "stopped_at": null,
-    "resumed_at": null,
-    "finished_at": null
-  },
-  "paths": {
-    "run": "tmp/reproduction/2030-01-01/reproduce-research-e003-reproduce-...",
-    "workspace": "workspace",
-    "diagnostics": "diagnostics",
-    "staging": "executions"
-  },
-  "workers": [
-    {
-      "worker_id": "worker-12347",
-      "parent_worker_id": null,
-      "pid": 12347,
-      "entry": "e003",
-      "execution_id": "pyrun-exec/v1:...",
-      "state": "running",
-      "registered_at": "2030-01-01T00:00:01Z",
-      "last_observed_at": "2030-01-01T00:00:02Z"
-    }
-  ],
-  "checkpoints": []
-}
-```
+Each accepted run directory contains immutable `plan.json` using
+`research-log-reproduction-plan/8` and one canonical mutable `run.json` using
+`research-log-reproduction-run/7`. The plan is atomically written before the
+run record. Run discovery requires both files; an incomplete acceptance is
+invalid. The plan owns the target, selection, settings, command inventory,
+dependencies, recipes, comparison context, and admission. `run.json` has only
+`schema`, `run_id`, `paths`, `state`, `progress`, `timestamps`, and `workers`.
+Its state is mutable operational ownership; it does not embed a plan, source or
+validation snapshot, command queue, attempt number/history, copied settings,
+or checkpoints. Each invocation checkpoint is a separately validated owned
+file, and `staging.json` retains durable comparison and staged-output records.
 
 `target` is exactly one of `{kind: "log", entry: null}`,
 `{kind: "entry", entry: ENTRY}`, or
 `{kind: "execution", entry: ENTRY, execution_id: ID}`. Entry IDs use the
-stable entry grammar; execution IDs use the full `pyrun-exec/v1` grammar.
-An execution target must have exactly its single key in the immutable queue.
-The top-level `jobs` and `execution_timeout_seconds` values must equal their
-immutable values in `plan`.
-`queue` is the immutable, canonically sorted initial command projection from
-the first source snapshot. It fixes the logical scope and records which target
-commands the launch policy queued. Resume may narrow work within that queue but
-must never add a command or change the original include-all authorization.
-`attempt` is the one-based current attempt number. `attempts` contains exactly
-the preceding attempts in order; each item preserves the listed plan,
-snapshots, state, progress, timestamps, workers, and checkpoints. Attempt-local
-files are retained beneath `attempts/NNNN/` when a continuation begins.
-`source_snapshot` and `validation_snapshot` are byte-for-byte the projections
-defined by dry-run planning. `plan` is the accepted
-`research-log-reproduction-plan/6` object without its outer `schema`; it is
-immutable within the current attempt and replaced only by a fresh accepted
-continuation plan.
+stable entry grammar; execution IDs use the full `pyrun-exec/v1` grammar. The
+accepted plan fixes this target, `include_all`, `jobs`, timeout, and command
+membership. Resume cannot add commands or change any accepted setting.
 
 `state.status` is null while active and otherwise one terminal status:
 `complete`, `stopped`, or `failed`. `state.phase` is one of `accepted`,
@@ -1321,23 +1202,9 @@ only active supervised runtime. A stopped resumable attempt preserves its
 first `started_at`, has no `finished_at`, and adds its resumed active interval
 to `elapsed_seconds`.
 
-The run record therefore durably retains:
-
-- run ID, log, target kind, target entry and execution ID when applicable, include-all policy,
-  and jobs cap;
-- accepted source and validation snapshots;
-- immutable logical command queue, current deterministic attempt plan, and
-  complete preceding-attempt lineage;
-- run status, current phase, active executions, latest execution diagnostic,
-  and operational failure;
-- accepted, started, updated, stopped, resumed, and finished timestamps where
-  applicable;
-- completed and total execution counts;
-- accumulated artifact-outcome counts;
-- per-execution checkpoints and worker registrations;
-- output-workspace, diagnostics, and staging paths; and
-- stop, interruption, recovery, and publication state required for idempotent
-  continuation.
+The run record durably retains operational state only: run ID, state, progress,
+timestamps, workers, and run-relative paths. The accepted plan and invocation
+checkpoint files retain their respective immutable and per-invocation facts.
 
 Unknown fields fail. Checkpoint writes must be atomic and sufficient to
 distinguish `succeeded`, `failed`, or `stopped` work from an `active` execution
@@ -1360,18 +1227,15 @@ immutable run ID rather than reading unlocked mutable state to rediscover it.
 ### Status
 
 Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/6` object containing exactly `schema`,
+`research-log-reproduction-status/7` object containing exactly `schema`,
 `run_id`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `status`, `phase`,
 `active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
-`operational_failure`, `surviving_workers`, `attempt`, `attempts`, `resolved`,
-and `resumable`. The values are the
-corresponding strict projection of `run.json`.
-`attempt` identifies the active or most recent attempt and `attempts` is the
-total number of attempts so far. `resolved` is true only when every initially
-queued command has a durable successful outcome. `resumable` is true for a
-terminal state that can continue unresolved work or retry failed publication.
+`operational_failure`, `surviving_workers`, and `resumable`. The values are the
+strict projection of `run.json`, accepted `plan.json`, and checkpoint files.
+`resumable` is true only for a stopped run or the explicit publication-retry
+case; it is not attempt lineage or a selector for replanning.
 `active_executions` uses the run-state execution-reference shape and order.
 `active_workers` contains every current worker record associated with those
 references and is empty when no execution is active.
@@ -1432,25 +1296,15 @@ returns nonzero. Repeating `stop` retries the bounded cleanup.
 
 ### Resume
 
-For a v6 logical reproduction, `resume` is available after a terminal
-`complete`, `failed`, or `stopped` attempt while the initial command queue is
-unresolved. It reacquires the original scope lock, preserves the run ID,
-target, include-all authorization, queue, `jobs` cap, and per-command runtime
-limit, then creates a fresh attempt plan and source snapshot. It preserves
-successful commands, selects
-commands with no durable outcome, reruns a failed command only when its source
-closure changed, and reconsiders every blocked command. Newly selected work
-also selects downstream commands that it may affect. An unchanged failure is
-retained as `unchanged_failed`; an unresolved blocker remains blocked. If no
-command is actionable, resume returns the standard zero-execution
-reconciliation and creates no attempt.
-
-The new attempt uses clean attempt-local output, checkpoint, diagnostic, and
-runtime paths. Its snapshot is strict until that attempt terminates. A command
-interrupted without a durable terminal checkpoint is therefore attempted again
-from clean output space. `--recheck` applies only to initial launch and is not
-a resume option. Policy-skipped commands remain outside the logical queue even
-if current metadata later reclassifies them.
+`resume` is available only for a stopped run or the explicit publication-retry
+case. It reacquires reproduction reservation ownership, reloads exactly the
+accepted plan and validated checkpoint/staging inventory, then rechecks state
+under run-state serialization. It preserves completed successful and failed
+outcomes, comparisons, dependency skips, elapsed time, workspace, and run ID.
+It launches only never-started work and work stopped without a durable terminal
+outcome, after cleaning that invocation's incomplete outputs and scratch. It
+does not replan, reread current source to adopt repairs, rerun failed work, or
+accept options. `--recheck` applies only to initial launch.
 
 For a current-format publication failure, resume reuses every durable
 comparison, terminal failed attempt, dependency skip, and succeeded checkpoint
@@ -1459,12 +1313,12 @@ and require a new current-format run.
 
 ### One-Attempt Rule
 
-Within one immutable attempt, each compound `(entry, execution_id)` is attempted
-at most once. Multiple artifact cases and dependent branches reuse that one
-terminal result. A failed execution remains failed for that attempt, its
+Within one immutable run, each compound `(entry, execution_id)` launches at
+most once after it has a durable terminal outcome. Multiple artifact cases and
+dependent branches reuse that result. A failed execution remains failed, its
 dependents are skipped with `dependency_failed`, and independent executions
-continue. A later explicit resume may create a new attempt under the rules
-above; it never mutates or reuses the preceding attempt's source snapshot.
+continue. Resume may restart only interrupted work without a durable terminal
+outcome; it never creates a continuation plan or accepted-attempt history.
 
 ### Recovery
 
@@ -1511,7 +1365,7 @@ inside the run workspace. Current clean Structure validation is an admission
 requirement and therefore prevents a recipe with a missing, ambiguous, or
 noncanonical binding from reaching execution. The executor consumes the same
 shared binding projection defensively; an unexpected projection failure means
-the validated source snapshot changed or an implementation invariant failed,
+an accepted invocation observation changed or an implementation invariant failed,
 not a separate artifact outcome or user-facing binding check.
 
 The executor resolves retained origins and boundaries directly from their
@@ -2082,8 +1936,9 @@ log reproduce promote --path LOG --run-id RUN_ID --execution-id EXECUTION_ID
 
 The execution ID selects the complete indivisible output set recorded in
 `pyrun.json`; individual artifact paths are not promotion selectors. Promotion
-requires every output in the staged execution, verifies manifest, source
-snapshot, recipe, output membership, staged fingerprints, and destination
+requires every output in the staged execution, verifies the accepted invocation
+and frozen comparison evidence, recipe equality, output membership, staged
+fingerprints, and destination-baseline
 preconditions, then copies the complete set into maintained locations. A
 partial or stale set cannot be promoted.
 
@@ -2101,12 +1956,14 @@ or run validation. It leaves the staging bundle intact.
 
 ### Scope Locks
 
-Reproduction extends the existing lock implementation beneath
-`<log>/.cache/research-log-operations/`; it must not introduce a second lock
-system. One run holds exactly one scope lock for its complete active lifetime:
-the selected entry lock for entry reproduction or the selected log lock for
-log reproduction. It must not widen an entry run to dependency-entry locks or
-a log run to every entry lock.
+Reproduction uses the existing lock implementation beneath
+`<log>/.cache/research-log-operations/`. Reproduction-only reservations are
+separate from ordinary source-operation locks: a log target holds exclusive
+`reproduction-log.lock`; an entry target holds shared `reproduction-log.lock`
+and exclusive `reproduction-entry-ENTRY.lock`. They exclude overlapping
+reproduction targets while allowing distinct-entry runs. A reservation is held
+from accepted launch or resume through worker and permit cleanup; normal log
+and entry locks are never held while research commands execute.
 
 Before acceptance, a serialized active-target check rejects overlap:
 
@@ -2114,10 +1971,11 @@ Before acceptance, a serialized active-target check rejects overlap:
 - a log conflicts with itself and every entry in that log; and
 - distinct entries in one log may run concurrently.
 
-The prerequisite mutation guard must make maintained `log` mutations and
-ordinary `pyrun` publication refuse changes protected by an active reproduction
-entry or log lock. Raw filesystem edits and external origins do not participate
-in advisory locks and remain covered by exact snapshot and fingerprint checks.
+Reproduction reservations coordinate only overlapping reproduction targets.
+They do not hold ordinary source-editing or `pyrun` publication locks for a
+run's lifetime. Those operations retain their existing short operation locks;
+source edits after acceptance are unsupported and require a new run when an
+invocation-scoped observation detects them.
 
 ### Project-Wide Scheduling
 
@@ -2186,9 +2044,10 @@ becomes the sole active exclusive permit. A later ticket cannot overtake it. Sch
 unrelated host processes or coordinates projects that do not share the current
 Git root.
 
-The lock order is scope lock, scheduler mutex, run-state lock, entry-local
-reproduction-requirement lock, log publication mutex. No code may acquire an earlier lock
-while holding a later one. The scheduler mutex is never held while waiting for
+The lock order is reproduction reservation, normal log/entry operation lock,
+promotion-index mutex, scheduler mutex, run-state lock, entry-local
+reproduction-requirement lock, log publication mutex. No code may acquire an
+earlier lock while holding a later one. The scheduler mutex is never held while waiting for
 capacity, running or stopping workers, comparing artifacts, publishing results,
 or invoking validation. A transition that touches coordinator and run state
 takes the locks in that order and writes idempotent state so reconciliation can
@@ -2209,7 +2068,7 @@ no surviving worker. If those conditions cannot be proved, admission fails with
 the owner run must be inspected or recovered before retrying.
 
 Historical reproduction jobs are never rewritten, migrated, or deleted. The
-current runtime accepts only `research-log-reproduction-run/6`; status, stop,
+current runtime accepts only `research-log-reproduction-run/7`; status, stop,
 resume, recovery, and publication reject older job records with
 `reproduction.run.unsupported` and direct the caller to start a new current
 run. An unsupported job never blocks current-format admission or scheduling.
@@ -2222,8 +2081,8 @@ brief log-local publication mutex built on the existing lock infrastructure.
 It is not a reproduction scope lock and is not held during planning, execution,
 comparison, or per-execution reproduction-requirement update.
 
-Under the mutex, publication must reload current shared state, revalidate the
-runtime source-snapshot boundary, merge only the completed target or lifecycle
+Under the mutex, publication must reload current shared state, verify retained
+accepted invocation and comparison evidence, merge only the completed target or lifecycle
 record, append or update run history, compose the human report, and publish the
 two reproduction-owned files atomically. It must detect conflicting concurrent
 or manual edits and preserve the prior complete reproduction bundle on failure.
@@ -2236,8 +2095,9 @@ mechanical endpoint, reproduction atomically changes only that execution's
 `requires_reproduction` field to false
 in its entry-local `pyrun.json`. This is independent of artifact comparison:
 matched, changed, and comparison-failed outputs all belong to a completed
-command. The run already holds the owning entry or log scope lock. Each update
-is independent and durable; no later execution or publication outcome restores
+command. The update takes the owning short entry guard; active-run reservations
+and promotion conflicts remain checked independently. Each update is
+independent and durable; no later execution or publication outcome restores
 the requirement.
 
 After reproduction-result publication succeeds and the run becomes complete,
@@ -2252,9 +2112,10 @@ reproduction requirements, or reproduction results.
 
 Promotion acquires the producing entry's normal operation lock. It is rejected
 while that entry or enclosing log is under reproduction and whenever an active
-reproduction snapshot records a promoted artifact as an input. While active,
-promotion publishes its complete output set in operation state so a newly
-planned reproduction with an intersecting input snapshot is likewise rejected.
+accepted plan records a promoted artifact as an input or retained comparison
+baseline. While active, promotion publishes its complete output set in operation
+state so a newly prepared reproduction with an intersecting accepted input or
+comparison baseline is likewise rejected.
 Its shared-state changes use the publication mutex.
 
 ## Human And Agent Interfaces
@@ -2535,8 +2396,8 @@ whole-log recheck accepted with the current result schema.
 An explicitly launched whole-log `--recheck` also recovers unsupported results
 when the accepted target is completely empty: no recorded commands (including
 nonautomatic commands), artifact cases, boundaries, or planning failures. Under
-the whole-log scope and publication locks, it rechecks the accepted source and
-validation snapshot and atomically replaces only the generated result and human
+the whole-log scope and publication locks, it uses the accepted no-work plan and
+atomically replaces only the generated result and human
 report with canonical empty, not-yet-reproduced state. It creates no run, claims
 no successful execution, and does not invoke research or validation. Supported
 history and absent results remain unchanged. A dry-run preview never performs
@@ -2570,8 +2431,8 @@ Command-oriented version 5 execution state, parallel planning and scheduling,
 safety, run-local execution, exact and evidence-scoped artifact comparison,
 durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
-control, immutable completed-run command inspection, fresh-attempt continuation
-resume, publication retry, lost-supervisor reconciliation, explicit
+control, immutable completed-run command inspection, fixed-plan stop/resume,
+publication retry, lost-supervisor reconciliation, explicit
 post-reproduction validation, and whole-execution copy-based promotion are
 implemented. The maintained-corpus exclusivity cutover is complete, and earlier
 execution-state schemas are rejected.

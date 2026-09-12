@@ -5,6 +5,14 @@ tolerances, stable evidence IDs, and unrelated work. Do not invent origins or
 clear an execution's reproduction requirement. Follow `SKILL.md`'s operation
 and lock-conflict boundaries.
 
+An active reproduction run reserves only overlapping reproduction targets. It
+does not hold an ordinary log or entry mutation lock for its lifetime, so an
+authorized repair may take the normal short operation lock and update its own
+state. Do not infer that a repair changes an accepted plan: a run retains no
+whole-log source snapshot and cannot adopt edited commands, declarations, or
+evidence on resume. Start a new reproduction run after a repair when execution
+against the changed source is required.
+
 ## Scope And Decisions
 
 Work on a bounded correction in the requested log. It may span several batches;

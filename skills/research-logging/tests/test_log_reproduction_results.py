@@ -258,52 +258,6 @@ class ReproductionResultContractTests(unittest.TestCase):
             current.runs[0].run_id,
         )
 
-    def test_continuation_merge_never_widens_an_initial_policy_skip(self) -> None:
-        run_id = "reproduce-20300101t000000z-policy"
-        previous_record = _command_record(
-            queued=False,
-            selection="policy",
-            bucket="skipped-by-policy",
-            reason="not_automatic",
-            terminal=None,
-        )
-        current_record = _command_record(
-            queued=True,
-            selection="run",
-            bucket="succeeded",
-            reason="succeeded",
-            terminal="succeeded",
-        )
-        previous = replace(
-            _run(run_id, "2030-01-01T00:00:00Z"),
-            command_outcomes=_command_counts(not_automatic=1),
-            command_records=(previous_record,),
-        )
-        current = replace(
-            previous,
-            accepted_at="2030-01-02T00:00:00Z",
-            finished_at="2030-01-02T00:05:00Z",
-            command_outcomes=_command_counts(succeeded=1),
-            command_records=(current_record,),
-        )
-
-        merged = merge_reproduction_results(
-            ReproductionResults(
-                "docs/research.md",
-                "2030-01-01T00:05:00Z",
-                (),
-                (previous,),
-            ),
-            (),
-            current,
-        )
-
-        self.assertEqual(merged.runs[0].accepted_at, previous.accepted_at)
-        self.assertEqual(merged.runs[0].command_records, (previous_record,))
-        self.assertEqual(
-            merged.runs[0].command_outcomes, _command_counts(not_automatic=1)
-        )
-
     def test_failed_pre_execution_case_may_have_no_execution_id(self) -> None:
         failed = ArtifactResult(
             "e001",

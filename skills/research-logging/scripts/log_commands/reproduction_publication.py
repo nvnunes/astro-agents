@@ -37,8 +37,6 @@ from .reproduction_planner import (
     ReproductionCommandInventory,
     project_reproduction_command_inventory,
     project_reproduction_state,
-    verify_reproduction_runtime_snapshot,
-    verify_reproduction_snapshot,
 )
 from .reproduction_results import (
     OUTCOMES,
@@ -115,7 +113,6 @@ def publish_completed_reproduction(
         raise ActionError("reproduction.publication.failed", str(error)) from error
     try:
         with operation_lock(log.root, "reproduction-publication.lock"):
-            verify_reproduction_runtime_snapshot(log, request.plan)
             run = _run_result(
                 request.plan,
                 artifacts,
@@ -177,7 +174,6 @@ def publish_completed_reproduction(
                 result_path: merged.serialized(),
                 log.root / REPRODUCTION_REPORT: report,
             }
-            verify_reproduction_runtime_snapshot(log, request.plan)
             atomic_write_texts(updates)
     except (OperationLockError, OSError, PublicationError) as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
@@ -193,7 +189,6 @@ def empty_reproduction_recovery_needed(log: LogContext, plan: ReproductionPlan) 
         or plan.cases
         or plan.failures
         or plan.boundaries
-        or plan.source_snapshot.get("commands")
     ):
         return False
     path = log.root / REPRODUCTION_RESULTS
@@ -219,7 +214,6 @@ def recover_empty_reproduction_results(
 
     try:
         with operation_lock(log.root, "reproduction-publication.lock"):
-            verify_reproduction_snapshot(log, plan)
             if project_reproduction_command_inventory(log, plan.target).total:
                 return False
             if not empty_reproduction_recovery_needed(log, plan):
@@ -235,7 +229,6 @@ def recover_empty_reproduction_results(
                 context=load_report_context(log.summary),
                 folder_links_from=log.root,
             )
-            verify_reproduction_snapshot(log, plan)
             atomic_write_texts(
                 {path: results.serialized(), log.root / REPRODUCTION_REPORT: report}
             )
@@ -247,11 +240,11 @@ def recover_empty_reproduction_results(
 def _replaces_outdated_results(plan: ReproductionPlan) -> bool:
     """Return whether one whole-log plan can rebuild cumulative generated state."""
 
-    if plan.source_snapshot.get("result_schema") != REPRODUCTION_RESULT_SCHEMA:
+    if plan.comparison_context.get("result_schema") != REPRODUCTION_RESULT_SCHEMA:
         return False
     if plan.target != {"entry": None, "kind": "log"}:
         return False
-    commands = plan.source_snapshot.get("commands")
+    commands = plan.commands
     if not isinstance(commands, Sequence) or isinstance(commands, (str, bytes)):
         return False
     try:

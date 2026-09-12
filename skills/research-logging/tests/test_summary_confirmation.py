@@ -11,9 +11,7 @@ from types import SimpleNamespace
 from research_log_cli_test_support import run_log
 
 # isort: split
-from log_commands.context import resolve_log
 from log_commands.reproduction_planner import (
-    _admit_validation,
     _blocked_validation_batches,
     _entry_validation_blockers,
     _require_resolved_validation_blockers,
@@ -65,7 +63,6 @@ class SummaryConfirmationTests(unittest.TestCase):
             logical = summary.with_suffix("")
             published = run_log(root, "validate", "--path", str(logical))
             self.assertEqual(published.returncode, 0, published.stderr)
-            _admit_validation(resolve_log(logical))
 
     def test_other_failures_and_unavailable_targets_remain_failures(self):
         for status, code in (

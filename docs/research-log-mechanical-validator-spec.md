@@ -3605,6 +3605,22 @@ dependent result is `not_applicable` when a stable prerequisite failed and
 `unavailable` when its prerequisite is temporarily unavailable. The dependency
 note names the governing result.
 
+### Typed Evaluation Material Context
+
+The typed mechanical-evaluation result carries the loaded material context used
+by reproduction preparation. For every physical entry it exposes the canonical
+entry/root identity, nullable declaration and evidence records, the current
+`PyrunFile` when it was loaded, and explicit load errors. It also carries the
+corresponding invocation and registry observations used to construct the
+mechanical record. This context is an evaluated observation, not a second
+validator or a published-result projection.
+
+Reproduction preparation consumes that typed context while holding its log
+lock. It must not reload entry state, read a published validation result, or
+silently convert a malformed state into an empty successful state. The context
+does not expose engine-private scan state or create a general untyped policy
+interface. Read-only query operations may load their own state independently.
+
 This prerequisite rule does not suppress independently established graph
 findings. One evidence-rooted artifact may therefore have several Provenance
 checks: one primary conclusion and additional findings for distinct reachable

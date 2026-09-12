@@ -412,6 +412,26 @@ class EvaluationContext:
     invocations: tuple[Invocation, ...]
     registries: tuple[tuple[str, DataFile], ...]
     whole_log_conclusions: tuple[str, ...]
+    materials: tuple["EvaluationEntryMaterial", ...]
+
+
+@dataclass(frozen=True)
+class EvaluationEntryMaterial:
+    """Already loaded entry material available to a prepared consumer.
+
+    The evaluator, rather than a later planner, owns these observations.  A
+    missing or malformed execution-state file is represented by ``pyrun``
+    being ``None`` and its concrete loading failure, never by an invented empty
+    state.
+    """
+
+    entry_id: str
+    entry_root: Path
+    document: Path
+    data: DataFile | None
+    evidence: EvidenceFile | None
+    pyrun: PyrunFile | None
+    errors: tuple[MechanicalContractError, ...]
 
 
 @dataclass(frozen=True)
@@ -421,6 +441,15 @@ class EvaluationResult:
     record: MechanicalGeneratedRecord
     context: EvaluationContext
     metrics: Mapping[str, object]
+
+
+def _physical_entry_materials(entries: Sequence[_Entry]) -> tuple[_Entry, ...]:
+    """Retain one material envelope for each physical entry root."""
+
+    by_root: dict[Path, _Entry] = {}
+    for entry in entries:
+        by_root.setdefault(entry.root, entry)
+    return tuple(by_root[root] for root in sorted(by_root))
 
 
 ENTRY_LIMITATIONS = (
@@ -440,6 +469,7 @@ def evaluate_mechanical(request: EvaluationRequest) -> EvaluationResult:
     record = _evaluate(scan, request.result_date)
     target = request.target
     selected = tuple(scan["selected_documents"])
+    scan_state = cast(_ScanState, scan["state"])
     # Current provenance traversal can introduce upstream entries while resolving
     # output support. Keep the selected physical documents explicit; all scanned
     # entries remain available as dependency context.
@@ -452,6 +482,22 @@ def evaluate_mechanical(request: EvaluationRequest) -> EvaluationResult:
         registries=tuple(scan["registries"]),
         whole_log_conclusions=(
             () if isinstance(target, FullEvaluationTarget) else ENTRY_LIMITATIONS
+        ),
+        materials=tuple(
+            EvaluationEntryMaterial(
+                entry_id=_stable_entry_id(entry.document),
+                entry_root=entry.root,
+                document=entry.document,
+                data=entry.data_file,
+                evidence=entry.evidence_file,
+                pyrun=scan["execution_states"].get(_material_owner(entry, scan_state)),
+                errors=tuple(
+                    error
+                    for owner, error in scan["execution_state_errors"]
+                    if owner == _material_owner(entry, scan_state)
+                ),
+            )
+            for entry in _physical_entry_materials(scan["entry_materials"])
         ),
     )
     return EvaluationResult(record, context, metrics)
@@ -606,6 +652,12 @@ def _scan(
             (entry.id, entry.data_file)
             for entry in state.entries
             if entry.data_file is not None
+        ),
+        "entry_materials": tuple(state.entries),
+        "state": state,
+        "execution_states": dict(state.execution_states),
+        "execution_state_errors": tuple(
+            sorted(state.output_record_errors.items(), key=lambda item: item[0])
         ),
         "summary": summary.as_posix(),
         "selected_documents": _selected_documents(state, request.target),
@@ -1072,9 +1124,9 @@ def _entry_evidence_material_roots(
 
 def _selected_documents(state: _ScanState, target: EvaluationTarget) -> tuple[str, ...]:
     if isinstance(target, FullEvaluationTarget):
-        return tuple(entry.id for entry in state.entries)
+        return tuple(entry.document.stem for entry in state.entries)
     root = target.entry_root.resolve()
-    return tuple(entry.id for entry in state.entries if entry.root == root)
+    return tuple(entry.document.stem for entry in state.entries if entry.root == root)
 
 
 def _dependency_entries(state: _ScanState, target: EvaluationTarget) -> tuple[str, ...]:
@@ -1211,7 +1263,7 @@ def _observe_entries(
         root = document.parent.resolve()
         entries.append(
             _Entry(
-                id=document.stem,
+                id=_stable_entry_id(document),
                 document=document.resolve(),
                 root=root,
                 evidence_file=surface.evidence_file,
@@ -1783,7 +1835,7 @@ def _discover_invocations(
                     valid_invocations.append(invocation)
                     continue
                 identity = _command_check_identity(
-                    entry.id, invocation.fence, invocation.ordinal
+                    entry.document.stem, invocation.fence, invocation.ordinal
                 )
                 state.checks.append(
                     _checks_depending_on(identity, CheckScope.PROVENANCE, prerequisites)
@@ -1793,7 +1845,7 @@ def _discover_invocations(
             for failure in discovery.failures:
                 state.rejected_producers.add(failure.error.observed)
                 identity = _command_check_identity(
-                    entry.id, failure.fence, failure.ordinal
+                    entry.document.stem, failure.fence, failure.ordinal
                 )
                 prerequisites = _command_failure_prerequisites(
                     entry, failure.error, state
@@ -1873,7 +1925,7 @@ def _record_raw_output_findings(invocation: Invocation, state: _ScanState) -> No
         }
         identity = (
             _command_check_identity(
-                invocation.entry, invocation.fence, invocation.ordinal
+                Path(invocation.document).stem, invocation.fence, invocation.ordinal
             )
             + f":output:{number}"
         )
@@ -2475,10 +2527,11 @@ def _evaluate_entries(
 ) -> None:
     if selected_roots is None:
         _record_unowned_evidence(state)
+    compared_roots: set[Path] = set()
     for entry in state.entries:
         if selected_roots is not None and entry.root not in selected_roots:
             continue
-        _evaluate_reproduction_comparisons(entry, state)
+        _evaluate_entry_reproduction_once(entry, compared_roots, state)
         try:
             presentations = _entry_presentations(entry, state)
             state.presentation_count += len(presentations)
@@ -2521,6 +2574,17 @@ def _evaluate_entries(
             identity = f"entry:{entry.id}:association"
             scope = _error_scope(error, CheckScope.EVIDENCE)
             state.checks.append(_error_check(identity, scope, error))
+
+
+def _evaluate_entry_reproduction_once(
+    entry: _Entry, compared_roots: set[Path], state: _ScanState
+) -> None:
+    """Evaluate one shared entry surface once across its split documents."""
+
+    if entry.root in compared_roots:
+        return
+    _evaluate_reproduction_comparisons(entry, state)
+    compared_roots.add(entry.root)
 
 
 def _evaluate_reproduction_comparisons(entry: _Entry, state: _ScanState) -> None:

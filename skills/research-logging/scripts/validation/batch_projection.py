@@ -458,7 +458,12 @@ def _unresolved_admission_effect(
 
     if not _blocks_reproduction(check) or check.failure is None:
         return "none"
-    if check.failure.code == "summary.reference.unresolved":
+    if check.failure.code in {
+        "summary.reference.unresolved",
+        # A missing producer remains an artifact-local planning failure. It
+        # cannot be repaired by excluding unrelated commands in this entry.
+        "producer.missing",
+    }:
         return "none"
     return "entry" if entry is not None else "log"
 
@@ -471,7 +476,13 @@ def _blocks_reproduction(check: MechanicalCheck) -> bool:
     return (
         check.scope.value == "provenance"
         and check.failure is not None
-        and check.failure.code != "provenance.output.reproduction_required"
+        # These findings describe work reproduction is specifically able to
+        # repair. Keep them in the plan, but do not self-block that work.
+        and check.failure.code
+        not in {
+            "provenance.output.reproduction_required",
+            "provenance.output.signature_mismatch",
+        }
     )
 
 

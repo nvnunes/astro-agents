@@ -39,8 +39,9 @@ run.
 Resolve the extensionless `scripts/log` entrypoint from this skill package.
 Choose exactly one log, entry, or entry-qualified execution; multiple logs require separate commands.
 
-Preview a deterministic plan without creating a run ID, lock, directory,
-checkpoint, result, report, or other state:
+Preview prepares one deterministic plan under the log lock without creating a
+run ID, directory, checkpoint, result, report, cache entry, or other durable
+state. The lock infrastructure is the preview's only filesystem side effect:
 
 ```bash
 <skill>/scripts/log reproduce --path <log> [--entry <entry> [--execution-id <full-id>]] \
@@ -105,11 +106,7 @@ does not prevent independent commands from running.
 
 The default selection is incremental. A current execution with
 `requires_reproduction: false` does not need execution and does not require
-saved reproduction state. An unchanged saved per-command source closure may
-also preserve a terminal failure or block without repeating work that cannot
-produce a different result. Machine state retains that prior failure or block;
-the compact report includes the command in its single reproduction-not-retried
-total. A command that still requires reproduction is
+saved reproduction state. A command that still requires reproduction is
 selected together with only the downstream commands its work may affect. Artifact matches are not
 used to decide whether reproduction is needed. When the researcher explicitly
 asks to recheck, check again, or rerun commands for which reproduction is not
@@ -117,13 +114,13 @@ needed, add `--recheck`. Recheck selects every
 currently runnable eligible command but does not bypass a planning blocker.
 State whether the preview or launch uses incremental or recheck selection.
 
-Treat a valid partial plan as useful work. A pre-existing changed or missing
+Treat a valid partial plan as useful work. Fresh preparation evaluates the log
+once under the log lock and derives admission from that evaluation, not from a
+previously published validation bundle. A pre-existing changed or missing
 script, participating code file, direct input, retained boundary, or comparison
 baseline fails only its owning execution when the planner can identify it;
-dependants are skipped and independent executions remain runnable. Validation's
-published admission effect similarly decides whether a finding affects no
-execution, one chain, one physical entry, or the complete log. Do not repair or
-reinterpret any of these findings during reproduction.
+dependants are skipped and independent executions remain runnable. Do not
+repair or reinterpret any of these findings during reproduction.
 
 The default run first classifies a current execution with
 `requires_reproduction: false` as reproduction not needed, even when
@@ -153,20 +150,18 @@ Use the immutable run ID for every later action:
 Use ordinary status for people. Agents and scheduled monitors use `--json` and
 must not parse human text or generated files. `stop` is the sole stopping
 action. It preserves diagnostics and completed checkpoints for an explicit
-`resume`. Resume keeps the same logical run ID, original target, include-all
-authorization, command queue, and jobs cap, but plans unresolved work against a
-fresh attempt snapshot. It never reruns a succeeded command, reruns a failed
-command only after its source closure changes, reconsiders blocked commands,
-and reruns interrupted commands with no durable terminal checkpoint in clean
-attempt-local output space. An unchanged failure produces the ordinary
-zero-execution reconciliation. The same command may retry a run whose sole
-operational failure was reproduction-result publication; that retry reuses
-durable comparisons and terminal attempts rather than rerunning commands.
-Status reports every active execution and worker; queued work is not presented
-as execution time. Its JSON projection distinguishes scheduler completion from
-logical `resolved` state and reports whether the run is `resumable`. Resume
-always reuses the accepted `jobs` value and cannot override it. `--recheck`
-applies only to the initial launch.
+`resume`. Resume loads the same accepted plan and keeps its run ID, target,
+include-all authorization, command inventory, and jobs cap. It never replans,
+adopts source edits, or reruns a durable successful or failed command. It
+launches only never-started work and work stopped without a durable terminal
+outcome, after cleaning that invocation's incomplete generated outputs and
+scratch. Source edits after acceptance require a new run; an unnoticed edit
+can invalidate conclusions and requires explicit reassessment. A run whose
+only failure is result publication may retry publication from durable terminal
+evidence without executing a command. Status reports every active execution
+and worker; queued work is not presented as execution time. Its JSON projection
+reports whether the run is resumable. Resume always reuses accepted settings
+and cannot accept selectors, `--jobs`, or `--recheck`.
 
 Accepted run folders live at
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`,

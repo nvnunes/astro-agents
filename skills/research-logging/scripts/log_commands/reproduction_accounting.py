@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .reproduction_contract import ReproductionPlan
@@ -49,46 +49,23 @@ def project_command_selection(
         planned[(entry, execution_id)] = automatic
 
     snapshots = command_snapshot_index(plan)
-    complete_snapshots = bool(snapshots) and all(
-        "queued" in value for value in snapshots.values()
+    del inventory
+    run_keys = frozenset(
+        key for key, value in snapshots.items() if value["selection"] == "run"
     )
-    if snapshots:
-        run_keys = frozenset(
-            key for key, value in snapshots.items() if value["selection"] == "run"
-        )
-        if run_keys != set(planned):
-            raise CommandAccountingError(
-                "command selection does not match the accepted plan"
-            )
-        blocked = sum(value["selection"] == "blocked" for value in snapshots.values())
-        unchanged_failed = sum(
-            value["selection"] == "unchanged"
-            and value["prior_disposition"] == "failed"
-            for value in snapshots.values()
-        )
-        unchanged_blocked = sum(
-            value["selection"] == "unchanged"
-            and value["prior_disposition"] == "blocked"
-            for value in snapshots.values()
-        )
-    else:
-        run_keys = frozenset(planned)
-        blocked = 0
-        unchanged_failed = 0
-        unchanged_blocked = 0
-
-    if complete_snapshots:
-        not_automatic = sum(
-            value["selection"] == "policy" for value in snapshots.values()
-        )
-        total = len(snapshots)
-    else:
-        if inventory is None:
-            raise CommandAccountingError(
-                "legacy command accounting needs a current inventory"
-            )
-        not_automatic = 0 if plan.include_all else inventory.policy_skipped
-        total = inventory.total
+    if run_keys != set(planned):
+        raise CommandAccountingError("command selection does not match accepted plan")
+    blocked = sum(value["selection"] == "blocked" for value in snapshots.values())
+    unchanged_failed = sum(
+        value["selection"] == "unchanged" and value["prior_disposition"] == "failed"
+        for value in snapshots.values()
+    )
+    unchanged_blocked = sum(
+        value["selection"] == "unchanged" and value["prior_disposition"] == "blocked"
+        for value in snapshots.values()
+    )
+    not_automatic = sum(value["selection"] == "policy" for value in snapshots.values())
+    total = len(snapshots)
     reproduction_not_needed = (
         total
         - not_automatic
@@ -117,33 +94,10 @@ def command_snapshot_index(
 ) -> dict[tuple[str, str], Mapping[str, object]]:
     """Decode the immutable per-command source closures in one plan."""
 
-    raw = plan.source_snapshot.get("commands")
-    if raw is None:
-        return {}
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
-        raise CommandAccountingError("command snapshots are invalid")
+    raw = plan.commands
     snapshots: dict[tuple[str, str], Mapping[str, object]] = {}
-    legacy_fields = {
-        "auto_reproduce",
-        "entry",
-        "execution_id",
-        "prior_disposition",
-        "selection",
-        "source_digest",
-    }
-    current_fields = legacy_fields | {
-        "cwd",
-        "details",
-        "exclusive",
-        "queued",
-        "recipe",
-        "requires_reproduction",
-    }
     for value in raw:
-        if not isinstance(value, Mapping) or set(value) not in {
-            frozenset(legacy_fields),
-            frozenset(current_fields),
-        }:
+        if not isinstance(value, Mapping):
             raise CommandAccountingError("command snapshot is invalid")
         entry = value.get("entry")
         execution_id = value.get("execution_id")
@@ -154,10 +108,12 @@ def command_snapshot_index(
             or not isinstance(value.get("auto_reproduce"), bool)
             or value.get("selection")
             not in {"blocked", "not_needed", "policy", "run", "unchanged"}
-            or source_digest is not None
-            and (
-                not isinstance(source_digest, str)
-                or re.fullmatch(r"[0-9a-f]{64}", source_digest) is None
+            or (
+                source_digest is not None
+                and (
+                    not isinstance(source_digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", source_digest) is None
+                )
             )
         ):
             raise CommandAccountingError("command snapshot is invalid")
@@ -167,17 +123,7 @@ def command_snapshot_index(
             prior_disposition in {"failed", "blocked"}
         ) or (selection != "unchanged" and prior_disposition is not None):
             raise CommandAccountingError("command snapshot is invalid")
-        if set(value) == current_fields and (
-            not isinstance(value.get("cwd"), str)
-            or not isinstance(value.get("details"), list)
-            or any(not isinstance(item, str) for item in value["details"])
-            or not isinstance(value.get("exclusive"), bool)
-            or not isinstance(value.get("queued"), bool)
-            or not isinstance(value.get("recipe"), Mapping)
-            or not isinstance(value.get("requires_reproduction"), bool)
-            or selection not in {"not_needed", "policy"}
-            and source_digest is None
-        ):
+        if selection not in {"not_needed", "policy"} and source_digest is None:
             raise CommandAccountingError("command snapshot is invalid")
         key = (entry, execution_id)
         if key in snapshots:

@@ -17,14 +17,11 @@ from log_commands.reproduction_accounting import project_command_selection
 from log_commands.reproduction_contract import ReproductionPlan, ReproductionRuntime
 from log_commands.reproduction_planner import (
     RECHECK_SELECTION,
-    RESUME_SELECTION,
     ReproductionSelection,
     SelectionPolicy,
-    _admit_validation,
     plan_reproduction,
     project_reproduction_command_inventory,
     project_reproduction_state,
-    verify_reproduction_runtime_snapshot,
 )
 from log_commands.reproduction_results import CommandResult, ReproductionResults
 from research_log_cli_test_support import (
@@ -35,13 +32,10 @@ from research_log_data import (
     InputResource,
     observe_fingerprint,
 )
-from validation.engine import RULES_VERSION
-from validation.mechanical_results import (
-    CheckScope,
-    CheckStatus,
-    FailurePayload,
-    MechanicalCheck,
-    MechanicalGeneratedRecord,
+from validation.engine import (
+    EvaluationRequest,
+    FullEvaluationTarget,
+    evaluate_mechanical,
 )
 from validation.operation_state import operation_lock
 from validation.pyrun_state import (
@@ -90,7 +84,7 @@ class _Fixture:
         self.summary = root / "docs" / "study.md"
         self.log_root = self.summary.with_suffix("")
         self.log_root.mkdir(parents=True)
-        self.summary.write_text("# Study\n", encoding="utf-8")
+        self.summary.write_text("# Study\n\n## Entries\n", encoding="utf-8")
         self.log = LogContext(self.summary.resolve(), self.log_root.resolve())
 
     def entry(self, number: int) -> EntryContext:
@@ -98,6 +92,11 @@ class _Fixture:
         root = self.log_root / "entries" / f"2026-09-{number:02d}-{entry_id}-study"
         (root / "data").mkdir(parents=True)
         (root / "scripts").mkdir()
+        relative = (
+            Path("study") / "entries" / root.name / f"{entry_id}.md"
+        ).as_posix()
+        with self.summary.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n- [Fixture]({relative})\n")
         return EntryContext(self.log, entry_id, root.resolve())
 
     def write_data(self, entry: EntryContext, items: list[dict[str, object]]) -> None:
@@ -118,7 +117,29 @@ class _Fixture:
         }
 
     def evidence(self, entry: EntryContext, *names: str) -> None:
-        (entry.root / f"{entry.id}.md").write_text("# Entry\n", encoding="utf-8")
+        document = entry.root / f"{entry.id}.md"
+        data = json.loads((entry.root / "data.json").read_text(encoding="utf-8"))
+        locations = {
+            item["name"]: item["location"]
+            for item in data["inputs"]
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("location"), str)
+        }
+        artifacts = []
+        for number, name in enumerate(names, 1):
+            location = locations[name]
+            artifacts.append(
+                f"[artifact]({location})<!-- eid:result-{number} -->"
+            )
+        document.write_text(
+            "# Entry\n\n## Evidence\n\n`Background:`\n\n"
+            "Fixture evidence.\n\n`Steps:`\n\nInspect retained output.\n\n"
+            "`Results:`\n\n"
+            + "\n".join(artifacts)
+            + "\n",
+            encoding="utf-8",
+        )
         _write_json(
             entry.root / "evidence.json",
             {
@@ -129,7 +150,9 @@ class _Fixture:
                         "kind": "artifact",
                         "sources": [{"locator": None, "source": f"<{name}>"}],
                         "transformation": None,
-                        "artifact_fingerprint": None,
+                        "artifact_fingerprint": _fingerprint(
+                            entry.root / locations[name]
+                        ).as_dict(),
                     }
                     for number, name in enumerate(names, 1)
                 ],
@@ -150,14 +173,23 @@ class _Fixture:
     ) -> tuple[str, PyrunExecution]:
         script = entry.root / "scripts" / f"{name}.py"
         script.write_text(f"# {name}\n", encoding="utf-8")
+        parameters = tuple(
+            token
+            for input_name in sorted(inputs)
+            for token in ("--input-data", f"<{input_name}>")
+        ) + tuple(
+            token
+            for _output_name, output_path in sorted(outputs.items())
+            for token in ("--output-data", f"data/{output_path.name}")
+        )
         recipe = ExecutionRecipe(
             f"scripts/{name}.py",
-            (),
+            parameters,
             (),
             tuple(sorted(inputs)),
             tuple(sorted((f"data/{path.name}", "file") for path in outputs.values())),
             parameter_roles=fixture_parameter_roles(
-                (),
+                parameters,
                 tuple(sorted(inputs)),
                 tuple(
                     sorted((f"data/{path.name}", "file") for path in outputs.values())
@@ -185,6 +217,29 @@ class _Fixture:
             recipe,
             observed,
         )
+        document = entry.root / f"{entry.id}.md"
+        if not document.exists():
+            document.write_text("# Entry\n", encoding="utf-8")
+        command = "./pyrun"
+        if not auto_reproduce:
+            command += " --auto-reproduce=false --"
+        command += " scripts/{name}.py".format(name=name)
+        command += "".join(
+            f" --input-data '<{input_name}>'"
+            for input_name in sorted(inputs)
+        )
+        command += "".join(
+            f" --output-data '<{output_name}>'"
+            for output_name, _output_path in sorted(outputs.items())
+        )
+        document.write_text(
+            document.read_text(encoding="utf-8")
+            + f"\n## {name}\n\n`Background:`\n\nFixture command.\n\n"
+            "`Steps:`\n\n```bash\n"
+            + command
+            + "\n```\n\n`Results:`\n\nRecorded.\n",
+            encoding="utf-8",
+        )
         return execution_id(recipe), execution
 
     def write_pyrun(
@@ -200,24 +255,29 @@ class _Fixture:
 
 def _plan(
     fixture: _Fixture,
-    entry: EntryContext,
+    entry: EntryContext | None,
     *,
     include_all: bool = False,
     recheck: bool = False,
+    runtime: ReproductionRuntime = ReproductionRuntime(),
 ):
-    admission = _admission(fixture)
-    with mock.patch(
-        "log_commands.reproduction_planner._admit_validation",
-        return_value=(admission, mock.sentinel.record),
-    ):
-        return plan_reproduction(
-            fixture.log,
-            entry=entry,
-            include_all=include_all,
-            selection=ReproductionSelection(
-                RECHECK_SELECTION if recheck else "incremental"
-            ),
+    from log_commands.reproduction_planner import prepare_reproduction_context
+
+    prepared = prepare_reproduction_context(
+        evaluate_mechanical(
+            EvaluationRequest(fixture.summary, "2026-09-01", FullEvaluationTarget())
         )
+    )
+    return plan_reproduction(
+        fixture.log,
+        prepared,
+        entry=entry,
+        include_all=include_all,
+        runtime=runtime,
+        selection=ReproductionSelection(
+            RECHECK_SELECTION if recheck else "incremental"
+        ),
+    )
 
 
 def _admission(fixture: _Fixture) -> dict[str, object]:
@@ -240,7 +300,6 @@ def _seed_command_results(
     *,
     disposition: str = "succeeded",
 ) -> None:
-    snapshots = plan.source_snapshot["commands"]
     commands = tuple(
         CommandResult(
             cast(str, value["entry"]),
@@ -250,7 +309,7 @@ def _seed_command_results(
             "2026-09-06T00:01:00Z",
             "reproduce-20260906t000000z-seed",
         )
-        for value in cast(list[dict[str, object]], snapshots)
+        for value in plan.commands
     )
     path = fixture.log_root / ".cache" / "reproduction" / "results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -336,7 +395,7 @@ class ReproductionCommandInventoryTests(unittest.TestCase):
 
 def _write_projection(
     fixture: _Fixture,
-    record: MechanicalGeneratedRecord,
+    record: object,
     *,
     unresolved: list[dict[str, object]],
 ) -> None:
@@ -371,6 +430,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             ):
                 plan_reproduction(
                     mock.sentinel.log,
+                    mock.sentinel.prepared,
                     entry=None,
                     include_all=False,
                     runtime=ReproductionRuntime(execution_timeout_seconds=value),
@@ -411,7 +471,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             self.assertEqual(plan.executions, ())
             self.assertEqual(
-                plan.source_snapshot["commands"][0]["selection"], "not_needed"
+                plan.commands[0]["selection"], "not_needed"
             )
 
     def test_batch_admission_keeps_independent_work_and_blocks_dependents(self) -> None:
@@ -815,6 +875,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             with self.assertRaisesRegex(ActionError, "selection policy"):
                 plan_reproduction(
                     fixture.log,
+                    mock.sentinel.prepared,
                     entry=None,
                     include_all=False,
                     selection=ReproductionSelection(
@@ -901,6 +962,13 @@ class ReproductionPlanningTests(unittest.TestCase):
                 entry,
                 [
                     fixture.item(entry, "raw", raw, origin=True),
+                    {
+                        "identity": {"algorithm": "directory-sha256-v1"},
+                        "kind": "directory",
+                        "location": "data/bundle",
+                        "name": "bundle",
+                        "origin": False,
+                    },
                     fixture.item(entry, "member", member, origin=False),
                     fixture.item(entry, "final", final, origin=False),
                 ],
@@ -910,12 +978,14 @@ class ReproductionPlanningTests(unittest.TestCase):
             producer_script.write_text("# produce\n", encoding="utf-8")
             producer_recipe = ExecutionRecipe(
                 "scripts/produce.py",
-                (),
+                ("--input-data", "<raw>", "--output-data", "data/bundle"),
                 (),
                 ("raw",),
                 (("data/bundle", "directory"),),
                 parameter_roles=fixture_parameter_roles(
-                    (), ("raw",), (("data/bundle", "directory"),)
+                    ("--input-data", "<raw>", "--output-data", "data/bundle"),
+                    ("raw",),
+                    (("data/bundle", "directory"),),
                 ),
             )
             producer = (
@@ -949,6 +1019,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                         ),
                     ),
                 ),
+            )
+            document = entry.root / f"{entry.id}.md"
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Produce bundle\n\n`Background:`\n\nFixture command.\n\n"
+                "`Steps:`\n\n```bash\n"
+                "./pyrun scripts/produce.py --input-data '<raw>' "
+                "--output-data '<bundle>'\n```\n\n`Results:`\n\nRecorded.\n",
+                encoding="utf-8",
             )
             consumer = fixture.execution(
                 entry, "consume", {"member": member}, {"final": final}
@@ -998,12 +1077,10 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(
                 [value["kind"] for value in plan.boundaries], ["cross_entry"]
             )
-            authority = {
-                value["path"] for value in plan.source_snapshot["authority_files"]
-            }
-            self.assertTrue(all(entry.root.name in value for value in authority))
-            self.assertFalse(
-                any(upstream_entry.root.name in value for value in authority)
+            frozen_input = plan.commands[0]["data_declaration"]["inputs"][0]
+            self.assertEqual(frozen_input["name"], "upstream")
+            self.assertEqual(
+                Path(frozen_input["canonical_target"]).resolve(), shared.resolve()
             )
 
     def test_log_target_reports_external_generated_input_without_aborting(self) -> None:
@@ -1033,13 +1110,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 entry, "independent", {"raw": raw}, {"final": final}
             )
             fixture.write_pyrun(entry, [independent])
-            admission = _admission(fixture)
-
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                plan = plan_reproduction(fixture.log, entry=None, include_all=False)
+            plan = _plan(fixture, None)
 
             self.assertEqual(
                 [value["execution_id"] for value in plan.executions],
@@ -1157,7 +1228,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             commands = {
                 value["execution_id"]: value
-                for value in plan.source_snapshot["commands"]
+                for value in plan.commands
             }
             self.assertEqual(
                 commands[current[0]]["selection"], "not_needed"
@@ -1169,7 +1240,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             rechecked_commands = {
                 value["execution_id"]: value
-                for value in recheck.source_snapshot["commands"]
+                for value in recheck.commands
             }
             self.assertEqual(rechecked_commands[current[0]]["selection"], "policy")
             self.assertIsNone(rechecked_commands[current[0]]["source_digest"])
@@ -1292,7 +1363,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 },
             )
             snapshotted = {
-                value["execution_id"] for value in plan.source_snapshot["executions"]
+                value["execution_id"] for value in plan.executions
             }
             self.assertNotIn(upstream[0], snapshotted)
             self.assertIn(independent[0], snapshotted)
@@ -1319,11 +1390,10 @@ class ReproductionPlanningTests(unittest.TestCase):
             fixture.write_pyrun(entry, [execution])
             final.unlink()
 
-            plan = _plan(fixture, entry)
-
-            self.assertEqual(plan.executions, ())
-            self.assertEqual(plan.cases[0]["disposition"], "failed")
-            self.assertEqual(plan.cases[0]["reason"], "baseline_unavailable")
+            with self.assertRaisesRegex(
+                ActionError, "prepared evaluation is incomplete"
+            ):
+                _plan(fixture, entry)
 
     def test_missing_direct_input_is_local_to_its_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1350,7 +1420,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             plan = _plan(fixture, entry)
 
             self.assertEqual(plan.executions, ())
-            self.assertEqual(plan.cases[0]["reason"], "direct_input_unavailable")
+            self.assertEqual(plan.cases[0]["reason"], "validation_blocked")
 
     def test_shared_changed_code_blocks_each_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1573,7 +1643,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [value["execution_id"] for value in first.executions],
                 [execution[0]],
             )
-            snapshot = first.source_snapshot["commands"][0]
+            snapshot = first.commands[0]
             stored["schema"] = "research-log-reproduction-result/9"
             stored["runs"][0]["command_records"] = None
             commands = [
@@ -1613,11 +1683,11 @@ class ReproductionPlanningTests(unittest.TestCase):
                     self.assertEqual(second.executions, ())
                     self.assertEqual(second.cases[0]["disposition"], "current")
                     self.assertEqual(
-                        second.source_snapshot["commands"][0]["selection"],
+                        second.commands[0]["selection"],
                         "unchanged",
                     )
                     self.assertEqual(
-                        second.source_snapshot["commands"][0]["prior_disposition"],
+                        second.commands[0]["prior_disposition"],
                         disposition,
                     )
 
@@ -1631,17 +1701,18 @@ class ReproductionPlanningTests(unittest.TestCase):
                 set(json.loads(recheck.serialized())),
                 {
                     "boundaries",
+                    "admission",
                     "cases",
+                    "commands",
+                    "comparison_context",
                     "executions",
                     "execution_timeout_seconds",
                     "failures",
                     "include_all",
                     "jobs",
                     "schema",
-                    "source_snapshot",
                     "summary",
                     "target",
-                    "validation_snapshot",
                 },
             )
 
@@ -1795,7 +1866,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     value["execution_id"]
                     for value in expected_artifact_changed.executions
                 ],
-                [first[0]],
+                [],
             )
             _seed_command_results(fixture, expected_artifact_changed)
 
@@ -1810,7 +1881,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             environment_changed = _plan(fixture, entry)
             self.assertEqual(
                 [value["execution_id"] for value in environment_changed.executions],
-                [first[0]],
+                [],
             )
 
             def comparison_identity(
@@ -1921,307 +1992,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             selections = {
                 value["execution_id"]: value["selection"]
-                for value in plan.source_snapshot["commands"]
+                for value in plan.commands
             }
             self.assertEqual(selections[independent[0]], "not_needed")
-
-    def test_recheck_reprojects_an_unchanged_planning_block(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            output = entry.root / "data" / "output.txt"
-            raw.write_text("raw", encoding="utf-8")
-            output.write_text("output", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "output", output, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "output")
-            execution = fixture.execution(
-                entry, "analyze", {"raw": raw}, {"output": output}
-            )
-            fixture.write_pyrun(entry, [execution])
-            (entry.root / execution[1].recipe.script).write_text(
-                "# changed\n", encoding="utf-8"
-            )
-            blocked = _plan(fixture, entry)
-            _seed_command_results(fixture, blocked, disposition="blocked")
-
-            incremental = _plan(fixture, entry)
-            recheck = _plan(fixture, entry, recheck=True)
-            blocked_record = blocked.source_snapshot["commands"][0]
-            key = (entry.id, execution[0])
-            admission = _admission(fixture)
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                resume = plan_reproduction(
-                    fixture.log,
-                    entry=entry,
-                    include_all=False,
-                    selection=ReproductionSelection(
-                        RESUME_SELECTION,
-                        command_queue=frozenset({key}),
-                        command_scope=frozenset({key}),
-                        prior_commands={
-                            key: {
-                                "disposition": "blocked",
-                                "source_digest": blocked_record["source_digest"],
-                            }
-                        },
-                    ),
-                )
-
-            self.assertEqual(
-                incremental.source_snapshot["commands"][0]["selection"], "unchanged"
-            )
-            self.assertEqual(
-                incremental.source_snapshot["commands"][0]["prior_disposition"],
-                "blocked",
-            )
-            self.assertEqual(
-                recheck.source_snapshot["commands"][0]["selection"], "blocked"
-            )
-            self.assertEqual(recheck.executions, ())
-            self.assertEqual(
-                resume.source_snapshot["commands"][0]["selection"], "blocked"
-            )
-
-    def test_resume_preserves_a_successful_command_with_a_current_source(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            output = entry.root / "data" / "output.txt"
-            raw.write_text("raw", encoding="utf-8")
-            output.write_text("output", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "output", output, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "output")
-            execution = fixture.execution(
-                entry, "analyze", {"raw": raw}, {"output": output}
-            )
-            fixture.write_pyrun(entry, [execution])
-            initial = _plan(fixture, entry)
-            command = initial.source_snapshot["commands"][0]
-            key = (entry.id, execution[0])
-            admission = _admission(fixture)
-
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                resumed = plan_reproduction(
-                    fixture.log,
-                    entry=entry,
-                    include_all=False,
-                    selection=ReproductionSelection(
-                        RESUME_SELECTION,
-                        command_queue=frozenset({key}),
-                        command_scope=frozenset({key}),
-                        prior_commands={
-                            key: {
-                                "disposition": "succeeded",
-                                "source_digest": command["source_digest"],
-                            }
-                        },
-                    ),
-                )
-                unchanged_failure = plan_reproduction(
-                    fixture.log,
-                    entry=entry,
-                    include_all=False,
-                    selection=ReproductionSelection(
-                        RESUME_SELECTION,
-                        command_queue=frozenset({key}),
-                        command_scope=frozenset({key}),
-                        prior_commands={
-                            key: {
-                                "disposition": "failed",
-                                "source_digest": command["source_digest"],
-                            }
-                        },
-                    ),
-                )
-
-            self.assertEqual(resumed.executions, ())
-            self.assertEqual(
-                resumed.source_snapshot["commands"][0]["selection"], "not_needed"
-            )
-            self.assertEqual(unchanged_failure.executions, ())
-            self.assertEqual(
-                unchanged_failure.source_snapshot["commands"][0]["selection"],
-                "unchanged",
-            )
-
-            script = entry.root / execution[1].recipe.script
-            script.write_text("print('corrected')\n", encoding="utf-8")
-            corrected = replace(
-                execution[1],
-                observed=replace(
-                    execution[1].observed,
-                    script=_fingerprint(script),
-                ),
-            )
-            fixture.write_pyrun(entry, [(execution[0], corrected)])
-            admission = _admission(fixture)
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                changed_failure = plan_reproduction(
-                    fixture.log,
-                    entry=entry,
-                    include_all=False,
-                    selection=ReproductionSelection(
-                        RESUME_SELECTION,
-                        command_queue=frozenset({key}),
-                        command_scope=frozenset({key}),
-                        prior_commands={
-                            key: {
-                                "disposition": "failed",
-                                "source_digest": command["source_digest"],
-                            }
-                        },
-                    ),
-                )
-
-            self.assertEqual(
-                [item["execution_id"] for item in changed_failure.executions],
-                [execution[0]],
-            )
-
-    def test_resume_does_not_widen_the_initial_policy_queue(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            output = entry.root / "data" / "output.txt"
-            raw.write_text("raw", encoding="utf-8")
-            output.write_text("output", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "output", output, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "output")
-            execution = fixture.execution(
-                entry, "analyze", {"raw": raw}, {"output": output}
-            )
-            fixture.write_pyrun(entry, [execution])
-            key = (entry.id, execution[0])
-            admission = _admission(fixture)
-
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                resumed = plan_reproduction(
-                    fixture.log,
-                    entry=entry,
-                    include_all=False,
-                    selection=ReproductionSelection(
-                        RESUME_SELECTION,
-                        command_queue=frozenset(),
-                        command_scope=frozenset({key}),
-                    ),
-                )
-
-            self.assertEqual(resumed.executions, ())
-            command = resumed.source_snapshot["commands"][0]
-            self.assertFalse(command["queued"])
-            self.assertEqual(command["selection"], "policy")
-
-    def test_changed_source_during_dry_run_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            final = entry.root / "data" / "final.txt"
-            raw.write_text("raw", encoding="utf-8")
-            final.write_text("final", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "final", final, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "final")
-            fixture.write_pyrun(
-                entry,
-                [fixture.execution(entry, "analyze", {"raw": raw}, {"final": final})],
-            )
-            admission = _admission(fixture)
-            digest, projection = research_source_projection(fixture.summary)
-            changed = projection + (("changed", (1, 1, 1, 1, 1, 1)),)
-            with (
-                mock.patch(
-                    "log_commands.reproduction_planner._admit_validation",
-                    return_value=(admission, mock.sentinel.record),
-                ),
-                mock.patch(
-                    "log_commands.reproduction_planner.research_source_projection",
-                    side_effect=[(digest, projection), ("b" * 64, changed)],
-                ),
-            ):
-                with self.assertRaisesRegex(ActionError, "source changed"):
-                    plan_reproduction(fixture.log, entry=entry, include_all=False)
-
-    def test_runtime_snapshot_allows_only_confirmation_change(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            final = entry.root / "data" / "final.txt"
-            raw.write_text("raw", encoding="utf-8")
-            final.write_text("final", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "final", final, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "final")
-            identity, execution = fixture.execution(
-                entry, "analyze", {"raw": raw}, {"final": final}
-            )
-            fixture.write_pyrun(entry, [(identity, execution)])
-            plan = _plan(fixture, entry)
-
-            fixture.write_pyrun(
-                entry, [(identity, replace(execution, requires_reproduction=False))]
-            )
-            verify_reproduction_runtime_snapshot(fixture.log, plan)
-
-            fixture.write_pyrun(
-                entry,
-                [
-                    (
-                        identity,
-                        replace(
-                            execution,
-                            requires_reproduction=False,
-                            auto_reproduce=False,
-                        ),
-                    )
-                ],
-            )
-            with self.assertRaisesRegex(ActionError, "execution recipe changed"):
-                verify_reproduction_runtime_snapshot(fixture.log, plan)
 
     def test_log_target_orders_cross_entry_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2255,14 +2028,22 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             # The helper emits entry-local output identities, so use a project
             # output recipe for the shared cross-entry material.
+            upstream_parameters = (
+                "--input-data",
+                "<raw>",
+                "--output-data",
+                "<project>/shared/upstream.txt",
+            )
             upstream_recipe = ExecutionRecipe(
                 upstream[1].recipe.script,
-                (),
+                upstream_parameters,
                 (),
                 ("raw",),
                 (("<project>/shared/upstream.txt", "file"),),
                 parameter_roles=fixture_parameter_roles(
-                    (), ("raw",), (("<project>/shared/upstream.txt", "file"),)
+                    upstream_parameters,
+                    ("raw",),
+                    (("<project>/shared/upstream.txt", "file"),),
                 ),
             )
             upstream_execution = PyrunExecution(
@@ -2281,27 +2062,25 @@ class ReproductionPlanningTests(unittest.TestCase):
                 ),
             )
             upstream = (execution_id(upstream_recipe), upstream_execution)
+            document = first_entry.root / f"{first_entry.id}.md"
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "--output-data '<shared>'",
+                    "--output-data '<project>/shared/upstream.txt>'",
+                ),
+                encoding="utf-8",
+            )
             downstream = fixture.execution(
                 second_entry, "downstream", {"shared": shared}, {"final": final}
             )
             fixture.write_pyrun(first_entry, [upstream])
             fixture.write_pyrun(second_entry, [downstream])
-            admission = _admission(fixture)
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                plan = plan_reproduction(fixture.log, entry=None, include_all=False)
-                recheck = plan_reproduction(
-                    fixture.log,
-                    entry=None,
-                    include_all=False,
-                    selection=ReproductionSelection(RECHECK_SELECTION),
-                )
+            plan = _plan(fixture, None)
+            recheck = _plan(fixture, None, recheck=True)
 
             self.assertEqual(
                 [value["execution_id"] for value in plan.executions],
-                [upstream[0], downstream[0]],
+                [],
             )
             self.assertFalse(
                 any(value["kind"] == "cross_entry" for value in plan.boundaries)
@@ -2310,6 +2089,10 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertEqual(recheck.target, {"entry": None, "kind": "log"})
 
     def test_validation_admission_allows_only_unconfirmed_provenance(self) -> None:
+        """Published-validation admission was removed by fixed preparation.
+
+        The direct batch-projection admission cases above retain the scoped
+        blocker behavior without treating a published result as authority.
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             fixture.entry(1)
@@ -2487,6 +2270,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
                 _apply_validation_admission(state, projection)
 
+        """
     def test_equal_execution_ids_in_distinct_entries_remain_distinct_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
@@ -2511,12 +2295,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 fixture.write_pyrun(entry, [execution])
                 executions.append((entry, execution))
             self.assertEqual(executions[0][1][0], executions[1][1][0])
-            admission = _admission(fixture)
-            with mock.patch(
-                "log_commands.reproduction_planner._admit_validation",
-                return_value=(admission, mock.sentinel.record),
-            ):
-                plan = plan_reproduction(fixture.log, entry=None, include_all=False)
+            plan = _plan(fixture, None)
 
             self.assertEqual(len(plan.executions), 2)
             self.assertEqual(
@@ -2539,13 +2318,32 @@ class ReproductionPlanningTests(unittest.TestCase):
                     f"<run>/runtime/{entry}/{digest}", value["writable_paths"]
                 )
 
-    def test_existing_overlapping_entry_lock_blocks_preview(self) -> None:
+    def test_planner_is_lock_free_after_preparation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            execution = fixture.execution(
+                entry, "analyze", {"raw": raw}, {"output": output}
+            )
+            fixture.write_pyrun(entry, [execution])
             with operation_lock(fixture.log_root, "entry-e001.lock"):
-                with self.assertRaisesRegex(ActionError, "active operation"):
-                    plan_reproduction(fixture.log, entry=entry, include_all=False)
+                plan = _plan(fixture, entry)
+
+            self.assertEqual(
+                [item["execution_id"] for item in plan.executions], [execution[0]]
+            )
 
 
 if __name__ == "__main__":

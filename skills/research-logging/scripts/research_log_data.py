@@ -650,6 +650,60 @@ def data_file_from_inputs(
     return DataFile(path=path, entry_root=entry_root, inputs=decoded)
 
 
+def data_file_from_fields(
+    path: Path, *, entry_root: Path, fields: Mapping[str, object]
+) -> DataFile:
+    """Decode accepted resolved data/v5 declarations without filesystem reads.
+
+    Accepted fields use direct resources only; a cross-entry source is retained
+    as normal resource fields plus its resolved ``canonical_target``.
+    """
+
+    if set(fields) != {"schema", "inputs"} or fields.get("schema") != DATA_SCHEMA:
+        _invalid(path, {"fields": sorted(fields)})
+    raw_inputs = fields.get("inputs")
+    if (
+        not isinstance(raw_inputs, list)
+        or not raw_inputs
+        or len(raw_inputs) > MAX_INPUTS
+    ):
+        _invalid(path, {"inputs": raw_inputs})
+    root = entry_root.resolve()
+    inputs: list[InputResource] = []
+    for index, raw in enumerate(raw_inputs):
+        if not isinstance(raw, Mapping):
+            _invalid(path, {"input": index})
+        value = cast(Mapping[str, Any], raw)
+        required = {
+            "name", "kind", "location", "identity", "origin", "canonical_target",
+            "reference_entry",
+        }
+        allowed = required | {"comparison"}
+        if not required <= set(value) <= allowed:
+            _invalid(path, {"input": index, "fields": sorted(value)})
+        target = value["canonical_target"]
+        if not isinstance(target, str) or not Path(target).is_absolute():
+            _invalid(path, {"input": index, "target": target})
+        direct = {
+            key: value[key]
+            for key in {"name", "kind", "location", "identity", "origin", "comparison"}
+            if key in value
+        }
+        decoded = _decode_input(direct, f"{path}:inputs[{index}]", root)
+        if decoded.canonical_target != target:
+            _invalid(path, {"input": index, "reason": "target_mismatch"})
+        reference = value["reference_entry"]
+        if reference is not None and (
+            not isinstance(reference, str)
+            or ENTRY_REFERENCE_NAME_RE.fullmatch(reference) is None
+        ):
+            _invalid(path, {"input": index, "reference_entry": reference})
+        inputs.append(replace(decoded, reference_entry=reference))
+    resolved_inputs = tuple(inputs)
+    _require_unique_inputs(resolved_inputs, path)
+    return DataFile(path, root, resolved_inputs)
+
+
 def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInputToken:
     """Resolve one complete locator, commit, or directory-member input token."""
 

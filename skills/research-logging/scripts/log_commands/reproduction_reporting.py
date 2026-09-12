@@ -15,18 +15,20 @@ from .reproduction_execution import open_existing_workspace
 def reproduction_execution_report(log: LogContext, run_id: str) -> str:
     """Report one retained attempt without consulting cumulative log results."""
 
-    from .reproduction_jobs import _find_run, _load_run, _plan_from_record
+    from .reproduction_jobs import _find_run, _load_run, load_accepted_plan
 
     root = _find_run(log, run_id)
     record = _load_run(root / "run.json")
-    plan = _plan_from_record(record)
+    plan = load_accepted_plan(root)
     if plan.target.get("kind") != "execution":
         raise ActionError(
             "reproduction.report.target_invalid",
             "--run-id requires a single-execution run; use status for broader runs",
         )
     state = cast(Mapping[str, object], record["state"])
-    checkpoints = cast(Sequence[Mapping[str, object]], record["checkpoints"])
+    from .reproduction_jobs import _checkpoint_dicts
+
+    checkpoints = _checkpoint_dicts(root)
     checkpoint = next(
         (
             item
@@ -35,7 +37,7 @@ def reproduction_execution_report(log: LogContext, run_id: str) -> str:
         ),
         None,
     )
-    commands = cast(Sequence[Mapping[str, object]], plan.source_snapshot["commands"])
+    commands = plan.commands
     command = commands[0]
     selection = str(command["selection"])
     outcome = (
@@ -49,8 +51,6 @@ def reproduction_execution_report(log: LogContext, run_id: str) -> str:
     ]
     if is_repair_verification(plan):
         lines.append("Mode: repaired-source verification")
-    if record.get("attempt") is not None:
-        lines.append(f"Attempt: {record['attempt']}")
     lines.extend(_output_lines(log, root, run_id, plan, command))
     for failure in plan.failures:
         lines.append(f"Blocked {failure['artifact']}: {failure['reason']}")

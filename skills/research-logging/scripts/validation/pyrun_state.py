@@ -545,6 +545,25 @@ def parse_pyrun_state_text(
     return result
 
 
+def parse_pyrun_execution(
+    value: object,
+    *,
+    subject: object,
+    entry_root: Path,
+    project_root: Path | None = None,
+) -> PyrunExecution:
+    """Decode one in-memory accepted execution without reading ``pyrun.json``."""
+
+    execution = _decode_execution(
+        value, str(subject), entry_root=entry_root.resolve(), project_root=project_root
+    )
+    if PYRUN_EXECUTION_RE.fullmatch(str(subject)) is not None and (
+        execution_id(execution.recipe) != subject
+    ):
+        _invalid(subject, {"reason": "identity_mismatch"})
+    return execution
+
+
 def publish_execution_locked(
     entry_root: Path,
     execution: PyrunExecution,

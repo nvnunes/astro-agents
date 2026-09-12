@@ -357,7 +357,7 @@ def _source_changed_entry_result(
     return EntryValidationResult(
         EvaluationResult(
             record,
-            EvaluationContext(target, (), (), (), (), ENTRY_LIMITATIONS),
+            EvaluationContext(target, (), (), (), (), ENTRY_LIMITATIONS, ()),
             {},
         )
     )

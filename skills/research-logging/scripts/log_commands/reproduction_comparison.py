@@ -15,14 +15,16 @@ from typing import Any, Iterator, Mapping, Sequence, cast
 
 from research_log_data import (
     Fingerprint,
+    InputResource,
     compose_directory_fingerprint,
-    load_data_file,
     observe_directory_tree,
     observe_file_content,
+    observe_fingerprint,
     parse_fingerprint,
+    parse_resource_identity,
 )
 from validation.errors import MechanicalContractError
-from validation.evidence import load_evidence_file
+from validation.evidence import EvidenceFile
 from validation.evidence_comparison import (
     EVIDENCE_COMPARISON_RESULT_CONTRACT,
     EvidenceComparisonDefinition,
@@ -41,11 +43,17 @@ from .context import LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import (
     ReproductionPlan,
+    accepted_invocation,
+    accepted_typed_comparison,
     is_repair_verification,
     successful_checkpoint_state,
 )
-from .reproduction_execution import ExecutionAttempt, ReproductionWorkspace
-from .storage import atomic_write_text
+from .reproduction_execution import (
+    ExecutionAttempt,
+    ReproductionWorkspace,
+    _fingerprint,
+)
+from .storage import atomic_write_text, entry_lock
 
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 LEGACY_STAGING_SCHEMA = "research-log-reproduction-staging/1"
@@ -233,32 +241,8 @@ def compare_execution_outputs(
     """Compare or stage one complete execution output set without promotion."""
 
     source_entry = resolve_entry(log, attempt.entry)
-    state = load_pyrun_state(
-        source_entry.root / "pyrun.json",
-        entry_root=source_entry.root,
-        project_root=workspace.source_project,
-    )
-    execution = state.executions.get(attempt.execution_id)
-    if execution is None:
-        raise ActionError(
-            "reproduction.comparison.execution_missing",
-            f"execution is no longer present: {attempt.entry}:{attempt.execution_id}",
-        )
-    data_path = source_entry.root / "data.json"
-    evidence_path = source_entry.root / "evidence.json"
-    definitions: tuple[EvidenceComparisonDefinition, ...] = ()
-    if data_path.is_file() and not data_path.is_symlink():
-        data = load_data_file(data_path, entry_root=source_entry.root)
-        evidence = (
-            load_evidence_file(
-                evidence_path,
-                log_root=log.root,
-                entry_root=source_entry.root,
-            )
-            if evidence_path.is_file() and not evidence_path.is_symlink()
-            else None
-        )
-        definitions = evidence_comparison_definitions(data, evidence)
+    accepted = accepted_invocation(plan, attempt.entry, attempt.execution_id)
+    execution = accepted.execution
     results: list[ArtifactComparison] = []
     for artifact, _kind in execution.recipe.outputs:
         expected = output_target_path(
@@ -267,7 +251,46 @@ def compare_execution_outputs(
             project_root=workspace.source_project,
         )
         regenerated = workspace.map_source(expected)
-        definition = definition_for_target(definitions, expected)
+        recorded = dict(execution.observed.outputs).get(artifact)
+        if not _retained_baseline_matches(expected, recorded, _kind):
+            results.append(
+                ArtifactComparison(
+                    artifact,
+                    "comparison_failed",
+                    "baseline_changed",
+                    None,
+                    _observed_fingerprint(expected),
+                    _observed_fingerprint(regenerated),
+                )
+            )
+            continue
+        comparison = accepted_typed_comparison(
+            plan, attempt.entry, attempt.execution_id, artifact
+        )
+        definition = _accepted_definition(comparison, accepted, expected)
+        definition_identity = (
+            comparison.definition.get("definition_identity")
+            if comparison is not None
+            else None
+        )
+        if (
+            comparison is not None
+            and isinstance(definition_identity, str)
+            and not _evidence_only_context_matches(
+                plan, attempt.entry, definition_identity
+            )
+        ):
+            results.append(
+                ArtifactComparison(
+                    artifact,
+                    "comparison_failed",
+                    "evidence_context_changed",
+                    None,
+                    _observed_fingerprint(expected),
+                    _observed_fingerprint(regenerated),
+                )
+            )
+            continue
         results.append(
             _compare_execution_output(
                 artifact,
@@ -295,6 +318,140 @@ def compare_execution_outputs(
         staged,
         complete,
     )
+
+
+def _accepted_definition(
+    comparison: object, accepted: object, expected: Path
+) -> EvidenceComparisonDefinition | None:
+    """Build one frozen evidence comparator without reopening evidence metadata."""
+
+    from .reproduction_contract import AcceptedComparison, AcceptedInvocation
+
+    if comparison is None:
+        return None
+    if (
+        not isinstance(comparison, AcceptedComparison)
+        or not isinstance(accepted, AcceptedInvocation)
+        or accepted.data is None
+    ):
+        raise ActionError(
+            "reproduction.comparison.invalid", "invalid accepted comparison"
+        )
+    resource = next(
+        (
+            item
+            for item in accepted.data.inputs
+            if item.canonical_target == expected.resolve().as_posix()
+        ),
+        None,
+    )
+    if resource is None:
+        raise ActionError(
+            "reproduction.comparison.invalid", "accepted comparison target is missing"
+        )
+    evidence = EvidenceFile(
+        Path("/accepted/evidence.json"), accepted.data.entry_root, comparison.records
+    )
+    definition = evidence_comparison_definitions(accepted.data, evidence)
+    value = definition_for_target(definition, expected)
+    if value is None or value.identity != comparison.definition.get(
+        "definition_identity"
+    ):
+        raise ActionError(
+            "reproduction.comparison.changed", "accepted comparison definition changed"
+        )
+    return value
+
+
+def _evidence_only_context_matches(
+    plan: ReproductionPlan, entry: str, definition_identity: str
+) -> bool:
+    """Reobserve only frozen evidence-only resources used by one definition."""
+
+    rows = plan.comparison_context.get("evidence_only", ())
+    if not isinstance(rows, list):
+        raise ActionError(
+            "reproduction.comparison.context_invalid",
+            "accepted evidence-only context is invalid",
+        )
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ActionError(
+                "reproduction.comparison.context_invalid",
+                "accepted evidence-only row is invalid",
+            )
+        comparisons = row.get("comparisons")
+        if row.get("entry") != entry or not isinstance(comparisons, list):
+            continue
+        if definition_identity not in comparisons:
+            continue
+        resource = row.get("resource")
+        expected = row.get("fingerprint")
+        if not isinstance(resource, str) or not isinstance(expected, Mapping):
+            raise ActionError(
+                "reproduction.comparison.context_invalid",
+                "accepted evidence-only row is invalid",
+            )
+        observed = _observed_evidence_selection(row)
+        if observed != expected:
+            return False
+    return True
+
+
+def verify_evidence_only_context(plan: ReproductionPlan) -> None:
+    """Require every frozen auxiliary evidence selection to retain its bytes."""
+
+    rows = plan.comparison_context.get("evidence_only", ())
+    if not isinstance(rows, list):
+        raise ActionError(
+            "reproduction.publication.material_invalid",
+            "accepted evidence-only context is invalid",
+        )
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ActionError(
+                "reproduction.publication.material_invalid",
+                "accepted evidence-only row is invalid",
+            )
+        resource = row.get("resource")
+        expected = row.get("fingerprint")
+        if not isinstance(resource, str) or not isinstance(expected, Mapping):
+            raise ActionError(
+                "reproduction.publication.material_invalid",
+                "accepted evidence-only row is invalid",
+            )
+        if _observed_evidence_selection(row) != expected:
+            raise ActionError(
+                "reproduction.publication.material_changed",
+                f"accepted evidence-only material changed: {resource}",
+            )
+
+
+def _observed_evidence_selection(
+    row: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    """Observe the exact retained kind and directory selection, not a whole path."""
+
+    resource = row.get("resource")
+    kind = row.get("kind")
+    selection = row.get("selection")
+    if not isinstance(resource, str) or not isinstance(kind, str):
+        return None
+    try:
+        identity = parse_resource_identity(selection, resource, kind=kind)
+        observed = observe_fingerprint(
+            InputResource(
+                name=resource,
+                kind=kind,
+                location=resource,
+                identity=identity,
+                origin=False,
+                canonical_target=resource,
+            )
+        )
+    except (OSError, ValueError, MechanicalContractError):
+        return None
+    return observed.fingerprint.as_dict()
 
 
 def _compare_execution_output(
@@ -353,6 +510,19 @@ def _compare_execution_output(
     )
 
 
+def _retained_baseline_matches(
+    expected: Path, recorded: Fingerprint | None, kind: str
+) -> bool:
+    """Return whether the retained output still equals its accepted observation."""
+
+    return (
+        recorded is not None
+        and expected.exists()
+        and not expected.is_symlink()
+        and _fingerprint(expected, kind) == recorded
+    )
+
+
 def _compare_evidence_change(
     artifact: str,
     *,
@@ -406,25 +576,35 @@ def clear_execution_reproduction_requirement_locked(
             f"{result.entry}:{result.execution_id}",
         )
     entry = resolve_entry(log, result.entry)
-    state = load_pyrun_state(
-        entry.root / "pyrun.json",
-        entry_root=entry.root,
-        project_root=project_root,
-    )
-    current = state.executions.get(result.execution_id)
-    if current is None:
-        raise ActionError(
-            "reproduction.requirement.execution_missing", result.execution_id
+    with entry_lock(entry):
+        accepted = accepted_invocation(plan, result.entry, result.execution_id)
+        state = load_pyrun_state(
+            entry.root / "pyrun.json",
+            entry_root=entry.root,
+            project_root=project_root,
         )
-    if not current.requires_reproduction:
-        return False
-    executions = dict(state.executions)
-    executions[result.execution_id] = replace(current, requires_reproduction=False)
-    candidate = PyrunFile(state.path, state.entry_root, executions)
-    atomic_write_text(
-        state.path,
-        validated_pyrun_serialization(candidate, project_root=project_root),
-    )
+        current = state.executions.get(result.execution_id)
+        if current is None:
+            raise ActionError(
+                "reproduction.requirement.execution_missing", result.execution_id
+            )
+        if (
+            current.recipe.as_dict() != accepted.execution.recipe.as_dict()
+            or current.observed.as_dict() != accepted.execution.observed.as_dict()
+        ):
+            raise ActionError(
+                "reproduction.requirement.execution_changed",
+                "current execution no longer matches the accepted execution",
+            )
+        if not current.requires_reproduction:
+            return False
+        executions = dict(state.executions)
+        executions[result.execution_id] = replace(current, requires_reproduction=False)
+        candidate = PyrunFile(state.path, state.entry_root, executions)
+        atomic_write_text(
+            state.path,
+            validated_pyrun_serialization(candidate, project_root=project_root),
+        )
     return True
 
 

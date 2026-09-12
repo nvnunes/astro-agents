@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
-import os
 from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
@@ -18,21 +16,14 @@ from research_log_data import (
     ResourceIdentity,
     load_data_file,
     observe_fingerprint,
-    parse_fingerprint,
     resolve_input_token,
 )
-from research_log_paths import (
-    REPRODUCTION_RESULTS,
-    VALIDATION_BATCHES,
-    VALIDATION_RESULTS,
-)
-from validation.batch_projection import PROJECTION_SCHEMA
-from validation.controller import evaluate_current_record
-from validation.engine import RULES_VERSION
+from research_log_paths import REPRODUCTION_RESULTS
+from validation.batch_projection import build_batch_projection
+from validation.engine import RULES_VERSION, EvaluationEntryMaterial, EvaluationResult
 from validation.evidence import EvidenceFile, load_evidence_file
 from validation.evidence_comparison import evidence_comparison_identity
-from validation.mechanical_results import CompletionState, MechanicalGeneratedRecord
-from validation.operation_state import operation_directory
+from validation.mechanical_results import CompletionState
 from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
@@ -41,31 +32,21 @@ from validation.pyrun_state import (
     load_pyrun_state,
     script_target_path,
 )
-from validation.source_projection import research_source_projection
 
 from .context import (
     EntryContext,
     LogContext,
     parse_entry_directory_name,
     parse_entry_document_name,
-    resolve_entry,
     resolve_project_root,
 )
 from .model import ActionError
 from .reproduction_contract import (
-    LEGACY_SOURCE_SNAPSHOT_SCHEMA,
     MAX_EXECUTION_TIMEOUT_SECONDS,
-    PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
-    PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
-    PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
-    REPAIR_SOURCE_SNAPSHOT_SCHEMA,
-    SOURCE_SNAPSHOT_SCHEMA,
     ReproductionPlan,
     ReproductionRuntime,
     canonical_execution_source_digest,
     canonical_record_digest,
-    is_repair_verification,
-    source_snapshot,
     valid_reproduction_target,
 )
 
@@ -78,20 +59,16 @@ MAX_BOUNDARIES = 10_000
 MAX_FAILURES = 10_000
 RESULT_MAX_BYTES = 64 * 1024 * 1024
 ExecutionKey = tuple[str, str]
-SelectionPolicy = Literal["incremental", "recheck", "resume"]
+SelectionPolicy = Literal["incremental", "recheck"]
 INCREMENTAL_SELECTION: SelectionPolicy = "incremental"
 RECHECK_SELECTION: SelectionPolicy = "recheck"
-RESUME_SELECTION: SelectionPolicy = "resume"
 
 
 @dataclass(frozen=True)
 class ReproductionSelection:
-    """Selection policy, optional execution selector, and continuation bounds."""
+    """Selection policy and optional execution selector for a fresh plan."""
 
     policy: SelectionPolicy = INCREMENTAL_SELECTION
-    command_queue: frozenset[ExecutionKey] | None = None
-    command_scope: frozenset[ExecutionKey] | None = None
-    prior_commands: Mapping[ExecutionKey, Mapping[str, object]] | None = None
     execution_id: str | None = None
     verify_repair: bool = False
 
@@ -102,6 +79,39 @@ class ReproductionCommandInventory:
 
     total: int
     policy_skipped: int
+
+
+@dataclass(frozen=True)
+class PreparedReproductionContext:
+    """One fresh, non-published full evaluation prepared under the log lock.
+
+    The caller owns locking and evaluation.  Planning consumes only these
+    loaded observations and the projection derived from the same result; it
+    never loads a published validation result or re-evaluates the log.
+    """
+
+    evaluation: EvaluationResult
+    batch_projection: Mapping[str, object]
+
+
+def prepare_reproduction_context(
+    evaluation: EvaluationResult,
+) -> PreparedReproductionContext:
+    """Derive current admission input from one already completed full evaluation."""
+
+    if evaluation.record.completion is CompletionState.INCOMPLETE:
+        raise ActionError(
+            "reproduction.validation.incomplete", "prepared evaluation is incomplete"
+        )
+    if evaluation.record.rules_version != RULES_VERSION:
+        raise ActionError("reproduction.validation.invalid", "prepared rules are stale")
+    projection = build_batch_projection(
+        evaluation.record,
+        invocations=evaluation.context.invocations,
+        registries=evaluation.context.registries,
+        source_identity=canonical_record_digest(evaluation.record.as_dict()),
+    )
+    return PreparedReproductionContext(evaluation, projection)
 
 
 @dataclass(frozen=True)
@@ -177,6 +187,9 @@ class _PlanningState:
     material_owners: dict[tuple[str, str], set[ExecutionKey | None]] = field(
         default_factory=lambda: defaultdict(set)
     )
+    evidence_selections: dict[tuple[str, str, str], dict[str, object]] = field(
+        default_factory=dict
+    )
     authority_paths: set[Path] = field(default_factory=set)
     admitted_batches: set[tuple[str, str]] = field(default_factory=set)
     excluded_batches: dict[tuple[str, str], tuple[str, ...]] = field(
@@ -185,8 +198,6 @@ class _PlanningState:
     command_digests: dict[ExecutionKey, str] = field(default_factory=dict)
     command_selections: dict[ExecutionKey, str] = field(default_factory=dict)
     prior_command_dispositions: dict[ExecutionKey, str] = field(default_factory=dict)
-    command_queue: frozenset[ExecutionKey] | None = None
-    command_scope: frozenset[ExecutionKey] | None = None
     execution_id: str | None = None
     verify_repair: bool = False
 
@@ -281,8 +292,9 @@ class _ReachabilityProjector:
         )
 
 
-def plan_reproduction(
+def plan_reproduction(  # noqa: PLR0913
     log: LogContext,
+    prepared: PreparedReproductionContext,
     *,
     entry: EntryContext | None,
     include_all: bool,
@@ -295,8 +307,7 @@ def plan_reproduction(
     _require_execution_selector(entry, execution_id)
     _require_selection_policy(selection.policy)
     if selection.verify_repair and (
-        execution_id is None
-        or selection.policy not in {RECHECK_SELECTION, RESUME_SELECTION}
+        execution_id is None or selection.policy != RECHECK_SELECTION
     ):
         raise ActionError(
             "reproduction.repair.invalid",
@@ -318,21 +329,18 @@ def plan_reproduction(
             "--execution-timeout-seconds must be between 1 and "
             f"{MAX_EXECUTION_TIMEOUT_SECONDS}",
         )
-    _require_existing_locks_available(log, entry)
-    admitted = _admit_validation(log)
-    validation_snapshot, validation_state = admitted[:2]
-    batch_projection = admitted[2] if len(admitted) == 3 else None
-    before_digest, before_projection = research_source_projection(log.summary)
-    if before_digest != validation_snapshot["source_projection_digest"]:
+    if prepared.evaluation.record.completion is CompletionState.INCOMPLETE:
         raise ActionError(
-            "reproduction.validation.concurrent_change",
-            "research state changed while validation admission was evaluated",
+            "reproduction.validation.incomplete", "prepared evaluation is incomplete"
         )
     project_root = resolve_project_root(log.root)
-    contexts = _entry_contexts(log)
-    entries = _load_entries(log, project_root, contexts)
+    entries = _prepared_entries(
+        log, project_root, prepared.evaluation.context.materials
+    )
     selection = _execution_selection(entries, entry, execution_id, selection)
-    selected_ids = (entry.id,) if entry is not None else tuple(entries)
+    selected_ids = (
+        (entry.id,) if entry is not None and entry.id in entries else tuple(entries)
+    )
     state = _PlanningState(
         log,
         project_root,
@@ -344,37 +352,24 @@ def plan_reproduction(
         selection.policy,
         entries,
         _owner_index(entries, project_root),
-        command_queue=selection.command_queue,
-        command_scope=selection.command_scope,
         execution_id=execution_id,
         verify_repair=selection.verify_repair,
     )
     _trace_selected_evidence(selected_ids, entries, state)
     _trace_queued_commands(state)
-    if batch_projection is not None:
-        _apply_validation_admission(state, batch_projection)
+    _apply_validation_admission(state, prepared.batch_projection)
     _apply_cycle_and_dependency_failures(state)
     retained_commands = dict(
         _load_prior_results(log, replace_outdated=selection.policy == RECHECK_SELECTION)
     )
-    if selection.prior_commands is not None:
-        retained_commands.update(selection.prior_commands)
     ordered = _select_and_order(state, retained_commands)
     plan = _project_plan(
         state,
         ordered,
-        validation_snapshot,
+        prepared.evaluation,
         entry=entry,
     )
-    _recheck_plan_sources(plan, state)
-    after_digest, after_projection = research_source_projection(log.summary)
-    if before_projection != after_projection or before_digest != after_digest:
-        raise ActionError(
-            "reproduction.source.changed",
-            "research source changed while the dry-run plan was being built",
-        )
     plan.serialized()
-    del validation_state
     return plan
 
 
@@ -410,18 +405,8 @@ def _execution_selection(
             "reproduction.execution.unknown",
             f"unknown execution in {entry.id}: {identity}",
         )
-    scope = frozenset({(entry.id, identity)})
-    queue = scope if selection.command_queue is None else selection.command_queue
-    if not queue <= scope or selection.command_scope not in (None, scope):
-        raise ActionError(
-            "reproduction.execution.scope_changed",
-            "execution continuation scope changed",
-        )
     return ReproductionSelection(
         selection.policy,
-        queue,
-        scope,
-        selection.prior_commands,
         identity,
         selection.verify_repair,
     )
@@ -451,6 +436,9 @@ def _trace_selected_evidence(
         for record in current.evidence.records:
             for source in record.sources:
                 resolved = resolve_input_token(source.source, current.data)
+                _retain_evidence_selection(
+                    state, current.context.id, record.id, resolved.resource
+                )
                 _trace_resource(
                     resolved.resource, current, state, consumer=None, depth=0
                 )
@@ -466,13 +454,7 @@ def _trace_queued_commands(state: _PlanningState) -> None:
     for key, owner in sorted(owners.items()):
         if key[0] not in state.selected_entries:
             continue
-        if state.command_queue is not None and key not in state.command_queue:
-            continue
-        if (
-            state.command_queue is None
-            and not owner.execution.auto_reproduce
-            and not state.include_all
-        ):
+        if not owner.execution.auto_reproduce and not state.include_all:
             continue
         _trace_execution(
             owner,
@@ -490,7 +472,6 @@ def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
     if selection_policy not in {
         INCREMENTAL_SELECTION,
         RECHECK_SELECTION,
-        RESUME_SELECTION,
     }:
         raise ActionError(
             "reproduction.selection.invalid",
@@ -704,6 +685,39 @@ def _load_entries(
     return result
 
 
+def _prepared_entries(
+    log: LogContext,
+    project_root: Path,
+    materials: Sequence[EvaluationEntryMaterial],
+) -> dict[str, _EntryState]:
+    """Convert evaluator-owned loaded entry material without a second load."""
+
+    entries: dict[str, _EntryState] = {}
+    for material in materials:
+        if material.errors:
+            error = material.errors[0]
+            raise ActionError(
+                str(getattr(error, "code", "reproduction.metadata.invalid")), str(error)
+            )
+        if material.pyrun is None and material.errors:
+            raise ActionError(
+                "reproduction.metadata.invalid",
+                f"missing execution state for {material.entry_id}",
+            )
+        context = EntryContext(log, material.entry_id, material.entry_root)
+        if material.entry_id in entries:
+            raise ActionError(
+                "reproduction.entry.duplicate", "duplicate entry material"
+            )
+        entries[material.entry_id] = _EntryState(
+            context,
+            material.data,
+            material.evidence,
+            material.pyrun or empty_pyrun_state(material.entry_root),
+        )
+    return entries
+
+
 def _owner_index(
     entries: Mapping[str, _EntryState], project_root: Path
 ) -> dict[str, tuple[_Owner, ...]]:
@@ -843,26 +857,6 @@ def _trace_resource_producer(
     state: _PlanningState,
     depth: int,
 ) -> None:
-    if state.command_queue is not None and producer.key not in state.command_queue:
-        _verified_boundary(
-            state,
-            _BoundaryRequest(
-                "outside_queue",
-                request.entry,
-                request.resource,
-                request.artifact,
-                request.consumer,
-            ),
-        )
-        if request.consumer is None:
-            state.cases[(request.entry.context.id, request.artifact)] = _case(
-                request.entry.context.id,
-                request.artifact,
-                producer.execution_id,
-                "skipped",
-                "outside_queue",
-            )
-        return
     if _stop_at_nonautomatic_policy(
         producer,
         _BoundaryRequest(
@@ -890,12 +884,7 @@ def _stop_at_nonautomatic_policy(
 ) -> bool:
     """Bound traversal at one current or policy-skipped nonautomatic command."""
 
-    if (
-        producer.execution.auto_reproduce
-        or state.include_all
-        or state.command_queue is not None
-        and producer.key in state.command_queue
-    ):
+    if producer.execution.auto_reproduce or state.include_all:
         return False
     if not producer.execution.requires_reproduction:
         _trace_execution(producer, state, depth=depth, trace_inputs=False)
@@ -956,15 +945,17 @@ def _trace_execution(
             )
             state.blocked.add(key)
             continue
+        material = _material(
+            resource.canonical_target,
+            "input",
+            resource.kind,
+            dict(owner.execution.observed.inputs)[name],
+        )
+        material["selection"] = resource.identity.as_dict()
         _retain_material(
             state,
-            ("input", resource.canonical_target),
-            _material(
-                resource.canonical_target,
-                "input",
-                resource.kind,
-                dict(owner.execution.observed.inputs)[name],
-            ),
+            ("input", _resource_selection_key(resource)),
+            material,
             owner=key,
         )
         _trace_resource(resource, owner.entry, state, consumer=owner, depth=depth + 1)
@@ -1083,15 +1074,7 @@ def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str 
     data = owner.entry.data
     if data is None:
         return None
-    target = (
-        output_target_path(
-            output,
-            entry_root=owner.entry.context.root,
-            project_root=project_root,
-        )
-        .resolve()
-        .as_posix()
-    )
+    target = _output_target(owner, output, project_root)
     resource = next(
         (item for item in data.inputs if item.canonical_target == target), None
     )
@@ -1101,6 +1084,20 @@ def _comparison_identity(owner: _Owner, output: str, project_root: Path) -> str 
         resource,
         data=data,
         evidence=owner.entry.evidence,
+    )
+
+
+def _output_target(owner: _Owner, output: str, project_root: Path) -> str:
+    """Return the canonical output target used by frozen comparison binding."""
+
+    return (
+        output_target_path(
+            output,
+            entry_root=owner.entry.context.root,
+            project_root=project_root,
+        )
+        .resolve()
+        .as_posix()
     )
 
 
@@ -1205,9 +1202,7 @@ def _boundary(
     _retain_material(
         state,
         ("boundary", resource.canonical_target),
-        _material(
-            resource.canonical_target, "boundary", resource.kind, observed
-        ),
+        _material(resource.canonical_target, "boundary", resource.kind, observed),
         owner=request.consumer.key if request.consumer is not None else None,
     )
     if len(state.boundaries) > MAX_BOUNDARIES:
@@ -1578,14 +1573,7 @@ def _select_and_order(
         and state.selection_policy != RECHECK_SELECTION
         and key not in needs_run
         and key not in state.blocked
-        and (
-            not state.selected[key].execution.requires_reproduction
-            or state.selection_policy == RESUME_SELECTION
-            and prior.get(key, {}).get("disposition") == "succeeded"
-            and _command_result_current(
-                prior.get(key), state.command_digests[key], {"succeeded"}
-            )
-        )
+        and (not state.selected[key].execution.requires_reproduction)
     }
     unchanged = {
         key
@@ -1595,11 +1583,7 @@ def _select_and_order(
         and key not in not_needed
         and (state.execution_id is None or key not in state.blocked)
         and _command_result_current(prior.get(key), state.command_digests[key])
-        and (
-            state.selection_policy == INCREMENTAL_SELECTION
-            or state.selection_policy == RESUME_SELECTION
-            and prior.get(key, {}).get("disposition") == "failed"
-        )
+        and state.selection_policy == INCREMENTAL_SELECTION
     }
     state.prior_command_dispositions = {
         key: cast(str, prior[key]["disposition"]) for key in unchanged
@@ -1629,21 +1613,6 @@ def _initial_work(
 
     if state.selection_policy == RECHECK_SELECTION:
         return set(runnable)
-
-    if state.selection_policy == RESUME_SELECTION:
-        return {
-            key
-            for key in runnable
-            if state.selected[key].execution.requires_reproduction
-            and not (
-                prior.get(key, {}).get("disposition") in {"failed", "succeeded"}
-                and _command_result_current(
-                    prior.get(key),
-                    state.command_digests[key],
-                    {"failed", "succeeded"},
-                )
-            )
-        }
 
     return {
         key
@@ -1782,7 +1751,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
 def _project_plan(
     state: _PlanningState,
     ordered: tuple[ExecutionKey, ...],
-    validation_snapshot: Mapping[str, object],
+    evaluation: EvaluationResult,
     *,
     entry: EntryContext | None,
 ) -> ReproductionPlan:
@@ -1808,21 +1777,7 @@ def _project_plan(
                 **_execution_claims(state, owner),
             }
         )
-    authority_files = [
-        {"path": _canonical_path(path, state.project_root), "sha256": _digest(path)}
-        for path in sorted(state.authority_paths, key=lambda item: item.as_posix())
-        if path.name != "pyrun.json"
-    ]
     runnable = set(state.selected) - state.blocked
-    execution_snapshot = [
-        {
-            "digest": canonical_execution_source_digest(owner.execution.as_dict()),
-            "entry": owner.entry.context.id,
-            "execution_id": identity,
-        }
-        for (_, identity), owner in sorted(state.selected.items())
-        if owner.key in runnable
-    ]
     materials = sorted(
         (
             value
@@ -1836,29 +1791,19 @@ def _project_plan(
         (cast(str, item["entry"]), cast(str, item["execution_id"])): item
         for item in _project_command_details(state)
     }
-    snapshot = source_snapshot(
-        authority_files=authority_files,
-        commands=[
-            {
-                **dict(command_details[key]),
-                "prior_disposition": state.prior_command_dispositions.get(key),
-                "selection": state.command_selections.get(
-                    key,
-                    (
-                        "policy"
-                        if command_details[key]["queued"] is False
-                        else "not_needed"
-                    ),
-                ),
-                "source_digest": state.command_digests.get(key),
-            }
-            for key in sorted(
-                command_details, key=lambda item: (item not in state.selected, item)
-            )
-        ],
-        executions=execution_snapshot,
-        materials=materials,
-        verify_repair=state.verify_repair,
+    commands = tuple(
+        {
+            **dict(command_details[key]),
+            "prior_disposition": state.prior_command_dispositions.get(key),
+            "selection": state.command_selections.get(
+                key,
+                ("policy" if command_details[key]["queued"] is False else "not_needed"),
+            ),
+            "source_digest": state.command_digests.get(key),
+        }
+        for key in sorted(
+            command_details, key=lambda item: (item not in state.selected, item)
+        )
     )
     cases = tuple(
         state.cases[key]
@@ -1868,21 +1813,25 @@ def _project_plan(
     )
     boundaries = tuple(state.boundaries[key] for key in sorted(state.boundaries))
     failures = tuple(state.failures[key] for key in sorted(state.failures))
-    accepted_validation = dict(validation_snapshot)
-    accepted_validation["batch_admission"] = {
-        "admitted": [
-            {"chain_id": chain, "entry": entry}
-            for entry, chain in sorted(state.admitted_batches)
-        ],
-        "excluded": [
-            {
-                "blocking_findings": list(state.excluded_batches[(entry, chain)]),
-                "chain_id": chain,
-                "entry": entry,
-            }
-            for entry, chain in sorted(state.excluded_batches)
-        ],
-        "schema": "research-log-reproduction-batch-admission/2",
+    comparisons = _project_comparisons(state, runnable)
+    admission = {
+        "evaluated_at": evaluation.record.result_date,
+        "rules_version": evaluation.record.rules_version,
+        "batch_admission": {
+            "admitted": [
+                {"chain_id": chain, "entry": entry}
+                for entry, chain in sorted(state.admitted_batches)
+            ],
+            "excluded": [
+                {
+                    "blocking_findings": list(state.excluded_batches[(entry, chain)]),
+                    "chain_id": chain,
+                    "entry": entry,
+                }
+                for entry, chain in sorted(state.excluded_batches)
+            ],
+            "schema": "research-log-reproduction-batch-admission/2",
+        },
     }
     return ReproductionPlan(
         _canonical_path(state.log.summary, state.project_root),
@@ -1900,8 +1849,16 @@ def _project_plan(
             ),
         },
         state.include_all,
-        accepted_validation,
-        snapshot,
+        admission,
+        commands,
+        {
+            "materials": materials,
+            "evidence_only": _project_evidence_only_context(state, comparisons),
+            "comparisons": comparisons,
+            "result_schema": "research-log-reproduction-result/10",
+            "schema": "research-log-reproduction-comparison-context/1",
+            **({"repair_verification": True} if state.verify_repair else {}),
+        },
         cases,
         tuple(executions),
         boundaries,
@@ -1921,11 +1878,6 @@ def _project_command_details(
         current = state.entries[entry_id]
         cwd = current.context.root.resolve().relative_to(state.project_root).as_posix()
         for execution_id, execution in sorted(current.pyrun.executions.items()):
-            if (
-                state.command_scope is not None
-                and (entry_id, execution_id) not in state.command_scope
-            ):
-                continue
             reasons = sorted(
                 {
                     cast(str, case["reason"])
@@ -1940,24 +1892,181 @@ def _project_command_details(
                     "auto_reproduce": execution.auto_reproduce,
                     "cwd": cwd,
                     "details": reasons,
+                    "entry_root": current.context.root.as_posix(),
+                    "project_root": state.project_root.as_posix(),
                     "entry": entry_id,
                     "execution_id": execution_id,
                     "exclusive": execution.exclusive,
-                    "queued": (
-                        (entry_id, execution_id) in state.command_queue
-                        and (
-                            state.execution_id is None
-                            or execution.auto_reproduce
-                            or state.include_all
-                        )
-                        if state.command_queue is not None
-                        else execution.auto_reproduce or state.include_all
+                    "queued": execution.auto_reproduce or state.include_all,
+                    "execution_state": execution.as_dict(),
+                    "data_declaration": (
+                        {
+                            "inputs": [
+                                _resolved_input_declaration(item)
+                                for item in current.data.inputs
+                            ],
+                            "schema": "research-log-data/v5",
+                        }
+                        if current.data is not None
+                        else None
                     ),
-                    "recipe": execution.recipe.as_dict(),
                     "requires_reproduction": execution.requires_reproduction,
                 }
             )
     return tuple(details)
+
+
+def _project_comparisons(
+    state: _PlanningState, runnable: Collection[ExecutionKey]
+) -> list[dict[str, object]]:
+    """Project exactly the runnable frozen comparison inventory."""
+
+    return [
+        {
+            "entry": owner.entry.context.id,
+            "execution_id": owner.execution_id,
+            "output": output,
+            "evidence_records": (
+                [record.as_dict() for record in owner.entry.evidence.records]
+                if owner.entry.evidence is not None
+                else []
+            ),
+            "definition_identity": definition,
+        }
+        for key, owner in sorted(state.selected.items())
+        for output, _kind in owner.execution.recipe.outputs
+        for definition in (_comparison_identity(owner, output, state.project_root),)
+        if key in runnable and definition is not None
+    ]
+
+
+def _project_evidence_only_context(
+    state: _PlanningState, comparisons: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """Freeze selected presentation-only inputs and consuming definitions."""
+
+    rows: list[dict[str, object]] = []
+    for entry_id in state.selected_entries:
+        entry = state.entries[entry_id]
+        if entry.data is None or entry.evidence is None:
+            continue
+        for record in entry.evidence.records:
+            record_targets = {
+                resolve_input_token(source.source, entry.data).resource.canonical_target
+                for source in record.sources
+            }
+            definitions = _record_comparison_definitions(
+                state, entry_id, record_targets, comparisons
+            )
+            if not definitions:
+                continue
+            for source in record.sources:
+                resource = resolve_input_token(source.source, entry.data).resource
+                material = state.evidence_selections.get(
+                    (entry_id, record.id, _resource_selection_key(resource))
+                )
+                if material is None:
+                    continue
+                rows.append(
+                    {
+                        "comparisons": definitions,
+                        "entry": entry_id,
+                        "fingerprint": material["fingerprint"],
+                        "record_id": record.id,
+                        "resource": resource.canonical_target,
+                        "kind": resource.kind,
+                        "selection": resource.identity.as_dict(),
+                    }
+                )
+    return rows
+
+
+def _record_comparison_definitions(
+    state: _PlanningState,
+    entry_id: str,
+    record_targets: set[str],
+    comparisons: Sequence[Mapping[str, object]],
+) -> list[str]:
+    """Return frozen output definitions whose retained record names that output."""
+
+    return sorted(
+        {
+            cast(str, comparison["definition_identity"])
+            for comparison in comparisons
+            if comparison.get("entry") == entry_id
+            and isinstance(comparison.get("output"), str)
+            and isinstance(comparison.get("definition_identity"), str)
+            and _comparison_output_target(
+                state, entry_id, cast(str, comparison["output"])
+            )
+            in record_targets
+        }
+    )
+
+
+def _comparison_output_target(
+    state: _PlanningState, entry_id: str, output: str
+) -> str:
+    """Resolve a persisted comparison output under its selected entry root."""
+
+    return (
+        output_target_path(
+            output,
+            entry_root=state.entries[entry_id].context.root,
+            project_root=state.project_root,
+        )
+        .resolve()
+        .as_posix()
+    )
+
+
+def _retain_evidence_selection(
+    state: _PlanningState, entry: str, record_id: str, resource: InputResource
+) -> None:
+    """Observe a retained evidence source using its declared selection semantics."""
+
+    try:
+        fingerprint = observe_fingerprint(resource).fingerprint
+    except (OSError, ValueError) as error:
+        raise ActionError(
+            "reproduction.evidence.unavailable",
+            f"cannot observe evidence source {resource.name}: {error}",
+        ) from error
+    key = (entry, record_id, _resource_selection_key(resource))
+    state.evidence_selections[key] = {
+        "fingerprint": fingerprint.as_dict(),
+        "kind": resource.kind,
+        "selection": resource.identity.as_dict(),
+    }
+
+
+def _resource_selection_key(resource: InputResource) -> str:
+    """Return the distinct retained identity of one selected input observation."""
+
+    return canonical_record_digest(
+        {
+            "kind": resource.kind,
+            "resource": resource.canonical_target,
+            "selection": resource.identity.as_dict(),
+        }
+    )
+
+
+def _resolved_input_declaration(resource: InputResource) -> dict[str, object]:
+    """Persist a cross-entry declaration with its resolved target intact."""
+
+    value: dict[str, object] = {
+        "canonical_target": resource.canonical_target,
+        "identity": resource.identity.as_dict(),
+        "kind": resource.kind,
+        "location": resource.canonical_target,
+        "name": resource.name,
+        "origin": resource.origin,
+        "reference_entry": resource.reference_entry,
+    }
+    if resource.comparison is not None:
+        value["comparison"] = resource.comparison.as_dict()
+    return value
 
 
 def _execution_claims(state: _PlanningState, owner: _Owner) -> dict[str, object]:
@@ -2022,69 +2131,6 @@ def _claim_run_path(path: Path, project_root: Path) -> str:
     return f"<run>/workspace/{relative}"
 
 
-def _admit_validation(
-    log: LogContext,
-) -> tuple[dict[str, object], MechanicalGeneratedRecord, Mapping[str, object]]:
-    path = log.root / VALIDATION_RESULTS
-    if path.is_symlink() or not path.is_file():
-        raise ActionError(
-            "reproduction.validation.missing",
-            f"missing cached validation result; run full validation: {path}",
-        )
-    try:
-        raw = path.read_bytes()
-        if len(raw) > RESULT_MAX_BYTES:
-            raise ValueError("validation result crossed its byte bound")
-        record = MechanicalGeneratedRecord.from_json(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.validation.invalid", str(error)) from error
-    if record.completion is CompletionState.INCOMPLETE:
-        raise ActionError(
-            "reproduction.validation.incomplete", "validation result is incomplete"
-        )
-    if (
-        Path(record.summary).resolve() != log.summary.resolve()
-        or record.rules_version != RULES_VERSION
-    ):
-        raise ActionError(
-            "reproduction.validation.stale",
-            "validation identity or rules version is stale",
-        )
-    try:
-        current = evaluate_current_record(log.summary, result_date=record.result_date)
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.validation.stale", str(error)) from error
-    if current.canonical_json() != record.canonical_json():
-        raise ActionError(
-            "reproduction.validation.stale",
-            "published validation result does not describe current research source",
-        )
-    from .findings import load_batch_projection
-
-    projection = load_batch_projection(log, record=record)
-    if projection.get("schema") != PROJECTION_SCHEMA:
-        raise ActionError(
-            "reproduction.validation.publication_invalid",
-            "published validation is unsupported",
-        )
-    projection_path = log.root / VALIDATION_BATCHES
-    source_digest, _ = research_source_projection(log.summary)
-    return (
-        {
-            "projection_digest": _digest(projection_path),
-            "validation_id": projection["validation_id"],
-            "projection_path": projection_path.relative_to(log.root).as_posix(),
-            "result_date": record.result_date,
-            "result_digest": hashlib.sha256(raw).hexdigest(),
-            "result_path": path.relative_to(log.root).as_posix(),
-            "rules_version": record.rules_version,
-            "source_projection_digest": source_digest,
-        },
-        record,
-        projection,
-    )
-
-
 def _load_prior_results(
     log: LogContext,
     *,
@@ -2110,265 +2156,6 @@ def _load_prior_results(
     except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
     return {(item.entry, item.execution_id): item.as_dict() for item in value.commands}
-
-
-def _require_existing_locks_available(
-    log: LogContext, entry: EntryContext | None
-) -> None:
-    directory = operation_directory(log.root)
-    checks = [
-        (directory / "log.lock", fcntl.LOCK_SH if entry is not None else fcntl.LOCK_EX)
-    ]
-    if entry is not None:
-        checks.append((directory / f"entry-{entry.id}.lock", fcntl.LOCK_EX))
-    handles: list[int] = []
-    try:
-        for path, mode in checks:
-            if not path.exists():
-                continue
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            handles.append(descriptor)
-            try:
-                fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise ActionError(
-                    "reproduction.operation.active",
-                    f"active operation overlaps target: {path.name}",
-                ) from error
-    finally:
-        for descriptor in reversed(handles):
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
-
-
-def _recheck_plan_sources(plan: ReproductionPlan, state: _PlanningState) -> None:
-    """Recheck every accepted byte and material immediately before return."""
-
-    verify_reproduction_snapshot(state.log, plan)
-
-
-def verify_reproduction_snapshot(log: LogContext, plan: ReproductionPlan) -> None:
-    """Require exact agreement with every source accepted by one plan."""
-
-    project_root = resolve_project_root(log.root)
-    _recheck_authority_files(plan, project_root)
-    _recheck_validation_result(plan, log)
-    _recheck_executions(plan, log, project_root)
-    is_repair_verification(plan)
-    _recheck_materials(plan)
-    digest, _ = research_source_projection(log.summary)
-    expected = plan.validation_snapshot.get("source_projection_digest")
-    if not isinstance(expected, str) or digest != expected:
-        raise ActionError(
-            "reproduction.source.changed", "validated research source changed"
-        )
-
-
-def verify_reproduction_runtime_snapshot(
-    log: LogContext, plan: ReproductionPlan
-) -> None:
-    """Verify immutable run sources while allowing requirement-clearing writes."""
-
-    if plan.source_snapshot.get("schema") in {
-        LEGACY_SOURCE_SNAPSHOT_SCHEMA,
-        PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
-    }:
-        verify_reproduction_snapshot(log, plan)
-        return
-    if plan.source_snapshot.get("schema") not in {
-        PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
-        PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
-        SOURCE_SNAPSHOT_SCHEMA,
-        REPAIR_SOURCE_SNAPSHOT_SCHEMA,
-    }:
-        raise ActionError("reproduction.source.invalid", "unknown source snapshot")
-    project_root = resolve_project_root(log.root)
-    _recheck_authority_files(plan, project_root)
-    _recheck_executions(plan, log, project_root)
-    is_repair_verification(plan)
-    _recheck_materials(plan)
-
-
-def _recheck_authority_files(plan: ReproductionPlan, project_root: Path) -> None:
-    """Require every loaded authority file to retain its exact bytes."""
-
-    for item in cast(
-        Sequence[Mapping[str, object]], plan.source_snapshot["authority_files"]
-    ):
-        raw_path = item["path"]
-        expected = item["sha256"]
-        if not isinstance(raw_path, str) or not isinstance(expected, str):
-            raise ActionError(
-                "reproduction.source.invalid", "invalid authority snapshot"
-            )
-        path = Path(raw_path)
-        if not path.is_absolute():
-            path = project_root / path
-        if _digest(path) != expected:
-            raise ActionError(
-                "reproduction.source.changed", f"authority file changed: {raw_path}"
-            )
-
-
-def _recheck_validation_result(plan: ReproductionPlan, log: LogContext) -> None:
-    """Require the admitted validation result to retain its exact bytes."""
-
-    result_path = plan.validation_snapshot["result_path"]
-    result_digest = plan.validation_snapshot["result_digest"]
-    if not isinstance(result_path, str) or not isinstance(result_digest, str):
-        raise ActionError("reproduction.source.invalid", "invalid validation snapshot")
-    if _digest(log.root / result_path) != result_digest:
-        raise ActionError("reproduction.source.changed", "validation result changed")
-    projection_path = plan.validation_snapshot.get("projection_path")
-    projection_digest = plan.validation_snapshot.get("projection_digest")
-    if projection_path is None and projection_digest is None:
-        return
-    if not isinstance(projection_path, str) or not isinstance(projection_digest, str):
-        raise ActionError("reproduction.source.invalid", "invalid published validation")
-    if _digest(log.root / projection_path) != projection_digest:
-        raise ActionError("reproduction.source.changed", "published validation changed")
-
-
-def _recheck_executions(
-    plan: ReproductionPlan, log: LogContext, project_root: Path
-) -> None:
-    loaded: dict[str, PyrunFile] = {}
-    values = cast(Sequence[Mapping[str, object]], plan.source_snapshot["executions"])
-    for value in values:
-        entry_id = value.get("entry")
-        identity = value.get("execution_id")
-        expected = value.get("digest")
-        if not all(isinstance(item, str) for item in (entry_id, identity, expected)):
-            raise ActionError(
-                "reproduction.source.invalid", "invalid execution snapshot"
-            )
-        assert isinstance(entry_id, str)
-        assert isinstance(identity, str)
-        assert isinstance(expected, str)
-        if entry_id not in loaded:
-            entry = resolve_entry(log, entry_id)
-            loaded[entry_id] = load_pyrun_state(
-                entry.root / "pyrun.json",
-                entry_root=entry.root,
-                project_root=project_root,
-            )
-        execution = loaded[entry_id].executions.get(identity)
-        encoded = execution.as_dict() if execution is not None else None
-        digest = (
-            canonical_execution_source_digest(encoded)
-            if encoded is not None
-            and plan.source_snapshot.get("schema")
-            in {
-                PRELOCAL_SOURCE_SNAPSHOT_SCHEMA,
-                PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA,
-                PREQUERY_SOURCE_SNAPSHOT_SCHEMA,
-                SOURCE_SNAPSHOT_SCHEMA,
-                REPAIR_SOURCE_SNAPSHOT_SCHEMA,
-            }
-            else canonical_record_digest(encoded)
-            if encoded is not None
-            else None
-        )
-        if execution is None or digest != expected:
-            raise ActionError(
-                "reproduction.source.changed",
-                f"execution recipe changed: {entry_id}:{identity}",
-            )
-        _verify_repair_source_observations(
-            plan, execution, loaded[entry_id].entry_root, project_root
-        )
-
-
-def _verify_repair_source_observations(
-    plan: ReproductionPlan,
-    execution: PyrunExecution,
-    entry_root: Path,
-    project_root: Path,
-) -> None:
-    """Bind accepted repair materials to the unchanged recorded source closure."""
-
-    if not is_repair_verification(plan):
-        return
-    script = script_target_path(
-        execution.recipe.script, entry_root=entry_root, project_root=project_root
-    )
-    expected = {script.resolve().as_posix(): execution.observed.script.as_dict()}
-    expected.update(
-        {
-            code_target_path(name, entry_root=entry_root)
-            .resolve()
-            .as_posix(): fingerprint.as_dict()
-            for name, fingerprint in execution.observed.code
-        }
-    )
-    seen: set[str] = set()
-    for item in cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"]):
-        if item.get("role") not in {"script", "code"}:
-            if "recorded_fingerprint" in item:
-                raise ActionError(
-                    "reproduction.source.invalid",
-                    "only source may use repair admission",
-                )
-            continue
-        identity = cast(str, item.get("identity"))
-        if (
-            set(item)
-            != {"identity", "role", "kind", "fingerprint", "recorded_fingerprint"}
-            or item.get("kind") != "file"
-            or identity not in expected
-            or identity in seen
-            or item.get("recorded_fingerprint") != expected[identity]
-        ):
-            raise ActionError(
-                "reproduction.source.invalid", "repair source observation is invalid"
-            )
-        seen.add(identity)
-    if seen != set(expected):
-        raise ActionError(
-            "reproduction.source.invalid", "repair source closure is incomplete"
-        )
-
-
-def _recheck_materials(plan: ReproductionPlan) -> None:
-    """Require every snapshotted material to retain its closed fingerprint."""
-
-    repair = is_repair_verification(plan)
-    observed: set[tuple[str, str]] = set()
-    for item in cast(Sequence[Mapping[str, object]], plan.source_snapshot["materials"]):
-        if not repair and "recorded_fingerprint" in item:
-            raise ActionError(
-                "reproduction.source.invalid", "repair source needs explicit admission"
-            )
-        identity = item.get("identity")
-        kind = item.get("kind")
-        raw_fingerprint = item.get("fingerprint")
-        if not isinstance(identity, str) or not isinstance(kind, str):
-            raise ActionError(
-                "reproduction.source.invalid", "invalid material snapshot"
-            )
-        fingerprint = parse_fingerprint(
-            raw_fingerprint,
-            identity,
-            kind=kind,
-        )
-        key = (identity, fingerprint.content_identity)
-        if key in observed:
-            continue
-        observed.add(key)
-        resource = _observation_resource(
-            "snapshot-material", kind, identity, fingerprint
-        )
-        try:
-            current = observe_fingerprint(resource).fingerprint
-        except (OSError, ValueError) as error:
-            raise ActionError(
-                "reproduction.source.changed",
-                f"material became unavailable: {identity}: {error}",
-            ) from error
-        if current.as_dict() != fingerprint.as_dict():
-            raise ActionError(
-                "reproduction.source.changed", f"material changed: {identity}"
-            )
 
 
 def _artifact(
